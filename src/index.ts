@@ -51,9 +51,84 @@ import { execFileSync } from 'node:child_process'
                           args.includes('daily') || args.includes('weekly') || args.includes('monthly') ||
                           args.includes('session') || args.includes('--watch')
   const hasDashboardCommand = args.includes('--dashboard')
+  const hasYoloFlag = args.includes('--yolo')
 
-  // Handle top-level model-switch commands
-  if (hasModelCommand) {
+  // Special case: --yolo combined with model switch (e.g., --yolo --to GLM)
+  // We want to switch the model AND run Claude in one command
+  if (hasYoloFlag && (args.includes('--to') || args.includes('--add'))) {
+    // Extract model name after --to
+    const toIndex = args.indexOf('--to')
+    if (toIndex !== -1 && toIndex + 1 < args.length) {
+      const modelName = args[toIndex + 1]
+
+      // Switch the model
+      try {
+        const { getModelManager } = await import('./claude/sdk/modelManager')
+        const modelManager = getModelManager()
+        const success = modelManager.switchModel(modelName)
+
+        if (!success) {
+          console.error(chalk.red(`Model "${modelName}" not found`))
+          process.exit(1)
+        }
+
+        // Get the active profile to display info
+        const active = modelManager.getProfile(modelName)
+        if (active) {
+          console.log(`${chalk.green('✓')} Switched to model "${active.displayName || active.name}"`)
+          console.log(`   Model ID: ${active.modelId}`)
+          console.log(`   Cost: $${active.costPer1KInput}/1K input, $${active.costPer1KOutput}/1K output`)
+        }
+
+        // Now continue to run Claude with --yolo
+        // Remove --yolo and --to <model> from args, keep everything else
+        const filteredArgs = args.filter((arg, idx) =>
+          arg === '--yolo' ||
+          (arg === '--to' && idx + 1 < args.length && args[idx + 1] === modelName)
+        ).map((arg, idx, arr) => {
+          // Remove the model name that follows --to
+          if (arg === '--to' && idx + 1 < arr.length) {
+            return [arg, arr[idx + 1]]
+          }
+          return [arg]
+        }).flat()
+
+        const newArgs = args.filter((arg, idx) => {
+          if (arg === '--yolo') return false
+          if (arg === '--to' && idx + 1 < args.length && args[idx + 1] === modelName) {
+            return false
+          }
+          return false
+        })
+
+        // Actually, simpler: just remove --yolo, --to, and the model name
+        const runArgs: string[] = []
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === '--yolo') continue
+          if (args[i] === '--to' && i + 1 < args.length && args[i + 1] === modelName) {
+            i++ // Skip the model name too
+            continue
+          }
+          runArgs.push(args[i])
+        }
+
+        // Now execute the command with the remaining args
+        // We'll use spawnHappyCLI to run the CLI again with the new args
+        // But actually, we can just continue with the normal flow
+
+        // Store the model in a way that runClaude can access it
+        process.env.HAPPY_AUTO_SWITCHED_MODEL = modelName
+
+        // Continue to the main flow (don't return yet)
+      } catch (error) {
+        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+        process.exit(1)
+      }
+    }
+  }
+
+  // Handle top-level model-switch commands (but not when combined with --yolo for running)
+  if (hasModelCommand && !(hasYoloFlag && args.includes('--to'))) {
     try {
       // Special case: --to without a model name - show current/default model
       if (args.includes('--to') && !args.some((arg, i) => arg === '--to' && i + 1 < args.length)) {
@@ -445,6 +520,7 @@ ${chalk.bold('Token Statistics:')}
 ${chalk.bold('Examples:')}
   happy                          Start session
   happy --to claude-3-5-haiku    Switch to Haiku model
+  happy --yolo --to GLM          Switch to GLM and run (no permissions)
   happy --seeall                 List all models
   happy --stats -f compact       Show token stats (compact)
   happy --dashboard              Start real-time dashboard
@@ -494,6 +570,18 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       logger.debug(`Using active model from model manager: ${activeProfile.name} (${activeProfile.modelId})`)
     } else {
       logger.debug('No active model set, will use Claude default')
+    }
+
+    // Check if we auto-switched a model (e.g., with --yolo --to GLM)
+    const autoSwitchedModel = process.env.HAPPY_AUTO_SWITCHED_MODEL
+    if (autoSwitchedModel) {
+      const modelProfile = modelManager.getProfile(autoSwitchedModel)
+      if (modelProfile) {
+        options.model = modelProfile.modelId
+        logger.debug(`Using auto-switched model: ${modelProfile.name} (${modelProfile.modelId})`)
+        // Clean up the environment variable
+        delete process.env.HAPPY_AUTO_SWITCHED_MODEL
+      }
     }
 
     // Always auto-start daemon for simplicity

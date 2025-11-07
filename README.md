@@ -90,6 +90,9 @@ happy --seeall
 # Switch to a different model
 happy --to claude-3-5-haiku
 
+# Switch model and run in one command
+happy --yolo --to GLM
+
 # View current model
 happy --to
 
@@ -127,6 +130,7 @@ happy --auto expensive  # Switch to more capable model
 |---------|-------------|
 | `happy --seeall` | List all models |
 | `happy --to <model>` | Switch model |
+| `happy --yolo --to <model>` | Switch model and run in one command |
 | `happy --to` | Show current model |
 | `happy --toadd <name>` | Add custom model |
 | `happy --del <name>` | Remove model |
@@ -160,6 +164,81 @@ happy --toadd custom \
   --cost "input:output" \
   --provider custom
 ```
+
+---
+
+## Security Configuration
+
+### 🔒 API Key Management
+
+**Happy CLI prioritizes security - API keys are never hardcoded!**
+
+#### Configuration Files
+
+Create a configuration file at one of these locations:
+- `~/.happy/APIs` (recommended)
+- `/Users/swmt/Documents/auto_claude_proxy/APIs` (project-specific)
+- `./APIs` (current directory)
+
+#### Setup Example
+
+1. **Copy the template:**
+```bash
+cp examples/API_CONFIG.template ~/.happy/APIs
+```
+
+2. **Edit with your API keys:**
+```bash
+# Replace placeholders with real values
+YOUR_MINIMAX_API_KEY_HERE    → eyJhbGciOiJSUzI1Ni...
+YOUR_ZHIPU_API_KEY_HERE      → xxxxx.yyyyy.zzzzz
+YOUR_MOONSHOT_API_KEY_HERE   → sk-xxxxxxxxxx
+```
+
+3. **Set secure permissions:**
+```bash
+chmod 600 ~/.happy/APIs
+```
+
+4. **Test configuration:**
+```bash
+happy --seeall  # Should show all 12 models
+happy --to MM   # Test MiniMax
+happy --to GLM  # Test GLM
+happy --to KIMI # Test Kimi
+```
+
+#### Available Models (12 total)
+
+| Provider | Models | Aliases |
+|----------|--------|---------|
+| **Built-in** | claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus, gpt-4o, gpt-4o-mini | - |
+| **MiniMax** | MiniMax-M2 | MiniMax, MM |
+| **GLM** | glm-4.6 | GLM, glm |
+| **Kimi** | kimi-k2-thinking | Kimi, KIMI, kimi |
+
+#### Security Best Practices
+
+✅ **DO:**
+- Store API keys in configuration files only
+- Use `chmod 600` to restrict file permissions
+- Keep configuration files out of version control
+- Rotate API keys regularly
+- Use different keys for development/production
+
+❌ **DON'T:**
+- Never hardcode API keys in source code
+- Never commit API keys to git
+- Never share API keys in chat or forums
+- Never use production keys for testing
+
+#### Documentation
+
+📚 **Security Resources:**
+- [API Configuration Guide](./API_CONFIGURATION.md) - Complete setup instructions
+- [Security Guide](./SECURITY.md) - Best practices & incident response
+- [Configuration Example](./examples/api-config-example.md) - Step-by-step guide
+- [Security Summary](./SECURITY_DOCUMENTATION_SUMMARY.md) - Overview
 
 ---
 

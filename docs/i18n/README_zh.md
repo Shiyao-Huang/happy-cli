@@ -88,6 +88,9 @@ happy --seeall
 # 切换到不同模型
 happy --to claude-3-5-haiku
 
+# 一键切换模型并运行
+happy --yolo --to GLM
+
 # 查看当前模型
 happy --to
 
@@ -125,6 +128,7 @@ happy --auto expensive  # 切换到更强大的模型
 |---------|-------------|
 | `happy --seeall` | 列出所有模型 |
 | `happy --to <model>` | 切换模型 |
+| `happy --yolo --to <model>` | 切换模型并运行（一个命令） |
 | `happy --to` | 显示当前模型 |
 | `happy --toadd <name>` | 添加自定义模型 |
 | `happy --del <name>` | 删除模型 |
@@ -252,6 +256,81 @@ happy --toadd custom \
   --cost "input:output" \
   --provider custom
 ```
+
+---
+
+## 安全配置
+
+### 🔒 API 密钥管理
+
+**Happy CLI 优先考虑安全性 - 绝不硬编码 API 密钥！**
+
+#### 配置文件
+
+在以下位置之一创建配置文件：
+- `~/.happy/APIs`（推荐）
+- `/Users/swmt/Documents/auto_claude_proxy/APIs`（项目特定）
+- `./APIs`（当前目录）
+
+#### 设置示例
+
+1. **复制模板：**
+```bash
+cp examples/API_CONFIG.template ~/.happy/APIs
+```
+
+2. **编辑您的 API 密钥：**
+```bash
+# 将占位符替换为真实值
+YOUR_MINIMAX_API_KEY_HERE    → eyJhbGciOiJSUzI1Ni...
+YOUR_ZHIPU_API_KEY_HERE      → xxxxx.yyyyy.zzzzz
+YOUR_MOONSHOT_API_KEY_HERE   → sk-xxxxxxxxxx
+```
+
+3. **设置安全权限：**
+```bash
+chmod 600 ~/.happy/APIs
+```
+
+4. **测试配置：**
+```bash
+happy --seeall  # 应该显示所有 12 个模型
+happy --to MM   # 测试 MiniMax
+happy --to GLM  # 测试 GLM
+happy --to KIMI # 测试 Kimi
+```
+
+#### 可用模型（共 12 个）
+
+| 提供商 | 模型 | 别名 |
+|----------|--------|---------|
+| **内置** | claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus, gpt-4o, gpt-4o-mini | - |
+| **MiniMax** | MiniMax-M2 | MiniMax, MM |
+| **GLM** | glm-4.6 | GLM, glm |
+| **Kimi** | kimi-k2-thinking | Kimi, KIMI, kimi |
+
+#### 安全最佳实践
+
+✅ **应该做的：**
+- 仅在配置文件中存储 API 密钥
+- 使用 `chmod 600` 限制文件权限
+- 将配置文件排除在版本控制之外
+- 定期轮换 API 密钥
+- 为开发/生产使用不同的密钥
+
+❌ **不应该做的：**
+- 绝不在源代码中硬编码 API 密钥
+- 绝不要将 API 密钥提交到 git
+- 绝不在聊天或论坛中分享 API 密钥
+- 绝不在测试中使用生产密钥
+
+#### 文档
+
+📚 **安全资源：**
+- [API 配置指南](./API_CONFIGURATION.md) - 完整设置说明
+- [安全指南](./SECURITY.md) - 最佳实践和事件响应
+- [配置示例](./examples/api-config-example.md) - 分步指南
+- [安全摘要](./SECURITY_DOCUMENTATION_SUMMARY.md) - 概览
 
 ---
 

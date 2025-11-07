@@ -24,5 +24,11 @@ pnpm-lock.yaml
 # Local installation
 .happy/
 
+# API Configuration (contains sensitive API keys)
+# IMPORTANT: Never commit API keys to version control!
+APIs
+~/.happy/APIs
+**/APIs
+
 **/*.log
 .release-notes-temp.md

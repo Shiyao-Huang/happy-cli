@@ -177,10 +177,18 @@ export class ModelManager {
 
     /**
      * Load model profiles from APIs configuration file
+     *
+     * SECURITY NOTE:
+     * - API keys are loaded from external configuration files only
+     * - NO API keys are hardcoded in the source code
+     * - Configuration files should be placed in ~/.happy/ or project directory
+     * - See API_CONFIGURATION.md for setup instructions
+     * - Use .gitignore to prevent committing API keys
      */
     private loadFromApisConfig(): void {
         try {
             // Check for APIs config file in project directory or home directory
+            // Priority: /Users/swmt/Documents/auto_claude_proxy/APIs > ~/.happy/APIs > ./APIs
             const possiblePaths = [
                 '/Users/swmt/Documents/auto_claude_proxy/APIs',
                 join(homedir(), '.happy', 'APIs'),
@@ -232,13 +240,14 @@ export class ModelManager {
                                             })
                                         }
 
-                                        // Add GLM model
-                                        if (env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
+                                        // Add GLM model (check for GLM base URL)
+                                        if (env.ANTHROPIC_BASE_URL && env.ANTHROPIC_BASE_URL.includes('bigmodel.cn')) {
+                                            const modelId = env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'glm-4.6'
                                             this.profiles.set('GLM', {
                                                 name: 'GLM',
                                                 displayName: 'GLM',
                                                 provider: 'custom',
-                                                modelId: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+                                                modelId: modelId,
                                                 costPer1KInput: 0.001,
                                                 costPer1KOutput: 0.001,
                                                 description: 'GLM model via API',
@@ -253,7 +262,7 @@ export class ModelManager {
                                                 name: 'glm',
                                                 displayName: 'glm (GLM)',
                                                 provider: 'custom',
-                                                modelId: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+                                                modelId: modelId,
                                                 costPer1KInput: 0.001,
                                                 costPer1KOutput: 0.001,
                                                 description: 'GLM model via API (alias: glm)',
@@ -264,13 +273,14 @@ export class ModelManager {
                                             })
                                         }
 
-                                        // Add Kimi model
-                                        if (env.ANTHROPIC_DEFAULT_HAIKU_MODEL && env.ANTHROPIC_DEFAULT_HAIKU_MODEL.includes('kimi')) {
+                                        // Add Kimi model (check for Kimi base URL)
+                                        if (env.ANTHROPIC_BASE_URL && env.ANTHROPIC_BASE_URL.includes('moonshot.cn')) {
+                                            const modelId = env.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'kimi-k2-thinking'
                                             this.profiles.set('Kimi', {
                                                 name: 'Kimi',
                                                 displayName: 'Kimi',
                                                 provider: 'custom',
-                                                modelId: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+                                                modelId: modelId,
                                                 costPer1KInput: 0.001,
                                                 costPer1KOutput: 0.001,
                                                 description: 'Kimi model via API',
@@ -285,7 +295,7 @@ export class ModelManager {
                                                 name: 'KIMI',
                                                 displayName: 'KIMI (Kimi)',
                                                 provider: 'custom',
-                                                modelId: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+                                                modelId: modelId,
                                                 costPer1KInput: 0.001,
                                                 costPer1KOutput: 0.001,
                                                 description: 'Kimi model via API (alias: KIMI)',
@@ -299,7 +309,7 @@ export class ModelManager {
                                                 name: 'kimi',
                                                 displayName: 'kimi (Kimi)',
                                                 provider: 'custom',
-                                                modelId: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+                                                modelId: modelId,
                                                 costPer1KInput: 0.001,
                                                 costPer1KOutput: 0.001,
                                                 description: 'Kimi model via API (alias: kimi)',
