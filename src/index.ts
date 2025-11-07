@@ -25,6 +25,9 @@ import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
+import { handleTokenStatsCli } from './commands/token-stats-cli'
+import { handleModelSwitchCli } from './commands/model-switch-cli'
+import { handleDashboardCli } from './commands/dashboard-cli'
 import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
@@ -36,6 +39,87 @@ import { execFileSync } from 'node:child_process'
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
     logger.debug('Starting happy CLI with args: ', process.argv)
+  }
+
+  // Check for top-level model and token commands first
+  const hasModelCommand = args.includes('--to') || args.includes('--toadd') || args.includes('--toadd') ||
+                          args.includes('--seeall') || args.includes('--see') || args.includes('--del') ||
+                          args.includes('--upd') || args.includes('--auto') || args.includes('--exp') ||
+                          args.includes('--imp') || args.includes('--format')
+  const hasTokenCommand = args.includes('--stats') || args.includes('--f') ||
+                          args.includes('--since') || args.includes('--until') ||
+                          args.includes('daily') || args.includes('weekly') || args.includes('monthly') ||
+                          args.includes('session') || args.includes('--watch')
+  const hasDashboardCommand = args.includes('--dashboard')
+
+  // Handle top-level model-switch commands
+  if (hasModelCommand) {
+    try {
+      // Special case: --to without a model name - show current/default model
+      if (args.includes('--to') && !args.some((arg, i) => arg === '--to' && i + 1 < args.length)) {
+        const { getModelManager } = await import('./claude/sdk/modelManager')
+        const modelManager = getModelManager()
+        const active = modelManager.getActiveProfile()
+
+        if (active) {
+          console.log(`${chalk.bold('Current Active Model:')}`)
+          console.log(`  ${chalk.cyan(active.displayName || active.name)}`)
+          console.log(`  Model ID: ${active.modelId}`)
+          console.log(`  Provider: ${active.provider}`)
+          console.log(`  Cost: $${active.costPer1KInput}/1K input, $${active.costPer1KOutput}/1K output`)
+        } else {
+          // Show Claude's default environment
+          const defaultModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ||
+                               process.env.ANTHROPIC_MODEL ||
+                               'claude-3-5-sonnet-20241022'
+          const baseUrl = process.env.ANTHROPIC_BASE_URL || 'default Anthropic API'
+
+          console.log(`${chalk.bold('Claude Default Configuration:')}`)
+          console.log(`  Model: ${chalk.cyan(defaultModel)}`)
+          console.log(`  API Base: ${baseUrl}`)
+          console.log(`  Auth Token: ${process.env.ANTHROPIC_AUTH_TOKEN ? '✓ Configured' : '✗ Not configured'}`)
+        }
+        console.log(`\n${chalk.gray('Use "happy --seeall" to see all available models')}`)
+        return
+      }
+
+      await handleModelSwitchCli(args);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  }
+
+  // Handle top-level token-stats commands
+  if (hasTokenCommand) {
+    try {
+      await handleTokenStatsCli(args);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  }
+
+  // Handle dashboard command
+  if (hasDashboardCommand) {
+    try {
+      await handleDashboardCli(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   }
 
   // Check if first argument is a subcommand
@@ -120,6 +204,42 @@ import { execFileSync } from 'node:child_process'
     // Handle notification command
     try {
       await handleNotifyCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'token-stats') {
+    // Handle token-stats command
+    try {
+      await handleTokenStatsCli(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'model-switch') {
+    // Handle model-switch command
+    try {
+      await handleModelSwitchCli(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'dashboard') {
+    // Handle dashboard command
+    try {
+      await handleDashboardCli(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -293,20 +413,44 @@ ${chalk.bold('happy')} - Claude Code On the Go
 
 ${chalk.bold('Usage:')}
   happy [options]         Start Claude with mobile control
+  happy --to <model>      Switch to a different model
+  happy --seeall          List all available models
+  happy --stats           View token usage statistics
+  happy --dashboard       Real-time token dashboard
   happy auth              Manage authentication
   happy codex             Start Codex mode
   happy connect           Connect AI vendor API keys
   happy notify            Send push notification
-  happy daemon            Manage background service that allows
-                            to spawn new sessions away from your computer
+  happy daemon            Manage background service
   happy doctor            System diagnostics & troubleshooting
 
+${chalk.bold('Model Management:')}
+  --to <name>             Switch to model (e.g., claude-3-5-haiku)
+  --seeall, -a            List all models
+  --toadd <name>          Add a new model
+  --del <name>            Remove a model
+  --upd <name>            Update a model
+  --auto <pattern>        Auto-switch (expensive|cheap|balanced)
+  --exp <file>            Export model config
+  --imp <file>            Import model config
+
+${chalk.bold('Token Statistics:')}
+  --stats                 Show daily token usage
+  -f, --format <fmt>      Output format (table|json|compact)
+  --since <date>          Filter from date (YYYYMMDD)
+  --until <date>          Filter until date (YYYYMMDD)
+  daily|weekly|monthly    Group by time period
+  --watch                 Real-time monitoring
+
 ${chalk.bold('Examples:')}
-  happy                    Start session
-  happy --yolo             Start with bypassing permissions 
-                            happy sugar for --dangerously-skip-permissions
-  happy auth login --force Authenticate
-  happy doctor             Run diagnostics
+  happy                          Start session
+  happy --to claude-3-5-haiku    Switch to Haiku model
+  happy --seeall                 List all models
+  happy --stats -f compact       Show token stats (compact)
+  happy --dashboard              Start real-time dashboard
+  happy --yolo                   Start with bypassing permissions
+  happy auth login --force       Authenticate
+  happy doctor                   Run diagnostics
 
 ${chalk.bold('Happy supports ALL Claude options!')}
   Use any claude flag with happy as you would with claude. Our favorite:
@@ -316,7 +460,7 @@ ${chalk.bold('Happy supports ALL Claude options!')}
 ${chalk.gray('─'.repeat(60))}
 ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 `)
-      
+
       // Run claude --help and display its output
       // Use execFileSync with the current Node executable for cross-platform compatibility
       try {
@@ -325,7 +469,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
       }
-      
+
       process.exit(0)
     }
 
@@ -339,6 +483,18 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     const {
       credentials
     } = await authAndSetupMachineIfNeeded();
+
+    // Get active model from model manager and set it in options
+    const { getModelManager } = await import('./claude/sdk/modelManager')
+    const modelManager = getModelManager()
+    const activeProfile = modelManager.getActiveProfile()
+    if (activeProfile) {
+      // Set the model in options so runClaude uses it
+      options.model = activeProfile.modelId
+      logger.debug(`Using active model from model manager: ${activeProfile.name} (${activeProfile.modelId})`)
+    } else {
+      logger.debug('No active model set, will use Claude default')
+    }
 
     // Always auto-start daemon for simplicity
     logger.debug('Ensuring Happy background service is running & matches our version...');

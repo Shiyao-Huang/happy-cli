@@ -20,11 +20,13 @@ import {
     type CanUseToolControlResponse,
     type ControlCancelRequest,
     type PermissionResult,
+    type SDKResultMessage,
     AbortError
 } from './types'
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
+import { getModelManager } from './modelManager'
 
 /**
  * Query class manages Claude Code process interaction
@@ -398,4 +400,104 @@ export function query(config: {
     })
 
     return query
+}
+
+/**
+ * MonitoredQuery - Extended Query class with token monitoring
+ */
+export class MonitoredQuery extends Query implements AsyncIterableIterator<SDKMessage> {
+    private tokenMonitor: any
+
+    constructor(
+        childStdin: Writable | null,
+        childStdout: NodeJS.ReadableStream,
+        processExitPromise: Promise<void>,
+        tokenMonitor: any,
+        canCallTool?: CanCallToolCallback
+    ) {
+        super(childStdin, childStdout, processExitPromise, canCallTool)
+        this.tokenMonitor = tokenMonitor
+        this.interceptMessages()
+    }
+
+    /**
+     * Intercept result messages to record token usage
+     */
+    private interceptMessages(): void {
+        const originalNext = this.next.bind(this)
+
+        this.next = async (...args: [] | [undefined]) => {
+            const result = await originalNext(...args)
+
+            if (!result.done && result.value.type === 'result') {
+                const resultMessage = result.value as SDKResultMessage
+                if (resultMessage.usage) {
+                    this.tokenMonitor.recordUsage({
+                        input_tokens: resultMessage.usage.input_tokens,
+                        output_tokens: resultMessage.usage.output_tokens,
+                        total_cost_usd: resultMessage.total_cost_usd,
+                        model: (resultMessage as any).model,
+                        session_id: resultMessage.session_id
+                    })
+                }
+            }
+
+            return result
+        }
+    }
+}
+
+/**
+ * Create a monitored query with automatic token tracking
+ */
+export function createMonitoredQuery(config: {
+    prompt: QueryPrompt
+    options?: QueryOptions
+    sessionId?: string
+}): {
+    query: MonitoredQuery
+    tokenMonitor: any
+} {
+    const { prompt, options = {}, sessionId } = config
+
+    // Get model manager and determine active model
+    const modelManager = getModelManager()
+    let effectiveModel = options.model
+    let effectiveFallback = options.fallbackModel
+
+    // If no model specified, use active profile
+    if (!effectiveModel) {
+        const activeProfile = modelManager.getActiveProfile()
+        if (activeProfile) {
+            effectiveModel = activeProfile.modelId
+            effectiveFallback = activeProfile.fallbackModelId
+        }
+    }
+
+    // Create token monitor
+    const { getTokenMonitor } = require('./tokenMonitor')
+    const tokenMonitor = getTokenMonitor(sessionId)
+
+    // Call original query with updated model settings
+    const monitoredQuery = query({
+        prompt,
+        options: {
+            ...options,
+            model: effectiveModel,
+            fallbackModel: effectiveFallback
+        }
+    }) as MonitoredQuery
+
+    // Wrap in MonitoredQuery
+    Object.setPrototypeOf(monitoredQuery, MonitoredQuery.prototype)
+    Object.defineProperty(monitoredQuery, 'constructor', {
+        value: MonitoredQuery,
+        writable: true,
+        configurable: true
+    })
+
+    return {
+        query: monitoredQuery,
+        tokenMonitor
+    }
 }

@@ -3,7 +3,7 @@
  * Provides clean TypeScript implementation without Bun support
  */
 
-export { query } from './query'
+export { query, createMonitoredQuery } from './query'
 export { AbortError } from './types'
 export type {
     QueryOptions,
@@ -20,3 +20,7 @@ export type {
     CanCallToolCallback,
     PermissionResult
 } from './types'
+
+// Token monitoring and model management
+export { TokenMonitor, getTokenMonitor, createNewMonitor } from './tokenMonitor'
+export { ModelManager, getModelManager } from './modelManager'
