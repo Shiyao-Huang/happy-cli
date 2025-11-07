@@ -41,6 +41,33 @@ import { execFileSync } from 'node:child_process'
     logger.debug('Starting happy CLI with args: ', process.argv)
   }
 
+  // Check for --yolo --to combination early (before other command handlers)
+  const hasYoloFlag = args.includes('--yolo')
+  const hasToFlag = args.includes('--to')
+  const toIndex = args.indexOf('--to')
+  const yoloToCombo = hasYoloFlag && hasToFlag && toIndex > -1
+
+  // If --yolo --to combo is detected, switch model and continue to main flow
+  if (yoloToCombo) {
+    const modelName = args[toIndex + 1]
+    if (!modelName || modelName.startsWith('-')) {
+      console.error(chalk.red('Error: --to requires a model name'))
+      process.exit(1)
+    }
+
+    const { getModelManager } = await import('./claude/sdk/modelManager')
+    const modelManager = getModelManager()
+    const success = modelManager.switchModel(modelName)
+
+    if (!success) {
+      console.error(chalk.red(`Error: Failed to switch to model "${modelName}"`))
+      process.exit(1)
+    }
+
+    console.log(chalk.green(`✓ Switched to model "${modelName}" and starting session...`))
+    // Don't return here - continue to main flow to start Claude
+  }
+
   // Check for top-level model and token commands first
   const hasModelCommand = args.includes('--to') || args.includes('--toadd') || args.includes('--toadd') ||
                           args.includes('--seeall') || args.includes('--see') || args.includes('--del') ||
@@ -389,6 +416,12 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
       } else if (arg === '--yolo') {
         // Shortcut for --dangerously-skip-permissions
         unknownArgs.push('--dangerously-skip-permissions')
+      } else if (arg === '--to') {
+        // Skip --to and its value (already handled if part of --yolo --to combo)
+        if (yoloToCombo) {
+          i++ // Skip the model name
+        }
+        // Otherwise, pass through to claude
       } else if (arg === '--started-by') {
         options.startedBy = args[++i] as 'daemon' | 'terminal'
       } else {
@@ -445,6 +478,7 @@ ${chalk.bold('Token Statistics:')}
 ${chalk.bold('Examples:')}
   happy                          Start session
   happy --to claude-3-5-haiku    Switch to Haiku model
+  happy --yolo --to GLM          Switch to GLM and start session
   happy --seeall                 List all models
   happy --stats -f compact       Show token stats (compact)
   happy --dashboard              Start real-time dashboard

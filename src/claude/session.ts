@@ -14,6 +14,7 @@ export class Session {
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly _onModeChange: (mode: 'local' | 'remote') => void;
+    readonly model?: string;
 
     sessionId: string | null;
     mode: 'local' | 'remote' = 'local';
@@ -31,6 +32,7 @@ export class Session {
         messageQueue: MessageQueue2<EnhancedMode>,
         onModeChange: (mode: 'local' | 'remote') => void,
         allowedTools?: string[],
+        model?: string,
     }) {
         this.path = opts.path;
         this.api = opts.api;
@@ -43,6 +45,29 @@ export class Session {
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
         this._onModeChange = opts.onModeChange;
+        this.model = opts.model;
+
+        // Add model to claudeArgs if not already present
+        if (this.model) {
+            if (!this.claudeArgs) {
+                this.claudeArgs = ['--model', this.model];
+            } else {
+                // Check if --model is already in args
+                const hasModelFlag = this.claudeArgs.some((arg, index) => {
+                    if (arg === '--model' || arg === '-m') {
+                        return true;
+                    }
+                    if (arg === '--to' && index + 1 < (this.claudeArgs as string[]).length) {
+                        const nextArg = (this.claudeArgs as string[])[index + 1];
+                        return nextArg !== undefined && !nextArg.startsWith('-');
+                    }
+                    return false;
+                });
+                if (!hasModelFlag) {
+                    this.claudeArgs = ['--model', this.model, ...this.claudeArgs];
+                }
+            }
+        }
 
         // Start keep alive
         this.client.keepAlive(this.thinking, this.mode);

@@ -201,7 +201,7 @@ export class ModelManager {
                                         const env = config.env
 
                                         // Add MiniMax model
-                                        if (env.ANTHROPIC_MODEL) {
+                                        if (env.ANTHROPIC_BASE_URL?.includes('minimaxi.com') && env.ANTHROPIC_MODEL) {
                                             this.profiles.set('MiniMax', {
                                                 name: 'MiniMax',
                                                 displayName: 'MiniMax',
@@ -233,7 +233,7 @@ export class ModelManager {
                                         }
 
                                         // Add GLM model
-                                        if (env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
+                                        if (env.ANTHROPIC_BASE_URL?.includes('bigmodel.cn') && env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
                                             this.profiles.set('GLM', {
                                                 name: 'GLM',
                                                 displayName: 'GLM',
@@ -265,7 +265,7 @@ export class ModelManager {
                                         }
 
                                         // Add Kimi model
-                                        if (env.ANTHROPIC_DEFAULT_HAIKU_MODEL && env.ANTHROPIC_DEFAULT_HAIKU_MODEL.includes('kimi')) {
+                                        if (env.ANTHROPIC_BASE_URL?.includes('moonshot.cn') && env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
                                             this.profiles.set('Kimi', {
                                                 name: 'Kimi',
                                                 displayName: 'Kimi',
