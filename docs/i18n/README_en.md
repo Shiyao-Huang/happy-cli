@@ -1,7 +1,5 @@
 # Happy (Happy CLI)
 
-[English](./docs/i18n/README_en.md) | [中文](./docs/i18n/README_zh.md) | [日本語](./docs/i18n/README_ja.md) | [한국어](./docs/i18n/README_ko.md)
-
 > **Code on the go** - Control Claude Code from anywhere with your mobile device
 
 **Happy** is a powerful CLI tool that wraps Claude Code to enable remote control and session sharing. Control Claude directly from your mobile device, monitor token usage in real-time, and manage multiple AI models seamlessly.
@@ -142,6 +140,100 @@ happy --auto expensive  # Switch to more capable model
 
 ---
 
+## Advanced Usage
+
+### Model Profiles
+
+Create custom model configurations:
+
+```bash
+# Add a model with custom pricing
+happy --toadd my-model \
+  --model claude-3-5-sonnet \
+  --cost "0.003:0.015" \
+  --tags "reasoning,fast"
+```
+
+Model profiles are stored in `~/.happy/model-config.json`:
+```json
+{
+  "profiles": {
+    "claude-3-5-sonnet": {
+      "name": "claude-3-5-sonnet",
+      "displayName": "Claude 3.5 Sonnet",
+      "provider": "anthropic",
+      "modelId": "claude-3-5-sonnet-20241022",
+      "costPer1KInput": 0.003,
+      "costPer1KOutput": 0.015,
+      "tags": ["reasoning", "coding"],
+      "isActive": true
+    }
+  }
+}
+```
+
+### Token Usage Tracking
+
+Monitor token usage in your code:
+
+```typescript
+import { createMonitoredQuery } from '@/claude/sdk'
+
+const { query, tokenMonitor } = createMonitoredQuery({
+    prompt: 'Your prompt here',
+    options: { model: 'claude-3-5-sonnet' }
+})
+
+for await (const message of query) {
+    // Process messages
+}
+
+// Get statistics
+const stats = tokenMonitor.getStats()
+console.log(`Total cost: $${stats.totalCost}`)
+```
+
+### Real-time Event Listeners
+
+```typescript
+import { getTokenMonitor } from '@/claude/sdk'
+
+const monitor = getTokenMonitor()
+
+// Listen for usage events
+monitor.on('usage', (usage) => {
+    console.log(`New request: ${usage.totalTokens} tokens`)
+})
+
+// Listen for rate changes
+monitor.on('stats', (stats) => {
+    console.log(`Current rate: ${stats.currentRate.tokensPerSecond} t/s`)
+})
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HAPPY_SERVER_URL` | Custom server URL | https://api.cluster-fluster.com |
+| `HAPPY_WEBAPP_URL` | Custom web app URL | https://app.happy.engineering |
+| `HAPPY_HOME_DIR` | Data directory | ~/.happy |
+| `HAPPY_DISABLE_CAFFEINATE` | Disable macOS sleep prevention | false |
+| `HAPPY_EXPERIMENTAL` | Enable experimental features | false |
+
+### Configuration Files
+
+- `~/.happy/model-config.json` - Model profiles and settings
+- `~/.happy/token-usage.json` - Token usage history (JSONL)
+- `~/.happy/credentials` - Authentication credentials
+- `~/.happy/logs/` - Application logs
+
+---
+
 ## API Providers
 
 Happy supports multiple AI providers:
@@ -165,49 +257,12 @@ happy --toadd custom \
 
 ## Documentation
 
-📚 **Available in Multiple Languages:**
-
-### English
+📚 **Additional Documentation:**
 - [Token Monitoring Guide](./TOKEN_MONITORING.md) - Complete API reference
 - [Getting Started Guide](./GETTING_STARTED.md) - Quick start tutorial
 - [CLI Integration Guide](./CLI_INTEGRATION.md) - Advanced usage
 - [Implementation Summary](./IMPLEMENTATION_SUMMARY.md) - Technical details
 - [Roadmap](./roadmap.md) - Future features
-
-### 中文
-- [Token 监控指南](./TOKEN_MONITORING.md) - 完整 API 参考
-- [快速开始指南](./GETTING_STARTED.md) - 快速入门教程
-- [CLI 集成指南](./CLI_INTEGRATION.md) - 高级用法
-- [实现总结](./IMPLEMENTATION_SUMMARY.md) - 技术细节
-
-### 日本語
-- [Token 監視ガイド](./docs/i18n/ja/TOKEN_MONITORING.md) - 完全な API リファレンス
-- [はじめに](./docs/i18n/ja/GETTING_STARTED.md) - クイックスタートチュートリアル
-
-### 한국어
-- [토큰 모니터링 가이드](./docs/i18n/ko/TOKEN_MONITORING.md) - 전체 API 참조
-- [시작하기 가이드](./docs/i18n/ko/GETTING_STARTED.md) - 빠른 시작 튜토리얼
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HAPPY_SERVER_URL` | Custom server URL | https://api.cluster-fluster.com |
-| `HAPPY_WEBAPP_URL` | Custom web app URL | https://app.happy.engineering |
-| `HAPPY_HOME_DIR` | Data directory | ~/.happy |
-| `HAPPY_DISABLE_CAFFEINATE` | Disable macOS sleep prevention | false |
-| `HAPPY_EXPERIMENTAL` | Enable experimental features | false |
-
-### Configuration Files
-
-- `~/.happy/model-config.json` - Model profiles and settings
-- `~/.happy/token-usage.json` - Token usage history (JSONL)
-- `~/.happy/credentials` - Authentication credentials
-- `~/.happy/logs/` - Application logs
 
 ---
 
@@ -272,27 +327,9 @@ MIT License - see [LICENSE](LICENSE) for details
 
 ---
 
-## Support & Community
+## Support
 
 - 📧 Email: support@happy.engineering
 - 🐛 Issues: [GitHub Issues](https://github.com/slopus/happy-cli/issues)
 - 💬 Discord: [Join our community](https://discord.gg/happy)
 - 📖 Docs: [docs.happy.engineering](https://docs.happy.engineering)
-
----
-
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Internationalization (i18n)
-
-Help us translate Happy into your language! See [docs/i18n/README_i18n.md](./docs/i18n/README_i18n.md) for translation guidelines.
-
-**Current Languages:**
-- ✅ English (en)
-- ✅ 中文 (zh)
-- 🔄 日本語 (ja) - In progress
-- 🔄 한국어 (ko) - In progress
-
-Want to add a new language? Check our [i18n Guide](./docs/i18n/README_i18n.md)!
