@@ -1,0 +1,64 @@
+# API Configuration Template
+#
+# COPY THIS FILE TO:
+#   /Users/swmt/Documents/auto_claude_proxy/APIs
+#   OR
+#   ~/.happy/APIs
+#   OR
+#   ./APIs
+#
+# Then replace the placeholder values with your actual API keys.
+#
+# SECURITY WARNING:
+# - NEVER commit this file with real API keys to version control
+# - Use 'chmod 600' to restrict file permissions
+# - Keep your API keys secret and secure
+
+# =============================================================================
+# MiniMax Configuration
+# =============================================================================
+# Get your API key from: https://api.minimaxi.com
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_MINIMAX_API_KEY_HERE",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
+    "ANTHROPIC_MODEL": "MiniMax-M2",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M2",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M2",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M2"
+  }
+}
+
+# =============================================================================
+# GLM (Zhipu AI) Configuration
+# =============================================================================
+# Get your API key from: https://open.bigmodel.cn
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_ZHIPU_API_KEY_HERE",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.6"
+  }
+}
+
+# =============================================================================
+# Kimi (Moonshot AI) Configuration
+# =============================================================================
+# Get your API key from: https://api.moonshot.cn
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.moonshot.cn/anthropic/",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_MOONSHOT_API_KEY_HERE",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k2-thinking",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k2-thinking",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi-k2-thinking"
+  }
+}
