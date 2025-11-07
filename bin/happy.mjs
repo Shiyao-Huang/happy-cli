@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 
 // Check if we're already running with the flags
 const hasNoWarnings = process.execArgv.includes('--no-warnings');
@@ -13,13 +13,19 @@ if (!hasNoWarnings || !hasNoDeprecation) {
   const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const entrypoint = join(projectRoot, 'dist', 'index.mjs');
 
+  // Get the command name (ccglm, ccmm, cckimi, or happy)
+  const commandName = basename(process.argv[1]);
+
+  // Prepend the command name as the first argument
+  const args = [commandName, ...process.argv.slice(2)];
+
   // Execute the actual CLI directly with the correct flags
   try {
     execFileSync(process.execPath, [
       '--no-warnings',
       '--no-deprecation',
       entrypoint,
-      ...process.argv.slice(2)
+      ...args
     ], {
       stdio: 'inherit',
       env: process.env

@@ -37,11 +37,23 @@ import { claudeCliPath } from './claude/claudeLocal';
 import { execFileSync } from 'node:child_process';
 
 (async () => {
-  const args = process.argv.slice(2);
+  let args = process.argv.slice(2);
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
     logger.debug('Starting happy CLI with args: ', process.argv);
+  }
+
+  // Handle ccglm, ccmm, cckimi commands (passed as first argument by bin/happy.mjs)
+  const firstArg = args[0];
+  if (firstArg === 'ccglm' || firstArg === 'ccmm' || firstArg === 'cckimi') {
+    // Remove the command name from args and process as ultra-simple command
+    const commandArgs = args.slice(1);
+    await handleUltraSimpleCommand(firstArg, commandArgs);
+    return;
+  } else if (firstArg === 'happy') {
+    // If first arg is 'happy', remove it (it's the command wrapper)
+    args = args.slice(1);
   }
 
   // Check for --yolo --to combination (in any order) - before other command handlers
@@ -191,85 +203,6 @@ import { execFileSync } from 'node:child_process';
 
   // Check if first argument is a subcommand
   const subcommand = args[0];
-
-  // Handle ultra-simple commands (ccglm, ccmm, cckimi)
-  if (subcommand === 'ccglm' || subcommand === 'ccmm' || subcommand === 'cckimi') {
-    // Determine model name
-    let modelName: string;
-    let modelDisplay: string;
-
-    if (subcommand === 'ccglm') {
-      modelName = 'GLM';
-      modelDisplay = 'GLM';
-    } else if (subcommand === 'ccmm') {
-      modelName = 'MM';
-      modelDisplay = 'MM (MiniMax)';
-    } else {
-      modelName = 'KIMI';
-      modelDisplay = 'KIMI (Kimi)';
-    }
-
-    // Check for --no flag (disable yolo mode)
-    const hasNoFlag = args.includes('--no');
-
-    // Switch model
-    const { getModelManager } = await import('./claude/sdk/modelManager');
-    const modelManager = getModelManager();
-    const success = modelManager.switchModel(modelName);
-
-    if (!success) {
-      console.error(chalk.red(`Error: Failed to switch to model "${modelDisplay}"`));
-      process.exit(1);
-    }
-
-    // Prepare to start Claude
-    const { credentials } = await authAndSetupMachineIfNeeded();
-
-    // Set up options
-    const options: StartOptions = {};
-
-    // If --no flag is present, don't add --dangerously-skip-permissions
-    if (!hasNoFlag) {
-      options.claudeArgs = ['--dangerously-skip-permissions'];
-    }
-
-    // Get active model
-    const activeProfile = modelManager.getActiveProfile();
-    if (activeProfile) {
-      options.model = activeProfile.modelId;
-    }
-
-    // Ensure daemon is running
-    logger.debug('Ensuring Happy background service is running & matches our version...');
-
-    if (!(await isDaemonRunningCurrentlyInstalledHappyVersion())) {
-      logger.debug('Starting Happy background service...');
-
-      const daemonProcess = spawnHappyCLI(['daemon', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env,
-      });
-      daemonProcess.unref();
-
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-
-    // Start the CLI
-    const modeText = hasNoFlag ? 'normal mode' : 'yolo mode';
-    console.log(chalk.green(`✓ Switched to model "${modelDisplay}" and starting session (${modeText})...`));
-
-    try {
-      await runClaude(credentials, options);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-      if (process.env.DEBUG) {
-        console.error(error);
-      }
-      process.exit(1);
-    }
-    return;
-  }
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -788,5 +721,85 @@ ${chalk.bold('Examples:')}
   } catch (error) {
     console.error(chalk.red('✗ Failed to send push notification'));
     throw error;
+  }
+}
+
+/**
+ * Handle ultra-simple commands (ccglm, ccmm, cckimi)
+ */
+async function handleUltraSimpleCommand(commandName: string, args: string[]): Promise<void> {
+  // Determine model name
+  let modelName: string;
+  let modelDisplay: string;
+
+  if (commandName === 'ccglm') {
+    modelName = 'GLM';
+    modelDisplay = 'GLM';
+  } else if (commandName === 'ccmm') {
+    modelName = 'MM';
+    modelDisplay = 'MM (MiniMax)';
+  } else {
+    modelName = 'KIMI';
+    modelDisplay = 'KIMI (Kimi)';
+  }
+
+  // Check for --no flag (disable yolo mode)
+  const hasNoFlag = args.includes('--no');
+
+  // Switch model
+  const { getModelManager } = await import('./claude/sdk/modelManager');
+  const modelManager = getModelManager();
+  const success = modelManager.switchModel(modelName);
+
+  if (!success) {
+    console.error(chalk.red(`Error: Failed to switch to model "${modelDisplay}"`));
+    process.exit(1);
+  }
+
+  // Prepare to start Claude
+  const { credentials } = await authAndSetupMachineIfNeeded();
+
+  // Set up options
+  const options: StartOptions = {};
+
+  // If --no flag is present, don't add --dangerously-skip-permissions
+  if (!hasNoFlag) {
+    options.claudeArgs = ['--dangerously-skip-permissions'];
+  }
+
+  // Get active model
+  const activeProfile = modelManager.getActiveProfile();
+  if (activeProfile) {
+    options.model = activeProfile.modelId;
+  }
+
+  // Ensure daemon is running
+  logger.debug('Ensuring Happy background service is running & matches our version...');
+
+  if (!(await isDaemonRunningCurrentlyInstalledHappyVersion())) {
+    logger.debug('Starting Happy background service...');
+
+    const daemonProcess = spawnHappyCLI(['daemon', 'start-sync'], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    });
+    daemonProcess.unref();
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // Start the CLI
+  const modeText = hasNoFlag ? 'normal mode' : 'yolo mode';
+  console.log(chalk.green(`✓ Switched to model "${modelDisplay}" and starting session (${modeText})...`));
+
+  try {
+    await runClaude(credentials, options);
+  } catch (error) {
+    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    if (process.env.DEBUG) {
+      console.error(error);
+    }
+    process.exit(1);
   }
 }

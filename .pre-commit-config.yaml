@@ -1,4 +1,7 @@
-# Temporary pre-commit config for formatting-only commit
+# Pre-commit hooks configuration for Happy CLI
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
 repos:
   # Pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -15,6 +18,35 @@ repos:
       - id: check-json
       - id: debug-statements
 
+  # TypeScript type checking (local)
+  - repo: local
+    hooks:
+      - id: typecheck
+        name: TypeScript type checking
+        entry: npx tsc --noEmit
+        language: system
+        pass_filenames: false
+        files: '\.(ts|tsx)$'
+
+  # ESLint (local)
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint
+        entry: npx eslint
+        language: system
+        args: [--fix, --max-warnings=0]
+        files: '\.(ts|tsx)$'
+
+  # Prettier (local)
+  - repo: local
+    hooks:
+      - id: prettier
+        name: Prettier
+        entry: npx prettier --write
+        language: system
+        files: '\.(ts|tsx|js|jsx|json|md|yml|yaml|css|scss)$'
+
   # Detect secrets
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.4.0
@@ -22,3 +54,14 @@ repos:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']
         exclude: package-lock.json
+
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit.com hooks
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: []
+  subodules: false

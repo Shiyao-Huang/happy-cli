@@ -210,9 +210,7 @@ class TokenMonitor extends EventEmitter {
   getUsageByModel(model?: string): TokenStats;
 
   // Get top models by usage
-  getTopModels(
-    limit = 10
-  ): Array<{
+  getTopModels(limit = 10): Array<{
     model: string;
     totalTokens: number;
     totalCost: number;

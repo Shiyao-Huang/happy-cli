@@ -10,7 +10,10 @@
   "repository": "slopus/happy-cli",
   "bin": {
     "happy": "./bin/happy.mjs",
-    "happy-mcp": "./bin/happy-mcp.mjs"
+    "happy-mcp": "./bin/happy-mcp.mjs",
+    "ccglm": "./bin/happy.mjs",
+    "ccmm": "./bin/happy.mjs",
+    "cckimi": "./bin/happy.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
