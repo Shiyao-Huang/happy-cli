@@ -28,7 +28,8 @@ This will:
 
 Happy CLI supports **TWO command systems** for maximum flexibility:
 
-1. **Ultra-Simple Commands** (Recommended) - Quick one-word commands for common models
+1. **Ultra-Simple Commands** (Recommended) - Quick one-word commands for common
+   models
 2. **Full-Featured Commands** - Complete set of flags for advanced usage
 
 Both systems work simultaneously - use whichever fits your workflow!

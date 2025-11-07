@@ -791,7 +791,9 @@ async function handleUltraSimpleCommand(commandName: string, args: string[]): Pr
 
   // Start the CLI
   const modeText = hasNoFlag ? 'normal mode' : 'yolo mode';
-  console.log(chalk.green(`✓ Switched to model "${modelDisplay}" and starting session (${modeText})...`));
+  console.log(
+    chalk.green(`✓ Switched to model "${modelDisplay}" and starting session (${modeText})...`)
+  );
 
   try {
     await runClaude(credentials, options);
