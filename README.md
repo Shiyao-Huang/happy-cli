@@ -251,6 +251,8 @@ happy --to KIMI # Test Kimi
 - [Getting Started Guide](./GETTING_STARTED.md) - Quick start tutorial
 - [CLI Integration Guide](./CLI_INTEGRATION.md) - Advanced usage
 - [Implementation Summary](./IMPLEMENTATION_SUMMARY.md) - Technical details
+- [API Configuration Guide](./API_CONFIGURATION.md) - Security setup instructions
+- [Security Guide](./SECURITY.md) - Best practices & incident response
 - [Roadmap](./roadmap.md) - Future features
 
 ### 中文
@@ -258,6 +260,8 @@ happy --to KIMI # Test Kimi
 - [快速开始指南](./GETTING_STARTED.md) - 快速入门教程
 - [CLI 集成指南](./CLI_INTEGRATION.md) - 高级用法
 - [实现总结](./IMPLEMENTATION_SUMMARY.md) - 技术细节
+- [API 配置指南](./API_CONFIGURATION.md) - 安全设置说明
+- [安全指南](./SECURITY.md) - 最佳实践和事件响应
 
 ### 日本語
 - [Token 監視ガイド](./docs/i18n/ja/TOKEN_MONITORING.md) - 完全な API リファレンス
