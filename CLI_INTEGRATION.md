@@ -2,11 +2,13 @@
 
 ## 问题：为什么使用 `--` 命令？
 
-您问得对！我之前的实现中，在文档里示例化了 `--` 命令，但实际上**没有真正实现CLI参数解析**。那只是**示例**而已。
+您问得对！我之前的实现中，在文档里示例化了 `--`
+命令，但实际上**没有真正实现CLI参数解析**。那只是**示例**而已。
 
 ## 真实实现
 
-我已经将token监控命令**真正集成**到happy CLI中，使用与现有命令相同的手写参数解析系统。
+我已经将token监控命令**真正集成**到happy
+CLI中，使用与现有命令相同的手写参数解析系统。
 
 ## 可用命令
 
@@ -82,7 +84,8 @@ happy dashboard --help
 
 ## 集成方式
 
-这些命令已经**完全集成**到 `index.ts` 中，与 `auth`、`connect`、`daemon` 等命令平级：
+这些命令已经**完全集成**到 `index.ts` 中，与 `auth`、`connect`、`daemon`
+等命令平级：
 
 ```typescript
 // 在 index.ts 中的集成
@@ -140,6 +143,7 @@ src/
 - **双连字符后是参数值**：`--format json`, `--interval 1000`
 
 在命令中：
+
 ```bash
 happy token-stats --watch --interval 2000
         └─────────┘   └────┘  └────────┘   └────┘
@@ -158,6 +162,7 @@ happy dashboard --help          # dashboard帮助
 ```
 
 帮助内容包括：
+
 - 用法说明
 - 所有可用选项
 - 示例
@@ -174,6 +179,7 @@ happy dashboard --help          # dashboard帮助
 ## 实际使用示例
 
 ### 示例 1：监控当前会话
+
 ```bash
 # 在一个终端启动仪表板
 happy dashboard
@@ -183,6 +189,7 @@ happy dashboard
 ```
 
 ### 示例 2：查看token统计
+
 ```bash
 # 查看详细统计
 happy token-stats
@@ -195,6 +202,7 @@ happy token-stats --format compact
 ```
 
 ### 示例 3：管理模型
+
 ```bash
 # 查看可用模型
 happy model-switch --list
@@ -209,6 +217,7 @@ happy model-switch --auto cheap
 ## 验证安装
 
 编译并测试：
+
 ```bash
 # 编译
 npm run build
@@ -228,10 +237,8 @@ happy dashboard --help
 
 ## 总结
 
-✅ **真正集成**到happy CLI中
-✅ **标准**Unix命令行约定（--选项）
-✅ **完整**的帮助系统
-✅ **一致**的命令风格
-✅ **无外部依赖**
+✅ **真正集成**到happy CLI中✅ **标准**Unix命令行约定（--选项）✅
+**完整**的帮助系统✅ **一致**的命令风格✅ **无外部依赖**
 
-现在这些命令是happy CLI的**第一公民**，可以像 `auth`、`connect`、`daemon` 一样使用！
+现在这些命令是happy CLI的**第一公民**，可以像 `auth`、`connect`、`daemon`
+一样使用！

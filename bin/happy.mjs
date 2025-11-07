@@ -12,7 +12,7 @@ if (!hasNoWarnings || !hasNoDeprecation) {
   // Get path to the actual CLI entrypoint
   const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const entrypoint = join(projectRoot, 'dist', 'index.mjs');
-  
+
   // Execute the actual CLI directly with the correct flags
   try {
     execFileSync(process.execPath, [

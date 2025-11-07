@@ -83,7 +83,10 @@ async function main() {
       } catch (error) {
         return {
           content: [
-            { type: 'text', text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
+            {
+              type: 'text',
+              text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}`,
+            },
           ],
           isError: true,
         };
@@ -99,9 +102,10 @@ async function main() {
 // Start and surface fatal errors to stderr only
 main().catch((err) => {
   try {
-    process.stderr.write(`[happy-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `[happy-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`
+    );
   } finally {
     process.exit(1);
   }
 });
-

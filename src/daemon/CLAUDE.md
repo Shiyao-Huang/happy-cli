@@ -1,6 +1,8 @@
 # Happy CLI Daemon: Control Flow and Lifecycle
 
-The daemon is a persistent background process that manages Happy sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
+The daemon is a persistent background process that manages Happy sessions,
+enables remote control from the mobile app, and handles auto-updates when the
+CLI version changes.
 
 ## 1. Daemon Lifecycle
 
@@ -9,21 +11,31 @@ The daemon is a persistent background process that manages Happy sessions, enabl
 Command: `happy daemon start`
 
 Control Flow:
+
 1. `src/index.ts` receives `daemon start` command
-2. Spawns detached process via `spawnHappyCLI(['daemon', 'start-sync'], { detached: true })`
+2. Spawns detached process via
+   `spawnHappyCLI(['daemon', 'start-sync'], { detached: true })`
 3. New process calls `startDaemon()` from `src/daemon/run.ts`
 4. `startDaemon()` performs startup:
-   - Sets up shutdown promise and handlers (SIGINT, SIGTERM, uncaughtException, unhandledRejection)
-   - Version check: `isDaemonRunningSameVersion()` reads daemon.state.json, compares `startedWithCliVersion` with `configuration.currentCliVersion`
-   - If version mismatch: calls `stopDaemon()` to kill old daemon before proceeding
+   - Sets up shutdown promise and handlers (SIGINT, SIGTERM, uncaughtException,
+     unhandledRejection)
+   - Version check: `isDaemonRunningSameVersion()` reads daemon.state.json,
+     compares `startedWithCliVersion` with `configuration.currentCliVersion`
+   - If version mismatch: calls `stopDaemon()` to kill old daemon before
+     proceeding
    - If same version running: exits with "Daemon already running"
-   - Lock acquisition: `acquireDaemonLock()` creates exclusive lock file to prevent multiple daemons
+   - Lock acquisition: `acquireDaemonLock()` creates exclusive lock file to
+     prevent multiple daemons
    - Authentication: `authAndSetupMachineIfNeeded()` ensures credentials exist
    - State persistence: writes PID, version, HTTP port to daemon.state.json
-   - HTTP server: starts on random port for local CLI control (list, stop, spawn)
-   - WebSocket: establishes persistent connection to backend via `ApiMachineClient`
-   - RPC registration: exposes `spawn-happy-session`, `stop-session`, `requestShutdown` handlers
-   - Heartbeat loop: every 60s (or HAPPY_DAEMON_HEARTBEAT_INTERVAL) checks for version updates and prunes dead sessions
+   - HTTP server: starts on random port for local CLI control (list, stop,
+     spawn)
+   - WebSocket: establishes persistent connection to backend via
+     `ApiMachineClient`
+   - RPC registration: exposes `spawn-happy-session`, `stop-session`,
+     `requestShutdown` handlers
+   - Heartbeat loop: every 60s (or HAPPY_DAEMON_HEARTBEAT_INTERVAL) checks for
+     version updates and prunes dead sessions
 5. Awaits shutdown promise which resolves when:
    - OS signal received (SIGINT/SIGTERM)
    - HTTP `/stop` endpoint called
@@ -41,13 +53,16 @@ Control Flow:
 ### Version Mismatch Auto-Update
 
 The daemon detects when `npm upgrade happy-coder` occurs:
+
 1. Heartbeat reads package.json from disk
-2. Compares `JSON.parse(package.json).version` with compiled `configuration.currentCliVersion`
+2. Compares `JSON.parse(package.json).version` with compiled
+   `configuration.currentCliVersion`
 3. If mismatch detected:
    - Spawns new daemon via `spawnHappyCLI(['daemon', 'start'])`
    - Hangs and waits to be killed
 4. New daemon starts, sees old daemon.state.json version != its compiled version
-5. New daemon calls `stopDaemon()` which tries HTTP `/stop`, falls back to SIGKILL
+5. New daemon calls `stopDaemon()` which tries HTTP `/stop`, falls back to
+   SIGKILL
 6. New daemon takes over
 
 ### Stopping the Daemon
@@ -55,6 +70,7 @@ The daemon detects when `npm upgrade happy-coder` occurs:
 Command: `happy daemon stop`
 
 Control Flow:
+
 1. `stopDaemon()` in `controlClient.ts` reads daemon.state.json
 2. Attempts graceful shutdown via HTTP POST to `/stop`
 3. Daemon receives request, calls `cleanupAndShutdown()`:
@@ -70,11 +86,13 @@ Control Flow:
 ### Daemon-Spawned Sessions (Remote)
 
 Initiated by mobile app via backend RPC:
+
 1. Backend forwards RPC `spawn-happy-session` to daemon via WebSocket
 2. `ApiMachineClient` invokes `spawnSession()` handler
 3. `spawnSession()`:
    - Creates directory if needed
-   - Spawns detached Happy process with `--happy-starting-mode remote --started-by daemon`
+   - Spawns detached Happy process with
+     `--happy-starting-mode remote --started-by daemon`
    - Adds to `pidToTrackedSession` map
    - Sets up 10-second awaiter for session webhook
 4. New Happy process:
@@ -86,14 +104,17 @@ Initiated by mobile app via backend RPC:
 ### Terminal-Spawned Sessions
 
 User runs `happy` directly:
+
 1. CLI auto-starts daemon if configured
-2. Happy process calls `notifyDaemonSessionStarted()` 
-3. Daemon receives webhook, creates `TrackedSession` with `startedBy: 'happy directly...'`
+2. Happy process calls `notifyDaemonSessionStarted()`
+3. Daemon receives webhook, creates `TrackedSession` with
+   `startedBy: 'happy directly...'`
 4. Session tracked for health monitoring
 
 ### Session Termination
 
 Via RPC `stop-session` or health check:
+
 1. `stopSession()` finds session by `happySessionId`
 2. Sends SIGTERM to process
 3. `on('exit')` handler removes from tracking map
@@ -101,6 +122,7 @@ Via RPC `stop-session` or health check:
 ## 3. HTTP Control Server
 
 Local HTTP server (127.0.0.1 only) provides:
+
 - `/session-started` - webhook for sessions to report themselves
 - `/list` - returns tracked sessions
 - `/stop-session` - terminates specific session
@@ -112,6 +134,7 @@ Local HTTP server (127.0.0.1 only) provides:
 ### Doctor Command
 
 `happy doctor` uses `ps aux | grep` to find all Happy processes:
+
 - Production: matches `happy.mjs`, `happy-coder`, `dist/index.mjs`
 - Development: matches `tsx.*src/index.ts`
 - Categorizes by command args: daemon, daemon-spawned, user-session, doctor
@@ -119,6 +142,7 @@ Local HTTP server (127.0.0.1 only) provides:
 ### Clean Runaway Processes
 
 `happy doctor clean`:
+
 1. `findRunawayHappyProcesses()` filters for likely orphans
 2. `killRunawayHappyProcesses()`:
    - Sends SIGTERM
@@ -128,6 +152,7 @@ Local HTTP server (127.0.0.1 only) provides:
 ## 5. State Persistence
 
 ### daemon.state.json
+
 ```json
 {
   "pid": 12345,
@@ -140,6 +165,7 @@ Local HTTP server (127.0.0.1 only) provides:
 ```
 
 ### Lock File
+
 - Created with O_EXCL flag for atomic acquisition
 - Contains PID for debugging
 - Prevents multiple daemon instances
@@ -148,13 +174,16 @@ Local HTTP server (127.0.0.1 only) provides:
 ## 6. WebSocket Communication
 
 `ApiMachineClient` handles bidirectional communication:
+
 - Daemon to Server: machine-alive, machine-update-metadata, machine-update-state
-- Server to Daemon: rpc-request (spawn-happy-session, stop-session, requestShutdown)
+- Server to Daemon: rpc-request (spawn-happy-session, stop-session,
+  requestShutdown)
 - All data encrypted with TweetNaCl
 
 ## 7. Integration Testing Challenges
 
 Version mismatch test simulates npm upgrade:
+
 - Test modifies package.json, rebuilds with new version
 - Daemon's compiled version != package.json on disk
 - Critical timing: heartbeat interval must exceed rebuild time
@@ -164,20 +193,29 @@ Version mismatch test simulates npm upgrade:
 
 I do not like how
 
-- daemon.state.json file is getting hard removed when daemon exits or is stopped. We should keep it around and have 'state' field and 'stateReason' field that will explain why the daemon is in that state
-- If the file is not found - we assume the daemon was never started or was cleaned out by the user or doctor
-- If the file is found and corrupted - we should try to upgrade it to the latest version? or simply remove it if we have write access
+- daemon.state.json file is getting hard removed when daemon exits or is
+  stopped. We should keep it around and have 'state' field and 'stateReason'
+  field that will explain why the daemon is in that state
+- If the file is not found - we assume the daemon was never started or was
+  cleaned out by the user or doctor
+- If the file is found and corrupted - we should try to upgrade it to the latest
+  version? or simply remove it if we have write access
 
 - posts helpers for daemon do not return typed results
-- I don't like that daemonPost returns either response from daemon or { error: ... }. We should have consistent envelope type
+- I don't like that daemonPost returns either response from daemon or { error:
+  ... }. We should have consistent envelope type
 
-- we loose track of children processes when daemon exits / restarts - we should write them to the same state file? At least the pids should be there for doctor & cleanup
+- we loose track of children processes when daemon exits / restarts - we should
+  write them to the same state file? At least the pids should be there for
+  doctor & cleanup
 
 - caffeinate process is not tracked in state at all & might become runaway
-- caffeinate is also started by individual sesions - we should not do that for simpler cleanup 
+- caffeinate is also started by individual sesions - we should not do that for
+  simpler cleanup
 
-- the port is not protected - lets encrypt something with a public portion of the secret key & send it as a signature along the rest of the unencrypted payload to the daemon - will make testing harder :/
-
+- the port is not protected - lets encrypt something with a public portion of
+  the secret key & send it as a signature along the rest of the unencrypted
+  payload to the daemon - will make testing harder :/
 
 # Machine Sync Architecture - Separated Metadata & Daemon State
 
@@ -186,10 +224,10 @@ I do not like how
 ```typescript
 // Static machine information (rarely changes)
 interface MachineMetadata {
-  host: string;              // hostname
-  platform: string;          // darwin, linux, win32
-  happyCliVersion: string;   
-  homeDir: string;           
+  host: string; // hostname
+  platform: string; // darwin, linux, win32
+  happyCliVersion: string;
+  homeDir: string;
   happyHomeDir: string;
 }
 
@@ -207,13 +245,16 @@ interface DaemonState {
 ## 1. CLI Startup Phase
 
 Checks if machine ID exists in settings:
+
 - If not: creates ID locally only (so sessions can reference it)
 - Does NOT create machine on server - that's daemon's job
-- CLI doesn't manage machine details - all API & schema live in daemon subpackage
+- CLI doesn't manage machine details - all API & schema live in daemon
+  subpackage
 
 ## 2. Daemon Startup - Initial Registration
 
 ### REST Request: `POST /v1/machines`
+
 ```json
 {
   "id": "machine-uuid-123",
@@ -234,13 +275,14 @@ Checks if machine ID exists in settings:
 ```
 
 ### Server Response:
+
 ```json
 {
   "machine": {
     "id": "machine-uuid-123",
-    "metadata": "base64(encrypted(...))",  // echoed back
+    "metadata": "base64(encrypted(...))", // echoed back
     "metadataVersion": 1,
-    "daemonState": "base64(encrypted(...))",  // echoed back
+    "daemonState": "base64(encrypted(...))", // echoed back
     "daemonStateVersion": 1,
     "active": true,
     "lastActiveAt": 1703001234567,
@@ -253,17 +295,19 @@ Checks if machine ID exists in settings:
 ## 3. WebSocket Connection & Real-time Updates
 
 ### Connection Handshake:
+
 ```javascript
 io(serverUrl, {
   auth: {
-    token: "auth-token",
-    clientType: "machine-scoped",
-    machineId: "machine-uuid-123"
-  }
-})
+    token: 'auth-token',
+    clientType: 'machine-scoped',
+    machineId: 'machine-uuid-123',
+  },
+});
 ```
 
 ### Heartbeat (every 20s):
+
 ```json
 // Client -> Server
 socket.emit('machine-alive', {
@@ -275,6 +319,7 @@ socket.emit('machine-alive', {
 ## 4. Daemon State Updates (via WebSocket)
 
 ### When daemon status changes:
+
 ```json
 // Client -> Server
 socket.emit('machine-update-state', {
@@ -307,6 +352,7 @@ socket.emit('machine-update-state', {
 ```
 
 ### Machine metadata update (rare):
+
 ```json
 // Client -> Server
 socket.emit('machine-update-metadata', {
@@ -325,6 +371,7 @@ socket.emit('machine-update-metadata', {
 ## 5. Mobile App RPC Calls
 
 ### Stop Daemon Request:
+
 ```json
 // Mobile -> Server
 socket.emit('rpc-call', {
@@ -344,8 +391,10 @@ callback("base64(encrypted({
 ```
 
 ### Flow when daemon receives stop request:
+
 1. Daemon receives RPC `stop-daemon`
 2. Updates daemon state immediately:
+
 ```json
 socket.emit('machine-update-state', {
   "machineId": "machine-uuid-123",
@@ -357,12 +406,14 @@ socket.emit('machine-update-state', {
   "expectedVersion": 2
 })
 ```
+
 3. Sends acknowledgment back via RPC callback
 4. Performs cleanup
 5. Final state update before exit:
+
 ```json
 socket.emit('machine-update-state', {
-  "machineId": "machine-uuid-123", 
+  "machineId": "machine-uuid-123",
   "daemonState": "base64(encrypted({
     'status': 'offline'
   }))",
@@ -373,6 +424,7 @@ socket.emit('machine-update-state', {
 ## 6. Server Broadcasts to Clients
 
 ### When daemon state changes:
+
 ```json
 // Server -> Mobile/Web clients
 socket.emit('update', {
@@ -391,6 +443,7 @@ socket.emit('update', {
 ```
 
 ### When metadata changes:
+
 ```json
 socket.emit('update', {
   "id": "update-id-abc",
@@ -410,11 +463,13 @@ socket.emit('update', {
 ## 7. GET Machine Status (REST)
 
 ### Request: `GET /v1/machines/machine-uuid-123`
+
 ```http
 Authorization: Bearer <token>
 ```
 
 ### Response:
+
 ```json
 {
   "machine": {
@@ -433,7 +488,7 @@ Authorization: Bearer <token>
 
 ## Key Design Decisions
 
-1. **Separation of Concerns**: 
+1. **Separation of Concerns**:
    - `metadata`: Static machine info (host, platform, versions)
    - `daemonState`: Dynamic runtime state (status, pid, ports)
 
@@ -448,8 +503,5 @@ Authorization: Bearer <token>
    - `t: 'update-machine'` with optional metadata and/or daemonState fields
    - Clients only receive updates for fields that changed
 
-5. **RPC Pattern**: Machine-scoped RPC methods prefixed with machineId (like sessions)
-
-
-
-
+5. **RPC Pattern**: Machine-scoped RPC methods prefixed with machineId (like
+   sessions)

@@ -1,6 +1,6 @@
 /**
  * Daemon doctor utilities
- * 
+ *
  * Process discovery and cleanup functions for the daemon
  * Helps diagnose and fix issues with hung or orphaned processes
  */
@@ -11,22 +11,25 @@ import spawn from 'cross-spawn';
 /**
  * Find all Happy CLI processes (including current process)
  */
-export async function findAllHappyProcesses(): Promise<Array<{ pid: number, command: string, type: string }>> {
+export async function findAllHappyProcesses(): Promise<
+  Array<{ pid: number; command: string; type: string }>
+> {
   try {
     const processes = await psList();
-    const allProcesses: Array<{ pid: number, command: string, type: string }> = [];
-    
+    const allProcesses: Array<{ pid: number; command: string; type: string }> = [];
+
     for (const proc of processes) {
       const cmd = proc.cmd || '';
       const name = proc.name || '';
-      
+
       // Check if it's a Happy process
-      const isHappy = name.includes('happy') || 
-                      name === 'node' && (cmd.includes('happy-cli') || cmd.includes('dist/index.mjs')) ||
-                      cmd.includes('happy.mjs') ||
-                      cmd.includes('happy-coder') ||
-                      (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('happy-cli'));
-      
+      const isHappy =
+        name.includes('happy') ||
+        (name === 'node' && (cmd.includes('happy-cli') || cmd.includes('dist/index.mjs'))) ||
+        cmd.includes('happy.mjs') ||
+        cmd.includes('happy-coder') ||
+        (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('happy-cli'));
+
       if (!isHappy) continue;
 
       // Classify process type
@@ -59,36 +62,41 @@ export async function findAllHappyProcesses(): Promise<Array<{ pid: number, comm
 /**
  * Find all runaway Happy CLI processes that should be killed
  */
-export async function findRunawayHappyProcesses(): Promise<Array<{ pid: number, command: string }>> {
+export async function findRunawayHappyProcesses(): Promise<
+  Array<{ pid: number; command: string }>
+> {
   const allProcesses = await findAllHappyProcesses();
-  
+
   // Filter to just runaway processes (excluding current process)
   return allProcesses
-    .filter(p => 
-      p.pid !== process.pid && (
-        p.type === 'daemon' ||
-        p.type === 'dev-daemon' ||
-        p.type === 'daemon-spawned-session' ||
-        p.type === 'dev-daemon-spawned' ||
-        p.type === 'daemon-version-check' ||
-        p.type === 'dev-daemon-version-check'
-      )
+    .filter(
+      (p) =>
+        p.pid !== process.pid &&
+        (p.type === 'daemon' ||
+          p.type === 'dev-daemon' ||
+          p.type === 'daemon-spawned-session' ||
+          p.type === 'dev-daemon-spawned' ||
+          p.type === 'daemon-version-check' ||
+          p.type === 'dev-daemon-version-check')
     )
-    .map(p => ({ pid: p.pid, command: p.command }));
+    .map((p) => ({ pid: p.pid, command: p.command }));
 }
 
 /**
  * Kill all runaway Happy CLI processes
  */
-export async function killRunawayHappyProcesses(): Promise<{ killed: number, errors: Array<{ pid: number, error: string }> }> {
+export async function killRunawayHappyProcesses(): Promise<{
+  killed: number;
+  errors: Array<{ pid: number; error: string }>;
+}> {
   const runawayProcesses = await findRunawayHappyProcesses();
-  const errors: Array<{ pid: number, error: string }> = [];
+  const errors: Array<{ pid: number; error: string }> = [];
   let killed = 0;
-  
+
   for (const { pid, command } of runawayProcesses) {
     try {
       console.log(`Killing runaway process PID ${pid}: ${command}`);
-      
+
       if (process.platform === 'win32') {
         // Windows: use taskkill
         const result = spawn.sync('taskkill', ['/F', '/PID', pid.toString()], { stdio: 'pipe' });
@@ -97,19 +105,19 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
       } else {
         // Unix: try SIGTERM first
         process.kill(pid, 'SIGTERM');
-        
+
         // Wait a moment
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
         // Check if still alive
         const processes = await psList();
-        const stillAlive = processes.find(p => p.pid === pid);
+        const stillAlive = processes.find((p) => p.pid === pid);
         if (stillAlive) {
           console.log(`Process PID ${pid} ignored SIGTERM, using SIGKILL`);
           process.kill(pid, 'SIGKILL');
         }
       }
-      
+
       console.log(`Successfully killed runaway process PID ${pid}`);
       killed++;
     } catch (error) {

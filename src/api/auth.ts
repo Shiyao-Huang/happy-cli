@@ -7,7 +7,9 @@ import { configuration } from '@/configuration';
  * Kept for backward compatibility only.
  */
 export async function getOrCreateSecretKey(): Promise<Uint8Array> {
-  throw new Error('getOrCreateSecretKey is deprecated. Use readPrivateKey/writePrivateKey from persistence module.');
+  throw new Error(
+    'getOrCreateSecretKey is deprecated. Use readPrivateKey/writePrivateKey from persistence module.'
+  );
 }
 
 /**
@@ -18,11 +20,11 @@ export async function getOrCreateSecretKey(): Promise<Uint8Array> {
  */
 export async function authGetToken(secret: Uint8Array): Promise<string> {
   const { challenge, publicKey, signature } = authChallenge(secret);
-  
+
   const response = await axios.post(`${configuration.serverUrl}/v1/auth`, {
     challenge: encodeBase64(challenge),
     publicKey: encodeBase64(publicKey),
-    signature: encodeBase64(signature)
+    signature: encodeBase64(signature),
   });
 
   if (!response.data.success || !response.data.token) {

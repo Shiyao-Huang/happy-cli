@@ -5,28 +5,18 @@
       "type": "node",
       "request": "launch",
       "name": "CLI [does not work for interactive claude, needs fixing]",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "runtimeExecutable": "npx",
-      "runtimeArgs": [
-        "tsx",
-        "${workspaceFolder}/src/index.ts"
-      ],
-      "console": "integratedTerminal",
+      "runtimeArgs": ["tsx", "${workspaceFolder}/src/index.ts"],
+      "console": "integratedTerminal"
     },
     {
       "type": "node",
       "request": "launch",
       "name": "Run Tests",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "runtimeExecutable": "npx",
-      "runtimeArgs": [
-        "vitest",
-        "run"
-      ],
+      "runtimeArgs": ["vitest", "run"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
@@ -34,17 +24,11 @@
       "type": "node",
       "request": "launch",
       "name": "Run tests in current file",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "runtimeExecutable": "npx",
-      "runtimeArgs": [
-        "vitest",
-        "run",
-        "${file}"
-      ],
+      "runtimeArgs": ["vitest", "run", "${file}"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
-    },
+    }
   ]
 }

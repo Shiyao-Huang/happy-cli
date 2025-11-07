@@ -3,501 +3,515 @@
  * Handles spawning Claude process and managing message streams
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { createInterface } from 'node:readline'
-import { existsSync } from 'node:fs'
-import { Stream } from './stream'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { existsSync } from 'node:fs';
+import { Stream } from './stream';
 import {
-    type QueryOptions,
-    type QueryPrompt,
-    type SDKMessage,
-    type ControlResponseHandler,
-    type SDKControlRequest,
-    type ControlRequest,
-    type SDKControlResponse,
-    type CanCallToolCallback,
-    type CanUseToolControlRequest,
-    type CanUseToolControlResponse,
-    type ControlCancelRequest,
-    type PermissionResult,
-    type SDKResultMessage,
-    AbortError
-} from './types'
-import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
-import type { Writable } from 'node:stream'
-import { logger } from '@/ui/logger'
-import { getModelManager } from './modelManager'
+  type QueryOptions,
+  type QueryPrompt,
+  type SDKMessage,
+  type ControlResponseHandler,
+  type SDKControlRequest,
+  type ControlRequest,
+  type SDKControlResponse,
+  type CanCallToolCallback,
+  type CanUseToolControlRequest,
+  type CanUseToolControlResponse,
+  type ControlCancelRequest,
+  type PermissionResult,
+  type SDKResultMessage,
+  AbortError,
+} from './types';
+import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils';
+import type { Writable } from 'node:stream';
+import { logger } from '@/ui/logger';
+import { getModelManager } from './modelManager';
 
 /**
  * Query class manages Claude Code process interaction
  */
 export class Query implements AsyncIterableIterator<SDKMessage> {
-    private pendingControlResponses = new Map<string, ControlResponseHandler>()
-    private cancelControllers = new Map<string, AbortController>()
-    private sdkMessages: AsyncIterableIterator<SDKMessage>
-    private inputStream = new Stream<SDKMessage>()
-    private canCallTool?: CanCallToolCallback
+  private pendingControlResponses = new Map<string, ControlResponseHandler>();
+  private cancelControllers = new Map<string, AbortController>();
+  private sdkMessages: AsyncIterableIterator<SDKMessage>;
+  private inputStream = new Stream<SDKMessage>();
+  private canCallTool?: CanCallToolCallback;
 
-    constructor(
-        private childStdin: Writable | null,
-        private childStdout: NodeJS.ReadableStream,
-        private processExitPromise: Promise<void>,
-        canCallTool?: CanCallToolCallback
-    ) {
-        this.canCallTool = canCallTool
-        this.readMessages()
-        this.sdkMessages = this.readSdkMessages()
+  constructor(
+    private childStdin: Writable | null,
+    private childStdout: NodeJS.ReadableStream,
+    private processExitPromise: Promise<void>,
+    canCallTool?: CanCallToolCallback
+  ) {
+    this.canCallTool = canCallTool;
+    this.readMessages();
+    this.sdkMessages = this.readSdkMessages();
+  }
+
+  /**
+   * Set an error on the stream
+   */
+  setError(error: Error): void {
+    this.inputStream.error(error);
+  }
+
+  /**
+   * AsyncIterableIterator implementation
+   */
+  next(...args: [] | [undefined]): Promise<IteratorResult<SDKMessage>> {
+    return this.sdkMessages.next(...args);
+  }
+
+  return(value?: any): Promise<IteratorResult<SDKMessage>> {
+    if (this.sdkMessages.return) {
+      return this.sdkMessages.return(value);
     }
+    return Promise.resolve({ done: true, value: undefined });
+  }
 
-    /**
-     * Set an error on the stream
-     */
-    setError(error: Error): void {
-        this.inputStream.error(error)
+  throw(e: any): Promise<IteratorResult<SDKMessage>> {
+    if (this.sdkMessages.throw) {
+      return this.sdkMessages.throw(e);
     }
+    return Promise.reject(e);
+  }
 
-    /**
-     * AsyncIterableIterator implementation
-     */
-    next(...args: [] | [undefined]): Promise<IteratorResult<SDKMessage>> {
-        return this.sdkMessages.next(...args)
-    }
+  [Symbol.asyncIterator](): AsyncIterableIterator<SDKMessage> {
+    return this.sdkMessages;
+  }
 
-    return(value?: any): Promise<IteratorResult<SDKMessage>> {
-        if (this.sdkMessages.return) {
-            return this.sdkMessages.return(value)
-        }
-        return Promise.resolve({ done: true, value: undefined })
-    }
+  /**
+   * Read messages from Claude process stdout
+   */
+  private async readMessages(): Promise<void> {
+    const rl = createInterface({ input: this.childStdout });
 
-    throw(e: any): Promise<IteratorResult<SDKMessage>> {
-        if (this.sdkMessages.throw) {
-            return this.sdkMessages.throw(e)
-        }
-        return Promise.reject(e)
-    }
+    try {
+      for await (const line of rl) {
+        if (line.trim()) {
+          try {
+            const message = JSON.parse(line) as SDKMessage | SDKControlResponse;
 
-    [Symbol.asyncIterator](): AsyncIterableIterator<SDKMessage> {
-        return this.sdkMessages
-    }
-
-    /**
-     * Read messages from Claude process stdout
-     */
-    private async readMessages(): Promise<void> {
-        const rl = createInterface({ input: this.childStdout })
-
-        try {
-            for await (const line of rl) {
-                if (line.trim()) {
-                    try {
-                        const message = JSON.parse(line) as SDKMessage | SDKControlResponse
-
-                        if (message.type === 'control_response') {
-                            const controlResponse = message as SDKControlResponse
-                            const handler = this.pendingControlResponses.get(controlResponse.response.request_id)
-                            if (handler) {
-                                handler(controlResponse.response)
-                            }
-                            continue
-                        } else if (message.type === 'control_request') {
-                            await this.handleControlRequest(message as unknown as CanUseToolControlRequest)
-                            continue
-                        } else if (message.type === 'control_cancel_request') {
-                            this.handleControlCancelRequest(message as unknown as ControlCancelRequest)
-                            continue
-                        }
-
-                        this.inputStream.enqueue(message)
-                    } catch (e) {
-                        logger.debug(line)
-                    }
-                }
+            if (message.type === 'control_response') {
+              const controlResponse = message as SDKControlResponse;
+              const handler = this.pendingControlResponses.get(controlResponse.response.request_id);
+              if (handler) {
+                handler(controlResponse.response);
+              }
+              continue;
+            } else if (message.type === 'control_request') {
+              await this.handleControlRequest(message as unknown as CanUseToolControlRequest);
+              continue;
+            } else if (message.type === 'control_cancel_request') {
+              this.handleControlCancelRequest(message as unknown as ControlCancelRequest);
+              continue;
             }
-            await this.processExitPromise
-        } catch (error) {
-            this.inputStream.error(error as Error)
-        } finally {
-            this.inputStream.done()
-            this.cleanupControllers()
-            rl.close()
+
+            this.inputStream.enqueue(message);
+          } catch (e) {
+            logger.debug(line);
+          }
         }
+      }
+      await this.processExitPromise;
+    } catch (error) {
+      this.inputStream.error(error as Error);
+    } finally {
+      this.inputStream.done();
+      this.cleanupControllers();
+      rl.close();
+    }
+  }
+
+  /**
+   * Async generator for SDK messages
+   */
+  private async *readSdkMessages(): AsyncIterableIterator<SDKMessage> {
+    for await (const message of this.inputStream) {
+      yield message;
+    }
+  }
+
+  /**
+   * Send interrupt request to Claude
+   */
+  async interrupt(): Promise<void> {
+    if (!this.childStdin) {
+      throw new Error('Interrupt requires --input-format stream-json');
     }
 
-    /**
-     * Async generator for SDK messages
-     */
-    private async *readSdkMessages(): AsyncIterableIterator<SDKMessage> {
-        for await (const message of this.inputStream) {
-            yield message
+    await this.request(
+      {
+        subtype: 'interrupt',
+      },
+      this.childStdin
+    );
+  }
+
+  /**
+   * Send control request to Claude process
+   */
+  private request(
+    request: ControlRequest,
+    childStdin: Writable
+  ): Promise<SDKControlResponse['response']> {
+    const requestId = Math.random().toString(36).substring(2, 15);
+    const sdkRequest: SDKControlRequest = {
+      request_id: requestId,
+      type: 'control_request',
+      request,
+    };
+
+    return new Promise((resolve, reject) => {
+      this.pendingControlResponses.set(requestId, (response) => {
+        if (response.subtype === 'success') {
+          resolve(response);
+        } else {
+          reject(new Error(response.error));
         }
+      });
+
+      childStdin.write(JSON.stringify(sdkRequest) + '\n');
+    });
+  }
+
+  /**
+   * Handle incoming control requests for tool permissions
+   * Replicates the exact logic from the SDK's handleControlRequest method
+   */
+  private async handleControlRequest(request: CanUseToolControlRequest): Promise<void> {
+    if (!this.childStdin) {
+      logDebug('Cannot handle control request - no stdin available');
+      return;
     }
 
-    /**
-     * Send interrupt request to Claude
-     */
-    async interrupt(): Promise<void> {
-        if (!this.childStdin) {
-            throw new Error('Interrupt requires --input-format stream-json')
-        }
+    const controller = new AbortController();
+    this.cancelControllers.set(request.request_id, controller);
 
-        await this.request({
-            subtype: 'interrupt'
-        }, this.childStdin)
+    try {
+      const response = await this.processControlRequest(request, controller.signal);
+      const controlResponse: CanUseToolControlResponse = {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: request.request_id,
+          response,
+        },
+      };
+      this.childStdin.write(JSON.stringify(controlResponse) + '\n');
+    } catch (error) {
+      const controlErrorResponse: CanUseToolControlResponse = {
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: request.request_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+      this.childStdin.write(JSON.stringify(controlErrorResponse) + '\n');
+    } finally {
+      this.cancelControllers.delete(request.request_id);
+    }
+  }
+
+  /**
+   * Handle control cancel requests
+   * Replicates the exact logic from the SDK's handleControlCancelRequest method
+   */
+  private handleControlCancelRequest(request: ControlCancelRequest): void {
+    const controller = this.cancelControllers.get(request.request_id);
+    if (controller) {
+      controller.abort();
+      this.cancelControllers.delete(request.request_id);
+    }
+  }
+
+  /**
+   * Process control requests based on subtype
+   * Replicates the exact logic from the SDK's processControlRequest method
+   */
+  private async processControlRequest(
+    request: CanUseToolControlRequest,
+    signal: AbortSignal
+  ): Promise<PermissionResult> {
+    if (request.request.subtype === 'can_use_tool') {
+      if (!this.canCallTool) {
+        throw new Error('canCallTool callback is not provided.');
+      }
+      return this.canCallTool(request.request.tool_name, request.request.input, {
+        signal,
+      });
     }
 
-    /**
-     * Send control request to Claude process
-     */
-    private request(request: ControlRequest, childStdin: Writable): Promise<SDKControlResponse['response']> {
-        const requestId = Math.random().toString(36).substring(2, 15)
-        const sdkRequest: SDKControlRequest = {
-            request_id: requestId,
-            type: 'control_request',
-            request
-        }
+    throw new Error('Unsupported control request subtype: ' + request.request.subtype);
+  }
 
-        return new Promise((resolve, reject) => {
-            this.pendingControlResponses.set(requestId, (response) => {
-                if (response.subtype === 'success') {
-                    resolve(response)
-                } else {
-                    reject(new Error(response.error))
-                }
-            })
-
-            childStdin.write(JSON.stringify(sdkRequest) + '\n')
-        })
+  /**
+   * Cleanup method to abort all pending control requests
+   */
+  private cleanupControllers(): void {
+    for (const [requestId, controller] of this.cancelControllers.entries()) {
+      controller.abort();
+      this.cancelControllers.delete(requestId);
     }
-
-    /**
-     * Handle incoming control requests for tool permissions
-     * Replicates the exact logic from the SDK's handleControlRequest method
-     */
-    private async handleControlRequest(request: CanUseToolControlRequest): Promise<void> {
-        if (!this.childStdin) {
-            logDebug('Cannot handle control request - no stdin available')
-            return
-        }
-
-        const controller = new AbortController()
-        this.cancelControllers.set(request.request_id, controller)
-
-        try {
-            const response = await this.processControlRequest(request, controller.signal)
-            const controlResponse: CanUseToolControlResponse = {
-                type: 'control_response',
-                response: {
-                    subtype: 'success',
-                    request_id: request.request_id,
-                    response
-                }
-            }
-            this.childStdin.write(JSON.stringify(controlResponse) + '\n')
-        } catch (error) {
-            const controlErrorResponse: CanUseToolControlResponse = {
-                type: 'control_response',
-                response: {
-                    subtype: 'error',
-                    request_id: request.request_id,
-                    error: error instanceof Error ? error.message : String(error)
-                }
-            }
-            this.childStdin.write(JSON.stringify(controlErrorResponse) + '\n')
-        } finally {
-            this.cancelControllers.delete(request.request_id)
-        }
-    }
-
-    /**
-     * Handle control cancel requests
-     * Replicates the exact logic from the SDK's handleControlCancelRequest method
-     */
-    private handleControlCancelRequest(request: ControlCancelRequest): void {
-        const controller = this.cancelControllers.get(request.request_id)
-        if (controller) {
-            controller.abort()
-            this.cancelControllers.delete(request.request_id)
-        }
-    }
-
-    /**
-     * Process control requests based on subtype
-     * Replicates the exact logic from the SDK's processControlRequest method
-     */
-    private async processControlRequest(request: CanUseToolControlRequest, signal: AbortSignal): Promise<PermissionResult> {
-        if (request.request.subtype === 'can_use_tool') {
-            if (!this.canCallTool) {
-                throw new Error('canCallTool callback is not provided.')
-            }
-            return this.canCallTool(request.request.tool_name, request.request.input, {
-                signal
-            })
-        }
-        
-        throw new Error('Unsupported control request subtype: ' + request.request.subtype)
-    }
-
-    /**
-     * Cleanup method to abort all pending control requests
-     */
-    private cleanupControllers(): void {
-        for (const [requestId, controller] of this.cancelControllers.entries()) {
-            controller.abort()
-            this.cancelControllers.delete(requestId)
-        }
-    }
+  }
 }
 
 /**
  * Main query function to interact with Claude Code
  */
-export function query(config: {
-    prompt: QueryPrompt
-    options?: QueryOptions
-}): Query {
-    const {
-        prompt,
-        options: {
-            allowedTools = [],
-            appendSystemPrompt,
-            customSystemPrompt,
-            cwd,
-            disallowedTools = [],
-            executable = 'node',
-            executableArgs = [],
-            maxTurns,
-            mcpServers,
-            pathToClaudeCodeExecutable = getDefaultClaudeCodePath(),
-            permissionMode = 'default',
-            continue: continueConversation,
-            resume,
-            model,
-            fallbackModel,
-            strictMcpConfig,
-            canCallTool
-        } = {}
-    } = config
+export function query(config: { prompt: QueryPrompt; options?: QueryOptions }): Query {
+  const {
+    prompt,
+    options: {
+      allowedTools = [],
+      appendSystemPrompt,
+      customSystemPrompt,
+      cwd,
+      disallowedTools = [],
+      executable = 'node',
+      executableArgs = [],
+      maxTurns,
+      mcpServers,
+      pathToClaudeCodeExecutable = getDefaultClaudeCodePath(),
+      permissionMode = 'default',
+      continue: continueConversation,
+      resume,
+      model,
+      fallbackModel,
+      strictMcpConfig,
+      canCallTool,
+    } = {},
+  } = config;
 
-    // Set entrypoint if not already set
-    if (!process.env.CLAUDE_CODE_ENTRYPOINT) {
-        process.env.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts'
-    }
+  // Set entrypoint if not already set
+  if (!process.env.CLAUDE_CODE_ENTRYPOINT) {
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
+  }
 
-    // Build command arguments
-    const args = ['--output-format', 'stream-json', '--verbose']
+  // Build command arguments
+  const args = ['--output-format', 'stream-json', '--verbose'];
 
-    if (customSystemPrompt) args.push('--system-prompt', customSystemPrompt)
-    if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt)
-    if (maxTurns) args.push('--max-turns', maxTurns.toString())
-    if (model) args.push('--model', model)
-    if (canCallTool) {
-        if (typeof prompt === 'string') {
-            throw new Error('canCallTool callback requires --input-format stream-json. Please set prompt as an AsyncIterable.')
-        }
-        args.push('--permission-prompt-tool', 'stdio')
-    }
-    if (continueConversation) args.push('--continue')
-    if (resume) args.push('--resume', resume)
-    if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','))
-    if (disallowedTools.length > 0) args.push('--disallowedTools', disallowedTools.join(','))
-    if (mcpServers && Object.keys(mcpServers).length > 0) {
-        args.push('--mcp-config', JSON.stringify({ mcpServers }))
-    }
-    if (strictMcpConfig) args.push('--strict-mcp-config')
-    if (permissionMode) args.push('--permission-mode', permissionMode)
-
-    if (fallbackModel) {
-        if (model && fallbackModel === model) {
-            throw new Error('Fallback model cannot be the same as the main model. Please specify a different model for fallbackModel option.')
-        }
-        args.push('--fallback-model', fallbackModel)
-    }
-
-    // Handle prompt input
+  if (customSystemPrompt) args.push('--system-prompt', customSystemPrompt);
+  if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
+  if (maxTurns) args.push('--max-turns', maxTurns.toString());
+  if (model) args.push('--model', model);
+  if (canCallTool) {
     if (typeof prompt === 'string') {
-        args.push('--print', prompt.trim())
+      throw new Error(
+        'canCallTool callback requires --input-format stream-json. Please set prompt as an AsyncIterable.'
+      );
+    }
+    args.push('--permission-prompt-tool', 'stdio');
+  }
+  if (continueConversation) args.push('--continue');
+  if (resume) args.push('--resume', resume);
+  if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','));
+  if (disallowedTools.length > 0) args.push('--disallowedTools', disallowedTools.join(','));
+  if (mcpServers && Object.keys(mcpServers).length > 0) {
+    args.push('--mcp-config', JSON.stringify({ mcpServers }));
+  }
+  if (strictMcpConfig) args.push('--strict-mcp-config');
+  if (permissionMode) args.push('--permission-mode', permissionMode);
+
+  if (fallbackModel) {
+    if (model && fallbackModel === model) {
+      throw new Error(
+        'Fallback model cannot be the same as the main model. Please specify a different model for fallbackModel option.'
+      );
+    }
+    args.push('--fallback-model', fallbackModel);
+  }
+
+  // Handle prompt input
+  if (typeof prompt === 'string') {
+    args.push('--print', prompt.trim());
+  } else {
+    args.push('--input-format', 'stream-json');
+  }
+
+  // Validate executable path
+  if (!existsSync(pathToClaudeCodeExecutable)) {
+    throw new ReferenceError(
+      `Claude Code executable not found at ${pathToClaudeCodeExecutable}. Is options.pathToClaudeCodeExecutable set?`
+    );
+  }
+
+  // Spawn Claude Code process
+  logDebug(
+    `Spawning Claude Code process: ${executable} ${[...executableArgs, pathToClaudeCodeExecutable, ...args].join(' ')}`
+  );
+
+  const child = spawn(executable, [...executableArgs, pathToClaudeCodeExecutable, ...args], {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    signal: config.options?.abort,
+    env: {
+      ...process.env,
+    },
+  }) as ChildProcessWithoutNullStreams;
+
+  // Handle stdin
+  let childStdin: Writable | null = null;
+  if (typeof prompt === 'string') {
+    child.stdin.end();
+  } else {
+    streamToStdin(prompt, child.stdin, config.options?.abort);
+    childStdin = child.stdin;
+  }
+
+  // Handle stderr in debug mode
+  if (process.env.DEBUG) {
+    child.stderr.on('data', (data) => {
+      console.error('Claude Code stderr:', data.toString());
+    });
+  }
+
+  // Setup cleanup
+  const cleanup = () => {
+    if (!child.killed) {
+      child.kill('SIGTERM');
+    }
+  };
+
+  config.options?.abort?.addEventListener('abort', cleanup);
+  process.on('exit', cleanup);
+
+  // Handle process exit
+  const processExitPromise = new Promise<void>((resolve) => {
+    child.on('close', (code) => {
+      if (config.options?.abort?.aborted) {
+        query.setError(new AbortError('Claude Code process aborted by user'));
+      }
+      if (code !== 0) {
+        query.setError(new Error(`Claude Code process exited with code ${code}`));
+      } else {
+        resolve();
+      }
+    });
+  });
+
+  // Create query instance
+  const query = new Query(childStdin, child.stdout, processExitPromise, canCallTool);
+
+  // Handle process errors
+  child.on('error', (error) => {
+    if (config.options?.abort?.aborted) {
+      query.setError(new AbortError('Claude Code process aborted by user'));
     } else {
-        args.push('--input-format', 'stream-json')
+      query.setError(new Error(`Failed to spawn Claude Code process: ${error.message}`));
     }
+  });
 
-    // Validate executable path
-    if (!existsSync(pathToClaudeCodeExecutable)) {
-        throw new ReferenceError(`Claude Code executable not found at ${pathToClaudeCodeExecutable}. Is options.pathToClaudeCodeExecutable set?`)
+  // Cleanup on exit
+  processExitPromise.finally(() => {
+    cleanup();
+    config.options?.abort?.removeEventListener('abort', cleanup);
+    if (process.env.CLAUDE_SDK_MCP_SERVERS) {
+      delete process.env.CLAUDE_SDK_MCP_SERVERS;
     }
+  });
 
-    // Spawn Claude Code process
-    logDebug(`Spawning Claude Code process: ${executable} ${[...executableArgs, pathToClaudeCodeExecutable, ...args].join(' ')}`)
-
-    const child = spawn(executable, [...executableArgs, pathToClaudeCodeExecutable, ...args], {
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        signal: config.options?.abort,
-        env: {
-            ...process.env
-        }
-    }) as ChildProcessWithoutNullStreams
-
-    // Handle stdin
-    let childStdin: Writable | null = null
-    if (typeof prompt === 'string') {
-        child.stdin.end()
-    } else {
-        streamToStdin(prompt, child.stdin, config.options?.abort)
-        childStdin = child.stdin
-    }
-
-    // Handle stderr in debug mode
-    if (process.env.DEBUG) {
-        child.stderr.on('data', (data) => {
-            console.error('Claude Code stderr:', data.toString())
-        })
-    }
-
-    // Setup cleanup
-    const cleanup = () => {
-        if (!child.killed) {
-            child.kill('SIGTERM')
-        }
-    }
-
-    config.options?.abort?.addEventListener('abort', cleanup)
-    process.on('exit', cleanup)
-
-    // Handle process exit
-    const processExitPromise = new Promise<void>((resolve) => {
-        child.on('close', (code) => {
-            if (config.options?.abort?.aborted) {
-                query.setError(new AbortError('Claude Code process aborted by user'))
-            }
-            if (code !== 0) {
-                query.setError(new Error(`Claude Code process exited with code ${code}`))
-            } else {
-                resolve()
-            }
-        })
-    })
-
-    // Create query instance
-    const query = new Query(childStdin, child.stdout, processExitPromise, canCallTool)
-
-    // Handle process errors
-    child.on('error', (error) => {
-        if (config.options?.abort?.aborted) {
-            query.setError(new AbortError('Claude Code process aborted by user'))
-        } else {
-            query.setError(new Error(`Failed to spawn Claude Code process: ${error.message}`))
-        }
-    })
-
-    // Cleanup on exit
-    processExitPromise.finally(() => {
-        cleanup()
-        config.options?.abort?.removeEventListener('abort', cleanup)
-        if (process.env.CLAUDE_SDK_MCP_SERVERS) {
-            delete process.env.CLAUDE_SDK_MCP_SERVERS
-        }
-    })
-
-    return query
+  return query;
 }
 
 /**
  * MonitoredQuery - Extended Query class with token monitoring
  */
 export class MonitoredQuery extends Query implements AsyncIterableIterator<SDKMessage> {
-    private tokenMonitor: any
+  private tokenMonitor: any;
 
-    constructor(
-        childStdin: Writable | null,
-        childStdout: NodeJS.ReadableStream,
-        processExitPromise: Promise<void>,
-        tokenMonitor: any,
-        canCallTool?: CanCallToolCallback
-    ) {
-        super(childStdin, childStdout, processExitPromise, canCallTool)
-        this.tokenMonitor = tokenMonitor
-        this.interceptMessages()
-    }
+  constructor(
+    childStdin: Writable | null,
+    childStdout: NodeJS.ReadableStream,
+    processExitPromise: Promise<void>,
+    tokenMonitor: any,
+    canCallTool?: CanCallToolCallback
+  ) {
+    super(childStdin, childStdout, processExitPromise, canCallTool);
+    this.tokenMonitor = tokenMonitor;
+    this.interceptMessages();
+  }
 
-    /**
-     * Intercept result messages to record token usage
-     */
-    private interceptMessages(): void {
-        const originalNext = this.next.bind(this)
+  /**
+   * Intercept result messages to record token usage
+   */
+  private interceptMessages(): void {
+    const originalNext = this.next.bind(this);
 
-        this.next = async (...args: [] | [undefined]) => {
-            const result = await originalNext(...args)
+    this.next = async (...args: [] | [undefined]) => {
+      const result = await originalNext(...args);
 
-            if (!result.done && result.value.type === 'result') {
-                const resultMessage = result.value as SDKResultMessage
-                if (resultMessage.usage) {
-                    this.tokenMonitor.recordUsage({
-                        input_tokens: resultMessage.usage.input_tokens,
-                        output_tokens: resultMessage.usage.output_tokens,
-                        total_cost_usd: resultMessage.total_cost_usd,
-                        model: (resultMessage as any).model,
-                        session_id: resultMessage.session_id
-                    })
-                }
-            }
-
-            return result
+      if (!result.done && result.value.type === 'result') {
+        const resultMessage = result.value as SDKResultMessage;
+        if (resultMessage.usage) {
+          this.tokenMonitor.recordUsage({
+            input_tokens: resultMessage.usage.input_tokens,
+            output_tokens: resultMessage.usage.output_tokens,
+            total_cost_usd: resultMessage.total_cost_usd,
+            model: (resultMessage as any).model,
+            session_id: resultMessage.session_id,
+          });
         }
-    }
+      }
+
+      return result;
+    };
+  }
 }
 
 /**
  * Create a monitored query with automatic token tracking
  */
 export function createMonitoredQuery(config: {
-    prompt: QueryPrompt
-    options?: QueryOptions
-    sessionId?: string
+  prompt: QueryPrompt;
+  options?: QueryOptions;
+  sessionId?: string;
 }): {
-    query: MonitoredQuery
-    tokenMonitor: any
+  query: MonitoredQuery;
+  tokenMonitor: any;
 } {
-    const { prompt, options = {}, sessionId } = config
+  const { prompt, options = {}, sessionId } = config;
 
-    // Get model manager and determine active model
-    const modelManager = getModelManager()
-    let effectiveModel = options.model
-    let effectiveFallback = options.fallbackModel
+  // Get model manager and determine active model
+  const modelManager = getModelManager();
+  let effectiveModel = options.model;
+  let effectiveFallback = options.fallbackModel;
 
-    // If no model specified, use active profile
-    if (!effectiveModel) {
-        const activeProfile = modelManager.getActiveProfile()
-        if (activeProfile) {
-            effectiveModel = activeProfile.modelId
-            effectiveFallback = activeProfile.fallbackModelId
-        }
+  // If no model specified, use active profile
+  if (!effectiveModel) {
+    const activeProfile = modelManager.getActiveProfile();
+    if (activeProfile) {
+      effectiveModel = activeProfile.modelId;
+      effectiveFallback = activeProfile.fallbackModelId;
     }
+  }
 
-    // Create token monitor
-    const { getTokenMonitor } = require('./tokenMonitor')
-    const tokenMonitor = getTokenMonitor(sessionId)
+  // Create token monitor
+  const { getTokenMonitor } = require('./tokenMonitor');
+  const tokenMonitor = getTokenMonitor(sessionId);
 
-    // Call original query with updated model settings
-    const monitoredQuery = query({
-        prompt,
-        options: {
-            ...options,
-            model: effectiveModel,
-            fallbackModel: effectiveFallback
-        }
-    }) as MonitoredQuery
+  // Call original query with updated model settings
+  const monitoredQuery = query({
+    prompt,
+    options: {
+      ...options,
+      model: effectiveModel,
+      fallbackModel: effectiveFallback,
+    },
+  }) as MonitoredQuery;
 
-    // Wrap in MonitoredQuery
-    Object.setPrototypeOf(monitoredQuery, MonitoredQuery.prototype)
-    Object.defineProperty(monitoredQuery, 'constructor', {
-        value: MonitoredQuery,
-        writable: true,
-        configurable: true
-    })
+  // Wrap in MonitoredQuery
+  Object.setPrototypeOf(monitoredQuery, MonitoredQuery.prototype);
+  Object.defineProperty(monitoredQuery, 'constructor', {
+    value: MonitoredQuery,
+    writable: true,
+    configurable: true,
+  });
 
-    return {
-        query: monitoredQuery,
-        tokenMonitor
-    }
+  return {
+    query: monitoredQuery,
+    tokenMonitor,
+  };
 }

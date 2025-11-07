@@ -13,9 +13,19 @@ import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
-import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
+import {
+  writeDaemonState,
+  DaemonLocallyPersistedState,
+  readDaemonState,
+  acquireDaemonLock,
+  releaseDaemonLock,
+} from '@/persistence';
 
-import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
+import {
+  cleanupDaemonState,
+  isDaemonRunningCurrentlyInstalledHappyVersion,
+  stopDaemon,
+} from './controlClient';
 import { startDaemonControlServer } from './controlServer';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -28,7 +38,7 @@ export const initialMachineMetadata: MachineMetadata = {
   happyCliVersion: packageJson.version,
   homeDir: os.homedir(),
   happyHomeDir: configuration.happyHomeDir,
-  happyLibDir: projectPath()
+  happyLibDir: projectPath(),
 };
 
 export async function startDaemon(): Promise<void> {
@@ -41,17 +51,25 @@ export async function startDaemon(): Promise<void> {
   //
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
-  let requestShutdown: (source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
-  let resolvesWhenShutdownRequested = new Promise<({ source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
+  let requestShutdown: (
+    source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception',
+    errorMessage?: string
+  ) => void;
+  let resolvesWhenShutdownRequested = new Promise<{
+    source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception';
+    errorMessage?: string;
+  }>((resolve) => {
     requestShutdown = (source, errorMessage) => {
-      logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
+      logger.debug(
+        `[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`
+      );
 
       // Fallback - in case startup malfunctions - we will force exit the process with code 1
       setTimeout(async () => {
         logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
 
         // Give time for logs to be flushed
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
         process.exit(1);
       }, 1_000);
@@ -81,7 +99,8 @@ export async function startDaemon(): Promise<void> {
   process.on('unhandledRejection', (reason, promise) => {
     logger.debug('[DAEMON RUN] FATAL: Unhandled promise rejection', reason);
     logger.debug(`[DAEMON RUN] Rejected promise:`, promise);
-    const error = reason instanceof Error ? reason : new Error(`Unhandled promise rejection: ${reason}`);
+    const error =
+      reason instanceof Error ? reason : new Error(`Unhandled promise rejection: ${reason}`);
     logger.debug(`[DAEMON RUN] Stack trace: ${error.stack}`);
     requestShutdown('exception', error.message);
   });
@@ -101,7 +120,9 @@ export async function startDaemon(): Promise<void> {
   // Check if running daemon version matches current CLI version
   const runningDaemonVersionMatches = await isDaemonRunningCurrentlyInstalledHappyVersion();
   if (!runningDaemonVersionMatches) {
-    logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
+    logger.debug(
+      '[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version'
+    );
     await stopDaemon();
   } else {
     logger.debug('[DAEMON RUN] Daemon version matches, keeping existing daemon');
@@ -150,8 +171,12 @@ export async function startDaemon(): Promise<void> {
         return;
       }
 
-      logger.debug(`[DAEMON RUN] Session webhook: ${sessionId}, PID: ${pid}, started by: ${sessionMetadata.startedBy || 'unknown'}`);
-      logger.debug(`[DAEMON RUN] Current tracked sessions before webhook: ${Array.from(pidToTrackedSession.keys()).join(', ')}`);
+      logger.debug(
+        `[DAEMON RUN] Session webhook: ${sessionId}, PID: ${pid}, started by: ${sessionMetadata.startedBy || 'unknown'}`
+      );
+      logger.debug(
+        `[DAEMON RUN] Current tracked sessions before webhook: ${Array.from(pidToTrackedSession.keys()).join(', ')}`
+      );
 
       // Check if we already have this PID (daemon-spawned)
       const existingSession = pidToTrackedSession.get(pid);
@@ -175,7 +200,7 @@ export async function startDaemon(): Promise<void> {
           startedBy: 'happy directly - likely by user from terminal',
           happySessionId: sessionId,
           happySessionMetadataFromLocalWebhook: sessionMetadata,
-          pid
+          pid,
         };
         pidToTrackedSession.set(pid, trackedSession);
         logger.debug(`[DAEMON RUN] Registered externally-started session ${sessionId}`);
@@ -200,7 +225,7 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Directory creation not approved for: ${directory}`);
           return {
             type: 'requestToApproveDirectoryCreation',
-            directory
+            directory,
           };
         }
 
@@ -227,18 +252,16 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Directory creation failed: ${errorMessage}`);
           return {
             type: 'error',
-            errorMessage
+            errorMessage,
           };
         }
       }
 
       try {
-
         // Resolve authentication token if provided
         let extraEnv: Record<string, string> = {};
         if (options.token) {
           if (options.agent === 'codex') {
-
             // Create a temporary directory for Codex
             const codexHomeDir = tmp.dirSync();
 
@@ -247,11 +270,12 @@ export async function startDaemon(): Promise<void> {
 
             // Set the environment variable for Codex
             extraEnv = {
-              CODEX_HOME: codexHomeDir.name
+              CODEX_HOME: codexHomeDir.name,
             };
-          } else { // Assuming claude
+          } else {
+            // Assuming claude
             extraEnv = {
-              CLAUDE_CODE_OAUTH_TOKEN: options.token
+              CLAUDE_CODE_OAUTH_TOKEN: options.token,
             };
           }
         }
@@ -259,20 +283,22 @@ export async function startDaemon(): Promise<void> {
         // Construct arguments for the CLI
         const args = [
           options.agent === 'claude' ? 'claude' : 'codex',
-          '--happy-starting-mode', 'remote',
-          '--started-by', 'daemon'
+          '--happy-starting-mode',
+          'remote',
+          '--started-by',
+          'daemon',
         ];
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session
         const happyProcess = spawnHappyCLI(args, {
           cwd: directory,
-          detached: true,  // Sessions stay alive when daemon stops
-          stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
+          detached: true, // Sessions stay alive when daemon stops
+          stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr for debugging
           env: {
             ...process.env,
-            ...extraEnv
-          }
+            ...extraEnv,
+          },
         });
 
         // Log output for debugging
@@ -289,7 +315,7 @@ export async function startDaemon(): Promise<void> {
           logger.debug('[DAEMON RUN] Failed to spawn process - no PID returned');
           return {
             type: 'error',
-            errorMessage: 'Failed to spawn Happy process - no PID returned'
+            errorMessage: 'Failed to spawn Happy process - no PID returned',
           };
         }
 
@@ -300,13 +326,17 @@ export async function startDaemon(): Promise<void> {
           pid: happyProcess.pid,
           childProcess: happyProcess,
           directoryCreated,
-          message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
+          message: directoryCreated
+            ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.`
+            : undefined,
         };
 
         pidToTrackedSession.set(happyProcess.pid, trackedSession);
 
         happyProcess.on('exit', (code, signal) => {
-          logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
+          logger.debug(
+            `[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`
+          );
           if (happyProcess.pid) {
             onChildExited(happyProcess.pid);
           }
@@ -329,7 +359,7 @@ export async function startDaemon(): Promise<void> {
             logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
             resolve({
               type: 'error',
-              errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
+              errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`,
             });
             // 15 second timeout - I have seen timeouts on 10 seconds
             // even though session was still created successfully in ~2 more seconds
@@ -338,10 +368,12 @@ export async function startDaemon(): Promise<void> {
           // Register awaiter
           pidToAwaiter.set(happyProcess.pid!, (completedSession) => {
             clearTimeout(timeout);
-            logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
+            logger.debug(
+              `[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`
+            );
             resolve({
               type: 'success',
-              sessionId: completedSession.happySessionId!
+              sessionId: completedSession.happySessionId!,
             });
           });
         });
@@ -350,7 +382,7 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Failed to spawn session:', error);
         return {
           type: 'error',
-          errorMessage: `Failed to spawn session: ${errorMessage}`
+          errorMessage: `Failed to spawn session: ${errorMessage}`,
         };
       }
     };
@@ -361,9 +393,10 @@ export async function startDaemon(): Promise<void> {
 
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
-        if (session.happySessionId === sessionId ||
-          (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
-
+        if (
+          session.happySessionId === sessionId ||
+          (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))
+        ) {
           if (session.startedBy === 'daemon' && session.childProcess) {
             try {
               session.childProcess.kill('SIGTERM');
@@ -403,7 +436,7 @@ export async function startDaemon(): Promise<void> {
       stopSession,
       spawnSession,
       requestShutdown: () => requestShutdown('happy-cli'),
-      onHappySessionWebhook
+      onHappySessionWebhook,
     });
 
     // Write initial daemon state (no lock needed for state file)
@@ -412,7 +445,7 @@ export async function startDaemon(): Promise<void> {
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: packageJson.version,
-      daemonLogPath: logger.logFilePath
+      daemonLogPath: logger.logFilePath,
     };
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
@@ -422,7 +455,7 @@ export async function startDaemon(): Promise<void> {
       status: 'offline',
       pid: process.pid,
       httpPort: controlPort,
-      startedAt: Date.now()
+      startedAt: Date.now(),
     };
 
     // Create API client
@@ -432,7 +465,7 @@ export async function startDaemon(): Promise<void> {
     const machine = await api.getOrCreateMachine({
       machineId,
       metadata: initialMachineMetadata,
-      daemonState: initialDaemonState
+      daemonState: initialDaemonState,
     });
     logger.debug(`[DAEMON RUN] Machine registered: ${machine.id}`);
 
@@ -443,7 +476,7 @@ export async function startDaemon(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
-      requestShutdown: () => requestShutdown('happy-app')
+      requestShutdown: () => requestShutdown('happy-app'),
     });
 
     // Connect to server
@@ -455,7 +488,7 @@ export async function startDaemon(): Promise<void> {
     // 3. If outdated, restart with latest version
     // 4. Write heartbeat
     const heartbeatIntervalMs = parseInt(process.env.HAPPY_DAEMON_HEARTBEAT_INTERVAL || '60000');
-    let heartbeatRunning = false
+    let heartbeatRunning = false;
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
@@ -473,7 +506,9 @@ export async function startDaemon(): Promise<void> {
           process.kill(pid, 0);
         } catch (error) {
           // Process is dead, remove from tracking
-          logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
+          logger.debug(
+            `[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`
+          );
           pidToTrackedSession.delete(pid);
         }
       }
@@ -481,9 +516,13 @@ export async function startDaemon(): Promise<void> {
       // Check if daemon needs update
       // If version on disk is different from the one in package.json - we need to restart
       // BIG if - does this get updated from underneath us on npm upgrade?
-      const projectVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
+      const projectVersion = JSON.parse(
+        readFileSync(join(projectPath(), 'package.json'), 'utf-8')
+      ).version;
       if (projectVersion !== configuration.currentCliVersion) {
-        logger.debug('[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version, clearing heartbeat interval');
+        logger.debug(
+          '[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version, clearing heartbeat interval'
+        );
 
         clearInterval(restartOnStaleVersionAndHeartbeat);
 
@@ -497,15 +536,20 @@ export async function startDaemon(): Promise<void> {
         try {
           spawnHappyCLI(['daemon', 'start'], {
             detached: true,
-            stdio: 'ignore'
+            stdio: 'ignore',
           });
         } catch (error) {
-          logger.debug('[DAEMON RUN] Failed to spawn new daemon, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
+          logger.debug(
+            '[DAEMON RUN] Failed to spawn new daemon, this is quite likely to happen during integration tests as we are cleaning out dist/ directory',
+            error
+          );
         }
 
         // So we can just hang forever
-        logger.debug('[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-        await new Promise(resolve => setTimeout(resolve, 10_000));
+        logger.debug(
+          '[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code'
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
         process.exit(0);
       }
 
@@ -513,8 +557,13 @@ export async function startDaemon(): Promise<void> {
       // Race condition is possible, but thats okay for the time being :D
       const daemonState = await readDaemonState();
       if (daemonState && daemonState.pid !== process.pid) {
-        logger.debug('[DAEMON RUN] Somehow a different daemon was started without killing us. We should kill ourselves.')
-        requestShutdown('exception', 'A different daemon was started without killing us. We should kill ourselves.')
+        logger.debug(
+          '[DAEMON RUN] Somehow a different daemon was started without killing us. We should kill ourselves.'
+        );
+        requestShutdown(
+          'exception',
+          'A different daemon was started without killing us. We should kill ourselves.'
+        );
       }
 
       // Heartbeat
@@ -525,7 +574,7 @@ export async function startDaemon(): Promise<void> {
           startTime: fileState.startTime,
           startedWithCliVersion: packageJson.version,
           lastHeartbeat: new Date().toLocaleString(),
-          daemonLogPath: fileState.daemonLogPath
+          daemonLogPath: fileState.daemonLogPath,
         };
         writeDaemonState(updatedState);
         if (process.env.DEBUG) {
@@ -539,8 +588,13 @@ export async function startDaemon(): Promise<void> {
     }, heartbeatIntervalMs); // Every 60 seconds in production
 
     // Setup signal handlers
-    const cleanupAndShutdown = async (source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
-      logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
+    const cleanupAndShutdown = async (
+      source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception',
+      errorMessage?: string
+    ) => {
+      logger.debug(
+        `[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`
+      );
 
       // Clear health check interval
       if (restartOnStaleVersionAndHeartbeat) {
@@ -553,11 +607,11 @@ export async function startDaemon(): Promise<void> {
         ...state,
         status: 'shutting-down',
         shutdownRequestedAt: Date.now(),
-        shutdownSource: source
+        shutdownSource: source,
       }));
 
       // Give time for metadata update to send
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       apiMachine.shutdown();
       await stopControlServer();

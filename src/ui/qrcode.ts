@@ -13,4 +13,4 @@ export function displayQRCode(url: string): void {
     }
   });
   console.log('='.repeat(80));
-} 
+}

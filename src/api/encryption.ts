@@ -6,11 +6,14 @@ import tweetnacl from 'tweetnacl';
  * @param buffer - The buffer to encode
  * @param variant - The encoding variant ('base64' or 'base64url')
  */
-export function encodeBase64(buffer: Uint8Array, variant: 'base64' | 'base64url' = 'base64'): string {
+export function encodeBase64(
+  buffer: Uint8Array,
+  variant: 'base64' | 'base64url' = 'base64'
+): string {
   if (variant === 'base64url') {
     return encodeBase64Url(buffer);
   }
-  return Buffer.from(buffer).toString('base64')
+  return Buffer.from(buffer).toString('base64');
 }
 
 /**
@@ -22,7 +25,7 @@ export function encodeBase64Url(buffer: Uint8Array): string {
     .toString('base64')
     .replaceAll('+', '-')
     .replaceAll('/', '_')
-    .replaceAll('=', '')
+    .replaceAll('=', '');
 }
 
 /**
@@ -31,25 +34,24 @@ export function encodeBase64Url(buffer: Uint8Array): string {
  * @param variant - The encoding variant ('base64' or 'base64url')
  * @returns The decoded Uint8Array
  */
-export function decodeBase64(base64: string, variant: 'base64' | 'base64url' = 'base64'): Uint8Array {
+export function decodeBase64(
+  base64: string,
+  variant: 'base64' | 'base64url' = 'base64'
+): Uint8Array {
   if (variant === 'base64url') {
     // Convert base64url to base64
-    const base64Standard = base64
-      .replaceAll('-', '+')
-      .replaceAll('_', '/')
-      + '='.repeat((4 - base64.length % 4) % 4);
+    const base64Standard =
+      base64.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - (base64.length % 4)) % 4);
     return new Uint8Array(Buffer.from(base64Standard, 'base64'));
   }
   return new Uint8Array(Buffer.from(base64, 'base64'));
 }
 
-
-
 /**
  * Generate secure random bytes
  */
 export function getRandomBytes(size: number): Uint8Array {
-  return new Uint8Array(randomBytes(size))
+  return new Uint8Array(randomBytes(size));
 }
 
 export function libsodiumPublicKeyFromSecretKey(seed: Uint8Array): Uint8Array {
@@ -59,22 +61,27 @@ export function libsodiumPublicKeyFromSecretKey(seed: Uint8Array): Uint8Array {
   return new Uint8Array(tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey);
 }
 
-export function libsodiumEncryptForPublicKey(data: Uint8Array, recipientPublicKey: Uint8Array): Uint8Array {
+export function libsodiumEncryptForPublicKey(
+  data: Uint8Array,
+  recipientPublicKey: Uint8Array
+): Uint8Array {
   // Generate ephemeral keypair for this encryption
   const ephemeralKeyPair = tweetnacl.box.keyPair();
-  
+
   // Generate random nonce (24 bytes for box encryption)
   const nonce = getRandomBytes(tweetnacl.box.nonceLength);
-  
+
   // Encrypt the data using box (authenticated encryption)
   const encrypted = tweetnacl.box(data, nonce, recipientPublicKey, ephemeralKeyPair.secretKey);
-  
+
   // Bundle format: ephemeral public key (32 bytes) + nonce (24 bytes) + encrypted data
-  const result = new Uint8Array(ephemeralKeyPair.publicKey.length + nonce.length + encrypted.length);
+  const result = new Uint8Array(
+    ephemeralKeyPair.publicKey.length + nonce.length + encrypted.length
+  );
   result.set(ephemeralKeyPair.publicKey, 0);
   result.set(nonce, ephemeralKeyPair.publicKey.length);
   result.set(encrypted, ephemeralKeyPair.publicKey.length + nonce.length);
-  
+
   return result;
 }
 
@@ -86,7 +93,11 @@ export function libsodiumEncryptForPublicKey(data: Uint8Array, recipientPublicKe
  */
 export function encryptLegacy(data: any, secret: Uint8Array): Uint8Array {
   const nonce = getRandomBytes(tweetnacl.secretbox.nonceLength);
-  const encrypted = tweetnacl.secretbox(new TextEncoder().encode(JSON.stringify(data)), nonce, secret);
+  const encrypted = tweetnacl.secretbox(
+    new TextEncoder().encode(JSON.stringify(data)),
+    nonce,
+    secret
+  );
   const result = new Uint8Array(nonce.length + encrypted.length);
   result.set(nonce);
   result.set(encrypted, nonce.length);
@@ -122,10 +133,7 @@ export function encryptWithDataKey(data: any, dataKey: Uint8Array): Uint8Array {
   const cipher = createCipheriv('aes-256-gcm', dataKey, nonce);
 
   const plaintext = new TextEncoder().encode(JSON.stringify(data));
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext),
-    cipher.final()
-  ]);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
 
   const authTag = cipher.getAuthTag();
 
@@ -149,13 +157,14 @@ export function decryptWithDataKey(bundle: Uint8Array, dataKey: Uint8Array): any
   if (bundle.length < 1) {
     return null;
   }
-  if (bundle[0] !== 0) { // Only verision 0
+  if (bundle[0] !== 0) {
+    // Only verision 0
     return null;
   }
-  if (bundle.length < 12 + 16 + 1) { // Minimum: version nonce + auth tag
+  if (bundle.length < 12 + 16 + 1) {
+    // Minimum: version nonce + auth tag
     return null;
   }
-
 
   const nonce = bundle.slice(1, 13);
   const authTag = bundle.slice(bundle.length - 16);
@@ -165,10 +174,7 @@ export function decryptWithDataKey(bundle: Uint8Array, dataKey: Uint8Array): any
     const decipher = createDecipheriv('aes-256-gcm', dataKey, nonce);
     decipher.setAuthTag(authTag);
 
-    const decrypted = Buffer.concat([
-      decipher.update(ciphertext),
-      decipher.final()
-    ]);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
     return JSON.parse(new TextDecoder().decode(decrypted));
   } catch (error) {
@@ -185,7 +191,11 @@ export function encrypt(key: Uint8Array, variant: 'legacy' | 'dataKey', data: an
   }
 }
 
-export function decrypt(key: Uint8Array, variant: 'legacy' | 'dataKey', data: Uint8Array): any | null {
+export function decrypt(
+  key: Uint8Array,
+  variant: 'legacy' | 'dataKey',
+  data: Uint8Array
+): any | null {
   if (variant === 'legacy') {
     return decryptLegacy(data, key);
   } else {
@@ -197,9 +207,9 @@ export function decrypt(key: Uint8Array, variant: 'legacy' | 'dataKey', data: Ui
  * Generate authentication challenge response
  */
 export function authChallenge(secret: Uint8Array): {
-  challenge: Uint8Array
-  publicKey: Uint8Array
-  signature: Uint8Array
+  challenge: Uint8Array;
+  publicKey: Uint8Array;
+  signature: Uint8Array;
 } {
   const keypair = tweetnacl.sign.keyPair.fromSeed(secret);
   const challenge = getRandomBytes(32);
@@ -208,6 +218,6 @@ export function authChallenge(secret: Uint8Array): {
   return {
     challenge,
     publicKey: keypair.publicKey,
-    signature
+    signature,
   };
 }

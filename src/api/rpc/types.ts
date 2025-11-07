@@ -8,7 +8,7 @@
  * @template TResponse - The response data type
  */
 export type RpcHandler<TRequest = any, TResponse = any> = (
-    data: TRequest
+  data: TRequest
 ) => TResponse | Promise<TResponse>;
 
 /**
@@ -20,8 +20,8 @@ export type RpcHandlerMap = Map<string, RpcHandler>;
  * RPC request data from server
  */
 export interface RpcRequest {
-    method: string;
-    params: string; // Base64 encoded encrypted params
+  method: string;
+  params: string; // Base64 encoded encrypted params
 }
 
 /**
@@ -33,15 +33,15 @@ export type RpcResponseCallback = (response: string) => void;
  * Configuration for RPC handler manager
  */
 export interface RpcHandlerConfig {
-    scopePrefix: string;
-    encryptionKey: Uint8Array;
-    encryptionVariant: 'legacy' | 'dataKey';
-    logger?: (message: string, data?: any) => void;
+  scopePrefix: string;
+  encryptionKey: Uint8Array;
+  encryptionVariant: 'legacy' | 'dataKey';
+  logger?: (message: string, data?: any) => void;
 }
 
 /**
  * Result of RPC handler execution
  */
 export type RpcHandlerResult<T = any> =
-    | { success: true; data: T }
-    | { success: false; error: string };
+  | { success: true; data: T }
+  | { success: false; error: string };

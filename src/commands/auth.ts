@@ -42,7 +42,7 @@ ${chalk.bold('happy auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
   happy auth login [--force]    Authenticate with Happy
-  happy auth logout             Remove authentication and machine data  
+  happy auth logout             Remove authentication and machine data
   happy auth status             Show authentication status
   happy auth show-backup        Display backup key for mobile/web clients
   happy auth help               Show this help message
@@ -109,7 +109,10 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(chalk.green('\n✓ Authentication successful'));
     console.log(chalk.gray(`  Machine ID: ${result.machineId}`));
   } catch (error) {
-    console.error(chalk.red('Authentication failed:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(
+      chalk.red('Authentication failed:'),
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     process.exit(1);
   }
 }
@@ -131,7 +134,7 @@ async function handleAuthLogout(): Promise<void> {
   // Ask for confirmation
   const rl = createInterface({
     input: process.stdin,
-    output: process.stdout
+    output: process.stdout,
   });
 
   const answer = await new Promise<string>((resolve) => {
@@ -146,7 +149,7 @@ async function handleAuthLogout(): Promise<void> {
       try {
         await stopDaemon();
         console.log(chalk.gray('Stopped daemon'));
-      } catch { }
+      } catch {}
 
       // Remove entire happy directory (as current logout does)
       if (existsSync(happyDir)) {
@@ -156,7 +159,9 @@ async function handleAuthLogout(): Promise<void> {
       console.log(chalk.green('✓ Successfully logged out'));
       console.log(chalk.gray('  Run "happy auth login" to authenticate again'));
     } catch (error) {
-      throw new Error(`Failed to logout: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to logout: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   } else {
     console.log(chalk.blue('Logout cancelled'));

@@ -65,7 +65,21 @@
     "dev:integration-test-env": "yarn build && tsx --env-file .env.integration-test src/index.ts",
     "prepublishOnly": "yarn build && yarn test",
     "release": "release-it",
-    "postinstall": "node scripts/unpack-tools.cjs"
+    "postinstall": "node scripts/unpack-tools.cjs",
+    "format": "prettier --write \"**/*.{ts,js,json,md,css,scss,yaml,html}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,json,md,css,scss,yaml,html}\"",
+    "lint": "eslint \"**/*.{ts,tsx}\" --max-warnings=0",
+    "lint:fix": "eslint \"**/*.{ts,tsx}\" --fix",
+    "lint:types": "tsc --noEmit",
+    "pre-commit": "pre-commit run --all-files",
+    "prepare": "command -v pre-commit >/dev/null && pre-commit install || echo 'pre-commit not installed, skipping'"
+  },
+  "pre-commit": {
+    "run": [
+      "format",
+      "lint",
+      "lint:types"
+    ]
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.0.14",
@@ -100,17 +114,22 @@
   },
   "devDependencies": {
     "@eslint/compat": "^1",
+    "@eslint/js": "^9.15.0",
     "@types/node": ">=20",
     "cross-env": "^10.0.0",
+    "detect-secrets": "^1.4.0",
     "dotenv": "^16.6.1",
     "eslint": "^9",
     "eslint-config-prettier": "^10",
     "pkgroll": "^2.14.2",
+    "pre-commit": "^1.2.2",
+    "prettier": "^4.0.0-alpha.8",
     "release-it": "^19.0.4",
     "shx": "^0.3.3",
     "ts-node": "^10",
     "tsx": "^4.20.3",
     "typescript": "^5",
+    "typescript-eslint": "^8.18.2",
     "vitest": "^3.2.4"
   },
   "resolutions": {

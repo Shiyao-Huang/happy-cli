@@ -17,7 +17,7 @@ const os = require('os');
 function getPlatformDir() {
     const platform = os.platform();
     const arch = os.arch();
-    
+
     if (platform === 'darwin') {
         if (arch === 'arm64') return 'arm64-darwin';
         if (arch === 'x64') return 'x64-darwin';
@@ -27,7 +27,7 @@ function getPlatformDir() {
     } else if (platform === 'win32') {
         if (arch === 'x64') return 'x64-win32';
     }
-    
+
     throw new Error(`Unsupported platform: ${arch}-${platform}`);
 }
 
@@ -45,22 +45,22 @@ function getToolsDir() {
  */
 function areToolsUnpacked(toolsDir) {
     const unpackedPath = path.join(toolsDir, 'unpacked');
-    
+
     if (!fs.existsSync(unpackedPath)) {
         return false;
     }
-    
+
     // Check for expected binaries
     const isWin = os.platform() === 'win32';
     const difftBinary = isWin ? 'difft.exe' : 'difft';
     const rgBinary = isWin ? 'rg.exe' : 'rg';
-    
+
     const expectedFiles = [
         path.join(unpackedPath, difftBinary),
         path.join(unpackedPath, rgBinary),
         path.join(unpackedPath, 'ripgrep.node')
     ];
-    
+
     return expectedFiles.every(file => fs.existsSync(file));
 }
 
@@ -73,7 +73,7 @@ async function unpackArchive(archivePath, destDir) {
         if (!fs.existsSync(destDir)) {
             fs.mkdirSync(destDir, { recursive: true });
         }
-        
+
         // Create read stream and extract
         fs.createReadStream(archivePath)
             .pipe(zlib.createGunzip())
@@ -110,37 +110,37 @@ async function unpackTools() {
         const toolsDir = getToolsDir();
         const archivesDir = path.join(toolsDir, 'archives');
         const unpackedPath = path.join(toolsDir, 'unpacked');
-        
+
         // Check if already unpacked
         if (areToolsUnpacked(toolsDir)) {
             console.log(`Tools already unpacked for ${platformDir}`);
             return { success: true, alreadyUnpacked: true };
         }
-        
+
         console.log(`Unpacking tools for ${platformDir}...`);
-        
+
         // Create unpacked directory
         if (!fs.existsSync(unpackedPath)) {
             fs.mkdirSync(unpackedPath, { recursive: true });
         }
-        
+
         // Unpack difftastic
         const difftasticArchive = path.join(archivesDir, `difftastic-${platformDir}.tar.gz`);
         if (!fs.existsSync(difftasticArchive)) {
             throw new Error(`Archive not found: ${difftasticArchive}`);
         }
         await unpackArchive(difftasticArchive, unpackedPath);
-        
+
         // Unpack ripgrep
         const ripgrepArchive = path.join(archivesDir, `ripgrep-${platformDir}.tar.gz`);
         if (!fs.existsSync(ripgrepArchive)) {
             throw new Error(`Archive not found: ${ripgrepArchive}`);
         }
         await unpackArchive(ripgrepArchive, unpackedPath);
-        
+
         console.log(`Tools unpacked successfully to ${unpackedPath}`);
         return { success: true, alreadyUnpacked: false };
-        
+
     } catch (error) {
         console.error('Failed to unpack tools:', error.message);
         throw error;

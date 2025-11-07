@@ -48,7 +48,7 @@ global.fetch = function(...args) {
     const id = ++fetchCounter;
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
     const method = args[1]?.method || 'GET';
-    
+
     // Parse URL for privacy
     let hostname = '';
     let path = '';
@@ -61,7 +61,7 @@ global.fetch = function(...args) {
         hostname = 'unknown';
         path = url;
     }
-    
+
     // Send fetch start event
     writeMessage({
         type: 'fetch-start',
@@ -74,7 +74,7 @@ global.fetch = function(...args) {
 
     // Execute the original fetch immediately
     const fetchPromise = originalFetch(...args);
-    
+
     // Attach handlers to send fetch end event
     const sendEnd = () => {
         writeMessage({
@@ -83,10 +83,10 @@ global.fetch = function(...args) {
             timestamp: Date.now()
         });
     };
-    
+
     // Send end event on both success and failure
     fetchPromise.then(sendEnd, sendEnd);
-    
+
     // Return the original promise unchanged
     return fetchPromise;
 };

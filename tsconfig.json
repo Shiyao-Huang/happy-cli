@@ -3,10 +3,7 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": [
-      "es2020",
-      "es2022"
-    ],
+    "lib": ["es2020", "es2022"],
     "jsx": "react",
     "rootDir": "src",
     "declaration": true,
@@ -25,20 +22,11 @@
     "strictPropertyInitialization": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "typeRoots": [
-      "./node_modules/@types"
-    ],
+    "typeRoots": ["./node_modules/@types"],
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"]
     }
   },
-  "exclude": [
-    "node_modules",
-  ],
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx"
-  ]
+  "exclude": ["node_modules"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

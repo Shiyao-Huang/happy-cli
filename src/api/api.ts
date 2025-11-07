@@ -1,16 +1,30 @@
-import axios from 'axios'
-import { logger } from '@/ui/logger'
-import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState } from '@/api/types'
+import axios from 'axios';
+import { logger } from '@/ui/logger';
+import type {
+  AgentState,
+  CreateSessionResponse,
+  Metadata,
+  Session,
+  Machine,
+  MachineMetadata,
+  DaemonState,
+} from '@/api/types';
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
-import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey } from './encryption';
+import {
+  decodeBase64,
+  encodeBase64,
+  getRandomBytes,
+  encrypt,
+  decrypt,
+  libsodiumEncryptForPublicKey,
+} from './encryption';
 import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
 import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 
 export class ApiClient {
-
   static async create(credential: Credentials) {
     return new ApiClient(credential);
   }
@@ -19,25 +33,23 @@ export class ApiClient {
   private readonly pushClient: PushNotificationClient;
 
   private constructor(credential: Credentials) {
-    this.credential = credential
-    this.pushClient = new PushNotificationClient(credential.token, configuration.serverUrl)
+    this.credential = credential;
+    this.pushClient = new PushNotificationClient(credential.token, configuration.serverUrl);
   }
 
   /**
    * Create a new session or load existing one with the given tag
    */
   async getOrCreateSession(opts: {
-    tag: string,
-    metadata: Metadata,
-    state: AgentState | null
+    tag: string;
+    metadata: Metadata;
+    state: AgentState | null;
   }): Promise<Session> {
-
     // Resolve encryption key
     let dataEncryptionKey: Uint8Array | null = null;
     let encryptionKey: Uint8Array;
     let encryptionVariant: 'legacy' | 'dataKey';
     if (this.credential.encryption.type === 'dataKey') {
-
       // Generate new encryption key
       encryptionKey = getRandomBytes(32);
       encryptionVariant = 'dataKey';
@@ -45,7 +57,10 @@ export class ApiClient {
       // Derive and encrypt data encryption key
       // const contentDataKey = await deriveKey(this.secret, 'Happy EnCoder', ['content']);
       // const publicKey = libsodiumPublicKeyFromSecretKey(contentDataKey);
-      let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, this.credential.encryption.publicKey);
+      let encryptedDataKey = libsodiumEncryptForPublicKey(
+        encryptionKey,
+        this.credential.encryption.publicKey
+      );
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
       dataEncryptionKey.set(encryptedDataKey, 1); // Data key
@@ -61,34 +76,40 @@ export class ApiClient {
         {
           tag: opts.tag,
           metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
-          agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
+          agentState: opts.state
+            ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state))
+            : null,
           dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : null,
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
-            'Content-Type': 'application/json'
+            Authorization: `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
           },
-          timeout: 60000 // 1 minute timeout for very bad network connections
+          timeout: 60000, // 1 minute timeout for very bad network connections
         }
-      )
+      );
 
-      logger.debug(`Session created/loaded: ${response.data.session.id} (tag: ${opts.tag})`)
+      logger.debug(`Session created/loaded: ${response.data.session.id} (tag: ${opts.tag})`);
       let raw = response.data.session;
       let session: Session = {
         id: raw.id,
         seq: raw.seq,
         metadata: decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata)),
         metadataVersion: raw.metadataVersion,
-        agentState: raw.agentState ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.agentState)) : null,
+        agentState: raw.agentState
+          ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.agentState))
+          : null,
         agentStateVersion: raw.agentStateVersion,
         encryptionKey: encryptionKey,
-        encryptionVariant: encryptionVariant
-      }
+        encryptionVariant: encryptionVariant,
+      };
       return session;
     } catch (error) {
       logger.debug('[API] [ERROR] Failed to get or create session:', error);
-      throw new Error(`Failed to get or create session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to get or create session: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 
@@ -97,11 +118,10 @@ export class ApiClient {
    * Returns the current machine state from the server with decrypted metadata and daemonState
    */
   async getOrCreateMachine(opts: {
-    machineId: string,
-    metadata: MachineMetadata,
-    daemonState?: DaemonState,
+    machineId: string;
+    metadata: MachineMetadata;
+    daemonState?: DaemonState;
   }): Promise<Machine> {
-
     // Resolve encryption key
     let dataEncryptionKey: Uint8Array | null = null;
     let encryptionKey: Uint8Array;
@@ -110,7 +130,10 @@ export class ApiClient {
       // Encrypt data encryption key
       encryptionVariant = 'dataKey';
       encryptionKey = this.credential.encryption.machineKey;
-      let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.machineKey, this.credential.encryption.publicKey);
+      let encryptedDataKey = libsodiumEncryptForPublicKey(
+        this.credential.encryption.machineKey,
+        this.credential.encryption.publicKey
+      );
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
       dataEncryptionKey.set(encryptedDataKey, 1); // Data key
@@ -126,21 +149,27 @@ export class ApiClient {
       {
         id: opts.machineId,
         metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
-        daemonState: opts.daemonState ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.daemonState)) : undefined,
-        dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined
+        daemonState: opts.daemonState
+          ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.daemonState))
+          : undefined,
+        dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined,
       },
       {
         headers: {
-          'Authorization': `Bearer ${this.credential.token}`,
-          'Content-Type': 'application/json'
+          Authorization: `Bearer ${this.credential.token}`,
+          'Content-Type': 'application/json',
         },
-        timeout: 60000 // 1 minute timeout for very bad network connections
+        timeout: 60000, // 1 minute timeout for very bad network connections
       }
     );
 
     if (response.status !== 200) {
       console.error(chalk.red(`[API] Failed to create machine: ${response.statusText}`));
-      console.log(chalk.yellow(`[API] Failed to create machine: ${response.statusText}, most likely you have re-authenticated, but you still have a machine associated with the old account. Now we are trying to re-associate the machine with the new account. That is not allowed. Please run 'happy doctor clean' to clean up your happy state, and try your original command again. Please create an issue on github if this is causing you problems. We apologize for the inconvenience.`));
+      console.log(
+        chalk.yellow(
+          `[API] Failed to create machine: ${response.statusText}, most likely you have re-authenticated, but you still have a machine associated with the old account. Now we are trying to re-associate the machine with the new account. That is not allowed. Please run 'happy doctor clean' to clean up your happy state, and try your original command again. Please create an issue on github if this is causing you problems. We apologize for the inconvenience.`
+        )
+      );
       process.exit(1);
     }
 
@@ -152,9 +181,13 @@ export class ApiClient {
       id: raw.id,
       encryptionKey: encryptionKey,
       encryptionVariant: encryptionVariant,
-      metadata: raw.metadata ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata)) : null,
+      metadata: raw.metadata
+        ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata))
+        : null,
       metadataVersion: raw.metadataVersion || 0,
-      daemonState: raw.daemonState ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.daemonState)) : null,
+      daemonState: raw.daemonState
+        ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.daemonState))
+        : null,
       daemonStateVersion: raw.daemonStateVersion || 0,
     };
     return machine;
@@ -181,14 +214,14 @@ export class ApiClient {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/connect/${vendor}/register`,
         {
-          token: JSON.stringify(apiKey)
+          token: JSON.stringify(apiKey),
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
-            'Content-Type': 'application/json'
+            Authorization: `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
           },
-          timeout: 5000
+          timeout: 5000,
         }
       );
 
@@ -199,7 +232,9 @@ export class ApiClient {
       logger.debug(`[API] Vendor token for ${vendor} registered successfully`);
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to register vendor token:`, error);
-      throw new Error(`Failed to register vendor token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to register vendor token: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 }

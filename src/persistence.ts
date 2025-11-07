@@ -1,29 +1,29 @@
 /**
  * Minimal persistence functions for happy CLI
- * 
+ *
  * Handles settings and private key storage in ~/.happy/ or local .happy/
  */
 
-import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
-import { constants } from 'node:fs'
-import { configuration } from '@/configuration'
+import { FileHandle } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises';
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { constants } from 'node:fs';
+import { configuration } from '@/configuration';
 import * as z from 'zod';
 import { encodeBase64 } from '@/api/encryption';
 
 interface Settings {
-  onboardingCompleted: boolean
+  onboardingCompleted: boolean;
   // This ID is used as the actual database ID on the server
   // All machine operations use this ID
-  machineId?: string
-  machineIdConfirmedByServer?: boolean
-  daemonAutoStartWhenRunningHappy?: boolean
+  machineId?: string;
+  machineIdConfirmedByServer?: boolean;
+  daemonAutoStartWhenRunningHappy?: boolean;
 }
 
 const defaultSettings: Settings = {
-  onboardingCompleted: false
-}
+  onboardingCompleted: false,
+};
 
 /**
  * Daemon state persisted locally (different from API DaemonState)
@@ -40,23 +40,23 @@ export interface DaemonLocallyPersistedState {
 
 export async function readSettings(): Promise<Settings> {
   if (!existsSync(configuration.settingsFile)) {
-    return { ...defaultSettings }
+    return { ...defaultSettings };
   }
 
   try {
-    const content = await readFile(configuration.settingsFile, 'utf8')
-    return JSON.parse(content)
+    const content = await readFile(configuration.settingsFile, 'utf8');
+    return JSON.parse(content);
   } catch {
-    return { ...defaultSettings }
+    return { ...defaultSettings };
   }
 }
 
 export async function writeSettings(settings: Settings): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true });
   }
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
+  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2));
 }
 
 /**
@@ -68,8 +68,8 @@ export async function updateSettings(
   updater: (current: Settings) => Settings | Promise<Settings>
 ): Promise<Settings> {
   // Timing constants
-  const LOCK_RETRY_INTERVAL_MS = 100;  // How long to wait between lock attempts
-  const MAX_LOCK_ATTEMPTS = 50;        // Maximum number of attempts (5 seconds total)
+  const LOCK_RETRY_INTERVAL_MS = 100; // How long to wait between lock attempts
+  const MAX_LOCK_ATTEMPTS = 50; // Maximum number of attempts (5 seconds total)
   const STALE_LOCK_TIMEOUT_MS = 10000; // Consider lock stale after 10 seconds
 
   const lockFile = configuration.settingsFile + '.lock';
@@ -87,15 +87,15 @@ export async function updateSettings(
       if (err.code === 'EEXIST') {
         // Lock file exists, wait and retry
         attempts++;
-        await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS));
+        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_INTERVAL_MS));
 
         // Check for stale lock
         try {
           const stats = await stat(lockFile);
           if (Date.now() - stats.mtimeMs > STALE_LOCK_TIMEOUT_MS) {
-            await unlink(lockFile).catch(() => { });
+            await unlink(lockFile).catch(() => {});
           }
-        } catch { }
+        } catch {}
       } else {
         throw err;
       }
@@ -103,12 +103,14 @@ export async function updateSettings(
   }
 
   if (!fileHandle) {
-    throw new Error(`Failed to acquire settings lock after ${MAX_LOCK_ATTEMPTS * LOCK_RETRY_INTERVAL_MS / 1000} seconds`);
+    throw new Error(
+      `Failed to acquire settings lock after ${(MAX_LOCK_ATTEMPTS * LOCK_RETRY_INTERVAL_MS) / 1000} seconds`
+    );
   }
 
   try {
     // Read current settings with defaults
-    const current = await readSettings() || { ...defaultSettings };
+    const current = (await readSettings()) || { ...defaultSettings };
 
     // Apply update
     const updated = await updater(current);
@@ -126,7 +128,7 @@ export async function updateSettings(
   } finally {
     // Release lock
     await fileHandle.close();
-    await unlink(lockFile).catch(() => { }); // Remove lock file
+    await unlink(lockFile).catch(() => {}); // Remove lock file
   }
 }
 
@@ -137,35 +139,42 @@ export async function updateSettings(
 const credentialsSchema = z.object({
   token: z.string(),
   secret: z.string().base64().nullish(), // Legacy
-  encryption: z.object({
-    publicKey: z.string().base64(),
-    machineKey: z.string().base64()
-  }).nullish()
-})
+  encryption: z
+    .object({
+      publicKey: z.string().base64(),
+      machineKey: z.string().base64(),
+    })
+    .nullish(),
+});
 
 export type Credentials = {
-  token: string,
-  encryption: {
-    type: 'legacy', secret: Uint8Array
-  } | {
-    type: 'dataKey', publicKey: Uint8Array, machineKey: Uint8Array
-  }
-}
+  token: string;
+  encryption:
+    | {
+        type: 'legacy';
+        secret: Uint8Array;
+      }
+    | {
+        type: 'dataKey';
+        publicKey: Uint8Array;
+        machineKey: Uint8Array;
+      };
+};
 
 export async function readCredentials(): Promise<Credentials | null> {
   if (!existsSync(configuration.privateKeyFile)) {
-    return null
+    return null;
   }
   try {
-    const keyBase64 = (await readFile(configuration.privateKeyFile, 'utf8'));
+    const keyBase64 = await readFile(configuration.privateKeyFile, 'utf8');
     const credentials = credentialsSchema.parse(JSON.parse(keyBase64));
     if (credentials.secret) {
       return {
         token: credentials.token,
         encryption: {
           type: 'legacy',
-          secret: new Uint8Array(Buffer.from(credentials.secret, 'base64'))
-        }
+          secret: new Uint8Array(Buffer.from(credentials.secret, 'base64')),
+        },
       };
     } else if (credentials.encryption) {
       return {
@@ -173,34 +182,58 @@ export async function readCredentials(): Promise<Credentials | null> {
         encryption: {
           type: 'dataKey',
           publicKey: new Uint8Array(Buffer.from(credentials.encryption.publicKey, 'base64')),
-          machineKey: new Uint8Array(Buffer.from(credentials.encryption.machineKey, 'base64'))
-        }
-      }
+          machineKey: new Uint8Array(Buffer.from(credentials.encryption.machineKey, 'base64')),
+        },
+      };
     }
   } catch {
-    return null
+    return null;
   }
-  return null
+  return null;
 }
 
-export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
+export async function writeCredentialsLegacy(credentials: {
+  secret: Uint8Array;
+  token: string;
+}): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true });
   }
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
-    secret: encodeBase64(credentials.secret),
-    token: credentials.token
-  }, null, 2));
+  await writeFile(
+    configuration.privateKeyFile,
+    JSON.stringify(
+      {
+        secret: encodeBase64(credentials.secret),
+        token: credentials.token,
+      },
+      null,
+      2
+    )
+  );
 }
 
-export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
+export async function writeCredentialsDataKey(credentials: {
+  publicKey: Uint8Array;
+  machineKey: Uint8Array;
+  token: string;
+}): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true });
   }
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
-    encryption: { publicKey: encodeBase64(credentials.publicKey), machineKey: encodeBase64(credentials.machineKey) },
-    token: credentials.token
-  }, null, 2));
+  await writeFile(
+    configuration.privateKeyFile,
+    JSON.stringify(
+      {
+        encryption: {
+          publicKey: encodeBase64(credentials.publicKey),
+          machineKey: encodeBase64(credentials.machineKey),
+        },
+        token: credentials.token,
+      },
+      null,
+      2
+    )
+  );
 }
 
 export async function clearCredentials(): Promise<void> {
@@ -210,9 +243,9 @@ export async function clearCredentials(): Promise<void> {
 }
 
 export async function clearMachineId(): Promise<void> {
-  await updateSettings(settings => ({
+  await updateSettings((settings) => ({
     ...settings,
-    machineId: undefined
+    machineId: undefined,
   }));
 }
 
@@ -228,7 +261,10 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
     return JSON.parse(content) as DaemonLocallyPersistedState;
   } catch (error) {
     // State corrupted somehow :(
-    console.error(`[PERSISTENCE] Daemon state file corrupted: ${configuration.daemonStateFile}`, error);
+    console.error(
+      `[PERSISTENCE] Daemon state file corrupted: ${configuration.daemonStateFile}`,
+      error
+    );
     return null;
   }
 }
@@ -299,7 +335,7 @@ export async function acquireDaemonLock(
         return null;
       }
       const delayMs = attempt * delayIncrementMs;
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
   return null;
@@ -311,12 +347,11 @@ export async function acquireDaemonLock(
 export async function releaseDaemonLock(lockHandle: FileHandle): Promise<void> {
   try {
     await lockHandle.close();
-  } catch { }
+  } catch {}
 
   try {
     if (existsSync(configuration.daemonLockFile)) {
       unlinkSync(configuration.daemonLockFile);
     }
-  } catch { }
+  } catch {}
 }
-

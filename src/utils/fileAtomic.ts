@@ -8,11 +8,11 @@ import { randomUUID } from 'crypto';
 
 export async function atomicFileWrite(filePath: string, content: string): Promise<void> {
   const tmpFile = `${filePath}.${randomUUID()}.tmp`;
-  
+
   try {
     // Write to temp file
     await writeFile(tmpFile, content);
-    
+
     // Atomic rename (on POSIX systems)
     await rename(tmpFile, filePath);
   } catch (error) {
