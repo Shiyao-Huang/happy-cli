@@ -341,6 +341,10 @@ happy --to KIMI # 测试 Kimi
 - [快速开始指南](./GETTING_STARTED.md) - 快速入门教程
 - [CLI 集成指南](./CLI_INTEGRATION.md) - 高级用法
 - [实现总结](./IMPLEMENTATION_SUMMARY.md) - 技术细节
+- [API 配置指南](./API_CONFIGURATION.md) - 安全设置说明
+- [安全指南](./SECURITY.md) - 最佳实践和事件响应
+- [YOLO 模型切换功能](./YOLO_MODEL_SWITCH_FEATURE.md) - 新功能说明
+- [实现完成](./IMPLEMENTATION_COMPLETE.md) - 完整实现总结
 - [路线图](./roadmap.md) - 未来功能
 
 ---
