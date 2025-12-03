@@ -23,6 +23,7 @@ export async function claudeLocal(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
+    sessionTag?: string
 }) {
 
     // Start a watcher for to detect the session id
@@ -51,6 +52,10 @@ export async function claudeLocal(opts: {
                 resolvedSessionId = sessionId;
                 opts.onSessionFound(sessionId);
             }
+
+            // Try to match with provided sessionTag (if it matches the session ID structure or if we can infer it)
+            // Note: Claude might not use our sessionTag as the ID directly, but if we passed it as an argument maybe?
+            // Actually, we don't pass sessionTag to Claude CLI yet. Let's fix that below.
         }
     });
 
@@ -74,6 +79,7 @@ export async function claudeLocal(opts: {
     };
 
     // Spawn the process
+    let exitCode = 0;
     try {
         // Start the interactive process
         process.stdin.pause();
@@ -197,6 +203,7 @@ export async function claudeLocal(opts: {
                 // Ignore
             });
             child.on('exit', (code, signal) => {
+                exitCode = code ?? 0;
                 if (signal === 'SIGTERM' && opts.abort.aborted) {
                     // Normal termination due to abort signal
                     r();
@@ -221,5 +228,5 @@ export async function claudeLocal(opts: {
     // Double check that session is correct
     //
 
-    return resolvedSessionId;
+    return exitCode;
 }

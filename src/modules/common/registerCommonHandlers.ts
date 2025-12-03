@@ -122,6 +122,7 @@ export interface SpawnSessionOptions {
     approvedNewDirectoryCreation?: boolean;
     agent?: 'claude' | 'codex';
     token?: string;
+    sessionTag?: string;
 }
 
 export type SpawnSessionResult =

@@ -295,6 +295,34 @@ export class CodexMcpClient {
         return this.sessionId;
     }
 
+    async sendArtifactUpdate(update: any): Promise<void> {
+        if (!this.connected) return;
+
+        try {
+            await this.client.notification({
+                method: 'happy/artifact-update',
+                params: update
+            });
+            logger.debug('[CodexMCP] Sent artifact update notification');
+        } catch (error) {
+            logger.debug('[CodexMCP] Failed to send artifact update notification:', error);
+        }
+    }
+
+    async sendTeamMessage(message: any): Promise<void> {
+        if (!this.connected) return;
+
+        try {
+            await this.client.notification({
+                method: 'happy/team-message',
+                params: message
+            });
+            logger.debug('[CodexMCP] Sent team message notification');
+        } catch (error) {
+            logger.debug('[CodexMCP] Failed to send team message notification:', error);
+        }
+    }
+
     async disconnect(): Promise<void> {
         if (!this.connected) return;
 
@@ -309,11 +337,11 @@ export class CodexMcpClient {
             logger.debug('[CodexMCP] client.close done');
         } catch (e) {
             logger.debug('[CodexMCP] Error closing client, attempting transport close directly', e);
-            try { 
+            try {
                 logger.debug('[CodexMCP] transport.close begin');
-                await this.transport?.close?.(); 
+                await this.transport?.close?.();
                 logger.debug('[CodexMCP] transport.close done');
-            } catch {}
+            } catch { }
         }
 
         // As a last resort, if child still exists, send SIGKILL
@@ -321,7 +349,7 @@ export class CodexMcpClient {
             try {
                 process.kill(pid, 0); // check if alive
                 logger.debug('[CodexMCP] Child still alive, sending SIGKILL');
-                try { process.kill(pid, 'SIGKILL'); } catch {}
+                try { process.kill(pid, 'SIGKILL'); } catch { }
             } catch { /* not running */ }
         }
 

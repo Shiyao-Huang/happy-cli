@@ -121,8 +121,9 @@ export class ApiSessionClient extends EventEmitter {
                     }
                 } else if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
-                        this.metadata = decrypt(this.encryptionKey, this.encryptionVariant,decodeBase64(data.body.metadata.value));
+                        this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(data.body.metadata.value));
                         this.metadataVersion = data.body.metadata.version;
+                        this.emit('metadata-update', this.metadata);
                     }
                     if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
                         this.agentState = data.body.agentState.value ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(data.body.agentState.value)) : null;
@@ -131,6 +132,24 @@ export class ApiSessionClient extends EventEmitter {
                 } else if (data.body.t === 'update-machine') {
                     // Session clients shouldn't receive machine updates - log warning
                     logger.debug(`[SOCKET] WARNING: Session client received unexpected machine update - ignoring`);
+                } else if (data.body.t === 'update-artifact' || data.body.t === 'new-artifact' || data.body.t === 'delete-artifact') {
+                    this.emit('artifact-update', data.body);
+                } else if (data.body.t === 'kv-batch-update') {
+                    for (const change of data.body.changes) {
+                        if (change.key.startsWith('team_messages.') && change.value) {
+                            try {
+                                // Value is Base64 encoded JSON string
+                                const decodedValue = new TextDecoder().decode(decodeBase64(change.value));
+                                const message = JSON.parse(decodedValue);
+                                this.emit('team-message', message);
+                            } catch (e) {
+                                logger.debug('[SOCKET] Failed to parse team message', e);
+                            }
+                        }
+                    }
+                } else if (data.body.t === 'team-message') {
+                    // Explicitly handle team-message update
+                    this.emit('team-message', data.body.message);
                 } else {
                     // If not a user message, it might be a permission response or other message type
                     this.emit('message', data.body);
@@ -150,6 +169,18 @@ export class ApiSessionClient extends EventEmitter {
         //
 
         this.socket.connect();
+    }
+
+    getEncryptionKey(): Uint8Array {
+        return this.encryptionKey;
+    }
+
+    getEncryptionVariant(): 'legacy' | 'dataKey' {
+        return this.encryptionVariant;
+    }
+
+    getMetadata(): Metadata | null {
+        return this.metadata;
     }
 
     onUserMessage(callback: (data: UserMessage) => void) {
@@ -313,6 +344,36 @@ export class ApiSessionClient extends EventEmitter {
         }
         logger.debugLargeJson('[SOCKET] Sending usage data:', usageReport)
         this.socket.emit('usage-report', usageReport);
+    }
+
+    /**
+     * Read an artifact
+     */
+    readArtifact(artifactId: string): Promise<any> {
+        return new Promise((resolve, reject) => {
+            this.socket.emit('artifact-read', { artifactId }, (response) => {
+                if (response.result === 'success') {
+                    resolve(response.artifact);
+                } else {
+                    reject(new Error(response.message || 'Failed to read artifact'));
+                }
+            });
+        });
+    }
+
+    /**
+     * Update an artifact
+     */
+    updateArtifact(artifactId: string, header?: { data: string; expectedVersion: number }, body?: { data: string; expectedVersion: number }): Promise<any> {
+        return new Promise((resolve, reject) => {
+            this.socket.emit('artifact-update', { artifactId, header, body }, (response) => {
+                if (response.result === 'success') {
+                    resolve(response);
+                } else {
+                    reject(new Error(response.message || 'Failed to update artifact'));
+                }
+            });
+        });
     }
 
     /**

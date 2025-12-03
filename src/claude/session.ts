@@ -13,6 +13,7 @@ export class Session {
     claudeArgs?: string[];  // Made mutable to allow filtering
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
+    readonly sessionTag?: string;
     readonly _onModeChange: (mode: 'local' | 'remote') => void;
 
     sessionId: string | null;
@@ -25,6 +26,7 @@ export class Session {
         path: string,
         logPath: string,
         sessionId: string | null,
+        sessionTag?: string,
         claudeEnvVars?: Record<string, string>,
         claudeArgs?: string[],
         mcpServers: Record<string, any>,
@@ -42,6 +44,7 @@ export class Session {
         this.claudeArgs = opts.claudeArgs;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
+        this.sessionTag = opts.sessionTag;
         this._onModeChange = opts.onModeChange;
 
         // Start keep alive
@@ -64,7 +67,7 @@ export class Session {
 
     onSessionFound = (sessionId: string) => {
         this.sessionId = sessionId;
-        
+
         // Update metadata with Claude Code session ID
         this.client.updateMetadata((metadata) => ({
             ...metadata,
@@ -87,7 +90,7 @@ export class Session {
      */
     consumeOneTimeFlags = (): void => {
         if (!this.claudeArgs) return;
-        
+
         const filteredArgs: string[] = [];
         for (let i = 0; i < this.claudeArgs.length; i++) {
             if (this.claudeArgs[i] === '--resume') {
@@ -111,7 +114,7 @@ export class Session {
                 filteredArgs.push(this.claudeArgs[i]);
             }
         }
-        
+
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
         logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
     }

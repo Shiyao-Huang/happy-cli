@@ -81,7 +81,7 @@ import { execFileSync } from 'node:child_process'
     // Handle codex command
     try {
       const { runCodex } = await import('@/codex/runCodex');
-      
+
       // Parse startedBy argument
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
@@ -89,11 +89,11 @@ import { execFileSync } from 'node:child_process'
           startedBy = args[++i] as 'daemon' | 'terminal';
         }
       }
-      
+
       const {
         credentials
       } = await authAndSetupMachineIfNeeded();
-      await runCodex({credentials, startedBy});
+      await runCodex({ credentials, startedBy });
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
@@ -269,8 +269,11 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
       } else if (arg === '--yolo') {
         // Shortcut for --dangerously-skip-permissions
         unknownArgs.push('--dangerously-skip-permissions')
+        options.permissionMode = 'bypassPermissions'
       } else if (arg === '--started-by') {
         options.startedBy = args[++i] as 'daemon' | 'terminal'
+      } else if (arg === '--session-tag') {
+        options.sessionTag = args[++i]
       } else {
         // Pass unknown arguments through to claude
         unknownArgs.push(arg)
@@ -316,7 +319,7 @@ ${chalk.bold('Happy supports ALL Claude options!')}
 ${chalk.gray('─'.repeat(60))}
 ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 `)
-      
+
       // Run claude --help and display its output
       // Use execFileSync with the current Node executable for cross-platform compatibility
       try {
@@ -325,7 +328,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
       }
-      
+
       process.exit(0)
     }
 

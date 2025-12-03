@@ -263,6 +263,10 @@ export async function startDaemon(): Promise<void> {
           '--started-by', 'daemon'
         ];
 
+        if (options.sessionTag) {
+          args.push('--session-tag', options.sessionTag);
+        }
+
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session
         const happyProcess = spawnHappyCLI(args, {

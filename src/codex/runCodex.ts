@@ -8,7 +8,7 @@ import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
-import { AgentState, Metadata } from '@/api/types';
+import { AgentState, Metadata, UpdateArtifactBody } from '@/api/types';
 import { initialMachineMetadata } from '@/daemon/run';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
@@ -27,6 +27,8 @@ import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
+import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -56,6 +58,234 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
     return true;
 }
 
+type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
+
+function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | undefined {
+    if (!rawMode) {
+        return undefined;
+    }
+    const normalized = rawMode.trim().toLowerCase();
+    switch (normalized) {
+        case 'default':
+            return 'default';
+        case 'read-only':
+        case 'readonly':
+            return 'read-only';
+        case 'safe-yolo':
+        case 'safe_yolo':
+        case 'safe':
+            return 'safe-yolo';
+        case 'yolo':
+        case 'bypass':
+        case 'bypasspermissions':
+            return 'yolo';
+        default:
+            logger.debug(`[Codex] Ignoring unknown HAPPY_PERMISSION_MODE value: ${rawMode}`);
+            return undefined;
+    }
+}
+
+type DesktopKanbanRole = {
+    id?: string;
+    title?: string;
+    summary?: string;
+    abilityBoundaries?: string[];
+    handoffProtocol?: string[];
+};
+
+type DesktopKanbanMember = {
+    sessionId?: string;
+    roleId?: string;
+    displayName?: string;
+};
+
+type DesktopKanbanAgreements = {
+    statusUpdates?: string;
+    handoffs?: string;
+    escalation?: string;
+    definitionOfDone?: string;
+};
+
+type DesktopKanbanState = {
+    room?: { id?: string; name?: string; description?: string };
+    board?: {
+        team?: {
+            members?: DesktopKanbanMember[];
+            roles?: DesktopKanbanRole[];
+            agreements?: DesktopKanbanAgreements;
+        }
+    };
+};
+
+async function fetchDesktopKanbanState(desktopMcpUrl: string, roomId: string): Promise<DesktopKanbanState | null> {
+    const client = new McpHttpClient(
+        { name: 'happy-cli-kanban-bootstrap', version: '1.0.0' },
+        { capabilities: { tools: {} } }
+    );
+    let transport: StreamableHTTPClientTransport | null = null;
+
+    try {
+        transport = new StreamableHTTPClientTransport(new URL(desktopMcpUrl));
+        await client.connect(transport);
+        const response: any = await client.callTool({
+            name: 'kanban_get_room_state',
+            arguments: { roomId }
+        });
+
+        const content = Array.isArray(response?.content) ? response.content : [];
+        const textEntry = content.find((entry: any) => entry?.type === 'text' && typeof entry.text === 'string');
+        if (!textEntry) {
+            return null;
+        }
+
+        try {
+            // The content is already an object if the server returns it as such, 
+            // but the MCP SDK types say content is text.
+            // If the server returns JSON directly, we might not need to parse it if the transport handles it.
+            // However, looking at kanbanServer.js:164, it uses #jsonResponse which likely stringifies it.
+            // Let's check if it's already an object first.
+            if (typeof textEntry.text === 'object') {
+                return textEntry.text;
+            }
+            return JSON.parse(textEntry.text as string);
+        } catch (error) {
+            logger.debug('[Codex] Failed to parse Kanban MCP payload', error);
+            // Fallback: maybe it's already the object?
+            return textEntry.text as unknown as DesktopKanbanState;
+        }
+    } catch (error) {
+        logger.debug('[Codex] Failed to fetch Kanban room state', error);
+        return null;
+    } finally {
+        try { await client.close(); } catch { }
+        try { await transport?.close?.(); } catch { }
+    }
+}
+
+function resolveRoleByIdOrLabel(
+    roles: DesktopKanbanRole[] | undefined,
+    needle?: string
+): DesktopKanbanRole | null {
+    if (!roles || !needle) {
+        return null;
+    }
+    const lowerNeedle = needle.toLowerCase();
+    return roles.find((role) =>
+        role.id?.toLowerCase() === lowerNeedle ||
+        role.title?.toLowerCase() === lowerNeedle
+    ) ?? null;
+}
+
+function resolveRoleTitle(roles: DesktopKanbanRole[] | undefined, roleId?: string): string | undefined {
+    const match = resolveRoleByIdOrLabel(roles, roleId);
+    return match?.title ?? roleId;
+}
+
+function formatKanbanInstructionBlock(
+    state: DesktopKanbanState,
+    opts: { roleId?: string; roleLabel?: string; memberId?: string }
+): string | null {
+    const team = state.board?.team;
+    if (!team) {
+        return null;
+    }
+
+    const roles = Array.isArray(team.roles) ? team.roles : [];
+    const roster = Array.isArray(team.members) ? team.members : [];
+    const agreements = team.agreements;
+    const roomName = state.room?.name || state.room?.id || 'team room';
+    const lines: string[] = [];
+
+    lines.push(`Team context for Kanban room "${roomName}".`);
+
+    if (roster.length) {
+        lines.push(`Roster (${roster.length} agents with tracked roles):`);
+        roster.slice(0, 5).forEach((member) => {
+            const label = member.displayName || member.sessionId || 'unknown member';
+            const roleTitle = resolveRoleTitle(roles, member.roleId) || member.roleId || 'unassigned';
+            const identifier = member.sessionId ? ` [${member.sessionId}]` : '';
+            lines.push(`- ${label}${identifier}: ${roleTitle}`);
+        });
+        if (roster.length > 5) {
+            lines.push(`- …${roster.length - 5} more not listed to save tokens.`);
+        }
+    }
+
+    if (roles.length) {
+        lines.push('Role charters and guardrails:');
+        roles.forEach((role) => {
+            const fragments: string[] = [];
+            if (role.summary) {
+                fragments.push(role.summary);
+            }
+            if (role.abilityBoundaries?.length) {
+                fragments.push(`Boundaries: ${role.abilityBoundaries.join('; ')}`);
+            }
+            if (role.handoffProtocol?.length) {
+                fragments.push(`Handoff: ${role.handoffProtocol.slice(0, 2).join('; ')}`);
+            }
+            lines.push(`- ${role.title || role.id}: ${fragments.join(' ')}`);
+        });
+    }
+
+    if (agreements) {
+        lines.push('Working agreements to respect:');
+        if (agreements.statusUpdates) {
+            lines.push(`- Status updates: ${agreements.statusUpdates}`);
+        }
+        if (agreements.handoffs) {
+            lines.push(`- Handoffs: ${agreements.handoffs}`);
+        }
+        if (agreements.escalation) {
+            lines.push(`- Escalation: ${agreements.escalation}`);
+        }
+        if (agreements.definitionOfDone) {
+            lines.push(`- Definition of Done: ${agreements.definitionOfDone}`);
+        }
+    }
+
+    const assignedMember = opts.memberId
+        ? roster.find((member) => member.sessionId === opts.memberId)
+        : null;
+    let resolvedRole =
+        resolveRoleByIdOrLabel(roles, opts.roleId) ||
+        resolveRoleByIdOrLabel(roles, opts.roleLabel) ||
+        resolveRoleByIdOrLabel(roles, assignedMember?.roleId);
+
+    if (!resolvedRole && opts.roleId) {
+        // Still note the role even if we lack metadata to expand it.
+        lines.push(`You are operating under role "${opts.roleId}". Use the roster above to stay aligned.`);
+    }
+
+    if (resolvedRole) {
+        const guardrails = resolvedRole.abilityBoundaries?.join('; ') || resolvedRole.summary;
+        lines.push(`You are operating as ${opts.roleLabel || resolvedRole.title || resolvedRole.id}. Guardrails: ${guardrails ?? 'Respect the charter above.'}`);
+        if (resolvedRole.handoffProtocol?.length) {
+            lines.push(`Preferred collaboration protocol: ${resolvedRole.handoffProtocol.join('; ')}`);
+        }
+    }
+
+    return lines.join('\n');
+}
+
+async function buildKanbanInstructionBlock(opts: {
+    desktopMcpUrl: string;
+    roomId: string;
+    roleId?: string;
+    roleLabel?: string;
+    memberId?: string;
+}): Promise<string | null> {
+    const state = await fetchDesktopKanbanState(opts.desktopMcpUrl, opts.roomId);
+    if (!state) {
+        return null;
+    }
+    return formatKanbanInstructionBlock(state, {
+        roleId: opts.roleId,
+        roleLabel: opts.roleLabel,
+        memberId: opts.memberId
+    });
+}
+
 /**
  * Main entry point for the codex command with ink UI
  */
@@ -63,7 +293,7 @@ export async function runCodex(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
 }): Promise<void> {
-    type PermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
+    type PermissionMode = CodexPermissionMode;
     interface EnhancedMode {
         permissionMode: PermissionMode;
         model?: string;
@@ -120,8 +350,49 @@ export async function runCodex(opts: {
         lifecycleStateSince: Date.now(),
         flavor: 'codex'
     };
+    if (process.env.HAPPY_AGENT_ROLE) {
+        metadata.role = process.env.HAPPY_AGENT_ROLE;
+    }
+    if (process.env.HAPPY_ROOM_ID) {
+        metadata.roomId = process.env.HAPPY_ROOM_ID;
+    }
+    if (process.env.HAPPY_ROOM_NAME) {
+        metadata.roomName = process.env.HAPPY_ROOM_NAME;
+        metadata.name = process.env.HAPPY_ROOM_NAME;
+    }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
     const session = api.sessionSyncClient(response);
+
+    const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
+        permissionMode: mode.permissionMode,
+        model: mode.model,
+    }));
+
+    session.on('artifact-update', (update: UpdateArtifactBody) => {
+        logger.debug('[Codex] Received artifact update, forwarding to agent');
+        client.sendArtifactUpdate(update);
+    });
+
+    session.on('team-message', (message: any) => {
+        logger.debug('[Codex] Received team message, injecting as user message');
+        const senderLabel = message.fromDisplayName || message.fromRole || message.fromSessionId || 'Unknown';
+        if (message.fromSessionId === session.sessionId) return;
+
+        const content = message.content || JSON.stringify(message);
+        const formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
+
+        messageQueue.push(formattedMessage, { permissionMode: 'default' });
+    });
+
+    session.on('metadata-update', (newMetadata: Metadata) => {
+        logger.debug('[Codex] Session metadata updated', newMetadata);
+        if (newMetadata.role && newMetadata.role !== metadata.role) {
+            logger.debug(`[Codex] Role changed to ${newMetadata.role}`);
+            const msg = `[System]: Your role has been updated to: ${newMetadata.role}. Please act accordingly.`;
+            messageQueue.push(msg, { permissionMode: 'default' });
+            metadata.role = newMetadata.role;
+        }
+    });
 
     // Always report to daemon if it exists
     try {
@@ -136,13 +407,11 @@ export async function runCodex(opts: {
         logger.debug('[START] Failed to report to daemon (may not be running):', error);
     }
 
-    const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
-        permissionMode: mode.permissionMode,
-        model: mode.model,
-    }));
-
     // Track current overrides to apply per message
-    let currentPermissionMode: PermissionMode | undefined = undefined;
+    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.HAPPY_PERMISSION_MODE);
+    if (currentPermissionMode) {
+        logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
+    }
     let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {
@@ -239,7 +508,7 @@ export async function runCodex(opts: {
                 storedSessionIdForResume = client.storeSessionForResume();
                 logger.debug('[Codex] Stored session for resume:', storedSessionIdForResume);
             }
-            
+
             abortController.abort();
             messageQueue.reset();
             permissionHandler.reset();
@@ -274,7 +543,7 @@ export async function runCodex(opts: {
                     archivedBy: 'cli',
                     archiveReason: 'User terminated'
                 }));
-                
+
                 // Send session death message
                 session.sendSessionDeath();
                 await session.flush();
@@ -533,15 +802,40 @@ export async function runCodex(opts: {
         }
     });
 
-    // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
-    const happyServer = await startHappyServer(session);
+    // Start Happy MCP server
+    const desktopMcpUrl = process.env.HAPPY_DESKTOP_MCP_URL;
+    const happyServer = await startHappyServer(api, session);
+    logger.debug(`[START] Happy MCP server started at ${happyServer.url}`);
     const bridgeCommand = join(projectPath(), 'bin', 'happy-mcp.mjs');
-    const mcpServers = {
+    const mcpServers: Record<string, { command: string; args: string[] }> = {
         happy: {
             command: bridgeCommand,
             args: ['--url', happyServer.url]
         }
-    } as const;
+    };
+    if (desktopMcpUrl) {
+        mcpServers['happy-desktop'] = {
+            command: bridgeCommand,
+            args: ['--url', desktopMcpUrl]
+        };
+    }
+    const happyRoomIdEnv = process.env.HAPPY_ROOM_ID;
+    const happyRoleLabelEnv = process.env.HAPPY_ROLE_LABEL;
+    const happyMemberIdEnv = process.env.HAPPY_MEMBER_ID;
+    let desktopKanbanInstructionBlock: string | null = null;
+    if (desktopMcpUrl && happyRoomIdEnv) {
+        try {
+            desktopKanbanInstructionBlock = await buildKanbanInstructionBlock({
+                desktopMcpUrl,
+                roomId: happyRoomIdEnv,
+                roleId: process.env.HAPPY_AGENT_ROLE,
+                roleLabel: happyRoleLabelEnv,
+                memberId: happyMemberIdEnv
+            });
+        } catch (error) {
+            logger.debug('[Codex] Failed to prepare Kanban instruction block', error);
+        }
+    }
     let first = true;
 
     try {
@@ -641,13 +935,35 @@ export async function runCodex(opts: {
                         'approval-policy': approvalPolicy,
                         config: { mcp_servers: mcpServers }
                     };
+
+                    const instructionBlocks: string[] = [];
+                    if (metadata.role) {
+                        instructionBlocks.push(
+                            `You are a ${metadata.role} in a collaborative team. Coordinate with other agents via the shared Kanban board and keep task statuses accurate.`
+                        );
+                    }
+                    if (desktopKanbanInstructionBlock) {
+                        instructionBlocks.push(desktopKanbanInstructionBlock);
+                    }
+                    if (desktopMcpUrl) {
+                        instructionBlocks.push(
+                            trimIdent(`The desktop has exposed a Kanban MCP server named "happy-desktop".
+- Use kanban_list_rooms to see available rooms.
+- Use kanban_get_room_state to inspect tasks for the active room.
+- Use kanban_create_task / kanban_update_task / kanban_assign_member to manage the board.
+Always reflect progress on the board and call these tools whenever you start or finish work.`)
+                        );
+                    }
+                    if (instructionBlocks.length > 0) {
+                        startConfig['base-instructions'] = instructionBlocks.join('\n\n');
+                    }
                     if (message.mode.model) {
                         startConfig.model = message.mode.model;
                     }
-                    
+
                     // Check for resume file from multiple sources
                     let resumeFile: string | null = null;
-                    
+
                     // Priority 1: Explicit resume file from mode change
                     if (nextExperimentalResume) {
                         resumeFile = nextExperimentalResume;
@@ -664,12 +980,12 @@ export async function runCodex(opts: {
                         }
                         storedSessionIdForResume = null; // consume once
                     }
-                    
+
                     // Apply resume file if found
                     if (resumeFile) {
                         (startConfig.config as any).experimental_resume = resumeFile;
                     }
-                    
+
                     await client.startSession(
                         startConfig,
                         { signal: abortController.signal }
@@ -686,7 +1002,7 @@ export async function runCodex(opts: {
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
-                
+
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });

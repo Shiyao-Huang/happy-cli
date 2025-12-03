@@ -65,6 +65,68 @@ export const UpdateMachineBodySchema = z.object({
 
 export type UpdateMachineBody = z.infer<typeof UpdateMachineBodySchema>
 
+export const UpdateArtifactBodySchema = z.object({
+  t: z.enum(['new-artifact', 'update-artifact', 'delete-artifact']),
+  artifactId: z.string(),
+  header: z.any().optional(),
+  body: z.any().optional(),
+  dataEncryptionKey: z.string().nullable().optional(),
+}).passthrough()
+
+export type UpdateArtifactBody = z.infer<typeof UpdateArtifactBodySchema>
+
+export type Artifact = {
+  id: string;
+  header: any;
+  body: any;
+  type: string;
+  createdAt: number;
+  updatedAt: number;
+  dataEncryptionKey?: string;
+  headerVersion?: number;
+  bodyVersion?: number;
+}
+
+export interface ArtifactUpdateRequest {
+  header?: string;  // Base64 encoded encrypted header
+  expectedHeaderVersion?: number;
+  body?: string;  // Base64 encoded encrypted body
+  expectedBodyVersion?: number;
+}
+
+export type ArtifactUpdateResponse =
+  | {
+    success: true;
+    headerVersion?: number;
+    bodyVersion?: number;
+  }
+  | {
+    success: false;
+    error: 'version-mismatch';
+    currentHeaderVersion?: number;
+    currentBodyVersion?: number;
+    currentHeader?: string;
+    currentBody?: string;
+  };
+
+export const KvBatchUpdateBodySchema = z.object({
+  t: z.literal('kv-batch-update'),
+  changes: z.array(z.object({
+    key: z.string(),
+    value: z.string().nullable()
+  }))
+})
+
+export type KvBatchUpdateBody = z.infer<typeof KvBatchUpdateBodySchema>
+
+export const TeamMessageUpdateBodySchema = z.object({
+  t: z.literal('team-message'),
+  teamId: z.string(),
+  message: z.any()
+})
+
+export type TeamMessageUpdateBody = z.infer<typeof TeamMessageUpdateBodySchema>
+
 /**
  * Update event from server
  */
@@ -75,6 +137,9 @@ export const UpdateSchema = z.object({
     UpdateBodySchema,
     UpdateSessionBodySchema,
     UpdateMachineBodySchema,
+    UpdateArtifactBodySchema,
+    KvBatchUpdateBodySchema,
+    TeamMessageUpdateBodySchema
   ]),
   createdAt: z.number()
 })
@@ -150,6 +215,12 @@ export interface ClientToServerEvents {
       [key: string]: number
     }
   }) => void
+  'artifact-read': (data: { artifactId: string }, callback: (response: any) => void) => void
+  'artifact-update': (data: {
+    artifactId: string;
+    header?: { data: string; expectedVersion: number };
+    body?: { data: string; expectedVersion: number };
+  }, callback: (response: any) => void) => void
 }
 
 /**
@@ -312,7 +383,11 @@ export type Metadata = {
   lifecycleStateSince?: number,
   archivedBy?: string,
   archiveReason?: string,
-  flavor?: string
+  flavor?: string,
+  role?: string,
+  teamId?: string,  // Team artifact ID if this session is part of a team
+  roomId?: string,
+  roomName?: string
 };
 
 export type AgentState = {

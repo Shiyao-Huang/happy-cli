@@ -1,9 +1,8 @@
 /**
  * Happy MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing a single tool `change_title`.
- * On invocation it forwards the tool call to an existing Happy HTTP MCP server
- * using the StreamableHTTPClientTransport.
+ * Minimal STDIO MCP server that bridges to a Happy HTTP MCP server.
+ * It dynamically discovers tools from the HTTP server and exposes them via STDIO.
  *
  * Configure the target HTTP MCP URL via env var `HAPPY_HTTP_MCP_URL` or
  * via CLI flag `--url <http://127.0.0.1:PORT>`.
@@ -42,20 +41,17 @@ async function main() {
     process.exit(2);
   }
 
-  let httpClient: Client | null = null;
+  // Connect to the HTTP MCP Server
+  const client = new Client(
+    { name: 'happy-stdio-bridge', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
 
-  async function ensureHttpClient(): Promise<Client> {
-    if (httpClient) return httpClient;
-    const client = new Client(
-      { name: 'happy-stdio-bridge', version: '1.0.0' },
-      { capabilities: { tools: {} } }
-    );
+  const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+  await client.connect(transport);
 
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
-    httpClient = client;
-    return client;
-  }
+  // Fetch available tools from the HTTP server
+  const toolsList = await client.listTools();
 
   // Create STDIO MCP server
   const server = new McpServer({
@@ -64,32 +60,30 @@ async function main() {
     description: 'STDIO bridge forwarding to Happy HTTP MCP',
   });
 
-  // Register the single tool and forward to HTTP MCP
-  server.registerTool(
-    'change_title',
-    {
-      description: 'Change the title of the current chat session',
-      title: 'Change Chat Title',
-      inputSchema: {
-        title: z.string().describe('The new title for the chat session'),
+  // Dynamically register all tools found on the HTTP server
+  for (const tool of toolsList.tools) {
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: tool.inputSchema as any,
       },
-    },
-    async (args) => {
-      try {
-        const client = await ensureHttpClient();
-        const response = await client.callTool({ name: 'change_title', arguments: args });
-        // Pass-through response from HTTP server
-        return response as any;
-      } catch (error) {
-        return {
-          content: [
-            { type: 'text', text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
-          ],
-          isError: true,
-        };
+      async (args: any) => {
+        try {
+          const response = await client.callTool({ name: tool.name, arguments: args });
+          // Pass-through response from HTTP server
+          return response as any;
+        } catch (error) {
+          return {
+            content: [
+              { type: 'text', text: `Failed to execute ${tool.name}: ${error instanceof Error ? error.message : String(error)}` },
+            ],
+            isError: true,
+          };
+        }
       }
-    }
-  );
+    );
+  }
 
   // Start STDIO transport
   const stdio = new StdioServerTransport();
@@ -104,4 +98,3 @@ main().catch((err) => {
     process.exit(1);
   }
 });
-

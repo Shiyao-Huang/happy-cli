@@ -288,6 +288,9 @@
     "@fastify/forwarded" "^3.0.0"
     ipaddr.js "^2.1.0"
 
+"@happy/shared-team-config@file:../shared/team-config":
+  version "0.1.0"
+
 "@humanfs/core@^0.19.1":
   version "0.19.1"
   resolved "https://registry.npmjs.org/@humanfs/core/-/core-0.19.1.tgz"

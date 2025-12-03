@@ -10,7 +10,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
-        onMessage: (message) => { 
+        onMessage: (message) => {
             // Block SDK summary messages - we generate our own
             if (message.type !== 'summary') {
                 session.client.sendClaudeSessionMessage(message)
@@ -91,7 +91,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // Launch
             logger.debug('[local]: launch');
             try {
-                await claudeLocal({
+                const exitCode = await claudeLocal({
                     path: session.path,
                     sessionId: session.sessionId,
                     onSessionFound: handleSessionStart,
@@ -101,7 +101,16 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     claudeArgs: session.claudeArgs,
                     mcpServers: session.mcpServers,
                     allowedTools: session.allowedTools,
+                    sessionTag: session.sessionTag,
                 });
+
+                // Check for error exit when resuming
+                if (exitCode !== 0 && session.sessionId) {
+                    logger.debug(`[local]: Process exited with code ${exitCode} while resuming session ${session.sessionId}. Clearing session and retrying.`);
+                    session.clearSessionId();
+                    session.consumeOneTimeFlags();
+                    continue;
+                }
 
                 // Consume one-time Claude flags after spawn
                 // For example we don't want to pass --resume flag after first spawn
