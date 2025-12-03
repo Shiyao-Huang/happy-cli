@@ -11,6 +11,7 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
+import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
 
 export async function startHappyServer(api: any, client: ApiSessionClient) {
     // Handler that sends title updates via the client
@@ -386,72 +387,24 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
                 logger.debug('[happyMCP] Failed to fetch team artifact:', e);
             }
 
-            // Role definitions
-            const roleDefinitions: Record<string, any> = {
-                master: {
-                    title: 'Master / Orchestrator',
-                    responsibilities: [
-                        'Lead the team and coordinate all activities',
-                        'Analyze user requests and break them down into tasks',
-                        'Assign tasks to appropriate team members',
-                        'Monitor progress and resolve blockers',
-                        'Make final decisions on technical approaches',
-                        'Ensure deliverables meet requirements'
-                    ],
-                    boundaries: [
-                        'Focus on planning and coordination, not implementation',
-                        'Delegate coding tasks to Builder/Framer',
-                        'Review work but avoid micromanagement'
-                    ]
-                },
-                builder: {
-                    title: 'Builder / Backend Developer',
-                    responsibilities: [
-                        'Implement backend logic and APIs',
-                        'Design and optimize data structures',
-                        'Write server-side code',
-                        'Handle business logic implementation',
-                        'Report progress to Master',
-                        'Ask for clarification when needed'
-                    ],
-                    boundaries: [
-                        'Focus on backend implementation',
-                        'Coordinate with Framer for API contracts',
-                        'Wait for Master assignment before starting new work'
-                    ]
-                },
-                framer: {
-                    title: 'Framer / Frontend Developer',
-                    responsibilities: [
-                        'Implement UI/UX components',
-                        'Build user interfaces',
-                        'Handle client-side logic',
-                        'Ensure responsive design',
-                        'Report progress to Master',
-                        'Ask for design clarifications when needed'
-                    ],
-                    boundaries: [
-                        'Focus on frontend implementation',
-                        'Coordinate with Builder for API integration',
-                        'Wait for Master assignment before starting new work'
-                    ]
-                },
-                reviewer: {
-                    title: 'Reviewer / Quality Assurance',
-                    responsibilities: [
-                        'Review code for quality and standards',
-                        'Test implementations',
-                        'Provide constructive feedback',
-                        'Ensure best practices are followed',
-                        'Report findings to Master'
-                    ],
-                    boundaries: [
-                        'Focus on review, not implementation',
-                        'Provide feedback but don\'t rewrite code',
-                        'Work on assignments from Master'
-                    ]
-                }
-            };
+            // ... (existing imports)
+
+            // ... inside get_team_info ...
+
+            // Role definitions from shared config
+            const roleDefinitions: Record<string, any> = {};
+            TEAM_ROLE_LIBRARY.forEach((role: any) => {
+                roleDefinitions[role.id] = {
+                    title: role.title,
+                    responsibilities: role.responsibilities,
+                    boundaries: role.abilityBoundaries // Map abilityBoundaries to boundaries
+                };
+            });
+
+            // Fallback for unknown roles
+            if (!roleDefinitions[myRole || '']) {
+                roleDefinitions[myRole || ''] = { title: 'Unassigned', responsibilities: [], boundaries: [] };
+            }
 
             // Collaboration protocols
             const protocols = {
