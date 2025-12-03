@@ -257,7 +257,9 @@ export class ApiClient {
       return {
         id: raw.id,
         header,
+        headerVersion: raw.headerVersion,
         body,
+        bodyVersion: raw.bodyVersion,
         type: raw.type || 'unknown',
         createdAt: raw.createdAt,
         updatedAt: raw.updatedAt

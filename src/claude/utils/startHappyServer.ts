@@ -566,9 +566,9 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
                 await api.updateArtifact(
                     teamId,
-                    null, // Keep header as is
+                    artifact.header, // Preserve existing header metadata
                     newBody,
-                    undefined, // expectedHeaderVersion
+                    artifact.headerVersion, // Use actual header version for optimistic locking
                     artifact.bodyVersion // Optimistic locking for body
                 );
             } catch (e) {
@@ -608,7 +608,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
         title: 'Update Task',
         inputSchema: {
             taskId: z.string().describe('The ID of the task to update'),
-            status: z.enum(['todo', 'in-progress', 'in_progress', 'review', 'done']).optional().describe('New status'),
+            status: z.enum(['todo', 'in-progress', 'review', 'done']).optional().describe('New status'),
             assigneeId: z.string().optional().describe('New assignee Session ID'),
             priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('New priority'),
             comment: z.string().optional().describe('Add a comment/note to the task'),
@@ -661,7 +661,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const task = board.tasks[taskIndex];
             const oldStatus = task.status;
 
-            const normalizedStatus = args.status === 'in_progress' ? 'in-progress' : args.status;
+            const normalizedStatus = args.status;
 
             if (isWorker) {
                 const assignedToSelf = task.assigneeId === sessionId;
@@ -710,10 +710,10 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
                 await api.updateArtifact(
                     teamId,
-                    null,
+                    artifact.header, // Preserve existing header metadata
                     newBody,
-                    undefined,
-                    artifact.bodyVersion
+                    artifact.headerVersion, // Use actual header version for optimistic locking
+                    artifact.bodyVersion // Optimistic locking for body
                 );
             } catch (e) {
                 return { content: [{ type: 'text', text: `Error: Failed to save task update. Someone else might have updated the board.` }], isError: true };
@@ -765,7 +765,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
         description: 'List all tasks for the current team.',
         title: 'List Tasks',
         inputSchema: {
-            status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Filter by status'),
+            status: z.enum(['todo', 'in-progress', 'review', 'done']).optional().describe('Filter by status'),
             assigneeId: z.string().optional().describe('Filter by assignee'),
         },
     }, async (args) => {
@@ -809,7 +809,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
             // Filter
             if (args.status) {
-                tasks = tasks.filter((t: any) => t.status === args.status);
+                const normalizedStatus = args.status;
+                tasks = tasks.filter((t: any) => t.status === normalizedStatus);
             }
             if (args.assigneeId) {
                 tasks = tasks.filter((t: any) => t.assigneeId === args.assigneeId);

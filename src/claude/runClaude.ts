@@ -475,6 +475,22 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     const recentMessages = await teamStorage.getRecentContext(teamId, 20);
                     const historyText = summarizeHistory(recentMessages);
 
+                    // Filter Kanban Board for Context Isolation
+                    let filteredBoard = { ...teamData };
+                    if (role !== 'master') {
+                        // Workers only see:
+                        // 1. Tasks assigned to them
+                        // 2. Unassigned tasks (todo)
+                        // 3. High-level team info (goal, members)
+                        if (filteredBoard.tasks && Array.isArray(filteredBoard.tasks)) {
+                            filteredBoard.tasks = filteredBoard.tasks.filter((t: any) =>
+                                t.assigneeId === response.id ||
+                                t.status === 'todo' ||
+                                !t.assigneeId
+                            );
+                        }
+                    }
+
                     let instructions = `
 1. Review the team agreements and your role responsibilities.
 2. Wait for instructions from the Master agent or User.
@@ -496,8 +512,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You have been assigned to this team with role: ${role}.
 
-📋 Team Context (Kanban Board):
-${JSON.stringify(teamData, null, 2)}
+📋 Team Context (Filtered for your Role):
+${JSON.stringify(filteredBoard, null, 2)}
 
 📜 Recent Chat History (Context):
 ${historyText}
