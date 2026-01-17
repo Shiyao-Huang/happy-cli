@@ -3,7 +3,7 @@ import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
-import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey } from './encryption';
+import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey } from './encryption';
 import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
 import chalk from 'chalk';
@@ -36,20 +36,31 @@ export class ApiClient {
     let dataEncryptionKey: Uint8Array | null = null;
     let encryptionKey: Uint8Array;
     let encryptionVariant: 'legacy' | 'dataKey';
-    if (this.credential.encryption.type === 'dataKey') {
 
-      // Generate new encryption key
+    if (this.credential.encryption.type === 'contentSecretKey') {
+      // New unified approach: use contentSecretKey for encryption (same as Kanban)
+      // Generate random data encryption key for this session
       encryptionKey = getRandomBytes(32);
       encryptionVariant = 'dataKey';
 
-      // Derive and encrypt data encryption key
-      // const contentDataKey = await deriveKey(this.secret, 'Happy EnCoder', ['content']);
-      // const publicKey = libsodiumPublicKeyFromSecretKey(contentDataKey);
+      // Encrypt the data encryption key using box encryption with contentSecretKey
+      // This matches how Kanban encrypts data: derive keypair from contentSecretKey
+      const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+      let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
+      dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
+      dataEncryptionKey.set([0], 0); // Version byte
+      dataEncryptionKey.set(encryptedDataKey, 1); // Encrypted data key
+    } else if (this.credential.encryption.type === 'dataKey') {
+      // Legacy dataKey mode (publicKey + machineKey)
+      encryptionKey = getRandomBytes(32);
+      encryptionVariant = 'dataKey';
+
       let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, this.credential.encryption.publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
       dataEncryptionKey.set(encryptedDataKey, 1); // Data key
     } else {
+      // Legacy mode
       encryptionKey = this.credential.encryption.secret;
       encryptionVariant = 'legacy';
     }
@@ -106,8 +117,20 @@ export class ApiClient {
     let dataEncryptionKey: Uint8Array | null = null;
     let encryptionKey: Uint8Array;
     let encryptionVariant: 'legacy' | 'dataKey';
-    if (this.credential.encryption.type === 'dataKey') {
-      // Encrypt data encryption key
+
+    if (this.credential.encryption.type === 'contentSecretKey') {
+      // New unified approach: use contentSecretKey for machine encryption
+      encryptionVariant = 'dataKey';
+      encryptionKey = this.credential.encryption.contentSecretKey;
+
+      // Encrypt using box encryption with derived public key
+      const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+      let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.contentSecretKey, publicKey);
+      dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
+      dataEncryptionKey.set([0], 0); // Version byte
+      dataEncryptionKey.set(encryptedDataKey, 1); // Encrypted data key
+    } else if (this.credential.encryption.type === 'dataKey') {
+      // Legacy dataKey mode
       encryptionVariant = 'dataKey';
       encryptionKey = this.credential.encryption.machineKey;
       let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.machineKey, this.credential.encryption.publicKey);
@@ -221,19 +244,14 @@ export class ApiClient {
       let encryptionVariant: 'legacy' | 'dataKey';
 
       if (raw.dataEncryptionKey) {
-        // Artifact has its own data key
+        // Artifact has its own data key - need to decrypt it
         const encryptedDataKey = decodeBase64(raw.dataEncryptionKey);
-        // Decrypt the data key using our private key (if we have one) or shared secret?
-        // Actually, for now let's assume standard encryption flow.
-        // If dataEncryptionKey is present, it's encrypted with the account public key?
-        // Or maybe it's just the raw key if we are the owner? 
-        // Let's look at getOrCreateSession for reference.
-        // It seems complex. For now, let's try to decrypt with the standard credential secret if it fails.
 
-        // Simplified: Use credential secret for now as most artifacts use legacy or simple data key
-        if (this.credential.encryption.type === 'dataKey') {
-          // For dataKey type, we use machineKey as a fallback for now, or we might need to fetch the specific key.
-          // This is a simplification.
+        if (this.credential.encryption.type === 'contentSecretKey') {
+          // Use contentSecretKey for decryption (same as Kanban)
+          encryptionKey = this.credential.encryption.contentSecretKey;
+          encryptionVariant = 'dataKey';
+        } else if (this.credential.encryption.type === 'dataKey') {
           encryptionKey = this.credential.encryption.machineKey;
           encryptionVariant = 'dataKey';
         } else {
@@ -241,7 +259,11 @@ export class ApiClient {
           encryptionVariant = 'legacy';
         }
       } else {
-        if (this.credential.encryption.type === 'dataKey') {
+        // No data encryption key, use credential directly
+        if (this.credential.encryption.type === 'contentSecretKey') {
+          encryptionKey = this.credential.encryption.contentSecretKey;
+          encryptionVariant = 'dataKey';
+        } else if (this.credential.encryption.type === 'dataKey') {
           encryptionKey = this.credential.encryption.machineKey;
           encryptionVariant = 'dataKey';
         } else {
@@ -252,7 +274,27 @@ export class ApiClient {
 
       // Decrypt header and body
       const header = raw.header ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.header)) : null;
-      const body = raw.body ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.body)) : null;
+
+      // Try to decrypt body, fallback to plaintext for team artifacts
+      let body = null;
+      if (raw.body) {
+        try {
+          body = decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.body));
+        } catch (decryptError) {
+          // If decryption fails, try to parse as plaintext (for team artifacts)
+          try {
+            const decoded = decodeBase64(raw.body);
+            const textDecoder = new TextDecoder();
+            const plainText = textDecoder.decode(decoded);
+            const parsed = JSON.parse(plainText);
+            body = parsed.body || null;
+            logger.debug(`[API] Successfully read plaintext body for artifact ${artifactId}`);
+          } catch (plaintextError) {
+            logger.debug(`[API] Failed to decrypt or parse body for artifact ${artifactId}:`, plaintextError);
+            body = null;
+          }
+        }
+      }
 
       return {
         id: raw.id,
@@ -266,7 +308,16 @@ export class ApiClient {
       };
 
     } catch (error) {
-      logger.debug(`[API] [ERROR] Failed to get artifact ${artifactId}:`, error);
+      if (axios.isAxiosError(error)) {
+        logger.debug(`[API] [ERROR] Failed to get artifact ${artifactId}:`, {
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          message: error.message
+        });
+      } else {
+        logger.debug(`[API] [ERROR] Failed to get artifact ${artifactId}:`, error);
+      }
       throw new Error(`Failed to get artifact: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -406,7 +457,10 @@ export class ApiClient {
         // Artifact has its own data key
         const encryptedDataKey = decodeBase64(raw.dataEncryptionKey);
 
-        if (this.credential.encryption.type === 'dataKey') {
+        if (this.credential.encryption.type === 'contentSecretKey') {
+          encryptionKey = this.credential.encryption.contentSecretKey;
+          encryptionVariant = 'dataKey';
+        } else if (this.credential.encryption.type === 'dataKey') {
           encryptionKey = this.credential.encryption.machineKey;
           encryptionVariant = 'dataKey';
         } else {
@@ -420,18 +474,16 @@ export class ApiClient {
           throw new Error('Failed to decrypt artifact data key');
         }
         artifactDataKey = decryptedKey;
-        // For artifact content, we use the decrypted data key. 
-        // Note: The 'encrypt' function expects a key and variant. 
-        // If we use a raw data key, we treat it as 'legacy' (raw key) or we need to adapt 'encrypt'.
-        // Looking at encryption.ts, 'encrypt' takes (key, variant, data).
-        // If variant is 'legacy', it uses sodium.crypto_secretbox_easy(data, nonce, key).
-        // So we can use artifactDataKey with 'legacy' variant effectively.
+        // Use the decrypted data key with 'legacy' variant for actual encryption
         encryptionKey = artifactDataKey;
         encryptionVariant = 'legacy';
 
       } else {
         // Legacy artifact without specific data key
-        if (this.credential.encryption.type === 'dataKey') {
+        if (this.credential.encryption.type === 'contentSecretKey') {
+          encryptionKey = this.credential.encryption.contentSecretKey;
+          encryptionVariant = 'dataKey';
+        } else if (this.credential.encryption.type === 'dataKey') {
           encryptionKey = this.credential.encryption.machineKey;
           encryptionVariant = 'dataKey';
         } else {

@@ -5,7 +5,7 @@ import tweetnacl from 'tweetnacl';
 import axios from 'axios';
 import { displayQRCode } from "./qrcode";
 import { delay } from "@/utils/time";
-import { writeCredentialsLegacy, readCredentials, updateSettings, Credentials, writeCredentialsDataKey } from "@/persistence";
+import { writeCredentialsLegacy, readCredentials, updateSettings, Credentials, writeCredentialsDataKey, writeCredentialsContentSecretKey } from "@/persistence";
 import { generateWebAuthUrl } from "@/api/webAuth";
 import { openBrowser } from "@/utils/browser";
 import { AuthSelector, AuthMethod } from "./ink/AuthSelector";
@@ -174,18 +174,18 @@ async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Cre
                             };
                         } else {
                             if (decrypted[0] === 0) {
+                                // V2 response: contentSecretKey from Kanban
+                                const contentSecretKey = decrypted.slice(1, 33);
                                 const credentials = {
-                                    publicKey: decrypted.slice(1, 33),
-                                    machineKey: randomBytes(32),
+                                    contentSecretKey: contentSecretKey,
                                     token: token
                                 }
-                                await writeCredentialsDataKey(credentials);
-                                console.log('\n\n✓ Authentication successful\n');
+                                await writeCredentialsContentSecretKey(credentials);
+                                console.log('\n\n✓ Authentication successful (V2 with contentSecretKey)\n');
                                 return {
                                     encryption: {
-                                        type: 'dataKey',
-                                        publicKey: credentials.publicKey,
-                                        machineKey: credentials.machineKey
+                                        type: 'contentSecretKey',
+                                        contentSecretKey: contentSecretKey
                                     },
                                     token: token
                                 };

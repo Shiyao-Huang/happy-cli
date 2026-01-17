@@ -138,8 +138,9 @@ const credentialsSchema = z.object({
   token: z.string(),
   secret: z.string().base64().nullish(), // Legacy
   encryption: z.object({
-    publicKey: z.string().base64(),
-    machineKey: z.string().base64()
+    publicKey: z.string().base64().optional(),
+    machineKey: z.string().base64().optional(),
+    contentSecretKey: z.string().base64().optional()
   }).nullish()
 })
 
@@ -149,6 +150,8 @@ export type Credentials = {
     type: 'legacy', secret: Uint8Array
   } | {
     type: 'dataKey', publicKey: Uint8Array, machineKey: Uint8Array
+  } | {
+    type: 'contentSecretKey', contentSecretKey: Uint8Array
   }
 }
 
@@ -168,12 +171,25 @@ export async function readCredentials(): Promise<Credentials | null> {
         }
       };
     } else if (credentials.encryption) {
-      return {
-        token: credentials.token,
-        encryption: {
-          type: 'dataKey',
-          publicKey: new Uint8Array(Buffer.from(credentials.encryption.publicKey, 'base64')),
-          machineKey: new Uint8Array(Buffer.from(credentials.encryption.machineKey, 'base64'))
+      // Check for contentSecretKey (new unified key approach)
+      if (credentials.encryption.contentSecretKey) {
+        return {
+          token: credentials.token,
+          encryption: {
+            type: 'contentSecretKey',
+            contentSecretKey: new Uint8Array(Buffer.from(credentials.encryption.contentSecretKey, 'base64'))
+          }
+        }
+      }
+      // Legacy dataKey approach (publicKey + machineKey)
+      if (credentials.encryption.publicKey && credentials.encryption.machineKey) {
+        return {
+          token: credentials.token,
+          encryption: {
+            type: 'dataKey',
+            publicKey: new Uint8Array(Buffer.from(credentials.encryption.publicKey, 'base64')),
+            machineKey: new Uint8Array(Buffer.from(credentials.encryption.machineKey, 'base64'))
+          }
         }
       }
     }
@@ -199,6 +215,16 @@ export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Arr
   }
   await writeFile(configuration.privateKeyFile, JSON.stringify({
     encryption: { publicKey: encodeBase64(credentials.publicKey), machineKey: encodeBase64(credentials.machineKey) },
+    token: credentials.token
+  }, null, 2));
+}
+
+export async function writeCredentialsContentSecretKey(credentials: { contentSecretKey: Uint8Array, token: string }): Promise<void> {
+  if (!existsSync(configuration.happyHomeDir)) {
+    await mkdir(configuration.happyHomeDir, { recursive: true })
+  }
+  await writeFile(configuration.privateKeyFile, JSON.stringify({
+    encryption: { contentSecretKey: encodeBase64(credentials.contentSecretKey) },
     token: credentials.token
   }, null, 2));
 }

@@ -123,6 +123,10 @@ export interface SpawnSessionOptions {
     agent?: 'claude' | 'codex';
     token?: string;
     sessionTag?: string;
+    teamId?: string;
+    role?: string;
+    sessionName?: string;
+    sessionPath?: string;
 }
 
 export type SpawnSessionResult =

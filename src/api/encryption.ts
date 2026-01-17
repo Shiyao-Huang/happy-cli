@@ -62,20 +62,46 @@ export function libsodiumPublicKeyFromSecretKey(seed: Uint8Array): Uint8Array {
 export function libsodiumEncryptForPublicKey(data: Uint8Array, recipientPublicKey: Uint8Array): Uint8Array {
   // Generate ephemeral keypair for this encryption
   const ephemeralKeyPair = tweetnacl.box.keyPair();
-  
+
   // Generate random nonce (24 bytes for box encryption)
   const nonce = getRandomBytes(tweetnacl.box.nonceLength);
-  
+
   // Encrypt the data using box (authenticated encryption)
   const encrypted = tweetnacl.box(data, nonce, recipientPublicKey, ephemeralKeyPair.secretKey);
-  
+
   // Bundle format: ephemeral public key (32 bytes) + nonce (24 bytes) + encrypted data
   const result = new Uint8Array(ephemeralKeyPair.publicKey.length + nonce.length + encrypted.length);
   result.set(ephemeralKeyPair.publicKey, 0);
   result.set(nonce, ephemeralKeyPair.publicKey.length);
   result.set(encrypted, ephemeralKeyPair.publicKey.length + nonce.length);
-  
+
   return result;
+}
+
+/**
+ * Decrypt data that was encrypted with libsodiumEncryptForPublicKey
+ * @param encryptedBundle - The encrypted bundle (ephemeral public key + nonce + encrypted data)
+ * @param recipientSecretKey - The recipient's secret key (derived from master secret via SHA-512)
+ * @returns The decrypted data or null if decryption fails
+ */
+export function libsodiumDecryptWithSecretKey(encryptedBundle: Uint8Array, recipientSecretKey: Uint8Array): Uint8Array | null {
+  // Bundle format: ephemeral public key (32 bytes) + nonce (24 bytes) + encrypted data
+  const ephemeralPublicKeyLength = tweetnacl.box.publicKeyLength; // 32
+  const nonceLength = tweetnacl.box.nonceLength; // 24
+
+  if (encryptedBundle.length < ephemeralPublicKeyLength + nonceLength) {
+    return null; // Invalid bundle
+  }
+
+  // Extract components
+  const ephemeralPublicKey = encryptedBundle.slice(0, ephemeralPublicKeyLength);
+  const nonce = encryptedBundle.slice(ephemeralPublicKeyLength, ephemeralPublicKeyLength + nonceLength);
+  const encrypted = encryptedBundle.slice(ephemeralPublicKeyLength + nonceLength);
+
+  // Decrypt using box.open
+  const decrypted = tweetnacl.box.open(encrypted, nonce, ephemeralPublicKey, recipientSecretKey);
+
+  return decrypted;
 }
 
 /**

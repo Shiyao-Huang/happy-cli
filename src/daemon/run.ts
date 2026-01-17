@@ -256,6 +256,24 @@ export async function startDaemon(): Promise<void> {
           }
         }
 
+        // Add team context to environment if provided
+        if (options.teamId) {
+          extraEnv.HAPPY_ROOM_ID = options.teamId;
+          logger.debug(`[DAEMON RUN] Setting HAPPY_ROOM_ID=${options.teamId}`);
+        }
+        if (options.role) {
+          extraEnv.HAPPY_AGENT_ROLE = options.role;
+          logger.debug(`[DAEMON RUN] Setting HAPPY_AGENT_ROLE=${options.role}`);
+        }
+        if (options.sessionName) {
+          extraEnv.HAPPY_SESSION_NAME = options.sessionName;
+          logger.debug(`[DAEMON RUN] Setting HAPPY_SESSION_NAME=${options.sessionName}`);
+        }
+        if (options.sessionPath) {
+          extraEnv.HAPPY_SESSION_PATH = options.sessionPath;
+          logger.debug(`[DAEMON RUN] Setting HAPPY_SESSION_PATH=${options.sessionPath}`);
+        }
+
         // Construct arguments for the CLI
         const args = [
           options.agent === 'claude' ? 'claude' : 'codex',

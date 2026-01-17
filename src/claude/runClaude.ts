@@ -105,6 +105,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug(`[START] Permission mode initialized from env: ${envPermissionMode}`);
         }
     }
+    if (!options.permissionMode && process.env.HAPPY_ROOM_ID) {
+        options.permissionMode = 'bypassPermissions';
+        logger.debug(`[START] Permission mode defaulted to bypass for team session ${process.env.HAPPY_ROOM_ID}`);
+    }
 
     // Log environment info at startup
     logger.debugLargeJson('[START] Happy process started', getEnvironmentInfo());
@@ -159,18 +163,27 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     };
     if (process.env.HAPPY_AGENT_ROLE) {
         metadata.role = process.env.HAPPY_AGENT_ROLE;
+        logger.debug(`[runClaude] Setting metadata.role from env: ${process.env.HAPPY_AGENT_ROLE}`);
     }
     const roomIdFromEnv = process.env.HAPPY_ROOM_ID;
     if (roomIdFromEnv) {
         metadata.teamId = roomIdFromEnv;
         metadata.roomId = roomIdFromEnv;
+        logger.debug(`[runClaude] Setting metadata.teamId from env: ${roomIdFromEnv}`);
     }
+    logger.debug(`[runClaude] Final metadata before session creation:`, { role: metadata.role, teamId: metadata.teamId });
     if (process.env.HAPPY_ROOM_NAME) {
         metadata.roomName = process.env.HAPPY_ROOM_NAME;
         metadata.name = process.env.HAPPY_ROOM_NAME;
     }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
     logger.debug(`Session created: ${response.id}`);
+    logger.debug(`[runClaude] Response metadata from server:`, { role: response.metadata?.role, teamId: response.metadata?.teamId });
+
+    // Create realtime session
+    const session = api.sessionSyncClient(response);
+
+    // Note: teamId/role from env vars are used internally, Kanban will update metadata
 
     // Always report to daemon if it exists
     try {
@@ -200,9 +213,6 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug('[start] Failed to update session metadata:', error);
         }
     });
-
-    // Create realtime session
-    const session = api.sessionSyncClient(response);
 
     // Create message queue for managing state updates
     const messageQueue = new MessageQueue2<EnhancedMode>(
@@ -262,13 +272,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
 
-    // Initialize role from session metadata
-    let currentRole: string | undefined = session.getMetadata()?.role;
+    // Initialize role from environment variables first, fallback to session metadata
+    logger.debug(`[runClaude] Initializing role - env: ${process.env.HAPPY_AGENT_ROLE}, metadata: ${session.getMetadata()?.role}`);
+    let currentRole: string | undefined = process.env.HAPPY_AGENT_ROLE || session.getMetadata()?.role;
     if (currentRole) {
         logger.debug(`[runClaude] Initialized with role: ${currentRole}`);
     }
 
-    let currentTeamId = session.getMetadata()?.teamId;
+    // Initialize teamId from environment variables first, fallback to session metadata
+    logger.debug(`[runClaude] Initializing teamId - env: ${process.env.HAPPY_ROOM_ID}, metadata: ${session.getMetadata()?.teamId}`);
+    let currentTeamId: string | undefined = process.env.HAPPY_ROOM_ID || session.getMetadata()?.teamId;
     let cleanupTeamHandling: (() => void) | undefined;
 
     // Function to setup/update team handling
@@ -356,7 +369,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         const isTaskUpdate = message.type === 'task-update';
 
                         const fromRole = message.fromRole;
-                        const isFromUser = !fromRole; // If no role, it's likely from the user
+                        const isFromUser = !fromRole || fromRole === 'user'; // No role OR explicit "user" role
                         const isFromMaster = fromRole === 'master';
 
                         const amIMaster = role === 'master';
@@ -575,6 +588,8 @@ ${instructions}
         }
     });
 
+    // Note: Team handling will be initialized AFTER loop starts (see below)
+
     session.onUserMessage((message) => {
 
         // Resolve permission mode from meta
@@ -736,12 +751,6 @@ ${instructions}
 
     // ...
 
-    // ===== Team Message Injection =====
-    // ===== Team Message Injection =====
-    // Initialize team handling - treat startup as a "new join" if we have a teamId
-    updateTeamHandling(currentTeamId, currentRole, !!currentTeamId);
-    // ===== End Team Message Injection =====
-
     // Setup signal handlers for graceful shutdown
     const cleanup = async () => {
         logger.debug('[START] Received termination signal, cleaning up...');
@@ -806,6 +815,45 @@ ${instructions}
             url: desktopMcpUrl,
         };
     }
+
+    // Initialize team handling after a delay to ensure loop is running
+    // This allows handshake and context injection to work properly
+    setTimeout(async () => {
+        if (currentTeamId && currentRole) {
+            logger.debug('[runClaude] Delayed team initialization starting...');
+
+            // Update session metadata with teamId/role/name/path
+            // This ensures metadata is encrypted with Happy-CLI's key (not Kanban's)
+            try {
+                const updateData: Record<string, any> = {
+                    teamId: currentTeamId,
+                    role: currentRole
+                };
+
+                // Preserve name and path from environment or existing metadata
+                const sessionName = process.env.HAPPY_SESSION_NAME;
+                if (sessionName) {
+                    updateData.name = sessionName;
+                }
+
+                const sessionPath = process.env.HAPPY_SESSION_PATH || workingDirectory;
+                if (sessionPath) {
+                    updateData.path = sessionPath;
+                }
+
+                session.updateMetadata((currentMetadata) => ({
+                    ...currentMetadata,
+                    ...updateData
+                }));
+                logger.debug(`[runClaude] Updated metadata:`, updateData);
+            } catch (error) {
+                logger.debug('[runClaude] Failed to update metadata with team info:', error);
+            }
+
+            // Initialize team handling
+            updateTeamHandling(currentTeamId, currentRole, true);
+        }
+    }, 3000); // 3 second delay to ensure loop is fully started
 
     // Create claude loop
     await loop({

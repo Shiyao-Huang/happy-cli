@@ -412,6 +412,10 @@ export async function runCodex(opts: {
     if (currentPermissionMode) {
         logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
     }
+    if (!currentPermissionMode && process.env.HAPPY_ROOM_ID) {
+        currentPermissionMode = 'yolo';
+        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.HAPPY_ROOM_ID}`);
+    }
     let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {

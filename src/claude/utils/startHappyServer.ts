@@ -825,6 +825,585 @@ Use the \`send_team_message\` tool to communicate with your team members.
         }
     });
 
+    // ========== 嵌套任务工具 (v2) ==========
+
+    // Create Subtask - 创建子任务
+    mcp.registerTool('create_subtask', {
+        description: 'Create a subtask under an existing task. Use this to break down complex tasks into smaller, manageable pieces. ONLY MASTER role can create subtasks.',
+        title: 'Create Subtask',
+        inputSchema: {
+            parentTaskId: z.string().describe('ID of the parent task'),
+            title: z.string().describe('Subtask title'),
+            description: z.string().optional().describe('Detailed subtask description'),
+            assigneeId: z.string().optional().describe('Session ID of the assignee (inherits from parent if not specified)'),
+            priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('Subtask priority (inherits from parent if not specified)'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team to create subtasks.' }], isError: true };
+            }
+
+            if (role !== 'master') {
+                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can create subtasks.' }], isError: true };
+            }
+
+            // Fetch artifact and parse board
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: `Error: Failed to fetch team artifact.` }], isError: true };
+            }
+
+            let board: any = { tasks: [], columns: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+            if (!board.tasks) board.tasks = [];
+
+            const parentTask = board.tasks.find((t: any) => t.id === args.parentTaskId);
+            if (!parentTask) {
+                return { content: [{ type: 'text', text: `Error: Parent task ${args.parentTaskId} not found.` }], isError: true };
+            }
+
+            const parentDepth = parentTask.depth ?? 0;
+            if (parentDepth >= 3) {
+                return { content: [{ type: 'text', text: 'Error: Maximum nesting depth (3) reached.' }], isError: true };
+            }
+
+            const subtaskId = randomUUID();
+            const subtask = {
+                id: subtaskId,
+                title: args.title,
+                description: args.description || '',
+                status: 'todo',
+                assigneeId: args.assigneeId ?? parentTask.assigneeId ?? null,
+                reporterId: client.sessionId,
+                priority: args.priority ?? parentTask.priority ?? 'medium',
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                parentTaskId: args.parentTaskId,
+                subtaskIds: [],
+                depth: parentDepth + 1,
+                statusPropagation: {
+                    autoCompleteParent: true,
+                    blockParentOnBlocked: true,
+                    cascadeDeleteSubtasks: false
+                }
+            };
+
+            board.tasks.push(subtask);
+            parentTask.subtaskIds = parentTask.subtaskIds || [];
+            parentTask.subtaskIds.push(subtaskId);
+            parentTask.updatedAt = Date.now();
+
+            // If parent is todo, move to in-progress
+            if (parentTask.status === 'todo') {
+                parentTask.status = 'in-progress';
+            }
+
+            // Save
+            try {
+                const newBody = { body: JSON.stringify(board) };
+                await api.updateArtifact(teamId, artifact.header, newBody, artifact.headerVersion, artifact.bodyVersion);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to save subtask.' }], isError: true };
+            }
+
+            // Notify team
+            try {
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `📌 Subtask created under "${parentTask.title}":\n• ${subtask.title}\nAssignee: ${subtask.assigneeId || 'Unassigned'}`,
+                    type: 'task-update',
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: role,
+                    mentions: subtask.assigneeId ? [subtask.assigneeId] : []
+                });
+            } catch (e) { logger.debug('Failed to send subtask notification', e); }
+
+            return {
+                content: [{ type: 'text', text: `Subtask created successfully.\nID: ${subtaskId}\nParent: ${parentTask.title}\nDepth: ${subtask.depth}` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error creating subtask: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // List Subtasks - 列出子任务
+    mcp.registerTool('list_subtasks', {
+        description: 'List all subtasks of a given task.',
+        title: 'List Subtasks',
+        inputSchema: {
+            parentTaskId: z.string().describe('ID of the parent task'),
+            includeNested: z.boolean().optional().describe('Include deeply nested subtasks (default: false)'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
+            }
+
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to fetch team artifact.' }], isError: true };
+            }
+
+            let board: any = { tasks: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+
+            const parentTask = board.tasks?.find((t: any) => t.id === args.parentTaskId);
+            if (!parentTask) {
+                return { content: [{ type: 'text', text: `Task ${args.parentTaskId} not found.` }], isError: true };
+            }
+
+            let subtasks: any[] = [];
+            if (args.includeNested) {
+                // Recursively collect all subtasks
+                const collectSubtasks = (taskId: string) => {
+                    const task = board.tasks.find((t: any) => t.id === taskId);
+                    if (!task) return;
+                    task.subtaskIds?.forEach((stid: string) => {
+                        const st = board.tasks.find((t: any) => t.id === stid);
+                        if (st) {
+                            subtasks.push(st);
+                            collectSubtasks(stid);
+                        }
+                    });
+                };
+                collectSubtasks(args.parentTaskId);
+            } else {
+                // Direct children only
+                subtasks = board.tasks.filter((t: any) => parentTask.subtaskIds?.includes(t.id));
+            }
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify(subtasks, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error listing subtasks: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // Start Task - 开始执行任务（创建执行链接）
+    mcp.registerTool('start_task', {
+        description: 'Mark a task as actively being worked on by you. Creates an execution link between your session and the task.',
+        title: 'Start Task',
+        inputSchema: {
+            taskId: z.string().describe('ID of the task to start'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
+            }
+
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to fetch team artifact.' }], isError: true };
+            }
+
+            let board: any = { tasks: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+
+            const task = board.tasks?.find((t: any) => t.id === args.taskId);
+            if (!task) {
+                return { content: [{ type: 'text', text: `Task ${args.taskId} not found.` }], isError: true };
+            }
+
+            // Check if task is assigned to this session
+            if (task.assigneeId && task.assigneeId !== client.sessionId && role !== 'master') {
+                return { content: [{ type: 'text', text: `Error: Task is assigned to another session.` }], isError: true };
+            }
+
+            // Check if already has an active link from another session
+            const existingActive = task.executionLinks?.find((l: any) => l.status === 'active');
+            if (existingActive && existingActive.sessionId !== client.sessionId) {
+                return { content: [{ type: 'text', text: `Task is already being executed by session ${existingActive.sessionId.substring(0, 8)}...` }], isError: true };
+            }
+
+            // Add execution link
+            task.executionLinks = task.executionLinks || [];
+            task.executionLinks.push({
+                sessionId: client.sessionId,
+                linkedAt: Date.now(),
+                role: 'primary',
+                status: 'active'
+            });
+
+            if (task.status === 'todo') {
+                task.status = 'in-progress';
+            }
+            task.updatedAt = Date.now();
+
+            // Save
+            try {
+                const newBody = { body: JSON.stringify(board) };
+                await api.updateArtifact(teamId, artifact.header, newBody, artifact.headerVersion, artifact.bodyVersion);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to save task update.' }], isError: true };
+            }
+
+            return {
+                content: [{ type: 'text', text: `Started working on: "${task.title}"\nStatus: ${task.status}` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error starting task: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // Complete Task - 完成任务（触发状态传播）
+    mcp.registerTool('complete_task', {
+        description: 'Mark a task as complete. If all subtasks of a parent are done, the parent will automatically move to review.',
+        title: 'Complete Task',
+        inputSchema: {
+            taskId: z.string().describe('ID of the task to complete'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
+            }
+
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to fetch team artifact.' }], isError: true };
+            }
+
+            let board: any = { tasks: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+
+            const task = board.tasks?.find((t: any) => t.id === args.taskId);
+            if (!task) {
+                return { content: [{ type: 'text', text: `Task ${args.taskId} not found.` }], isError: true };
+            }
+
+            // Check for incomplete subtasks
+            if (task.subtaskIds?.length) {
+                const subtasks = board.tasks.filter((t: any) => task.subtaskIds.includes(t.id));
+                const incomplete = subtasks.filter((st: any) => st.status !== 'done');
+                if (incomplete.length > 0) {
+                    return {
+                        content: [{ type: 'text', text: `Cannot complete: ${incomplete.length} subtask(s) still pending:\n${incomplete.map((st: any) => `• ${st.title} (${st.status})`).join('\n')}` }],
+                        isError: true
+                    };
+                }
+            }
+
+            // Update execution link
+            const activeLink = task.executionLinks?.find((l: any) => l.sessionId === client.sessionId && l.status === 'active');
+            if (activeLink) {
+                activeLink.status = 'completed';
+            }
+
+            task.status = 'done';
+            task.updatedAt = Date.now();
+
+            const propagatedTasks: string[] = [args.taskId];
+
+            // Propagate to parent
+            const propagateToParent = (parentId: string) => {
+                const parent = board.tasks.find((t: any) => t.id === parentId);
+                if (!parent) return;
+
+                const subtasks = board.tasks.filter((t: any) => parent.subtaskIds?.includes(t.id));
+                const allDone = subtasks.every((st: any) => st.status === 'done');
+
+                if (allDone && parent.status !== 'done' && parent.status !== 'review') {
+                    parent.status = 'review';
+                    parent.updatedAt = Date.now();
+                    propagatedTasks.push(parentId);
+
+                    if (parent.parentTaskId) {
+                        propagateToParent(parent.parentTaskId);
+                    }
+                }
+            };
+
+            if (task.parentTaskId) {
+                propagateToParent(task.parentTaskId);
+            }
+
+            // Save
+            try {
+                const newBody = { body: JSON.stringify(board) };
+                await api.updateArtifact(teamId, artifact.header, newBody, artifact.headerVersion, artifact.bodyVersion);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to save task update.' }], isError: true };
+            }
+
+            // Notify team
+            try {
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `✅ Task completed: "${task.title}"${propagatedTasks.length > 1 ? `\n📊 Parent tasks updated: ${propagatedTasks.length - 1}` : ''}`,
+                    type: 'task-update',
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: role
+                });
+            } catch (e) { logger.debug('Failed to send completion notification', e); }
+
+            return {
+                content: [{ type: 'text', text: `Task "${task.title}" completed.\nPropagated to ${propagatedTasks.length - 1} parent task(s).` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error completing task: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // Report Blocker - 报告阻塞
+    mcp.registerTool('report_blocker', {
+        description: 'Report a blocker on a task. This will mark the task as blocked and notify the Master.',
+        title: 'Report Blocker',
+        inputSchema: {
+            taskId: z.string().describe('ID of the blocked task'),
+            type: z.enum(['dependency', 'question', 'resource', 'technical']).describe('Type of blocker'),
+            description: z.string().describe('Detailed description of the blocker'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
+            }
+
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to fetch team artifact.' }], isError: true };
+            }
+
+            let board: any = { tasks: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+
+            const task = board.tasks?.find((t: any) => t.id === args.taskId);
+            if (!task) {
+                return { content: [{ type: 'text', text: `Task ${args.taskId} not found.` }], isError: true };
+            }
+
+            const blockerId = randomUUID();
+            const blocker = {
+                id: blockerId,
+                type: args.type,
+                description: args.description,
+                raisedAt: Date.now(),
+                raisedBy: client.sessionId
+            };
+
+            task.blockers = task.blockers || [];
+            task.blockers.push(blocker);
+            task.status = 'blocked';
+            task.updatedAt = Date.now();
+
+            // Propagate hasBlockedChild to parents
+            const propagateBlocker = (parentId: string) => {
+                const parent = board.tasks.find((t: any) => t.id === parentId);
+                if (!parent) return;
+                parent.hasBlockedChild = true;
+                parent.updatedAt = Date.now();
+                if (parent.parentTaskId) {
+                    propagateBlocker(parent.parentTaskId);
+                }
+            };
+
+            if (task.parentTaskId) {
+                propagateBlocker(task.parentTaskId);
+            }
+
+            // Save
+            try {
+                const newBody = { body: JSON.stringify(board) };
+                await api.updateArtifact(teamId, artifact.header, newBody, artifact.headerVersion, artifact.bodyVersion);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to save blocker.' }], isError: true };
+            }
+
+            // Notify Master with URGENT priority
+            try {
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `🚨 BLOCKER REPORTED\nTask: "${task.title}"\nType: ${args.type}\nDescription: ${args.description}\n\n@master Please address this blocker.`,
+                    type: 'notification',
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: role,
+                    metadata: { priority: 'urgent', blockerType: args.type }
+                });
+            } catch (e) { logger.debug('Failed to send blocker notification', e); }
+
+            return {
+                content: [{ type: 'text', text: `Blocker reported on "${task.title}".\nBlocker ID: ${blockerId}\nMaster has been notified.` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error reporting blocker: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // Resolve Blocker - 解决阻塞
+    mcp.registerTool('resolve_blocker', {
+        description: 'Resolve a blocker on a task. ONLY MASTER role can resolve blockers.',
+        title: 'Resolve Blocker',
+        inputSchema: {
+            taskId: z.string().describe('ID of the task with the blocker'),
+            blockerId: z.string().describe('ID of the blocker to resolve'),
+            resolution: z.string().describe('How the blocker was resolved'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
+            }
+
+            if (role !== 'master') {
+                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can resolve blockers.' }], isError: true };
+            }
+
+            let artifact;
+            try {
+                artifact = await api.getArtifact(teamId);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to fetch team artifact.' }], isError: true };
+            }
+
+            let board: any = { tasks: [] };
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+            } else if (artifact.body) {
+                board = artifact.body;
+            }
+
+            const task = board.tasks?.find((t: any) => t.id === args.taskId);
+            if (!task) {
+                return { content: [{ type: 'text', text: `Task ${args.taskId} not found.` }], isError: true };
+            }
+
+            const blocker = task.blockers?.find((b: any) => b.id === args.blockerId);
+            if (!blocker) {
+                return { content: [{ type: 'text', text: `Blocker ${args.blockerId} not found.` }], isError: true };
+            }
+
+            blocker.resolvedAt = Date.now();
+            blocker.resolvedBy = client.sessionId;
+            blocker.resolution = args.resolution;
+
+            // Check if there are other unresolved blockers
+            const unresolvedBlockers = task.blockers?.filter((b: any) => !b.resolvedAt) || [];
+            if (unresolvedBlockers.length === 0) {
+                task.status = 'in-progress';
+            }
+            task.updatedAt = Date.now();
+
+            // Update parent hasBlockedChild flags
+            const updateParentBlockedStatus = (parentId: string) => {
+                const parent = board.tasks.find((t: any) => t.id === parentId);
+                if (!parent) return;
+
+                const subtasks = board.tasks.filter((t: any) => parent.subtaskIds?.includes(t.id));
+                const hasBlockedSubtask = subtasks.some((st: any) => st.status === 'blocked' || st.hasBlockedChild);
+
+                parent.hasBlockedChild = hasBlockedSubtask;
+                parent.updatedAt = Date.now();
+
+                if (parent.parentTaskId) {
+                    updateParentBlockedStatus(parent.parentTaskId);
+                }
+            };
+
+            if (task.parentTaskId) {
+                updateParentBlockedStatus(task.parentTaskId);
+            }
+
+            // Save
+            try {
+                const newBody = { body: JSON.stringify(board) };
+                await api.updateArtifact(teamId, artifact.header, newBody, artifact.headerVersion, artifact.bodyVersion);
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Error: Failed to save blocker resolution.' }], isError: true };
+            }
+
+            // Notify the original reporter
+            try {
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `✅ Blocker resolved on "${task.title}"\nResolution: ${args.resolution}\nTask is now: ${task.status}`,
+                    type: 'task-update',
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: role,
+                    mentions: blocker.raisedBy ? [blocker.raisedBy] : []
+                });
+            } catch (e) { logger.debug('Failed to send resolution notification', e); }
+
+            return {
+                content: [{ type: 'text', text: `Blocker resolved on "${task.title}".\nTask status: ${task.status}` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error resolving blocker: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== End 嵌套任务工具 ==========
+
     const transport = new StreamableHTTPServerTransport({
         // NOTE: Returning session id here will result in claude
         // sdk spawn to fail with `Invalid Request: Server already initialized`
@@ -856,7 +1435,21 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     return {
         url: baseUrl.toString(),
-        toolNames: ['change_title', 'send_team_message', 'get_team_info', 'create_task', 'update_task', 'list_tasks'],
+        toolNames: [
+            'change_title',
+            'send_team_message',
+            'get_team_info',
+            'create_task',
+            'update_task',
+            'list_tasks',
+            // 嵌套任务工具 (v2)
+            'create_subtask',
+            'list_subtasks',
+            'start_task',
+            'complete_task',
+            'report_blocker',
+            'resolve_blocker'
+        ],
         stop: () => {
             logger.debug('[happyMCP] Stopping server');
             mcp.close();
