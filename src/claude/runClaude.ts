@@ -474,38 +474,40 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 }
 
                 // 2. Inject Context (Team Artifact + Recent Messages)
+                // 2. Inject Context (Team Artifact + Recent Messages)
                 try {
-                    // Fetch Team Artifact
-                    const artifact = await api.getArtifact(teamId);
-                    const teamData = artifact.body;
-                    const teamName = typeof artifact.header === 'string' ? artifact.header : 'Team';
+                    let teamName = 'Team';
+                    let filteredBoard: any = { note: "Team board data currently unavailable." };
+
+                    // Fetch Team Artifact (Fault Tolerant)
+                    try {
+                        const artifact = await api.getArtifact(teamId);
+                        filteredBoard = artifact.body;
+                        teamName = typeof artifact.header === 'string' ? artifact.header : 'Team';
+                    } catch (fetchError) {
+                        logger.debug('[runClaude] Failed to fetch team artifact, proceeding with fallback context', fetchError);
+                    }
 
                     // Fetch Recent Messages (Context)
-                    // Try to get from local storage first, or maybe we should fetch from server if we want true history?
-                    // For now, let's assume local storage has some history if we've been here before.
-                    // If it's a fresh join on a new machine, we might miss history.
-                    // ideally we should have an API to fetch recent team messages.
-                    // But since we don't have that API handy in ApiClient yet (only sendTeamMessage), 
-                    // we rely on what we have or just the artifact.
-
-                    // Let's try to read local storage context
-                    const recentMessages = await teamStorage.getRecentContext(teamId, 20);
-                    const historyText = summarizeHistory(recentMessages);
+                    let historyText = '(No recent history available)';
+                    try {
+                        const recentMessages = await teamStorage.getRecentContext(teamId, 20);
+                        historyText = summarizeHistory(recentMessages);
+                    } catch (historyError) {
+                        logger.debug('[runClaude] Failed to fetch local history', historyError);
+                    }
 
                     // Filter Kanban Board for Context Isolation
-                    let filteredBoard = { ...teamData };
-                    if (role !== 'master') {
+                    if (role !== 'master' && filteredBoard.tasks && Array.isArray(filteredBoard.tasks)) {
                         // Workers only see:
                         // 1. Tasks assigned to them
                         // 2. Unassigned tasks (todo)
                         // 3. High-level team info (goal, members)
-                        if (filteredBoard.tasks && Array.isArray(filteredBoard.tasks)) {
-                            filteredBoard.tasks = filteredBoard.tasks.filter((t: any) =>
-                                t.assigneeId === response.id ||
-                                t.status === 'todo' ||
-                                !t.assigneeId
-                            );
-                        }
+                        filteredBoard.tasks = filteredBoard.tasks.filter((t: any) =>
+                            t.assigneeId === response.id ||
+                            t.status === 'todo' ||
+                            !t.assigneeId
+                        );
                     }
 
                     let instructions = `
@@ -559,7 +561,11 @@ ${instructions}
                     messageQueue.pushIsolateAndClear(contextMsg, enhancedMode);
                     logger.debug('[runClaude] Injected team context into queue (cleared previous context)');
                 } catch (e) {
-                    logger.debug('[runClaude] Failed to fetch/inject team context:', e);
+                    logger.debug('[runClaude] Failed to inject team context:', e);
+
+                    // Fallback: If everything above fails (e.g. fatal logic error), still trying to kick the agent
+                    const fallbackMsg = `[System] Critical: Failed to load detailed team context. However, you are active as role: ${role}. Please Start by calling 'list_tasks' to inspect the state.`;
+                    messageQueue.push(fallbackMsg, { permissionMode: 'default' });
                 }
             }
 
@@ -676,16 +682,21 @@ ${instructions}
         const specialCommand = parseSpecialCommand(message.content.text);
 
         const sessionMetadata = session.getMetadata() || {} as any;
-        const role = sessionMetadata.role;
 
         // Resolve permission mode - check message override first, then options
         const requestedMode = messagePermissionMode || options.permissionMode;
 
-        // Get role-based permissions
+        // Get role-based permissions - use currentRole (with env fallback) for permission checks
         const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
-            getRolePermissions(role, requestedMode);
+            getRolePermissions(currentRole, requestedMode);
 
-        const rolePrompt = generateRolePrompt(sessionMetadata);
+        // Generate role prompt - use currentRole and currentTeamId (with env fallback)
+        // This ensures team context is injected even if server metadata doesn't have teamId/role
+        const rolePrompt = generateRolePrompt({
+            ...sessionMetadata,
+            role: currentRole,
+            teamId: currentTeamId
+        });
 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');

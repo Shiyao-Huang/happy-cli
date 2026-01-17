@@ -355,6 +355,7 @@ export async function runCodex(opts: {
     }
     if (process.env.HAPPY_ROOM_ID) {
         metadata.roomId = process.env.HAPPY_ROOM_ID;
+        metadata.teamId = process.env.HAPPY_ROOM_ID; // Ensure teamId is set for startHappyServer tools
     }
     if (process.env.HAPPY_ROOM_NAME) {
         metadata.roomName = process.env.HAPPY_ROOM_NAME;
@@ -374,12 +375,24 @@ export async function runCodex(opts: {
     });
 
     session.on('team-message', (message: any) => {
+        // Filter out messages not for this team
+        if (metadata.teamId && message.teamId && message.teamId !== metadata.teamId) {
+            return;
+        }
+
         logger.debug('[Codex] Received team message, injecting as user message');
         const senderLabel = message.fromDisplayName || message.fromRole || message.fromSessionId || 'Unknown';
         if (message.fromSessionId === session.sessionId) return;
 
-        const content = message.content || JSON.stringify(message);
-        const formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
+        // Specialized handling for different message types
+        let formattedMessage = '';
+
+        if (message.type === 'task-update') {
+            formattedMessage = `[Team Notification] ${senderLabel}: ${message.content}`;
+        } else {
+            const content = message.content || JSON.stringify(message);
+            formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
+        }
 
         messageQueue.push(formattedMessage, { permissionMode: 'default' });
     });
@@ -840,6 +853,26 @@ export async function runCodex(opts: {
             logger.debug('[Codex] Failed to prepare Kanban instruction block', error);
         }
     }
+
+    //
+    // Auto-start Trigger for Team Roles
+    // Agents started by Daemon need a "kick" to start working, otherwise they wait for User Input forever.
+    //
+    if (metadata.teamId && metadata.role) {
+        logger.debug(`[Codex] Auto-starting agent with role: ${metadata.role}`);
+        const role = metadata.role;
+        let startInstruction = '';
+
+        if (role === 'master') {
+            startInstruction = "System: [AUTO-ACTIVATION] You have been activated as the team MASTER. Please immediately Check for any existing tasks or user requests, and coordinate the team accordingly. Start by calling 'list_tasks'.";
+        } else {
+            startInstruction = `System: [AUTO-ACTIVATION] You have been activated as ${role.toUpperCase()}. Please Check for any tasks assigned to you by calling 'list_tasks' and report your status.`;
+        }
+
+        // We push this message to the queue so it's processed as soon as the client connects
+        messageQueue.push(startInstruction, { permissionMode: 'default' });
+    }
+
     let first = true;
 
     try {
