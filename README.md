@@ -30,6 +30,50 @@ This will:
 - `happy daemon` – Manage background service
 - `happy doctor` – System diagnostics & troubleshooting
 
+## Daemon
+
+The daemon is a background service that enables remote control from the mobile app and handles team session spawning.
+
+### Starting the Daemon
+
+```bash
+# Start daemon with default server
+./bin/happy.mjs daemon start
+
+# Start daemon with custom server URL (for local development)
+HAPPY_SERVER_URL=http://localhost:3005 ./bin/happy.mjs daemon start
+
+# Check daemon status
+./bin/happy.mjs daemon status
+
+# Stop daemon
+./bin/happy.mjs daemon stop
+```
+
+### Daemon for Teams
+
+**Important**: The daemon must be running to create teams with auto-spawned agent sessions. When you create a team in the mobile app with spawned agents (e.g., Master, Builder, Framer), the daemon:
+
+1. Receives the spawn request from the mobile app
+2. Creates new Claude sessions with `teamId` and `role` in their metadata
+3. Sets environment variables (`HAPPY_ROOM_ID`, `HAPPY_AGENT_ROLE`) for team context
+4. Manages the lifecycle of spawned sessions
+
+### Daemon Logs
+
+Daemon logs are stored in `~/.happy/logs/` (or `$HAPPY_HOME_DIR/logs/`):
+- Format: `YYYY-MM-DD-HH-MM-SS-pid-PID-daemon.log`
+- Session logs: `YYYY-MM-DD-HH-MM-SS-pid-PID.log`
+
+View logs for debugging:
+```bash
+# View daemon logs
+tail -f ~/.happy/logs/*-daemon.log
+
+# View specific session logs
+tail -f ~/.happy/logs/2026-01-17-12-49-59-pid-20555.log
+```
+
 ## Options
 
 - `-h, --help` - Show help

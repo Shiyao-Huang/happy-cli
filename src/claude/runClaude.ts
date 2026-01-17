@@ -174,7 +174,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     logger.debug(`[runClaude] Final metadata before session creation:`, { role: metadata.role, teamId: metadata.teamId });
     if (process.env.HAPPY_ROOM_NAME) {
         metadata.roomName = process.env.HAPPY_ROOM_NAME;
-        metadata.name = process.env.HAPPY_ROOM_NAME;
+    }
+    // Priority: HAPPY_SESSION_NAME > HAPPY_ROOM_NAME
+    metadata.name = process.env.HAPPY_SESSION_NAME || process.env.HAPPY_ROOM_NAME;
+    if (metadata.name) {
+        logger.debug(`[runClaude] Setting metadata.name: ${metadata.name}`);
     }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
     logger.debug(`Session created: ${response.id}`);
