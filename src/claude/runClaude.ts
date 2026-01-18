@@ -376,42 +376,68 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         const isFromUser = !fromRole || fromRole === 'user'; // No role OR explicit "user" role
                         const isFromMaster = fromRole === 'master';
 
-                        const amIMaster = role === 'master';
-                        const amIWorker = ['builder', 'framer', 'reviewer'].includes(role || '');
+                        // Master roles coordinate the team and receive all relevant messages
+                        const masterRoles = ['master', 'orchestrator'];
+                        // Observer roles are read-only and only respond when mentioned
+                        const observerRoles = ['observer', 'scribe'];
+                        // All other roles are workers who respond to master and mentions
+
+                        const amIMaster = masterRoles.includes(role || '');
+                        const amIObserver = observerRoles.includes(role || '');
+                        const amIWorker = role && !amIMaster && !amIObserver;
 
                         // Master receives ALL messages to orchestrate the workflow.
+                        // Workers listen to Master, User, and Mentions.
+                        // STRICTLY IGNORE other workers unless mentioned.
+
+
+                        // 1. Self-filter: IGNORE messages from myself
+                        if (message.fromSessionId === response.id) {
+                            logger.debug(`[Team] Ignoring my own message`);
+                            return;
+                        }
+
+                        // Master receives relevant messages to orchestrate the workflow.
                         // Workers listen to Master, User, and Mentions.
                         // STRICTLY IGNORE other workers unless mentioned.
 
                         let shouldRespond = false;
 
                         if (amIMaster) {
-                            // Master sees everything and decides what to do
-                            // Master should also pay attention to task updates to monitor progress
-                            shouldRespond = true;
+                            // Master Logic:
+                            // 1. Respond to User (Highest Priority)
+                            // 2. Respond to mentions (High Priority)
+                            // 3. Respond to Urgent messages
+                            // 4. Respond to Task Updates (to monitor progress)
+
+                            if (isFromUser || isMentioned || isUrgent || isTaskUpdate) {
+                                shouldRespond = true;
+                            } else {
+                                // Ignore general chatter from workers not directed at Master
+                                shouldRespond = false;
+                            }
                         } else if (amIWorker) {
-                            // Workers logic:
+                            // Workers Logic:
                             // 1. Always respond if mentioned
                             // 2. Respond if message is from Master
-                            // 3. Respond if message is from User (no role)
-                            // 4. Respond if it is a task update (to keep context synced)
-                            // 5. IGNORE messages from other workers (builder, framer, reviewer) unless mentioned
+                            // 3. IGNORE User broadcast messages (Master handles them)
+                            // 4. IGNORE task updates implies no action needed, unless mentioned
+                            // 5. IGNORE messages from other workers unless mentioned
 
                             if (isMentioned) {
                                 shouldRespond = true;
                             } else if (isFromMaster) {
                                 shouldRespond = true;
-                            } else if (isFromUser) {
-                                shouldRespond = true;
-                            } else if (isTaskUpdate) {
-                                shouldRespond = true;
                             } else {
-                                // Message from another worker and NOT mentioned -> IGNORE
+                                // Message from User(broadcast), other worker, task-update etc. AND NOT mentioned -> IGNORE
                                 shouldRespond = false;
                             }
+                        } else if (amIObserver) {
+                            // Observer Logic: Read-only, only respond when directly mentioned or urgent
+                            shouldRespond = isMentioned || isUrgent;
                         } else {
-                            // Fallback for unassigned roles or others
-                            shouldRespond = isMentioned || isUrgent || isTaskUpdate;
+                            // Fallback for unassigned roles
+                            shouldRespond = isMentioned || isUrgent;
                         }
 
                         console.log(`[Team] Should respond? ${shouldRespond} (Role:${role}, From:${fromRole || 'User'}, Mentioned:${isMentioned})`);
@@ -422,20 +448,28 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                             // Format the message for injection
                             const formattedMessage = formatTeamMessage(message, teamId!, role!, isMentioned);
 
+                            // Generate role prompt to include in system prompt
+                            const sessionMetadataForTeamMsg = session.getMetadata() || {} as any;
+                            // Ensure we have role and teamId in metadata for generateRolePrompt
+                            if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
+                            if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
+                            const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg);
+                            const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
+
                             // Inject into message queue
                             const enhancedMode: EnhancedMode = {
                                 permissionMode: currentPermissionMode || 'default',
                                 model: currentModel,
                                 fallbackModel: currentFallbackModel,
                                 customSystemPrompt: currentCustomSystemPrompt,
-                                appendSystemPrompt: currentAppendSystemPrompt,
+                                appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForTeamMsg,
                                 allowedTools: currentAllowedTools,
-                                disallowedTools: currentDisallowedTools
+                                disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedToolsForMsg]
                             };
 
                             messageQueue.push(formattedMessage, enhancedMode);
                             console.log('[Team] ✅ Message injected into queue');
-                            logger.debug('[runClaude] Team message injected into queue');
+                            logger.debug('[runClaude] Team message injected into queue with role prompt');
                         } else {
                             logger.debug(`[runClaude] Team message received but not injecting (not relevant for this role)`);
                         }
@@ -474,56 +508,61 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 }
 
                 // 2. Inject Context (Team Artifact + Recent Messages)
+                // Even if artifact fetch fails, we must still send a kickstart message
+                let teamData: any = null;
+                let teamName = 'Team';
+                let historyText = '(No recent history)';
+
+                // Try to fetch team artifact (optional - may fail for new teams)
                 try {
-                    // Fetch Team Artifact
                     const artifact = await api.getArtifact(teamId);
-                    const teamData = artifact.body;
-                    const teamName = typeof artifact.header === 'string' ? artifact.header : 'Team';
+                    teamData = artifact.body;
+                    teamName = typeof artifact.header === 'string' ? artifact.header : 'Team';
+                    logger.debug('[runClaude] Successfully fetched team artifact');
+                } catch (e) {
+                    logger.debug('[runClaude] Team artifact not available (this is OK for new teams):', e);
+                }
 
-                    // Fetch Recent Messages (Context)
-                    // Try to get from local storage first, or maybe we should fetch from server if we want true history?
-                    // For now, let's assume local storage has some history if we've been here before.
-                    // If it's a fresh join on a new machine, we might miss history.
-                    // ideally we should have an API to fetch recent team messages.
-                    // But since we don't have that API handy in ApiClient yet (only sendTeamMessage), 
-                    // we rely on what we have or just the artifact.
-
-                    // Let's try to read local storage context
+                // Try to get recent messages from local storage
+                try {
                     const recentMessages = await teamStorage.getRecentContext(teamId, 20);
-                    const historyText = summarizeHistory(recentMessages);
+                    historyText = summarizeHistory(recentMessages);
+                } catch (e) {
+                    logger.debug('[runClaude] Failed to get recent messages:', e);
+                }
 
-                    // Filter Kanban Board for Context Isolation
-                    let filteredBoard = { ...teamData };
-                    if (role !== 'master') {
-                        // Workers only see:
-                        // 1. Tasks assigned to them
-                        // 2. Unassigned tasks (todo)
-                        // 3. High-level team info (goal, members)
-                        if (filteredBoard.tasks && Array.isArray(filteredBoard.tasks)) {
-                            filteredBoard.tasks = filteredBoard.tasks.filter((t: any) =>
-                                t.assigneeId === response.id ||
-                                t.status === 'todo' ||
-                                !t.assigneeId
-                            );
-                        }
+                // Filter Kanban Board for Context Isolation (only if we have data)
+                let filteredBoard = teamData ? { ...teamData } : { message: 'Team data not yet available. Wait for tasks from Master.' };
+                if (teamData && role !== 'master' && role !== 'orchestrator') {
+                    // Workers only see:
+                    // 1. Tasks assigned to them
+                    // 2. Unassigned tasks (todo)
+                    // 3. High-level team info (goal, members)
+                    if (filteredBoard.tasks && Array.isArray(filteredBoard.tasks)) {
+                        filteredBoard.tasks = filteredBoard.tasks.filter((t: any) =>
+                            t.assigneeId === response.id ||
+                            t.status === 'todo' ||
+                            !t.assigneeId
+                        );
                     }
+                }
 
-                    let instructions = `
+                let instructions = `
 1. Review the team agreements and your role responsibilities.
 2. Wait for instructions from the Master agent or User.
 3. Use the team chat for all project-related communication.`;
 
-                    if (role === 'master') {
-                        instructions = `
-1. 🚨 YOU ARE THE MASTER COORDINATOR.
+                if (role === 'master' || role === 'orchestrator') {
+                    instructions = `
+1. 🚨 YOU ARE THE TEAM COORDINATOR.
 2. CHECK the Kanban board above.
 3. IF the board is empty or has only a goal, you MUST call 'create_task' to break down the work.
 4. ASSIGN tasks to your team members (Builder, Framer, etc.).
 5. REPORT your plan to the team via 'send_team_message'.
 6. DO NOT WAIT. START NOW.`;
-                    }
+                }
 
-                    const contextMsg = `
+                const contextMsg = `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📢 TEAM ASSIGNMENT: ${teamName}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -540,27 +579,32 @@ ${instructions}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `.trim();
 
-                    // Calculate effective permissions for the injected message
-                    const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
-                        getRolePermissions(role, currentPermissionMode);
+                // Calculate effective permissions for the injected message
+                const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
+                    getRolePermissions(role, currentPermissionMode);
 
-                    const enhancedMode: EnhancedMode = {
-                        permissionMode: effectivePermissionMode,
-                        model: currentModel,
-                        fallbackModel: currentFallbackModel,
-                        customSystemPrompt: currentCustomSystemPrompt,
-                        appendSystemPrompt: currentAppendSystemPrompt,
-                        allowedTools: currentAllowedTools,
-                        disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedTools]
-                    };
+                // Generate role prompt for team context injection
+                const sessionMetadataForContext = session.getMetadata() || {} as any;
+                // Ensure we have role and teamId in metadata for generateRolePrompt
+                if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
+                if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext);
+                logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
-                    // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
-                    // This prevents context leakage from previous teams or sessions
-                    messageQueue.pushIsolateAndClear(contextMsg, enhancedMode);
-                    logger.debug('[runClaude] Injected team context into queue (cleared previous context)');
-                } catch (e) {
-                    logger.debug('[runClaude] Failed to fetch/inject team context:', e);
-                }
+                const enhancedMode: EnhancedMode = {
+                    permissionMode: effectivePermissionMode,
+                    model: currentModel,
+                    fallbackModel: currentFallbackModel,
+                    customSystemPrompt: currentCustomSystemPrompt,
+                    appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForContext,
+                    allowedTools: currentAllowedTools,
+                    disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedTools]
+                };
+
+                // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
+                // This prevents context leakage from previous teams or sessions
+                messageQueue.pushIsolateAndClear(contextMsg, enhancedMode);
+                logger.debug('[runClaude] Injected team context into queue (cleared previous context) with role prompt');
             }
 
         } else {

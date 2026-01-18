@@ -244,19 +244,40 @@ export class ApiClient {
       let encryptionVariant: 'legacy' | 'dataKey';
 
       if (raw.dataEncryptionKey) {
-        // Artifact has its own data key - need to decrypt it
+        // Artifact has its own data key - need to decrypt it first
         const encryptedDataKey = decodeBase64(raw.dataEncryptionKey);
 
+        // First, get the key to decrypt the dataEncryptionKey
+        let keyDecryptionKey: Uint8Array;
+        let keyDecryptionVariant: 'legacy' | 'dataKey';
+
         if (this.credential.encryption.type === 'contentSecretKey') {
-          // Use contentSecretKey for decryption (same as Kanban)
-          encryptionKey = this.credential.encryption.contentSecretKey;
-          encryptionVariant = 'dataKey';
+          keyDecryptionKey = this.credential.encryption.contentSecretKey;
+          keyDecryptionVariant = 'dataKey';
         } else if (this.credential.encryption.type === 'dataKey') {
-          encryptionKey = this.credential.encryption.machineKey;
-          encryptionVariant = 'dataKey';
+          keyDecryptionKey = this.credential.encryption.machineKey;
+          keyDecryptionVariant = 'dataKey';
         } else {
-          encryptionKey = this.credential.encryption.secret;
+          keyDecryptionKey = this.credential.encryption.secret;
+          keyDecryptionVariant = 'legacy';
+        }
+
+        // Decrypt the dataEncryptionKey to get the actual key for content
+        try {
+          const decryptedKey = decrypt(keyDecryptionKey, keyDecryptionVariant, encryptedDataKey);
+          // Convert to Uint8Array if it's a string
+          const artifactDataKey = typeof decryptedKey === 'string'
+            ? new TextEncoder().encode(decryptedKey)
+            : new Uint8Array(decryptedKey.buffer);
+          // Use the decrypted data key with 'legacy' variant for content decryption
+          encryptionKey = artifactDataKey;
           encryptionVariant = 'legacy';
+        } catch (keyDecryptError) {
+          // If dataEncryptionKey decryption fails, fall back to using credential key directly
+          // This handles cases where the key format might be different
+          logger.debug(`[API] Failed to decrypt dataEncryptionKey for artifact ${artifactId}, using credential key:`, keyDecryptError);
+          encryptionKey = keyDecryptionKey;
+          encryptionVariant = keyDecryptionVariant;
         }
       } else {
         // No data encryption key, use credential directly
@@ -287,7 +308,19 @@ export class ApiClient {
             const textDecoder = new TextDecoder();
             const plainText = textDecoder.decode(decoded);
             const parsed = JSON.parse(plainText);
-            body = parsed.body || null;
+            // parsed.body might be a JSON string (for team artifacts created by Kanban)
+            // that needs to be parsed again to get the actual object
+            let bodyContent = parsed.body || null;
+            if (typeof bodyContent === 'string') {
+              try {
+                bodyContent = JSON.parse(bodyContent);
+                logger.debug(`[API] Parsed nested JSON body for artifact ${artifactId}`);
+              } catch (nestedParseError) {
+                // Keep as string if not valid JSON
+                logger.debug(`[API] Body is string but not valid JSON, keeping as-is for artifact ${artifactId}`);
+              }
+            }
+            body = bodyContent;
             logger.debug(`[API] Successfully read plaintext body for artifact ${artifactId}`);
           } catch (plaintextError) {
             logger.debug(`[API] Failed to decrypt or parse body for artifact ${artifactId}:`, plaintextError);
