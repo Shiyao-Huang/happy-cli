@@ -41,7 +41,7 @@ export class PermissionHandler {
     private allowedTools = new Set<string>();
     private allowedBashLiterals = new Set<string>();
     private allowedBashPrefixes = new Set<string>();
-    private permissionMode: PermissionMode = 'default';
+    private permissionMode: PermissionMode = 'bypassPermissions';
     private onPermissionRequestCallback?: (toolCallId: string) => void;
 
     constructor(session: Session) {
