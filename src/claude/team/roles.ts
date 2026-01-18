@@ -90,12 +90,24 @@ export function generateRolePrompt(metadata: Metadata): string {
     
     // Add Next Step Templates
     prompt += `\n[NEXT STEP GUIDANCE]\n`;
-    if (roleKey === 'master') {
+
+    // Role category mapping for backward compatibility and new roles
+    const coordinationRoles = ['master', 'master-coordinator', 'orchestrator', 'project-manager'];
+    const implementationRoles = ['builder', 'framer', 'builder-/-executor', 'framing-engineer', 'implementer', 'architect', 'solution-architect'];
+    const reviewRoles = ['reviewer', 'reviewer-/-observer', 'qa-engineer', 'quality-assurance', 'observer'];
+
+    if (coordinationRoles.includes(roleKey)) {
+        // Coordination roles (Master, Orchestrator, PM)
         prompt += `To start, you SHOULD:\n1. Call 'list_tasks' to see current state.\n2. If empty or new request, call 'create_task' to break down work.\n3. Then 'send_team_message' to notify team.\n`;
-    } else if (['builder', 'framer'].includes(roleKey)) {
+    } else if (implementationRoles.includes(roleKey)) {
+        // Implementation roles (Builder, Framer, Architect, Implementer)
         prompt += `To start, you SHOULD:\n1. Call 'list_tasks' to find tasks assigned to you (or unassigned 'todo').\n2. Call 'update_task' to set status to 'in_progress'.\n3. Perform the work (edit files, run tests, etc.).\n4. Call 'update_task' to set status to 'done'.\n`;
-    } else if (roleKey === 'reviewer') {
+    } else if (reviewRoles.includes(roleKey)) {
+        // Review/QA roles (Reviewer, QA, Observer)
         prompt += `To start, you SHOULD:\n1. Call 'list_tasks' to find tasks in 'review' status.\n2. Read code using 'view_file'.\n3. Send feedback via 'send_team_message'.\n`;
+    } else {
+        // Default guidance for other roles (product, design, research, etc.)
+        prompt += `To start, you SHOULD:\n1. Call 'list_tasks' to find relevant work.\n2. Perform your role-specific responsibilities.\n3. Document your findings and decisions.\n`;
     }
     
     prompt += `\n[END TEAM CONTEXT]\n`;
