@@ -59,44 +59,34 @@ export const DOCUMENTATION_ROLES = [
 ];
 
 // =============================================================================
-// ROLE COLLABORATION MAP - Bidirectional Communication Design
+// ROLE COLLABORATION MAP - Unidirectional Workflow Design
 // =============================================================================
 //
 // Design Principles:
-// 1. Master/Orchestrator is the central coordinator that listens to ALL roles
-// 2. Roles in the same workflow can communicate BIDIRECTIONALLY for discussion
-// 3. This enables adaptive coordination - roles can negotiate and clarify
-// 4. @mention always works regardless of this map
+// 1. 单向工作流 - 防止消息循环
+// 2. Master/Orchestrator 是中央协调者，听所有角色汇报
+// 3. 工作角色只听上游，不听下游（防止循环）
+// 4. @mention 可以打破单向限制（在消息路由时检查）
 //
-// Communication Flow (bidirectional arrows ↔ indicate two-way discussion):
-//
-//   User ↔ Master ↔ [All Roles]
-//          ↓
-//   Framer ↔ Builder ↔ Reviewer ↔ QA
-//      ↑↓       ↑↓
-//   Architect ↔ Solution-Architect
+// Workflow (单向箭头 → ):
+//   User → Master → Framer → Builder → Reviewer → QA → Master
+//                      ↑
+//                   Architect (技术指导)
 //
 // =============================================================================
 
 export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
     // ===========================================
-    // COORDINATION (中央协调 - 听所有角色)
+    // COORDINATION (中央协调 - 听所有角色汇报)
     // ===========================================
-    // Master: 听 user 和所有团队成员的汇报与讨论
     'master': [
         'user',
-        // Implementation team
+        // 听所有角色的汇报（单向：角色 → Master）
         'framer', 'builder', 'implementer', 'architect', 'solution-architect',
-        // Review team
         'reviewer', 'qa-engineer', 'qa', 'observer',
-        // Research team
         'researcher', 'scout', 'ux-researcher', 'business-analyst',
-        // Product team
         'product-owner', 'product-designer', 'spec-writer',
-        // Design team
-        'ux-designer',
-        // Documentation team
-        'scribe', 'technical-writer'
+        'ux-designer', 'scribe', 'technical-writer'
     ],
     'orchestrator': [
         'user',
@@ -104,56 +94,50 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
         'reviewer', 'qa-engineer', 'qa', 'observer',
         'researcher', 'scout', 'ux-researcher', 'business-analyst',
         'product-owner', 'product-designer', 'spec-writer',
-        'ux-designer',
-        'scribe', 'technical-writer'
+        'ux-designer', 'scribe', 'technical-writer'
     ],
-    'project-manager': ['master', 'orchestrator', 'product-owner', 'architect', 'builder', 'reviewer'],
-    'product-owner': ['master', 'orchestrator', 'project-manager', 'product-designer', 'spec-writer', 'ux-researcher', 'business-analyst'],
+    'project-manager': ['master', 'orchestrator'],
+    'product-owner': ['master', 'orchestrator'],
 
     // ===========================================
-    // IMPLEMENTATION (双向协作 - 互相讨论)
+    // IMPLEMENTATION (单向：上游 → 下游)
     // ===========================================
-    // Framer ↔ Builder ↔ Architect 可以互相讨论设计方案
-    'framer': ['master', 'orchestrator', 'builder', 'architect', 'solution-architect', 'product-designer', 'spec-writer'],
-    'builder': ['master', 'orchestrator', 'framer', 'architect', 'solution-architect', 'reviewer', 'qa', 'qa-engineer', 'implementer'],
-    'implementer': ['master', 'orchestrator', 'framer', 'architect', 'solution-architect', 'reviewer', 'qa', 'qa-engineer', 'builder'],
-    'architect': ['master', 'orchestrator', 'framer', 'builder', 'implementer', 'solution-architect', 'reviewer'],
-    'solution-architect': ['master', 'orchestrator', 'architect', 'framer', 'builder', 'implementer'],
+    // Framer: 只听 Master/Orchestrator 的任务分配
+    'framer': ['master', 'orchestrator'],
+
+    // Builder: 听 Master 和 Framer（设计完成后接手）
+    'builder': ['master', 'orchestrator', 'framer'],
+    'implementer': ['master', 'orchestrator', 'framer'],
+
+    // Architect: 技术顾问，听 Master
+    'architect': ['master', 'orchestrator'],
+    'solution-architect': ['master', 'orchestrator', 'architect'],
 
     // ===========================================
-    // REVIEW/QA (双向协作 - 反馈与修复)
+    // REVIEW/QA (单向：实现 → 审查 → 测试)
     // ===========================================
-    // Reviewer ↔ Builder: 讨论代码问题和修复方案
-    // QA ↔ Builder: 讨论测试结果和bug修复
-    'reviewer': ['master', 'orchestrator', 'builder', 'implementer', 'architect', 'qa', 'qa-engineer'],
-    'qa-engineer': ['master', 'orchestrator', 'builder', 'implementer', 'reviewer', 'qa'],
-    'qa': ['master', 'orchestrator', 'builder', 'implementer', 'reviewer', 'qa-engineer'],
-    'observer': ['master', 'orchestrator', 'reviewer', 'qa'],
+    // Reviewer: 听 Builder 的代码提交
+    'reviewer': ['master', 'orchestrator', 'builder', 'implementer'],
+
+    // QA: 听 Reviewer 审查通过后
+    'qa-engineer': ['master', 'orchestrator', 'reviewer'],
+    'qa': ['master', 'orchestrator', 'reviewer'],
+
+    // Observer: 只读观察
+    'observer': ['master', 'orchestrator'],
 
     // ===========================================
-    // RESEARCH (支持角色 - 双向反馈)
+    // SUPPORT ROLES (只听协调者)
     // ===========================================
-    'researcher': ['master', 'orchestrator', 'scout', 'architect', 'framer'],
-    'scout': ['master', 'orchestrator', 'researcher', 'builder', 'framer'],
-    'ux-researcher': ['master', 'orchestrator', 'product-owner', 'product-designer', 'ux-designer'],
-    'business-analyst': ['master', 'orchestrator', 'product-owner', 'project-manager', 'spec-writer'],
-
-    // ===========================================
-    // PRODUCT (产品角色 - 双向协作)
-    // ===========================================
-    'product-designer': ['master', 'orchestrator', 'product-owner', 'ux-designer', 'framer', 'spec-writer'],
-    'spec-writer': ['master', 'orchestrator', 'product-owner', 'product-designer', 'framer', 'business-analyst'],
-
-    // ===========================================
-    // DESIGN (设计角色 - 双向反馈)
-    // ===========================================
-    'ux-designer': ['master', 'orchestrator', 'product-designer', 'ux-researcher', 'framer', 'builder'],
-
-    // ===========================================
-    // DOCUMENTATION (文档角色 - 收集信息)
-    // ===========================================
-    'scribe': ['master', 'orchestrator', 'builder', 'reviewer', 'architect'],
-    'technical-writer': ['master', 'orchestrator', 'builder', 'architect', 'spec-writer', 'scribe'],
+    'researcher': ['master', 'orchestrator'],
+    'scout': ['master', 'orchestrator'],
+    'ux-researcher': ['master', 'orchestrator'],
+    'business-analyst': ['master', 'orchestrator'],
+    'product-designer': ['master', 'orchestrator'],
+    'spec-writer': ['master', 'orchestrator'],
+    'ux-designer': ['master', 'orchestrator'],
+    'scribe': ['master', 'orchestrator'],
+    'technical-writer': ['master', 'orchestrator'],
 };
 
 /**
