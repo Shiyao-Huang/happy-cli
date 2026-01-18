@@ -24,7 +24,8 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
-import { getRolePermissions, generateRolePrompt } from './team/roles';
+import { getRolePermissions, generateRolePrompt, shouldListenTo, COORDINATION_ROLES } from './team/roles';
+import { DEFAULT_ROLES } from './team/roles.config';
 
 export interface StartOptions {
     model?: string
@@ -373,23 +374,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         const isTaskUpdate = message.type === 'task-update';
 
                         const fromRole = message.fromRole;
-                        const isFromUser = !fromRole || fromRole === 'user'; // No role OR explicit "user" role
-                        const isFromMaster = fromRole === 'master';
-
-                        // Master roles coordinate the team and receive all relevant messages
-                        const masterRoles = ['master', 'orchestrator'];
-                        // Observer roles are read-only and only respond when mentioned
-                        const observerRoles = ['observer', 'scribe'];
-                        // All other roles are workers who respond to master and mentions
-
-                        const amIMaster = masterRoles.includes(role || '');
-                        const amIObserver = observerRoles.includes(role || '');
-                        const amIWorker = role && !amIMaster && !amIObserver;
-
-                        // Master receives ALL messages to orchestrate the workflow.
-                        // Workers listen to Master, User, and Mentions.
-                        // STRICTLY IGNORE other workers unless mentioned.
-
+                        const isFromUser = !fromRole || fromRole === 'user';
 
                         // 1. Self-filter: IGNORE messages from myself
                         if (message.fromSessionId === response.id) {
@@ -397,53 +382,44 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                             return;
                         }
 
-                        // Master receives relevant messages to orchestrate the workflow.
-                        // Workers listen to Master, User, and Mentions.
-                        // STRICTLY IGNORE other workers unless mentioned.
+                        // =============================================================
+                        // NEW COLLABORATION MODEL: Peer-to-Peer Communication
+                        // =============================================================
+                        // Each role has a defined set of collaborators they listen to.
+                        // This removes the master bottleneck and enables direct teamwork.
+                        // =============================================================
 
                         let shouldRespond = false;
 
-                        if (amIMaster) {
-                            // Master Logic:
-                            // 1. Respond to User (Highest Priority)
-                            // 2. Respond to mentions (High Priority)
-                            // 3. Respond to Urgent messages
-                            // 4. Respond to Task Updates (to monitor progress)
-
-                            if (isFromUser || isMentioned || isUrgent || isTaskUpdate) {
-                                shouldRespond = true;
-                            } else {
-                                // Ignore general chatter from workers not directed at Master
-                                shouldRespond = false;
-                            }
-                        } else if (amIWorker) {
-                            // Workers Logic:
-                            // 1. Always respond if mentioned
-                            // 2. Respond if message is from Master
-                            // 3. IGNORE User broadcast messages (Master handles them)
-                            // 4. IGNORE task updates implies no action needed, unless mentioned
-                            // 5. IGNORE messages from other workers unless mentioned
-
-                            if (isMentioned) {
-                                shouldRespond = true;
-                            } else if (isFromMaster) {
-                                shouldRespond = true;
-                            } else {
-                                // Message from User(broadcast), other worker, task-update etc. AND NOT mentioned -> IGNORE
-                                shouldRespond = false;
-                            }
-                        } else if (amIObserver) {
-                            // Observer Logic: Read-only, only respond when directly mentioned or urgent
-                            shouldRespond = isMentioned || isUrgent;
-                        } else {
-                            // Fallback for unassigned roles
-                            shouldRespond = isMentioned || isUrgent;
+                        // Priority 1: Always respond if directly mentioned
+                        if (isMentioned) {
+                            shouldRespond = true;
+                            logger.debug(`[Team] Responding: directly mentioned`);
+                        }
+                        // Priority 2: Always respond to urgent messages
+                        else if (isUrgent) {
+                            shouldRespond = true;
+                            logger.debug(`[Team] Responding: urgent message`);
+                        }
+                        // Priority 3: Check role collaboration map
+                        else if (role && shouldListenTo(role, fromRole)) {
+                            shouldRespond = true;
+                            logger.debug(`[Team] Responding: ${role} listens to ${fromRole || 'user'}`);
+                        }
+                        // Priority 4: Coordination roles respond to task updates
+                        else if (isTaskUpdate && COORDINATION_ROLES.includes(role || '')) {
+                            shouldRespond = true;
+                            logger.debug(`[Team] Responding: coordinator receiving task update`);
+                        }
+                        // Otherwise: don't respond
+                        else {
+                            logger.debug(`[Team] Not responding: ${role} does not listen to ${fromRole || 'user'}`);
                         }
 
-                        console.log(`[Team] Should respond? ${shouldRespond} (Role:${role}, From:${fromRole || 'User'}, Mentioned:${isMentioned})`);
+                        console.log(`[Team] Should respond? ${shouldRespond} (Role:${role}, From:${fromRole || 'User'}, Mentioned:${isMentioned}, Collaborator:${role ? shouldListenTo(role, fromRole) : 'N/A'})`);
 
                         if (shouldRespond) {
-                            logger.debug(`[runClaude] Injecting team message (mentioned:${isMentioned}, urgent:${isUrgent}, fromMaster:${isFromMaster})`);
+                            logger.debug(`[runClaude] Injecting team message (mentioned:${isMentioned}, urgent:${isUrgent}, from:${fromRole || 'user'})`);
 
                             // Format the message for injection
                             const formattedMessage = formatTeamMessage(message, teamId!, role!, isMentioned);
@@ -489,22 +465,56 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (isNewJoin) {
                 logger.debug(`[runClaude] Performing handshake and context injection for team ${teamId}`);
 
-                // 1. Send Handshake
+                // 1. Send Handshake - Role-specific introduction
                 try {
+                    const roleDef = DEFAULT_ROLES[role!];
+                    const roleTitle = roleDef?.name || role;
+                    const roleResponsibilities = roleDef?.responsibilities?.slice(0, 3) || [];
+
+                    let introContent: string;
+
+                    if (role === 'master' || role === 'orchestrator') {
+                        // Master/Orchestrator: Announce leadership and request status
+                        introContent = `🎯 **${roleTitle}** reporting for duty!
+
+**My Role:** I will coordinate this team and manage task distribution.
+
+**Immediate Actions:**
+1. Review the project requirements
+2. Break down work into actionable tasks
+3. Assign tasks to team members
+
+📢 **Team Members:** Please report your status and availability. I will begin task assignment shortly.`;
+                    } else {
+                        // Other roles: Report availability and capabilities
+                        const responsibilitiesText = roleResponsibilities.length > 0
+                            ? roleResponsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
+                            : 'Ready to assist the team';
+
+                        introContent = `✅ **${roleTitle}** online and ready!
+
+**My Capabilities:**
+${responsibilitiesText}
+
+Awaiting task assignment from @master or @orchestrator.`;
+                    }
+
                     const handshakeMsg = {
                         id: randomUUID(),
                         teamId,
-                        content: `[System] Agent ${response.id} (Role: ${role}) is online and ready.`,
-                        type: 'system',
+                        content: introContent,
+                        type: 'message',  // Changed from 'system' to 'message' for visibility
                         timestamp: Date.now(),
                         fromSessionId: response.id,
                         fromRole: role,
-                        metadata: { type: 'handshake' }
+                        metadata: { type: 'handshake', roleTitle }
                     };
                     await api.sendTeamMessage(teamId, handshakeMsg);
                     logger.debug('[runClaude] Sent handshake message to team');
+                    console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
                 } catch (e) {
                     logger.debug('[runClaude] Failed to send handshake:', e);
+                    console.log(`[Team] ⚠️ Failed to send handshake for ${role}`);
                 }
 
                 // 2. Inject Context (Team Artifact + Recent Messages)
@@ -547,19 +557,43 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     }
                 }
 
-                let instructions = `
-1. Review the team agreements and your role responsibilities.
-2. Wait for instructions from the Master agent or User.
-3. Use the team chat for all project-related communication.`;
+                let instructions: string;
 
                 if (role === 'master' || role === 'orchestrator') {
                     instructions = `
-1. 🚨 YOU ARE THE TEAM COORDINATOR.
-2. CHECK the Kanban board above.
-3. IF the board is empty or has only a goal, you MUST call 'create_task' to break down the work.
-4. ASSIGN tasks to your team members (Builder, Framer, etc.).
-5. REPORT your plan to the team via 'send_team_message'.
-6. DO NOT WAIT. START NOW.`;
+🚨 **YOU ARE THE TEAM LEADER. TAKE CHARGE IMMEDIATELY.**
+
+**STEP 1: ASSESS THE SITUATION**
+- Review the Kanban board above
+- Check which team members are online (they will announce themselves)
+
+**STEP 2: CREATE TASKS (if board is empty)**
+- Use 'create_task' tool to create specific, actionable tasks
+- Assign each task to the appropriate role (builder, framer, reviewer, etc.)
+
+**STEP 3: COORDINATE THE TEAM**
+- Send a team message announcing the plan via 'send_team_message'
+- Monitor team members' progress
+- Resolve blockers and adjust assignments as needed
+
+**CRITICAL: DO NOT WAIT FOR INSTRUCTIONS. YOU ARE IN CHARGE. START NOW.**`;
+                } else {
+                    // Worker roles: clear instructions on collaboration
+                    instructions = `
+**YOUR ROLE: ${role?.toUpperCase()}**
+
+**HOW TO COLLABORATE:**
+1. Check the Kanban board for tasks assigned to you
+2. Update task status when you start/complete work using 'update_task'
+3. Communicate progress via 'send_team_message'
+4. Ask @master or @orchestrator if you need clarification
+
+**WHO YOU WORK WITH:**
+- Listen to: Master, Orchestrator, and your direct collaborators
+- Report to: Master/Orchestrator for task completion
+- Coordinate with: Related roles (see your collaboration map)
+
+**START:** Check the Kanban board for your assigned tasks.`;
                 }
 
                 const contextMsg = `

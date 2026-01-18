@@ -58,6 +58,138 @@ export const DOCUMENTATION_ROLES = [
     'spec-writer'
 ];
 
+// =============================================================================
+// ROLE COLLABORATION MAP - Bidirectional Communication Design
+// =============================================================================
+//
+// Design Principles:
+// 1. Master/Orchestrator is the central coordinator that listens to ALL roles
+// 2. Roles in the same workflow can communicate BIDIRECTIONALLY for discussion
+// 3. This enables adaptive coordination - roles can negotiate and clarify
+// 4. @mention always works regardless of this map
+//
+// Communication Flow (bidirectional arrows ↔ indicate two-way discussion):
+//
+//   User ↔ Master ↔ [All Roles]
+//          ↓
+//   Framer ↔ Builder ↔ Reviewer ↔ QA
+//      ↑↓       ↑↓
+//   Architect ↔ Solution-Architect
+//
+// =============================================================================
+
+export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
+    // ===========================================
+    // COORDINATION (中央协调 - 听所有角色)
+    // ===========================================
+    // Master: 听 user 和所有团队成员的汇报与讨论
+    'master': [
+        'user',
+        // Implementation team
+        'framer', 'builder', 'implementer', 'architect', 'solution-architect',
+        // Review team
+        'reviewer', 'qa-engineer', 'qa', 'observer',
+        // Research team
+        'researcher', 'scout', 'ux-researcher', 'business-analyst',
+        // Product team
+        'product-owner', 'product-designer', 'spec-writer',
+        // Design team
+        'ux-designer',
+        // Documentation team
+        'scribe', 'technical-writer'
+    ],
+    'orchestrator': [
+        'user',
+        'framer', 'builder', 'implementer', 'architect', 'solution-architect',
+        'reviewer', 'qa-engineer', 'qa', 'observer',
+        'researcher', 'scout', 'ux-researcher', 'business-analyst',
+        'product-owner', 'product-designer', 'spec-writer',
+        'ux-designer',
+        'scribe', 'technical-writer'
+    ],
+    'project-manager': ['master', 'orchestrator', 'product-owner', 'architect', 'builder', 'reviewer'],
+    'product-owner': ['master', 'orchestrator', 'project-manager', 'product-designer', 'spec-writer', 'ux-researcher', 'business-analyst'],
+
+    // ===========================================
+    // IMPLEMENTATION (双向协作 - 互相讨论)
+    // ===========================================
+    // Framer ↔ Builder ↔ Architect 可以互相讨论设计方案
+    'framer': ['master', 'orchestrator', 'builder', 'architect', 'solution-architect', 'product-designer', 'spec-writer'],
+    'builder': ['master', 'orchestrator', 'framer', 'architect', 'solution-architect', 'reviewer', 'qa', 'qa-engineer', 'implementer'],
+    'implementer': ['master', 'orchestrator', 'framer', 'architect', 'solution-architect', 'reviewer', 'qa', 'qa-engineer', 'builder'],
+    'architect': ['master', 'orchestrator', 'framer', 'builder', 'implementer', 'solution-architect', 'reviewer'],
+    'solution-architect': ['master', 'orchestrator', 'architect', 'framer', 'builder', 'implementer'],
+
+    // ===========================================
+    // REVIEW/QA (双向协作 - 反馈与修复)
+    // ===========================================
+    // Reviewer ↔ Builder: 讨论代码问题和修复方案
+    // QA ↔ Builder: 讨论测试结果和bug修复
+    'reviewer': ['master', 'orchestrator', 'builder', 'implementer', 'architect', 'qa', 'qa-engineer'],
+    'qa-engineer': ['master', 'orchestrator', 'builder', 'implementer', 'reviewer', 'qa'],
+    'qa': ['master', 'orchestrator', 'builder', 'implementer', 'reviewer', 'qa-engineer'],
+    'observer': ['master', 'orchestrator', 'reviewer', 'qa'],
+
+    // ===========================================
+    // RESEARCH (支持角色 - 双向反馈)
+    // ===========================================
+    'researcher': ['master', 'orchestrator', 'scout', 'architect', 'framer'],
+    'scout': ['master', 'orchestrator', 'researcher', 'builder', 'framer'],
+    'ux-researcher': ['master', 'orchestrator', 'product-owner', 'product-designer', 'ux-designer'],
+    'business-analyst': ['master', 'orchestrator', 'product-owner', 'project-manager', 'spec-writer'],
+
+    // ===========================================
+    // PRODUCT (产品角色 - 双向协作)
+    // ===========================================
+    'product-designer': ['master', 'orchestrator', 'product-owner', 'ux-designer', 'framer', 'spec-writer'],
+    'spec-writer': ['master', 'orchestrator', 'product-owner', 'product-designer', 'framer', 'business-analyst'],
+
+    // ===========================================
+    // DESIGN (设计角色 - 双向反馈)
+    // ===========================================
+    'ux-designer': ['master', 'orchestrator', 'product-designer', 'ux-researcher', 'framer', 'builder'],
+
+    // ===========================================
+    // DOCUMENTATION (文档角色 - 收集信息)
+    // ===========================================
+    'scribe': ['master', 'orchestrator', 'builder', 'reviewer', 'architect'],
+    'technical-writer': ['master', 'orchestrator', 'builder', 'architect', 'spec-writer', 'scribe'],
+};
+
+/**
+ * Get the roles that a given role should listen to for collaboration
+ * @param myRole The role to get collaborators for
+ * @returns Array of role names that this role should listen to
+ */
+export function getRoleCollaborators(myRole: string): string[] {
+    const collaborators = ROLE_COLLABORATION_MAP[myRole];
+    if (collaborators) {
+        return collaborators;
+    }
+    // Default: listen to coordination roles only
+    return ['master', 'orchestrator', 'user'];
+}
+
+/**
+ * Check if a role should respond to a message from another role
+ * @param myRole My role
+ * @param fromRole The role of the message sender
+ * @returns true if I should consider responding
+ */
+export function shouldListenTo(myRole: string, fromRole: string | undefined): boolean {
+    if (!fromRole || fromRole === 'user') {
+        // User messages: coordination roles always listen, others check their map
+        if (COORDINATION_ROLES.includes(myRole)) {
+            return true;
+        }
+        const collaborators = getRoleCollaborators(myRole);
+        return collaborators.includes('user');
+    }
+
+    const collaborators = getRoleCollaborators(myRole);
+    return collaborators.includes(fromRole);
+}
+
 export interface RolePermissions {
     permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     disallowedTools: string[];
