@@ -253,7 +253,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     mcp.registerTool('get_self_view', {
         description: [
             'See yourself: who you are, your context usage, your team, and your performance.',
-            'Combines identity (role, genome), context window status, and team pulse into one view.',
+            'Combines identity (role, genome), capabilities, behavior config, context window status, team pulse, tasks, and performance into one view.',
+            'Builds the self-reference triangle: who am I, what can I do, how am I doing.',
             'Call this at the start of each cycle to orient yourself before taking action.',
             'Available to ALL team members.',
         ].join(' '),
@@ -266,18 +267,30 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const teamId = meta?.teamId || meta?.roomId;
             const role = meta?.role || 'unknown';
             const sessionId = meta?.ahaSessionId || client.sessionId;
+            const specId = meta?.specId || null;
 
-            // Identity
+            // ── WHO AM I ──────────────────────────────────────────────────
             const genomeSpec = genomeSpecRef?.current;
             const identity = {
                 sessionId,
                 role,
+                specId,
                 genomeName: genomeSpec?.displayName || genomeSpec?.name || role,
                 genomeDescription: genomeSpec?.description || 'No genome loaded',
                 responsibilities: genomeSpec?.responsibilities || [],
+                capabilities: genomeSpec?.capabilities || [],
+                executionPlane: genomeSpec?.executionPlane || meta?.executionPlane || 'mainline',
             };
 
-            // Context
+            // Behavior & messaging DNA
+            const behavior = genomeSpec?.behavior;
+            const messaging = genomeSpec?.messaging;
+
+            // Protocol summary (first 5 items)
+            const protocol = (genomeSpec?.protocol || []).slice(0, 5);
+            const evalCriteria = genomeSpec?.evalCriteria || [];
+
+            // ── CONTEXT WINDOW ────────────────────────────────────────────
             let context: Record<string, unknown> = {};
             try {
                 const report = getContextStatusReport({
@@ -288,7 +301,49 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 context = report as unknown as Record<string, unknown>;
             } catch { context = { error: 'Could not read context status' }; }
 
-            // Team pulse
+            // ── HOW AM I DOING (genome-hub feedback) ──────────────────────
+            let performanceSection: string[] = [];
+            if (specId) {
+                try {
+                    const { fetchGenomeFeedbackData } = await import('@/claude/utils/fetchGenome');
+                    const feedbackRaw = await fetchGenomeFeedbackData(client.getAuthToken(), specId);
+                    if (feedbackRaw) {
+                        const feedback = JSON.parse(feedbackRaw) as {
+                            avgScore?: number;
+                            evaluationCount?: number;
+                            latestAction?: string;
+                            dimensions?: Record<string, number>;
+                            suggestions?: string[];
+                            recentBehaviorPatterns?: string[];
+                        };
+                        if (feedback.evaluationCount && feedback.evaluationCount > 0) {
+                            performanceSection.push(`[Performance Mirror]`);
+                            performanceSection.push(`  Evaluations: ${feedback.evaluationCount}`);
+                            if (feedback.avgScore != null) performanceSection.push(`  Avg Score: ${Math.round(feedback.avgScore)}/100`);
+                            if (feedback.latestAction) performanceSection.push(`  Latest Action: ${feedback.latestAction}`);
+                            if (feedback.dimensions) {
+                                const dims = Object.entries(feedback.dimensions)
+                                    .filter(([, v]) => typeof v === 'number')
+                                    .map(([k, v]) => `${k}=${Math.round(v as number)}`)
+                                    .join(', ');
+                                if (dims) performanceSection.push(`  Dimensions: ${dims}`);
+                            }
+                            const observations = [
+                                ...(feedback.recentBehaviorPatterns ?? []),
+                                ...(feedback.suggestions ?? []),
+                            ].slice(0, 3);
+                            if (observations.length > 0) {
+                                performanceSection.push(`  Observations:`);
+                                for (const obs of observations) {
+                                    performanceSection.push(`    - ${obs}`);
+                                }
+                            }
+                        }
+                    }
+                } catch { /* feedback fetch is best-effort */ }
+            }
+
+            // ── TEAM PULSE ────────────────────────────────────────────────
             let teamPulse: Array<Record<string, unknown>> = [];
             let teamSummary = 'No team';
             if (teamId) {
@@ -308,7 +363,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 } catch { teamSummary = 'Could not reach daemon for pulse'; }
             }
 
-            // My Tasks
+            // ── MY TASKS ──────────────────────────────────────────────────
             let myTaskLines: string[] = [];
             let peerTaskLines: string[] = [];
             try {
@@ -319,7 +374,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         const icon = task.status === 'in-progress' ? '🔨' : task.status === 'review' ? '👀' : '📋';
                         myTaskLines.push(`  ${icon} [${task.status}] ${task.title} (${task.id})`);
                     }
-                    // Peer Activity — in-progress tasks from other agents
                     const board = await taskManager.getBoard();
                     const otherInProgress = (board.tasks || []).filter(
                         (t: any) => t.status === 'in-progress' && t.assigneeId && t.assigneeId !== sessionId
@@ -332,7 +386,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 }
             } catch { /* non-critical */ }
 
-            // Score History
+            // ── LOCAL SCORE HISTORY ────────────────────────────────────────
             let scoreLines: string[] = [];
             try {
                 const scores = readScores();
@@ -346,26 +400,64 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 }
             } catch { /* non-critical */ }
 
-            // Format
+            // ── FORMAT OUTPUT ─────────────────────────────────────────────
             const lines: string[] = [
                 `═══ SELF VIEW ═══`,
                 ``,
-                `[Identity]`,
+                `[Who Am I]`,
                 `  Role: ${identity.role}`,
                 `  Genome: ${identity.genomeName}`,
                 `  Description: ${identity.genomeDescription}`,
-                identity.responsibilities.length > 0 ? `  Responsibilities: ${identity.responsibilities.join(', ')}` : '',
+                identity.specId ? `  Spec ID: ${identity.specId}` : '',
+                `  Execution Plane: ${identity.executionPlane}`,
+                identity.responsibilities.length > 0 ? `  Responsibilities: ${identity.responsibilities.join('; ')}` : '',
+                identity.capabilities.length > 0 ? `  Capabilities: ${identity.capabilities.join(', ')}` : '',
                 `  Session: ${identity.sessionId}`,
-                ``,
-                `[Context Window]`,
-                `  ${context.contextK ? `Used: ${context.contextK}K tokens` : JSON.stringify(context)}`,
-                context.contextWindowTokens ? `  Window: ${context.contextWindowTokens} tokens` : '',
-                context.percentUsed ? `  Usage: ${context.percentUsed}%` : '',
-                ``,
-                `[Team: ${teamId || 'none'}]`,
-                `  ${teamSummary}`,
             ].filter(Boolean);
 
+            // Behavior DNA
+            if (behavior || messaging) {
+                lines.push('', `[Behavior DNA]`);
+                if (behavior?.onIdle) lines.push(`  On Idle: ${behavior.onIdle}`);
+                if (behavior?.onBlocked) lines.push(`  On Blocked: ${behavior.onBlocked}`);
+                if (behavior?.canSpawnAgents != null) lines.push(`  Can Spawn Agents: ${behavior.canSpawnAgents}`);
+                if (behavior?.requireExplicitAssignment != null) lines.push(`  Require Explicit Assignment: ${behavior.requireExplicitAssignment}`);
+                if (messaging?.listenFrom) lines.push(`  Listen From: ${Array.isArray(messaging.listenFrom) ? messaging.listenFrom.join(', ') : messaging.listenFrom}`);
+                if (messaging?.replyMode) lines.push(`  Reply Mode: ${messaging.replyMode}`);
+                if (messaging?.receiveUserMessages != null) lines.push(`  Receive User Messages: ${messaging.receiveUserMessages}`);
+            }
+
+            // What I should do
+            if (protocol.length > 0 || evalCriteria.length > 0) {
+                lines.push('', `[What I Should Do]`);
+                if (protocol.length > 0) {
+                    lines.push(`  Protocol:`);
+                    for (const step of protocol) {
+                        lines.push(`    - ${step}`);
+                    }
+                    if ((genomeSpec?.protocol?.length ?? 0) > 5) {
+                        lines.push(`    ... (${(genomeSpec?.protocol?.length ?? 0) - 5} more)`);
+                    }
+                }
+                if (evalCriteria.length > 0) {
+                    lines.push(`  Eval Criteria: ${evalCriteria.join('; ')}`);
+                }
+            }
+
+            // Context window
+            lines.push('', `[Context Window]`);
+            lines.push(`  ${context.contextK ? `Used: ${context.contextK}K tokens` : JSON.stringify(context)}`);
+            if (context.contextWindowTokens) lines.push(`  Window: ${context.contextWindowTokens} tokens`);
+            if (context.percentUsed) lines.push(`  Usage: ${context.percentUsed}%`);
+
+            // Performance mirror (genome-hub)
+            if (performanceSection.length > 0) {
+                lines.push('');
+                lines.push(...performanceSection);
+            }
+
+            // Team
+            lines.push('', `[Team: ${teamId || 'none'}]`, `  ${teamSummary}`);
             for (const member of teamPulse) {
                 const isMe = member.sessionId === sessionId ? ' (YOU)' : '';
                 const icon = member.status === 'alive' ? '🟢' : member.status === 'suspect' ? '🟡' : '🔴';
@@ -373,7 +465,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 lines.push(`  ${icon} ${member.role}${isMe}: ${member.status} (${staleSec}s ago) [${member.runtimeType || '?'}]`);
             }
 
-            // My Tasks section
+            // My Tasks
             if (myTaskLines.length > 0) {
                 lines.push('', '[My Tasks]');
                 lines.push(...myTaskLines);
@@ -381,13 +473,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 lines.push('', '[My Tasks]', '  No tasks assigned');
             }
 
-            // Score History section
+            // Score History (local)
             if (scoreLines.length > 0) {
                 lines.push('', '[Score History]');
                 lines.push(...scoreLines);
             }
 
-            // Peer Activity section
+            // Peer Activity
             if (peerTaskLines.length > 0) {
                 lines.push('', '[Peer Activity]');
                 lines.push(...peerTaskLines);
