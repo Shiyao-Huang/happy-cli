@@ -24,8 +24,11 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
-import { getRolePermissions, generateRolePrompt, shouldListenTo, COORDINATION_ROLES } from './team/roles';
+import { getRolePermissions, generateRolePrompt, shouldListenTo, COORDINATION_ROLES, KanbanContext } from './team/roles';
 import { DEFAULT_ROLES } from './team/roles.config';
+import { TaskStateManager } from './utils/taskStateManager';
+import { StatusReporter, createStatusReporter } from './team/statusReporter';
+import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 
 export interface StartOptions {
     model?: string
@@ -289,6 +292,15 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentTeamId: string | undefined = process.env.HAPPY_ROOM_ID || session.getMetadata()?.teamId;
     let cleanupTeamHandling: (() => void) | undefined;
 
+    // TaskStateManager for Kanban context management
+    let taskStateManager: TaskStateManager | undefined;
+
+    // StatusReporter for automatic status updates to team
+    let statusReporter: StatusReporter | undefined;
+
+    // ApprovalWorkflow for Master/Coordinator roles
+    let approvalWorkflow: ApprovalWorkflow | undefined;
+
     // Function to setup/update team handling
     const updateTeamHandling = async (teamId: string | undefined, role: string | undefined, isNewJoin: boolean) => {
         // Cleanup existing listener if any
@@ -299,6 +311,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
         if (teamId && role) {
             logger.debug(`[runClaude] Session is part of team ${teamId} with role ${role}`);
+
+            // Initialize TaskStateManager for Kanban context
+            taskStateManager = new TaskStateManager(api, teamId, response.id, role);
+
+            // Set up state change callback for real-time updates
+            taskStateManager.setOnStateChange((change) => {
+                logger.debug(`[runClaude] Kanban state change: ${change.type} on ${change.taskTitle}`);
+            });
+
+            // Initialize StatusReporter for automatic status updates
+            statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
+            logger.debug(`[runClaude] StatusReporter initialized for role ${role}`);
+
+            // Initialize ApprovalWorkflow for coordination roles (master, orchestrator, team-lead)
+            if (COORDINATION_ROLES.includes(role)) {
+                approvalWorkflow = createApprovalWorkflow(api, taskStateManager, teamId, response.id, role);
+                logger.debug(`[runClaude] ApprovalWorkflow initialized for coordinator role ${role}`);
+            }
 
             // Initialize local storage
             const teamStorage = new TeamMessageStorage(process.cwd());
@@ -424,12 +454,23 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                             // Format the message for injection
                             const formattedMessage = formatTeamMessage(message, teamId!, role!, isMentioned);
 
+                            // Get Kanban context for role-aware prompt injection
+                            let kanbanContext: KanbanContext | undefined;
+                            if (taskStateManager) {
+                                try {
+                                    kanbanContext = await taskStateManager.getFilteredContext();
+                                    logger.debug(`[runClaude] Got Kanban context: ${kanbanContext.myTasks.length} my tasks, ${kanbanContext.availableTasks.length} available`);
+                                } catch (err) {
+                                    logger.debug('[runClaude] Failed to get Kanban context:', err);
+                                }
+                            }
+
                             // Generate role prompt to include in system prompt
                             const sessionMetadataForTeamMsg = session.getMetadata() || {} as any;
                             // Ensure we have role and teamId in metadata for generateRolePrompt
                             if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
                             if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
-                            const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg);
+                            const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext);
                             const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
 
                             // Inject into message queue
@@ -560,40 +601,82 @@ Awaiting task assignment from @master or @orchestrator.`;
                 let instructions: string;
 
                 if (role === 'master' || role === 'orchestrator') {
+                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
-🚨 **YOU ARE THE TEAM LEADER. TAKE CHARGE IMMEDIATELY.**
+<Coordinator_Instructions>
 
-**STEP 1: ASSESS THE SITUATION**
-- Review the Kanban board above
-- Check which team members are online (they will announce themselves)
+## Your Role: TEAM COORDINATOR
 
-**STEP 2: CREATE TASKS (if board is empty)**
-- Use 'create_task' tool to create specific, actionable tasks
-- Assign each task to the appropriate role (builder, framer, reviewer, etc.)
+You coordinate the team. You DO NOT do implementation work yourself.
 
-**STEP 3: COORDINATE THE TEAM**
-- Send a team message announcing the plan via 'send_team_message'
-- Monitor team members' progress
-- Resolve blockers and adjust assignments as needed
+## Phase 0 - Intent Gate (BLOCKING)
 
-**CRITICAL: DO NOT WAIT FOR INSTRUCTIONS. YOU ARE IN CHARGE. START NOW.**`;
+| Task Source | Valid? | Action |
+|-------------|--------|--------|
+| User instruction | ✅ YES | Follow immediately |
+| [MY TASKS] in context | ✅ YES | Manage/coordinate |
+| Local files (*.md, docs) | ❌ NO | Context only, NOT task source |
+
+**VIOLATION**: Reading files to "discover" work = Protocol breach.
+
+## Workflow (NON-NEGOTIABLE)
+
+1. **WAIT** for user to provide instruction
+2. **PLAN** by creating tasks via 'create_task' (only when asked)
+3. **ASSIGN** tasks to appropriate roles (builder, framer, reviewer)
+4. **ANNOUNCE** plan via 'send_team_message'
+5. **MONITOR** progress, resolve blockers
+
+## Anti-Patterns (BLOCKING)
+
+| Pattern | Problem |
+|---------|---------|
+| Reading files to find work | Inventing tasks |
+| Creating tasks without user request | Scope creep |
+| Starting implementation yourself | Wrong role |
+
+**NO USER INSTRUCTION = WAIT. DO NOT explore files for "tasks to do".**
+
+</Coordinator_Instructions>`;
                 } else {
-                    // Worker roles: clear instructions on collaboration
+                    // Worker instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
-**YOUR ROLE: ${role?.toUpperCase()}**
+<Worker_Instructions>
 
-**HOW TO COLLABORATE:**
-1. Check the Kanban board for tasks assigned to you
-2. Update task status when you start/complete work using 'update_task'
-3. Communicate progress via 'send_team_message'
-4. Ask @master or @orchestrator if you need clarification
+## Your Role: ${role?.toUpperCase()}
 
-**WHO YOU WORK WITH:**
-- Listen to: Master, Orchestrator, and your direct collaborators
-- Report to: Master/Orchestrator for task completion
-- Coordinate with: Related roles (see your collaboration map)
+You EXECUTE assigned tasks. You DO NOT self-assign work.
 
-**START:** Check the Kanban board for your assigned tasks.`;
+## Phase 0 - Intent Gate (BLOCKING)
+
+| Task Source | Valid? | Action |
+|-------------|--------|--------|
+| Master assignment | ✅ YES | Execute task |
+| [MY TASKS] in context | ✅ YES | Work on it |
+| Local files (*.md, docs) | ❌ NO | Context only |
+| Self-discovered "work" | ❌ NO | NEVER start |
+
+**VIOLATION**: Starting work from file contents = Protocol breach.
+
+## Workflow (NON-NEGOTIABLE)
+
+1. **CHECK** [MY TASKS] for assigned work
+2. **IF NO TASKS**: Send "🟢 [${role?.toUpperCase()}] Online and ready"
+3. **WAIT** for Master to assign task
+4. **EXECUTE**: update_task → in_progress → do work → done
+5. **REPORT**: send_team_message with completion status
+
+## Anti-Patterns (BLOCKING)
+
+| Pattern | Problem |
+|---------|---------|
+| "I noticed X in files..." | Inventing work |
+| Starting without assignment | No visibility |
+| Working on unassigned tasks | Duplicates effort |
+
+**NO ASSIGNED TASKS = ANNOUNCE + WAIT. DO NOT search for work.**
+
+</Worker_Instructions>`;
                 }
 
                 const contextMsg = `
@@ -617,12 +700,23 @@ ${instructions}
                 const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
                     getRolePermissions(role, currentPermissionMode);
 
+                // Get Kanban context for initial team join
+                let joinKanbanContext: KanbanContext | undefined;
+                if (taskStateManager) {
+                    try {
+                        joinKanbanContext = await taskStateManager.getFilteredContext();
+                        logger.debug(`[runClaude] Got initial Kanban context: ${joinKanbanContext.myTasks.length} my tasks, ${joinKanbanContext.availableTasks.length} available`);
+                    } catch (err) {
+                        logger.debug('[runClaude] Failed to get initial Kanban context:', err);
+                    }
+                }
+
                 // Generate role prompt for team context injection
                 const sessionMetadataForContext = session.getMetadata() || {} as any;
                 // Ensure we have role and teamId in metadata for generateRolePrompt
                 if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
                 if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
-                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext);
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext);
                 logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
                 const enhancedMode: EnhancedMode = {

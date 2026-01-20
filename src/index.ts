@@ -29,6 +29,64 @@ import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 
+/**
+ * Show general CLI help
+ * Displays all available commands with descriptions
+ */
+function showGeneralHelp() {
+  const version = packageJson.version
+
+  console.log(`
+${chalk.bold.cyan('Happy CLI')} - Claude Code wrapper with team collaboration
+${chalk.gray(`Version ${version}`)}
+
+${chalk.bold('Usage:')}
+  ${chalk.green('happy')} <command> [options]
+  ${chalk.green('happy')} <command> --help     Show command-specific help
+  ${chalk.green('happy')} --help              Show this help message
+  ${chalk.green('happy')} --version           Show version number
+
+${chalk.bold('Available Commands:')}
+  ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
+  ${chalk.yellow('auth')} [login|logout]      Authentication management
+  ${chalk.yellow('connect')} [list|add]      AI vendor API key management
+  ${chalk.yellow('codex')}                   Start team collaboration mode
+  ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
+  ${chalk.yellow('daemon')} [list|stop]      Background service management
+
+${chalk.bold('Options:')}
+  ${chalk.cyan('-h, --help')}              Show help information
+  ${chalk.cyan('-v, --version')}           Show version number
+  ${chalk.cyan('--debug')}                 Enable debug logging
+
+${chalk.bold('Documentation:')}
+  GitHub: ${chalk.blue.underline('https://github.com/slopus/happy')}
+  Docs:  ${chalk.blue.underline('https://github.com/slopus/happy/blob/main/README.md')}
+
+${chalk.bold('Examples:')}
+  ${chalk.gray('# Diagnose and clean up')}
+  ${chalk.green('happy doctor')}
+  ${chalk.green('happy doctor clean')}
+
+  ${chalk.gray('# Authentication')}
+  ${chalk.green('happy auth login')}
+  ${chalk.green('happy auth logout')}
+
+  ${chalk.gray('# Team collaboration')}
+  ${chalk.green('happy codex')}
+
+  ${chalk.gray('# Notifications')}
+  ${chalk.green('happy notify -p "Build complete!"')}
+
+  ${chalk.gray('# Claude Code with custom message')}
+  ${chalk.green('happy')} "Implement a feature" ${chalk.cyan('--message')}
+
+For command-specific help, run:
+  ${chalk.green('happy <command> --help')}
+`)
+  process.exit(0)
+}
+
 
 (async () => {
   const args = process.argv.slice(2)
@@ -40,6 +98,12 @@ import { execFileSync } from 'node:child_process'
 
   // Check if first argument is a subcommand
   const subcommand = args[0]
+
+  // Show general help if no arguments or --help
+  if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+    showGeneralHelp();
+    return;
+  }
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand

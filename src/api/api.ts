@@ -564,4 +564,546 @@ export class ApiClient {
       throw new Error(`Failed to update artifact: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
+
+  /**
+   * Create a new artifact with the given ID, header, and body
+   * Used for lazy initialization of team artifacts
+   */
+  async createArtifact(
+    artifactId: string,
+    header: any,
+    body: any
+  ): Promise<Artifact> {
+    try {
+      // Generate encryption key for this artifact
+      let dataEncryptionKey: Uint8Array;
+      let encryptionKey: Uint8Array;
+      let encryptionVariant: 'legacy' | 'dataKey';
+
+      if (this.credential.encryption.type === 'contentSecretKey') {
+        // New unified approach: generate random data key and encrypt with contentSecretKey
+        encryptionKey = getRandomBytes(32);
+        encryptionVariant = 'dataKey';
+
+        const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+        const encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
+        dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
+        dataEncryptionKey.set([0], 0); // Version byte
+        dataEncryptionKey.set(encryptedDataKey, 1);
+      } else if (this.credential.encryption.type === 'dataKey') {
+        // Legacy dataKey mode
+        encryptionKey = getRandomBytes(32);
+        encryptionVariant = 'dataKey';
+
+        const encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, this.credential.encryption.publicKey);
+        dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
+        dataEncryptionKey.set([0], 0); // Version byte
+        dataEncryptionKey.set(encryptedDataKey, 1);
+      } else {
+        // Legacy mode - use secret directly
+        encryptionKey = this.credential.encryption.secret;
+        encryptionVariant = 'legacy';
+        // For legacy mode, generate a random key and encrypt it
+        const randomKey = getRandomBytes(32);
+        dataEncryptionKey = encrypt(encryptionKey, encryptionVariant, randomKey);
+        // Use the random key for content encryption
+        encryptionKey = randomKey;
+        encryptionVariant = 'legacy';
+      }
+
+      // Encrypt header and body
+      const encryptedHeader = encodeBase64(encrypt(encryptionKey, encryptionVariant, header));
+      const encryptedBody = encodeBase64(encrypt(encryptionKey, encryptionVariant, body));
+      const encodedDataKey = encodeBase64(dataEncryptionKey);
+
+      // Create artifact via POST /v1/artifacts
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/artifacts`,
+        {
+          id: artifactId,
+          header: encryptedHeader,
+          body: encryptedBody,
+          dataEncryptionKey: encodedDataKey
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      logger.debug(`[API] Created artifact ${artifactId}`);
+
+      // Decrypt and return the created artifact
+      const raw = response.data;
+      return {
+        id: raw.id,
+        header: header, // Return original unencrypted header
+        headerVersion: raw.headerVersion,
+        body: body, // Return original unencrypted body
+        bodyVersion: raw.bodyVersion,
+        seq: raw.seq,
+        createdAt: raw.createdAt,
+        updatedAt: raw.updatedAt
+      };
+
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to create artifact ${artifactId}:`, error);
+      throw new Error(`Failed to create artifact: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // === Task API Methods (Server-Driven Task Orchestration) ===
+
+  /**
+   * List tasks for a team with optional filtering
+   */
+  async listTasks(teamId: string, filters?: { status?: string; assigneeId?: string }): Promise<{ tasks: any[]; version: number }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks`,
+        {
+          params: filters,
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Listed ${response.data.tasks?.length || 0} tasks for team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list tasks:`, error);
+      throw new Error(`Failed to list tasks: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get a single task by ID
+   */
+  async getTask(teamId: string, taskId: string): Promise<any | null> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000,
+          validateStatus: (status) => status === 200 || status === 404
+        }
+      );
+      if (response.status === 404) return null;
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get task:`, error);
+      throw new Error(`Failed to get task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Create a new task
+   */
+  async createTask(teamId: string, task: any): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks`,
+        task,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Created task ${response.data.task?.id} for team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to create task:`, error);
+      throw new Error(`Failed to create task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Update an existing task
+   */
+  async updateTask(teamId: string, taskId: string, updates: any): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.put(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}`,
+        updates,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Updated task ${taskId} for team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to update task:`, error);
+      throw new Error(`Failed to update task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Delete a task
+   */
+  async deleteTask(teamId: string, taskId: string): Promise<{ success: boolean }> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Deleted task ${taskId} from team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to delete task:`, error);
+      throw new Error(`Failed to delete task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Start working on a task
+   */
+  async startTask(teamId: string, taskId: string, sessionId: string, role: string = 'builder'): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/start`,
+        { sessionId, role },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Started task ${taskId} with session ${sessionId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to start task:`, error);
+      throw new Error(`Failed to start task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Complete a task
+   */
+  async completeTask(teamId: string, taskId: string, sessionId: string): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/complete`,
+        { sessionId },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Completed task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to complete task:`, error);
+      throw new Error(`Failed to complete task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Report a blocker on a task
+   */
+  async reportBlocker(teamId: string, taskId: string, sessionId: string, type: string, description: string): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/blocker`,
+        { sessionId, type, description },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Reported blocker on task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to report blocker:`, error);
+      throw new Error(`Failed to report blocker: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Resolve a blocker
+   */
+  async resolveBlocker(teamId: string, taskId: string, blockerId: string, sessionId: string, resolution: string): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/blocker/${blockerId}/resolve`,
+        { sessionId, resolution },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Resolved blocker ${blockerId} on task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to resolve blocker:`, error);
+      throw new Error(`Failed to resolve blocker: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // === Team Management API Methods ===
+
+  /**
+   * Add a member to a team
+   */
+  async addTeamMember(teamId: string, sessionId: string, roleId?: string, displayName?: string): Promise<{ success: boolean; member: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/members`,
+        { sessionId, roleId: roleId || 'member', displayName },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Added member ${sessionId} to team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to add team member:`, error);
+      throw new Error(`Failed to add team member: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Remove a member from a team
+   */
+  async removeTeamMember(teamId: string, sessionId: string): Promise<{ success: boolean }> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/teams/${teamId}/members/${sessionId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Removed member ${sessionId} from team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to remove team member:`, error);
+      throw new Error(`Failed to remove team member: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Archive a team and all its sessions
+   */
+  async archiveTeam(teamId: string): Promise<{ success: boolean; archivedSessions: number }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/archive`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      );
+      logger.debug(`[API] Archived team ${teamId} with ${response.data.archivedSessions} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to archive team:`, error);
+      throw new Error(`Failed to archive team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Delete a team and all its sessions
+   */
+  async deleteTeam(teamId: string): Promise<{ success: boolean; deletedSessions: number }> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/teams/${teamId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 30000
+        }
+      );
+      logger.debug(`[API] Deleted team ${teamId} with ${response.data.deletedSessions} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to delete team:`, error);
+      throw new Error(`Failed to delete team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Rename a team
+   */
+  async renameTeam(teamId: string, newName: string): Promise<{ success: boolean; team: any }> {
+    try {
+      const response = await axios.put(
+        `${configuration.serverUrl}/v1/teams/${teamId}/rename`,
+        { name: newName },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Renamed team ${teamId} to "${newName}"`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to rename team:`, error);
+      throw new Error(`Failed to rename team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Batch archive multiple sessions
+   */
+  async batchArchiveSessions(sessionIds: string[]): Promise<{ success: boolean; archived: number; results: any[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/sessions/batch/archive`,
+        { sessionIds },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        }
+      );
+      logger.debug(`[API] Batch archived ${response.data.archived} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to batch archive sessions:`, error);
+      throw new Error(`Failed to batch archive sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Batch delete multiple sessions
+   */
+  async batchDeleteSessions(sessionIds: string[]): Promise<{ success: boolean; deleted: number; results: any[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/sessions/batch/delete`,
+        { sessionIds },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        }
+      );
+      logger.debug(`[API] Batch deleted ${response.data.deleted} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to batch delete sessions:`, error);
+      throw new Error(`Failed to batch delete sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Rename a session
+   */
+  async renameSession(sessionId: string, newName: string): Promise<{ success: boolean; session: any }> {
+    try {
+      const response = await axios.put(
+        `${configuration.serverUrl}/v1/sessions/${sessionId}/rename`,
+        { name: newName },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Renamed session ${sessionId} to "${newName}"`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to rename session:`, error);
+      throw new Error(`Failed to rename session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Batch archive multiple teams
+   */
+  async batchArchiveTeams(teamIds: string[]): Promise<{ success: boolean; archived: number; results: any[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/batch/archive`,
+        { teamIds },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        }
+      );
+      logger.debug(`[API] Batch archived ${response.data.archived} teams`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to batch archive teams:`, error);
+      throw new Error(`Failed to batch archive teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Batch delete multiple teams
+   */
+  async batchDeleteTeams(teamIds: string[]): Promise<{ success: boolean; deleted: number; results: any[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/batch/delete`,
+        { teamIds },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
+        }
+      );
+      logger.debug(`[API] Batch deleted ${response.data.deleted} teams`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to batch delete teams:`, error);
+      throw new Error(`Failed to batch delete teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 }

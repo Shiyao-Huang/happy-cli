@@ -1,13 +1,48 @@
 /**
  * Task State Manager
- * 
- * 管理嵌套任务的状态传播、执行链接和阻塞追踪
- * 这是多 Agent 协作的核心状态引擎
+ *
+ * Server-Driven Task Orchestration Client
+ *
+ * This is a thin client that delegates all task mutations to the server.
+ * The server is the SINGLE SOURCE OF TRUTH for task state.
+ *
+ * Key Features:
+ * - All mutations go through server API
+ * - Local cache updated via WebSocket events
+ * - Handles task events from server in real-time
+ * - Backward compatible with existing code
  */
 
 import { randomUUID } from 'crypto';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
+import { filterTasksForRole } from '@/claude/team/taskFilter';
+import { KanbanContext } from '@/claude/team/roles';
+
+// === State Change Broadcasting Types ===
+
+export type KanbanStateChangeType =
+    | 'task-created'
+    | 'task-updated'
+    | 'task-deleted'
+    | 'task-status-changed'
+    | 'task-assigned'
+    | 'subtask-created'
+    | 'blocker-reported'
+    | 'blocker-resolved'
+    | 'execution-started'
+    | 'execution-completed';
+
+export interface KanbanStateChange {
+    type: KanbanStateChangeType;
+    taskId: string;
+    taskTitle: string;
+    details: Record<string, any>;
+    triggeredBy: string;
+    timestamp: number;
+}
+
+export type StateChangeCallback = (change: KanbanStateChange) => void;
 
 // 类型定义 (与 kanban/sources/sync/kanbanTypes.ts 保持同步)
 interface TaskExecutionLink {
@@ -69,11 +104,142 @@ export class TaskStateManager {
     private api: ApiClient;
     private teamId: string;
     private sessionId: string;
+    private roleId?: string;
+    private onStateChange?: StateChangeCallback;
 
-    constructor(api: ApiClient, teamId: string, sessionId: string) {
+    constructor(api: ApiClient, teamId: string, sessionId: string, roleId?: string) {
         this.api = api;
         this.teamId = teamId;
         this.sessionId = sessionId;
+        this.roleId = roleId;
+    }
+
+    /**
+     * Set the role ID for this manager (used for filtering)
+     */
+    setRoleId(roleId: string): void {
+        this.roleId = roleId;
+    }
+
+    /**
+     * Set the state change callback for broadcasting updates
+     */
+    setOnStateChange(callback: StateChangeCallback): void {
+        this.onStateChange = callback;
+    }
+
+    /**
+     * Broadcast a state change to listeners and optionally send team message
+     */
+    private broadcastChange(change: Omit<KanbanStateChange, 'timestamp' | 'triggeredBy'>): void {
+        const fullChange: KanbanStateChange = {
+            ...change,
+            triggeredBy: this.sessionId,
+            timestamp: Date.now()
+        };
+
+        // Call local callback if set
+        if (this.onStateChange) {
+            try {
+                this.onStateChange(fullChange);
+            } catch (err) {
+                logger.debug('[TaskStateManager] Error in state change callback:', err);
+            }
+        }
+
+        // Send team message for state change (fire and forget)
+        this.sendStateChangeMessage(fullChange).catch(err => {
+            logger.debug('[TaskStateManager] Failed to broadcast state change:', err);
+        });
+    }
+
+    /**
+     * Send a team message about the state change
+     */
+    private async sendStateChangeMessage(change: KanbanStateChange): Promise<void> {
+        const message = this.formatStateChangeMessage(change);
+
+        await this.api.sendTeamMessage(this.teamId, {
+            id: randomUUID(),
+            teamId: this.teamId,
+            type: 'task-update',
+            content: message,
+            fromSessionId: this.sessionId,
+            fromRole: this.roleId,
+            timestamp: change.timestamp,
+            metadata: {
+                taskId: change.taskId,
+                changeType: change.type,
+                ...change.details
+            }
+        });
+    }
+
+    /**
+     * Format a human-readable message for a state change
+     */
+    private formatStateChangeMessage(change: KanbanStateChange): string {
+        const roleLabel = this.roleId ? `[${this.roleId}]` : '';
+
+        switch (change.type) {
+            case 'task-created':
+                return `${roleLabel} Created task: "${change.taskTitle}"`;
+            case 'task-status-changed':
+                return `${roleLabel} Task "${change.taskTitle}" → ${change.details.newStatus}`;
+            case 'task-assigned':
+                return `${roleLabel} Assigned "${change.taskTitle}" to ${change.details.assigneeId}`;
+            case 'subtask-created':
+                return `${roleLabel} Created subtask "${change.taskTitle}" under "${change.details.parentTitle}"`;
+            case 'blocker-reported':
+                return `${roleLabel} ⚠️ BLOCKED: "${change.taskTitle}" - ${change.details.description}`;
+            case 'blocker-resolved':
+                return `${roleLabel} ✅ Resolved blocker on "${change.taskTitle}"`;
+            case 'execution-started':
+                return `${roleLabel} Started working on "${change.taskTitle}"`;
+            case 'execution-completed':
+                return `${roleLabel} ✅ Completed "${change.taskTitle}"`;
+            default:
+                return `${roleLabel} Updated task: "${change.taskTitle}"`;
+        }
+    }
+
+    /**
+     * Get the full Kanban board (via server API)
+     */
+    async getBoard(): Promise<KanbanBoard> {
+        try {
+            // Use new server API
+            const result = await this.api.listTasks(this.teamId);
+            return {
+                columns: [
+                    { id: 'todo', title: 'To Do' },
+                    { id: 'in-progress', title: 'In Progress' },
+                    { id: 'review', title: 'Review' },
+                    { id: 'done', title: 'Done' }
+                ],
+                tasks: result.tasks
+            };
+        } catch (error) {
+            // Fallback to artifact if new API not available
+            logger.debug('[TaskStateManager] Falling back to artifact API:', error);
+            const artifact = await this.api.getArtifact(this.teamId);
+            return this.parseBoard(artifact);
+        }
+    }
+
+    /**
+     * Get filtered Kanban context for the current role
+     * This is the main method for getting context to inject into prompts
+     */
+    async getFilteredContext(): Promise<KanbanContext> {
+        const board = await this.getBoard();
+        const roleId = this.roleId || 'builder'; // Default to builder if no role set
+
+        return filterTasksForRole(
+            board.tasks as KanbanTask[],
+            roleId,
+            this.sessionId
+        );
     }
 
     /**
@@ -175,6 +341,19 @@ export class TaskStateManager {
             await this.saveBoard(artifact, board);
             logger.debug(`[TaskStateManager] Created subtask ${subtaskId} under ${parentTaskId}`);
 
+            // Broadcast the change
+            this.broadcastChange({
+                type: 'subtask-created',
+                taskId: subtaskId,
+                taskTitle: title,
+                details: {
+                    parentTaskId,
+                    parentTitle: parentTask.title,
+                    assigneeId: subtask.assigneeId,
+                    priority: subtask.priority
+                }
+            });
+
             return { success: true, subtask };
         } catch (error) {
             return { success: false, error: String(error) };
@@ -194,102 +373,76 @@ export class TaskStateManager {
     }
 
     /**
-     * 开始执行任务 - 创建执行链接
+     * 开始执行任务 - 通过 Server API
      */
     async startTask(taskId: string): Promise<{ success: boolean; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            // Use server API - server handles all logic and broadcasts
+            const result = await this.api.startTask(
+                this.teamId,
+                taskId,
+                this.sessionId,
+                this.roleId || 'builder'
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
+            if (result.success) {
+                logger.debug(`[TaskStateManager] Started task ${taskId} via server`);
+
+                // Broadcast locally (server already broadcasted via WebSocket)
+                this.broadcastChange({
+                    type: 'execution-started',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        previousStatus: 'todo',
+                        newStatus: 'in-progress'
+                    }
+                });
+
+                return { success: true };
             }
 
-            // 检查是否已有 active 链接
-            const existingActive = task.executionLinks?.find(l => l.status === 'active');
-            if (existingActive && existingActive.sessionId !== this.sessionId) {
-                return { success: false, error: `Task is already being executed by session ${existingActive.sessionId}` };
-            }
-
-            // 添加执行链接
-            task.executionLinks = task.executionLinks || [];
-            task.executionLinks.push({
-                sessionId: this.sessionId,
-                linkedAt: Date.now(),
-                role: 'primary',
-                status: 'active'
-            });
-
-            // 更新状态
-            if (task.status === 'todo') {
-                task.status = 'in-progress';
-            }
-            task.updatedAt = Date.now();
-
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Started task ${taskId}`);
-
-            return { success: true };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to start task via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
     /**
-     * 完成任务 - 触发状态传播
+     * 完成任务 - 通过 Server API (server handles status propagation)
      */
     async completeTask(taskId: string): Promise<{ success: boolean; propagatedTasks?: string[]; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            // Use server API - server handles status propagation
+            const result = await this.api.completeTask(
+                this.teamId,
+                taskId,
+                this.sessionId
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
-            }
+            if (result.success) {
+                logger.debug(`[TaskStateManager] Completed task ${taskId} via server`);
 
-            // 检查是否有未完成的子任务
-            if (task.subtaskIds?.length) {
-                const subtasks = board.tasks.filter(t => task.subtaskIds!.includes(t.id));
-                const incomplete = subtasks.filter(st => st.status !== 'done');
-                if (incomplete.length > 0) {
-                    return {
-                        success: false,
-                        error: `Cannot complete: ${incomplete.length} subtasks still pending`
-                    };
-                }
-            }
-
-            // 更新执行链接状态
-            const activeLink = task.executionLinks?.find(l => l.sessionId === this.sessionId && l.status === 'active');
-            if (activeLink) {
-                activeLink.status = 'completed';
-            }
-
-            // 完成任务
-            task.status = 'done';
-            task.updatedAt = Date.now();
-
-            const propagatedTasks: string[] = [taskId];
-
-            // 状态传播到父任务
-            if (task.parentTaskId) {
-                const propagation = task.statusPropagation ?? DEFAULT_STATUS_PROPAGATION;
-                if (propagation.autoCompleteParent) {
-                    const result = this.propagateCompletionToParent(board, task.parentTaskId, propagatedTasks);
-                    if (result.changed) {
-                        propagatedTasks.push(...result.changed);
+                // Broadcast locally
+                this.broadcastChange({
+                    type: 'execution-completed',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        previousStatus: 'in-progress',
+                        newStatus: 'done',
+                        propagatedTasks: [taskId]
                     }
-                }
+                });
+
+                return { success: true, propagatedTasks: [taskId] };
             }
 
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Completed task ${taskId}, propagated: ${propagatedTasks.join(', ')}`);
-
-            return { success: true, propagatedTasks };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to complete task via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
@@ -326,7 +479,7 @@ export class TaskStateManager {
     }
 
     /**
-     * 报告阻塞
+     * 报告阻塞 - 通过 Server API
      */
     async reportBlocker(
         taskId: string,
@@ -334,42 +487,40 @@ export class TaskStateManager {
         description: string
     ): Promise<{ success: boolean; blockerId?: string; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
-
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
-            }
-
-            const blockerId = randomUUID();
-            const blocker: TaskBlocker = {
-                id: blockerId,
+            // Use server API - server handles blocker propagation
+            const result = await this.api.reportBlocker(
+                this.teamId,
+                taskId,
+                this.sessionId,
                 type,
-                description,
-                raisedAt: Date.now(),
-                raisedBy: this.sessionId
-            };
+                description
+            );
 
-            task.blockers = task.blockers || [];
-            task.blockers.push(blocker);
-            task.status = 'blocked';
-            task.updatedAt = Date.now();
+            if (result.success) {
+                const blockerId = result.task?.blockers?.[result.task.blockers.length - 1]?.id;
+                logger.debug(`[TaskStateManager] Reported blocker ${blockerId} on task ${taskId} via server`);
 
-            // 向上传播阻塞标记
-            if (task.parentTaskId) {
-                const propagation = task.statusPropagation ?? DEFAULT_STATUS_PROPAGATION;
-                if (propagation.blockParentOnBlocked) {
-                    this.propagateBlockerToParent(board, task.parentTaskId);
-                }
+                // Broadcast locally
+                this.broadcastChange({
+                    type: 'blocker-reported',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        blockerId,
+                        blockerType: type,
+                        description,
+                        previousStatus: 'in-progress',
+                        newStatus: 'blocked'
+                    }
+                });
+
+                return { success: true, blockerId };
             }
 
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Reported blocker ${blockerId} on task ${taskId}`);
-
-            return { success: true, blockerId };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to report blocker via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
@@ -433,6 +584,19 @@ export class TaskStateManager {
             await this.saveBoard(artifact, board);
             logger.debug(`[TaskStateManager] Resolved blocker ${blockerId} on task ${taskId}`);
 
+            // Broadcast the change
+            this.broadcastChange({
+                type: 'blocker-resolved',
+                taskId,
+                taskTitle: task.title,
+                details: {
+                    blockerId,
+                    resolution,
+                    unresolvedCount: unresolvedBlockers.length,
+                    newStatus: unresolvedBlockers.length === 0 ? 'in-progress' : 'blocked'
+                }
+            });
+
             return { success: true };
         } catch (error) {
             return { success: false, error: String(error) };
@@ -491,5 +655,54 @@ export class TaskStateManager {
 
         collectSubtasks(taskId);
         return result;
+    }
+
+    /**
+     * Handle incoming task event from WebSocket (server broadcast)
+     * This is called when server pushes task updates
+     */
+    handleTaskEvent(event: {
+        type: 'task-created' | 'task-updated' | 'task-deleted';
+        teamId: string;
+        taskId: string;
+        task?: KanbanTask;
+    }): void {
+        if (event.teamId !== this.teamId) {
+            return; // Ignore events for other teams
+        }
+
+        logger.debug(`[TaskStateManager] Received task event: ${event.type} for ${event.taskId}`);
+
+        // Broadcast to local listeners
+        switch (event.type) {
+            case 'task-created':
+                if (event.task) {
+                    this.broadcastChange({
+                        type: 'task-created',
+                        taskId: event.taskId,
+                        taskTitle: event.task.title,
+                        details: { task: event.task }
+                    });
+                }
+                break;
+            case 'task-updated':
+                if (event.task) {
+                    this.broadcastChange({
+                        type: 'task-updated',
+                        taskId: event.taskId,
+                        taskTitle: event.task.title,
+                        details: { task: event.task }
+                    });
+                }
+                break;
+            case 'task-deleted':
+                this.broadcastChange({
+                    type: 'task-deleted',
+                    taskId: event.taskId,
+                    taskTitle: event.taskId,
+                    details: {}
+                });
+                break;
+        }
     }
 }
