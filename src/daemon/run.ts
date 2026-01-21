@@ -274,6 +274,12 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Setting HAPPY_SESSION_PATH=${options.sessionPath}`);
         }
 
+        // Merge custom env variables (e.g., HAPPY_AGENT_LANGUAGE)
+        if (options.env) {
+          Object.assign(extraEnv, options.env);
+          logger.debug(`[DAEMON RUN] Merging custom env: ${JSON.stringify(options.env)}`);
+        }
+
         // Construct arguments for the CLI
         const args = [
           options.agent === 'claude' ? 'claude' : 'codex',

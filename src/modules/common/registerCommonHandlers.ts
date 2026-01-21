@@ -127,6 +127,7 @@ export interface SpawnSessionOptions {
     role?: string;
     sessionName?: string;
     sessionPath?: string;
+    env?: Record<string, string>;
 }
 
 export type SpawnSessionResult =
