@@ -31,18 +31,18 @@ describe('Role Permissions System', () => {
             expect(result.disallowedTools.length).toBeGreaterThan(0);
         });
 
-        it('should allow all tools for builder role', () => {
+        it('should restrict spawn_session for builder role', () => {
             const result = getRolePermissions('builder', undefined);
 
             expect(result.permissionMode).toBe('default');
-            expect(result.disallowedTools).toEqual([]);
+            expect(result.disallowedTools.some((tool) => tool.startsWith('spawn_session'))).toBe(true);
         });
 
-        it('should allow all tools for framer role', () => {
+        it('should restrict spawn_session for framer role', () => {
             const result = getRolePermissions('framer', undefined);
 
             expect(result.permissionMode).toBe('default');
-            expect(result.disallowedTools).toEqual([]);
+            expect(result.disallowedTools.some((tool) => tool.startsWith('spawn_session'))).toBe(true);
         });
 
         it('should handle unknown roles gracefully', () => {

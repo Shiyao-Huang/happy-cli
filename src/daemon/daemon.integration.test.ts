@@ -11,7 +11,7 @@
  * 
  * The integration test environment uses .env.integration-test which sets:
  * - HAPPY_HOME_DIR=~/.happy-dev-test (DIFFERENT from dev's ~/.happy-dev!)
- * - HAPPY_SERVER_URL=http://localhost:3005 (local dev server)
+ * - HAPPY_SERVER_URL=https://top1vibe.com (shared server)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -50,11 +50,12 @@ async function waitFor(
 async function isServerHealthy(): Promise<boolean> {
   try {
     // First check if server responds
-    const response = await fetch('http://localhost:3005/', { 
-      signal: AbortSignal.timeout(1000) 
+    const healthUrl = new URL('/', configuration.serverUrl).toString();
+    const response = await fetch(healthUrl, {
+      signal: AbortSignal.timeout(1000)
     });
     if (!response.ok) {
-      console.log('[TEST] Server health check failed: root endpoint not OK');
+      console.log(`[TEST] Server health check failed: ${healthUrl} not OK`);
       return false;
     }
     
@@ -68,7 +69,7 @@ async function isServerHealthy(): Promise<boolean> {
     
     return true;
   } catch (error) {
-    console.log('[TEST] Server not reachable:', error);
+    console.log(`[TEST] Server not reachable: ${configuration.serverUrl}`, error);
     return false;
   }
 }

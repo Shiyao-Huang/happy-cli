@@ -3,7 +3,7 @@ import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
-import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey } from './encryption';
+import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumDecryptWithSecretKey, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey, libsodiumSecretKeyFromSeed } from './encryption';
 import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
 import chalk from 'chalk';
@@ -21,6 +21,57 @@ export class ApiClient {
   private constructor(credential: Credentials) {
     this.credential = credential
     this.pushClient = new PushNotificationClient(credential.token, configuration.serverUrl)
+  }
+
+  private normalizeTeamArtifactBody(body: any): string {
+    if (body && typeof body === 'object' && 'body' in body) {
+      const inner = (body as { body?: unknown }).body;
+      if (typeof inner === 'string') {
+        return JSON.stringify(body);
+      }
+      return JSON.stringify({ ...(body as Record<string, unknown>), body: JSON.stringify(inner ?? null) });
+    }
+    if (typeof body === 'string') {
+      return JSON.stringify({ body });
+    }
+    return JSON.stringify({ body: JSON.stringify(body ?? null) });
+  }
+
+  private unwrapDataEncryptionKey(encodedKey: string): Uint8Array | null {
+    const decoded = decodeBase64(encodedKey);
+    if (decoded.length === 0) {
+      return null;
+    }
+
+    if (decoded[0] === 0) {
+      if (this.credential.encryption.type === 'contentSecretKey') {
+        const secretKey = libsodiumSecretKeyFromSeed(this.credential.encryption.contentSecretKey);
+        return libsodiumDecryptWithSecretKey(decoded.slice(1), secretKey);
+      }
+      if (this.credential.encryption.type === 'dataKey') {
+        const secretKey = libsodiumSecretKeyFromSeed(this.credential.encryption.machineKey);
+        return libsodiumDecryptWithSecretKey(decoded.slice(1), secretKey);
+      }
+      return null;
+    }
+
+    if (this.credential.encryption.type === 'legacy') {
+      const decrypted = decrypt(this.credential.encryption.secret, 'legacy', decoded);
+      if (!decrypted) {
+        return null;
+      }
+      if (decrypted instanceof Uint8Array) {
+        return decrypted;
+      }
+      if (Array.isArray(decrypted)) {
+        return new Uint8Array(decrypted);
+      }
+      if (typeof decrypted === 'string') {
+        return new TextEncoder().encode(decrypted);
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -65,6 +116,8 @@ export class ApiClient {
       encryptionVariant = 'legacy';
     }
 
+    const encodedDataEncryptionKey = dataEncryptionKey ? encodeBase64(dataEncryptionKey) : null;
+
     // Create session
     try {
       const response = await axios.post<CreateSessionResponse>(
@@ -73,7 +126,7 @@ export class ApiClient {
           tag: opts.tag,
           metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
           agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
-          dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : null,
+          dataEncryptionKey: encodedDataEncryptionKey,
         },
         {
           headers: {
@@ -85,16 +138,31 @@ export class ApiClient {
       )
 
       logger.debug(`Session created/loaded: ${response.data.session.id} (tag: ${opts.tag})`)
-      let raw = response.data.session;
-      let session: Session = {
+      const raw = response.data.session;
+      let resolvedEncryptionKey = encryptionKey;
+      let resolvedVariant = encryptionVariant;
+
+      if (raw.dataEncryptionKey) {
+        const matchesSent = encodedDataEncryptionKey && raw.dataEncryptionKey === encodedDataEncryptionKey;
+        if (!matchesSent) {
+          const unwrappedKey = this.unwrapDataEncryptionKey(raw.dataEncryptionKey);
+          if (!unwrappedKey) {
+            throw new Error('Failed to decrypt session data encryption key');
+          }
+          resolvedEncryptionKey = unwrappedKey;
+          resolvedVariant = 'dataKey';
+        }
+      }
+
+      const session: Session = {
         id: raw.id,
         seq: raw.seq,
-        metadata: decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata)),
+        metadata: decrypt(resolvedEncryptionKey, resolvedVariant, decodeBase64(raw.metadata)),
         metadataVersion: raw.metadataVersion,
-        agentState: raw.agentState ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.agentState)) : null,
+        agentState: raw.agentState ? decrypt(resolvedEncryptionKey, resolvedVariant, decodeBase64(raw.agentState)) : null,
         agentStateVersion: raw.agentStateVersion,
-        encryptionKey: encryptionKey,
-        encryptionVariant: encryptionVariant
+        encryptionKey: resolvedEncryptionKey,
+        encryptionVariant: resolvedVariant
       }
       return session;
     } catch (error) {
@@ -119,21 +187,19 @@ export class ApiClient {
     let encryptionVariant: 'legacy' | 'dataKey';
 
     if (this.credential.encryption.type === 'contentSecretKey') {
-      // New unified approach: use contentSecretKey for machine encryption
       encryptionVariant = 'dataKey';
-      encryptionKey = this.credential.encryption.contentSecretKey;
+      encryptionKey = getRandomBytes(32);
 
-      // Encrypt using box encryption with derived public key
       const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
-      let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.contentSecretKey, publicKey);
+      let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
       dataEncryptionKey.set(encryptedDataKey, 1); // Encrypted data key
     } else if (this.credential.encryption.type === 'dataKey') {
-      // Legacy dataKey mode
       encryptionVariant = 'dataKey';
-      encryptionKey = this.credential.encryption.machineKey;
-      let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.machineKey, this.credential.encryption.publicKey);
+      encryptionKey = getRandomBytes(32);
+
+      let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, this.credential.encryption.publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
       dataEncryptionKey.set(encryptedDataKey, 1); // Data key
@@ -143,6 +209,8 @@ export class ApiClient {
       encryptionVariant = 'legacy';
     }
 
+    const encodedDataEncryptionKey = dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined;
+
     // Create machine
     const response = await axios.post(
       `${configuration.serverUrl}/v1/machines`,
@@ -150,7 +218,7 @@ export class ApiClient {
         id: opts.machineId,
         metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
         daemonState: opts.daemonState ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.daemonState)) : undefined,
-        dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined
+        dataEncryptionKey: encodedDataEncryptionKey
       },
       {
         headers: {
@@ -168,16 +236,30 @@ export class ApiClient {
     }
 
     const raw = response.data.machine;
+    let resolvedEncryptionKey = encryptionKey;
+    let resolvedVariant = encryptionVariant;
+
+    if (raw.dataEncryptionKey) {
+      const matchesSent = encodedDataEncryptionKey && raw.dataEncryptionKey === encodedDataEncryptionKey;
+      if (!matchesSent) {
+        const unwrappedKey = this.unwrapDataEncryptionKey(raw.dataEncryptionKey);
+        if (!unwrappedKey) {
+          throw new Error('Failed to decrypt machine data encryption key');
+        }
+        resolvedEncryptionKey = unwrappedKey;
+        resolvedVariant = 'dataKey';
+      }
+    }
     logger.debug(`[API] Machine ${opts.machineId} registered/updated with server`);
 
     // Return decrypted machine like we do for sessions
     const machine: Machine = {
       id: raw.id,
-      encryptionKey: encryptionKey,
-      encryptionVariant: encryptionVariant,
-      metadata: raw.metadata ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata)) : null,
+      encryptionKey: resolvedEncryptionKey,
+      encryptionVariant: resolvedVariant,
+      metadata: raw.metadata ? decrypt(resolvedEncryptionKey, resolvedVariant, decodeBase64(raw.metadata)) : null,
       metadataVersion: raw.metadataVersion || 0,
-      daemonState: raw.daemonState ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.daemonState)) : null,
+      daemonState: raw.daemonState ? decrypt(resolvedEncryptionKey, resolvedVariant, decodeBase64(raw.daemonState)) : null,
       daemonStateVersion: raw.daemonStateVersion || 0,
     };
     return machine;
@@ -244,40 +326,22 @@ export class ApiClient {
       let encryptionVariant: 'legacy' | 'dataKey';
 
       if (raw.dataEncryptionKey) {
-        // Artifact has its own data key - need to decrypt it first
-        const encryptedDataKey = decodeBase64(raw.dataEncryptionKey);
-
-        // First, get the key to decrypt the dataEncryptionKey
-        let keyDecryptionKey: Uint8Array;
-        let keyDecryptionVariant: 'legacy' | 'dataKey';
-
-        if (this.credential.encryption.type === 'contentSecretKey') {
-          keyDecryptionKey = this.credential.encryption.contentSecretKey;
-          keyDecryptionVariant = 'dataKey';
-        } else if (this.credential.encryption.type === 'dataKey') {
-          keyDecryptionKey = this.credential.encryption.machineKey;
-          keyDecryptionVariant = 'dataKey';
+        const decryptedKey = this.unwrapDataEncryptionKey(raw.dataEncryptionKey);
+        if (decryptedKey) {
+          encryptionKey = decryptedKey;
+          encryptionVariant = 'dataKey';
         } else {
-          keyDecryptionKey = this.credential.encryption.secret;
-          keyDecryptionVariant = 'legacy';
-        }
-
-        // Decrypt the dataEncryptionKey to get the actual key for content
-        try {
-          const decryptedKey = decrypt(keyDecryptionKey, keyDecryptionVariant, encryptedDataKey);
-          // Convert to Uint8Array if it's a string
-          const artifactDataKey = typeof decryptedKey === 'string'
-            ? new TextEncoder().encode(decryptedKey)
-            : new Uint8Array(decryptedKey.buffer);
-          // Use the decrypted data key with 'legacy' variant for content decryption
-          encryptionKey = artifactDataKey;
-          encryptionVariant = 'legacy';
-        } catch (keyDecryptError) {
-          // If dataEncryptionKey decryption fails, fall back to using credential key directly
-          // This handles cases where the key format might be different
-          logger.debug(`[API] Failed to decrypt dataEncryptionKey for artifact ${artifactId}, using credential key:`, keyDecryptError);
-          encryptionKey = keyDecryptionKey;
-          encryptionVariant = keyDecryptionVariant;
+          logger.debug(`[API] Failed to decrypt dataEncryptionKey for artifact ${artifactId}, using credential key`);
+          if (this.credential.encryption.type === 'contentSecretKey') {
+            encryptionKey = this.credential.encryption.contentSecretKey;
+            encryptionVariant = 'dataKey';
+          } else if (this.credential.encryption.type === 'dataKey') {
+            encryptionKey = this.credential.encryption.machineKey;
+            encryptionVariant = 'dataKey';
+          } else {
+            encryptionKey = this.credential.encryption.secret;
+            encryptionVariant = 'legacy';
+          }
         }
       } else {
         // No data encryption key, use credential directly
@@ -308,9 +372,12 @@ export class ApiClient {
             const textDecoder = new TextDecoder();
             const plainText = textDecoder.decode(decoded);
             const parsed = JSON.parse(plainText);
-            // parsed.body might be a JSON string (for team artifacts created by Kanban)
+            let bodyContent: any = parsed;
+            if (parsed && typeof parsed === 'object' && 'body' in parsed) {
+              bodyContent = (parsed as { body?: unknown }).body ?? null;
+            }
+            // bodyContent might be a JSON string (for team artifacts created by Kanban)
             // that needs to be parsed again to get the actual object
-            let bodyContent = parsed.body || null;
             if (typeof bodyContent === 'string') {
               try {
                 bodyContent = JSON.parse(bodyContent);
@@ -484,32 +551,14 @@ export class ApiClient {
       // 2. Resolve encryption key
       let encryptionKey: Uint8Array;
       let encryptionVariant: 'legacy' | 'dataKey';
-      let artifactDataKey: Uint8Array;
 
       if (raw.dataEncryptionKey) {
-        // Artifact has its own data key
-        const encryptedDataKey = decodeBase64(raw.dataEncryptionKey);
-
-        if (this.credential.encryption.type === 'contentSecretKey') {
-          encryptionKey = this.credential.encryption.contentSecretKey;
-          encryptionVariant = 'dataKey';
-        } else if (this.credential.encryption.type === 'dataKey') {
-          encryptionKey = this.credential.encryption.machineKey;
-          encryptionVariant = 'dataKey';
-        } else {
-          encryptionKey = this.credential.encryption.secret;
-          encryptionVariant = 'legacy';
-        }
-
-        // Decrypt the data key
-        const decryptedKey = decrypt(encryptionKey, encryptionVariant, encryptedDataKey);
+        const decryptedKey = this.unwrapDataEncryptionKey(raw.dataEncryptionKey);
         if (!decryptedKey) {
           throw new Error('Failed to decrypt artifact data key');
         }
-        artifactDataKey = decryptedKey;
-        // Use the decrypted data key with 'legacy' variant for actual encryption
-        encryptionKey = artifactDataKey;
-        encryptionVariant = 'legacy';
+        encryptionKey = decryptedKey;
+        encryptionVariant = 'dataKey';
 
       } else {
         // Legacy artifact without specific data key
@@ -529,11 +578,35 @@ export class ApiClient {
       let encryptedHeader: string | undefined;
       let encryptedBody: string | undefined;
 
+      let currentHeaderType: string | undefined;
+      if (raw.header) {
+        try {
+          const decryptedHeader = decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.header));
+          if (decryptedHeader && typeof decryptedHeader === 'object') {
+            currentHeaderType = (decryptedHeader as any).type;
+          }
+        } catch (error) {
+          logger.debug(`[API] Failed to decrypt artifact header for ${artifactId} when determining type`, error);
+        }
+      }
+
+      // Check if this is a team artifact (from header.type or existing artifact)
+      const headerType = header && typeof header === 'object' ? header.type : undefined;
+      const isTeamArtifact = headerType === 'team' || currentHeaderType === 'team' || raw.type === 'team';
+
       if (header !== undefined) {
         encryptedHeader = encodeBase64(encrypt(encryptionKey, encryptionVariant, header));
       }
       if (body !== undefined) {
-        encryptedBody = encodeBase64(encrypt(encryptionKey, encryptionVariant, body));
+        // For team artifacts, store body as plaintext (base64-encoded JSON)
+        // This matches mobile app format and allows cross-client access
+        if (isTeamArtifact) {
+          const plainBody = this.normalizeTeamArtifactBody(body);
+          encryptedBody = encodeBase64(new TextEncoder().encode(plainBody));
+          logger.debug(`[API] Updating team artifact with plaintext body for cross-client access`);
+        } else {
+          encryptedBody = encodeBase64(encrypt(encryptionKey, encryptionVariant, body));
+        }
       }
 
       // 4. Send update
@@ -611,9 +684,21 @@ export class ApiClient {
         encryptionVariant = 'legacy';
       }
 
-      // Encrypt header and body
+      // Encrypt header (always encrypted)
       const encryptedHeader = encodeBase64(encrypt(encryptionKey, encryptionVariant, header));
-      const encryptedBody = encodeBase64(encrypt(encryptionKey, encryptionVariant, body));
+
+      // For team artifacts, store body as plaintext (base64-encoded JSON)
+      // This matches mobile app format and allows cross-client access without shared encryption keys
+      let encryptedBody: string;
+      if (header.type === 'team') {
+        // Store as plaintext JSON (base64 encoded) - matches mobile kanban format
+        const plainBody = this.normalizeTeamArtifactBody(body);
+        encryptedBody = encodeBase64(new TextEncoder().encode(plainBody));
+        logger.debug(`[API] Creating team artifact with plaintext body for cross-client access`);
+      } else {
+        // Normal encryption for non-team artifacts
+        encryptedBody = encodeBase64(encrypt(encryptionKey, encryptionVariant, body));
+      }
       const encodedDataKey = encodeBase64(dataEncryptionKey);
 
       // Create artifact via POST /v1/artifacts
@@ -644,6 +729,7 @@ export class ApiClient {
         headerVersion: raw.headerVersion,
         body: body, // Return original unencrypted body
         bodyVersion: raw.bodyVersion,
+        type: header.type || 'team', // Use type from header
         seq: raw.seq,
         createdAt: raw.createdAt,
         updatedAt: raw.updatedAt

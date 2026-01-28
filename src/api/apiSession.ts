@@ -211,12 +211,10 @@ export class ApiSessionClient extends EventEmitter {
             }
         } else {
             // Wrap Claude messages in the expected format
+            // Note: body already has its own 'type' field (user/assistant/summary/system)
             content = {
                 role: 'agent',
-                content: {
-                    type: 'output',
-                    data: body  // This wraps the entire Claude message
-                },
+                content: body,
                 meta: {
                     sentFrom: 'cli'
                 }
@@ -255,10 +253,7 @@ export class ApiSessionClient extends EventEmitter {
     sendCodexMessage(body: any) {
         let content = {
             role: 'agent',
-            content: {
-                type: 'codex',
-                data: body  // This wraps the entire Claude message
-            },
+            content: body,
             meta: {
                 sentFrom: 'cli'
             }

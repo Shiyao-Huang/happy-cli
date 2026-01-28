@@ -48,10 +48,12 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
      */
     const getTaskStateManager = (): TaskStateManager | null => {
         const metadata = client.getMetadata();
-        if (!metadata?.teamId) {
+        // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+        const teamId = metadata?.teamId || metadata?.roomId;
+        if (!teamId) {
             return null;
         }
-        return new TaskStateManager(api, metadata.teamId, client.sessionId, metadata.role);
+        return new TaskStateManager(api, teamId, client.sessionId, metadata?.role);
     };
 
     //
@@ -307,7 +309,8 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
             if (!teamId) {
@@ -361,7 +364,8 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
     }, async () => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
             const myRole = metadata?.role;
             const mySessionId = client.sessionId;
 
@@ -376,26 +380,52 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
             }
 
             // Fetch team artifact to get members
+            // Members come from TWO sources (like the mobile kanban app):
+            // 1. board.team.members - detailed member info with roleId
+            // 2. artifact.header.sessions - session IDs of team members
             let teamMembers: any[] = [];
             try {
                 const artifact = await api.getArtifact(teamId);
 
-                // Try to get members from the board data first
+                // Parse the board body
                 let board: any = null;
                 if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
-                    try {
-                        board = JSON.parse(artifact.body.body);
-                    } catch (e) { /* ignore */ }
+                    const bodyValue = (artifact.body as { body?: unknown }).body;
+                    if (typeof bodyValue === 'string') {
+                        try {
+                            board = JSON.parse(bodyValue);
+                        } catch (e) { /* ignore */ }
+                    } else if (bodyValue && typeof bodyValue === 'object') {
+                        board = bodyValue;
+                    }
                 } else {
                     board = artifact.body;
                 }
 
-                if (board && board.team && Array.isArray(board.team.members)) {
-                    teamMembers = board.team.members;
-                } else if (artifact.header && Array.isArray(artifact.header.sessions)) {
-                    // Fallback to header sessions if available
-                    teamMembers = artifact.header.sessions.map((sid: string) => ({ sessionId: sid }));
-                }
+                // Combine members from both sources (like mobile app's roster computation)
+                const boardMembers = (board && board.team && Array.isArray(board.team.members))
+                    ? board.team.members
+                    : [];
+                const headerSessions = (artifact.header && Array.isArray(artifact.header.sessions))
+                    ? artifact.header.sessions
+                    : [];
+
+                // Create a map of existing members from board.team.members
+                const memberMap = new Map(boardMembers.map((m: any) => [m.sessionId, m]));
+
+                // Add all session IDs from header (these are the actual team members)
+                const allSessionIds = new Set([
+                    ...headerSessions,
+                    ...boardMembers.map((m: any) => m.sessionId)
+                ]);
+
+                // Build the final member list, preferring board member data when available
+                teamMembers = Array.from(allSessionIds).map((sessionId: string) => {
+                    const existing = memberMap.get(sessionId);
+                    return existing || { sessionId, roleId: '', displayName: sessionId };
+                });
+
+                logger.debug(`[happyMCP] get_team_info: Found ${teamMembers.length} members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
             } catch (e) {
                 logger.debug('[happyMCP] Failed to fetch team artifact:', e);
             }
@@ -446,11 +476,17 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
                     role: myRole || 'unassigned',
                     roleDefinition: roleDefinitions[myRole || ''] || { title: 'Unassigned', responsibilities: [], boundaries: [] }
                 },
-                teamMembers: teamMembers.map(m => ({
-                    sessionId: m.sessionId,
-                    role: m.role || 'unknown',
-                    displayName: m.displayName
-                })),
+                teamMembers: teamMembers.map(m => {
+                    // Members use roleId (from kanban), resolve to role title
+                    const roleId = m.roleId || m.role || '';
+                    const roleDef = roleDefinitions[roleId];
+                    return {
+                        sessionId: m.sessionId,
+                        role: roleDef?.title || roleId || 'unknown',
+                        roleId: roleId,
+                        displayName: m.displayName || m.sessionId?.substring(0, 8)
+                    };
+                }),
                 protocols,
                 teamId
             };
@@ -522,7 +558,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
             if (!teamId) {
@@ -591,7 +628,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
             const sessionId = client.sessionId;
             const workerRoles = new Set(['builder', 'framer']);
@@ -687,6 +725,62 @@ Use the \`send_team_message\` tool to communicate with your team members.
         }
     });
 
+    // Delete Task - Uses REST API for server-driven task orchestration with WebSocket events
+    mcp.registerTool('delete_task', {
+        description: 'Delete a task from the team board. ONLY MASTER role can delete tasks.',
+        title: 'Delete Task',
+        inputSchema: {
+            taskId: z.string().describe('The ID of the task to delete'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team to delete tasks.' }], isError: true };
+            }
+
+            // Role Check: Only Master can delete tasks
+            if (role !== 'master') {
+                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can delete tasks. Please ask the Master to delete this task.' }], isError: true };
+            }
+
+            // Use REST API - server handles artifact update + WebSocket event emission
+            const result = await api.deleteTask(teamId, args.taskId);
+
+            if (!result.success) {
+                return { content: [{ type: 'text', text: 'Error: Failed to delete task via server API.' }], isError: true };
+            }
+
+            // Notify Team
+            try {
+                const notification = {
+                    id: randomUUID(),
+                    teamId,
+                    content: `🗑️ **Task Deleted**: ${args.taskId}`,
+                    type: 'task-update',
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: role,
+                };
+                await api.sendTeamMessage(teamId, notification);
+            } catch (e) {
+                logger.debug('Failed to send task deletion notification', e);
+            }
+
+            return {
+                content: [{ type: 'text', text: `Task ${args.taskId} deleted successfully.` }],
+                isError: false,
+            };
+
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error deleting task: ${String(error)}` }], isError: true };
+        }
+    });
+
     // List Tasks - Uses TaskStateManager for role-based filtering
     mcp.registerTool('list_tasks', {
         description: 'List tasks for the current team. Returns role-filtered context including your assigned tasks, available tasks, and team stats.',
@@ -763,7 +857,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
             if (!teamId) {
@@ -837,7 +932,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            const teamId = metadata?.teamId;
+            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            const teamId = metadata?.teamId || metadata?.roomId;
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
@@ -878,7 +974,12 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
             let board: any = { tasks: [] };
             if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
-                try { board = JSON.parse(artifact.body.body); } catch (e) { /* ignore */ }
+                const bodyValue = (artifact.body as { body?: unknown }).body;
+                if (typeof bodyValue === 'string') {
+                    try { board = JSON.parse(bodyValue); } catch (e) { /* ignore */ }
+                } else if (bodyValue && typeof bodyValue === 'object') {
+                    board = bodyValue;
+                }
             } else if (artifact.body) {
                 board = artifact.body;
             }
@@ -1142,6 +1243,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             'get_team_info',
             'create_task',
             'update_task',
+            'delete_task',
             'list_tasks',
             // 嵌套任务工具 (v2)
             'create_subtask',

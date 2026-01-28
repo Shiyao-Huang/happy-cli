@@ -85,6 +85,7 @@ export type Artifact = {
   dataEncryptionKey?: string;
   headerVersion?: number;
   bodyVersion?: number;
+  seq?: number;
 }
 
 export interface ArtifactUpdateRequest {
@@ -130,6 +131,44 @@ export type TeamMessageUpdateBody = z.infer<typeof TeamMessageUpdateBodySchema>
 /**
  * Update event from server
  */
+export const TeamUpdateBodySchema = z.object({
+  t: z.literal('team-update'),
+  teamId: z.string(),
+  eventType: z.enum(['member-added', 'member-removed', 'team-archived', 'team-deleted', 'team-renamed']),
+  details: z.any()
+})
+
+export type TeamUpdateBody = z.infer<typeof TeamUpdateBodySchema>
+
+export const TaskCreatedBodySchema = z.object({
+  t: z.literal('task-created'),
+  teamId: z.string(),
+  taskId: z.string(),
+  task: z.any()
+})
+
+export type TaskCreatedBody = z.infer<typeof TaskCreatedBodySchema>
+
+export const TaskUpdatedBodySchema = z.object({
+  t: z.literal('task-updated'),
+  teamId: z.string(),
+  taskId: z.string(),
+  task: z.any()
+})
+
+export type TaskUpdatedBody = z.infer<typeof TaskUpdatedBodySchema>
+
+export const TaskDeletedBodySchema = z.object({
+  t: z.literal('task-deleted'),
+  teamId: z.string(),
+  taskId: z.string()
+})
+
+export type TaskDeletedBody = z.infer<typeof TaskDeletedBodySchema>
+
+/**
+ * Update event from server
+ */
 export const UpdateSchema = z.object({
   id: z.string(),
   seq: z.number(),
@@ -139,7 +178,11 @@ export const UpdateSchema = z.object({
     UpdateMachineBodySchema,
     UpdateArtifactBodySchema,
     KvBatchUpdateBodySchema,
-    TeamMessageUpdateBodySchema
+    TeamMessageUpdateBodySchema,
+    TeamUpdateBodySchema,
+    TaskCreatedBodySchema,
+    TaskUpdatedBodySchema,
+    TaskDeletedBodySchema
   ]),
   createdAt: z.number()
 })

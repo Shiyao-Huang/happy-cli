@@ -100,6 +100,14 @@ const DEFAULT_STATUS_PROPAGATION: StatusPropagation = {
     cascadeDeleteSubtasks: false
 };
 
+// Default Kanban columns for new team artifacts
+const DEFAULT_COLUMNS = [
+    { id: 'todo', title: 'To Do' },
+    { id: 'in-progress', title: 'In Progress' },
+    { id: 'review', title: 'Review' },
+    { id: 'done', title: 'Done' }
+];
+
 export class TaskStateManager {
     private api: ApiClient;
     private teamId: string;
@@ -205,25 +213,69 @@ export class TaskStateManager {
 
     /**
      * Get the full Kanban board (via server API)
+     * Includes lazy initialization: automatically creates team artifact if it doesn't exist
      */
     async getBoard(): Promise<KanbanBoard> {
+        // Step 1: Ensure artifact exists (lazy initialization)
+        // This MUST happen BEFORE calling server API, because server requires artifact to exist
+        await this.ensureArtifactExists();
+
+        // Step 2: Now use server API (artifact is guaranteed to exist)
         try {
-            // Use new server API
             const result = await this.api.listTasks(this.teamId);
             return {
-                columns: [
-                    { id: 'todo', title: 'To Do' },
-                    { id: 'in-progress', title: 'In Progress' },
-                    { id: 'review', title: 'Review' },
-                    { id: 'done', title: 'Done' }
-                ],
+                columns: DEFAULT_COLUMNS,
                 tasks: result.tasks
             };
         } catch (error) {
-            // Fallback to artifact if new API not available
-            logger.debug('[TaskStateManager] Falling back to artifact API:', error);
+            // Fallback to artifact if server API fails for other reasons
+            logger.debug('[TaskStateManager] Server API failed, falling back to artifact:', error);
             const artifact = await this.api.getArtifact(this.teamId);
             return this.parseBoard(artifact);
+        }
+    }
+
+    /**
+     * Ensure team artifact exists, create if not
+     * This is the key to CLI-first workflow - no need for Kanban UI
+     */
+    private async ensureArtifactExists(): Promise<void> {
+        try {
+            // Try to get artifact - if it exists, we're done
+            await this.api.getArtifact(this.teamId);
+            logger.debug('[TaskStateManager] Team artifact exists');
+        } catch (error) {
+            // Artifact doesn't exist - perform lazy initialization
+            logger.debug('[TaskStateManager] Team artifact not found, performing lazy initialization...');
+            await this.initializeTeamArtifact();
+        }
+    }
+
+    /**
+     * Lazy initialization: Create team artifact if it doesn't exist
+     * This enables CLI agents to work with teams without requiring Kanban UI initialization
+     */
+    private async initializeTeamArtifact(): Promise<void> {
+        const initialHeader = {
+            type: 'team',
+            name: `Team ${this.teamId.substring(0, 8)}`,
+            createdAt: Date.now()
+        };
+        const initialBody = {
+            body: JSON.stringify({
+                tasks: [],
+                columns: DEFAULT_COLUMNS,
+                members: [],
+                createdAt: Date.now()
+            })
+        };
+
+        try {
+            await this.api.createArtifact(this.teamId, initialHeader, initialBody);
+            logger.debug(`[TaskStateManager] Successfully initialized team artifact ${this.teamId}`);
+        } catch (createError) {
+            logger.debug(`[TaskStateManager] Failed to initialize team artifact:`, createError);
+            throw new Error(`Failed to initialize team artifact: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
         }
     }
 
@@ -248,9 +300,14 @@ export class TaskStateManager {
     private parseBoard(artifact: any): KanbanBoard {
         let board: KanbanBoard = { columns: [], tasks: [] };
         if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
-            try {
-                board = JSON.parse(artifact.body.body);
-            } catch (e) { /* ignore */ }
+            const bodyValue = (artifact.body as { body?: unknown }).body;
+            if (typeof bodyValue === 'string') {
+                try {
+                    board = JSON.parse(bodyValue);
+                } catch (e) { /* ignore */ }
+            } else if (bodyValue && typeof bodyValue === 'object') {
+                board = bodyValue as KanbanBoard;
+            }
         } else if (artifact.body) {
             board = artifact.body;
         }

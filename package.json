@@ -71,7 +71,7 @@
     "prerecommit": "yarn typecheck && yarn test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.11",
+    "@anthropic-ai/claude-code": "2.1.19",
     "@anthropic-ai/sdk": "0.71.2",
     "@happy/shared-team-config": "file:../shared/team-config",
     "@modelcontextprotocol/sdk": "^1.15.1",
@@ -100,6 +100,7 @@
     "tar": "^7.4.3",
     "tmp": "^0.2.5",
     "tweetnacl": "^1.0.3",
+    "yaml": "^2.5.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -85,7 +85,7 @@ tail -f ~/.happy/logs/2026-01-17-12-49-59-pid-20555.log
 
 ## Environment Variables
 
-- `HAPPY_SERVER_URL` - Custom server URL (default: https://api.cluster-fluster.com)
+- `HAPPY_SERVER_URL` - Custom server URL (default: https://top1vibe.com)
 - `HAPPY_WEBAPP_URL` - Custom web app URL (default: https://app.happy.engineering)
 - `HAPPY_HOME_DIR` - Custom home directory for Happy data (default: ~/.happy)
 - `HAPPY_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)

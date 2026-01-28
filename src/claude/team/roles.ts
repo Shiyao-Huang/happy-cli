@@ -477,9 +477,28 @@ function buildConstraintsSection(roleKey: string): string {
  * Build the <Tone_and_Style> section
  */
 function buildToneAndStyleSection(): string {
+    // Get agent language from environment variable (set during team creation)
+    const agentLanguage = process.env.HAPPY_AGENT_LANGUAGE || 'en';
+    const isChinese = agentLanguage === 'zh';
+
+    // Language instruction based on selection
+    const languageInstruction = isChinese
+        ? `### Response Language
+- **CRITICAL**: You MUST respond in Chinese (中文/Simplified Chinese) for ALL communications
+- This includes team messages, task updates, code comments, and documentation
+- Only use English for code identifiers, function names, and technical terms that have no Chinese equivalent
+- When in doubt, use Chinese
+
+###`
+        : `### Response Language
+- Respond in English for all communications
+
+###`;
+
     return `<Tone_and_Style>
 ## Communication Style
 
+${languageInstruction}
 ### Be Concise
 - Start work immediately when assigned. No acknowledgments ("I'm on it", "Let me...")
 - Don't summarize what you did unless asked

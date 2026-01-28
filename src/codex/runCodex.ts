@@ -29,6 +29,23 @@ import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
 import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+// Team collaboration imports
+import { TaskStateManager } from '@/claude/utils/taskStateManager';
+import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
+import { COORDINATION_ROLES } from '@/claude/team/roles';
+import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
+import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
+
+// Helper functions for role metadata
+function getRoleTitle(roleId: string): string {
+    const role = TEAM_ROLE_LIBRARY.find((r: any) => r.id === roleId);
+    return role?.title || roleId;
+}
+
+function getRoleResponsibilities(roleId: string): string[] {
+    const role = TEAM_ROLE_LIBRARY.find((r: any) => r.id === roleId);
+    return role?.responsibilities || [];
+}
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -840,6 +857,166 @@ export async function runCodex(opts: {
             logger.debug('[Codex] Failed to prepare Kanban instruction block', error);
         }
     }
+
+    // ============================================================
+    // Team Collaboration Initialization
+    // ============================================================
+    const teamId = metadata.teamId || metadata.roomId;
+    const role = metadata.role;
+    let taskStateManager: TaskStateManager | undefined;
+    let statusReporter: StatusReporter | undefined;
+    let teamStorage: TeamMessageStorage | undefined;
+    let teamInitialized = false;
+    let teamContextBlock: string | null = null;
+
+    if (teamId && role) {
+        logger.debug(`[Codex] Team mode detected: teamId=${teamId}, role=${role}`);
+
+        try {
+            // Initialize TaskStateManager
+            taskStateManager = new TaskStateManager(api, teamId, response.id, role);
+            logger.debug(`[Codex] TaskStateManager initialized for role ${role}`);
+
+            // Set up state change notifications
+            taskStateManager.setOnStateChange((change) => {
+                logger.debug(`[Codex] Kanban state change: ${change.type} - ${change.taskTitle}`);
+            });
+
+            // Initialize StatusReporter for automatic status updates
+            statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
+            logger.debug(`[Codex] StatusReporter initialized for role ${role}`);
+
+            // Initialize team message storage
+            teamStorage = new TeamMessageStorage(process.cwd());
+
+            // Get role metadata
+            const roleTitle = getRoleTitle(role) || role;
+            const roleResponsibilities = getRoleResponsibilities(role) || [];
+            const isCoordinator = COORDINATION_ROLES.includes(role);
+
+            // Send handshake message to announce presence
+            let introContent: string;
+            if (isCoordinator) {
+                introContent = `🎯 **${roleTitle}** online and ready to coordinate!
+
+As the team coordinator, I will:
+1. Analyze incoming requests and create execution plans
+2. Break down work into actionable tasks
+3. Assign tasks to team members
+
+📢 **Team Members:** Please report your status and availability. I will begin task assignment shortly.`;
+            } else {
+                const responsibilitiesText = roleResponsibilities.length > 0
+                    ? roleResponsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
+                    : 'Ready to assist the team';
+
+                introContent = `✅ **${roleTitle}** online and ready!
+
+**My Capabilities:**
+${responsibilitiesText}
+
+Awaiting task assignment from @master or @orchestrator.`;
+            }
+
+            // Send handshake message
+            const handshakeMsg = {
+                id: randomUUID(),
+                teamId,
+                content: introContent,
+                type: 'chat' as const,
+                timestamp: Date.now(),
+                fromSessionId: response.id,
+                fromRole: role,
+                metadata: { type: 'handshake', roleTitle }
+            };
+            await api.sendTeamMessage(teamId, handshakeMsg);
+            logger.debug(`[Codex] Sent handshake message to team`);
+            console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+
+            // Fetch team context (artifact + recent messages)
+            let teamData: any = null;
+            let teamName = 'Team';
+            let historyText = '(No recent history)';
+
+            try {
+                const artifact = await api.getArtifact(teamId);
+                teamData = artifact.body;
+                teamName = typeof artifact.header === 'object' && artifact.header?.name
+                    ? artifact.header.name
+                    : 'Team';
+                logger.debug('[Codex] Successfully fetched team artifact');
+            } catch (e) {
+                logger.debug('[Codex] Team artifact not available (this is OK for new teams):', e);
+            }
+
+            // Get recent messages for context
+            try {
+                const recentMessages = await teamStorage.getRecentContext(teamId, 20);
+                if (recentMessages && recentMessages.length > 0) {
+                    historyText = recentMessages.map((m: any) =>
+                        `[${m.fromRole || 'unknown'}] ${m.content?.substring(0, 100)}...`
+                    ).join('\n');
+                }
+            } catch (e) {
+                logger.debug('[Codex] Failed to get recent messages:', e);
+            }
+
+            // Get kanban context
+            let kanbanContextText = '';
+            try {
+                const kanbanContext = await taskStateManager.getFilteredContext();
+                const myTasks = kanbanContext.myTasks || [];
+                const availableTasks = kanbanContext.availableTasks || [];
+                const stats = kanbanContext.teamStats;
+
+                kanbanContextText = `
+## Current Kanban State
+- TODO: ${stats.todo} | In Progress: ${stats.inProgress} | Review: ${stats.review} | Done: ${stats.done}
+${myTasks.length > 0 ? `\n### My Assigned Tasks:\n${myTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')}` : ''}
+${availableTasks.length > 0 ? `\n### Available Tasks:\n${availableTasks.map(t => `- [${t.priority || 'medium'}] ${t.title}`).join('\n')}` : ''}
+${isCoordinator && kanbanContext.pendingApprovals?.length ? `\n### Pending Approvals:\n${kanbanContext.pendingApprovals.map(t => `- ${t.title}`).join('\n')}` : ''}`;
+            } catch (e) {
+                logger.debug('[Codex] Failed to get kanban context:', e);
+            }
+
+            // Build team context block for injection into prompt
+            teamContextBlock = trimIdent(`
+# Team Context for ${roleTitle}
+
+## Your Role
+You are **${roleTitle}** in team "${teamName}".
+${roleResponsibilities.length > 0 ? `\n**Responsibilities:**\n${roleResponsibilities.map(r => `- ${r}`).join('\n')}` : ''}
+
+${kanbanContextText}
+
+## Recent Team Activity
+${historyText}
+
+## Required Actions on Startup
+${isCoordinator ? `
+1. Call \`get_team_info\` to see full team roster and their status
+2. Call \`list_tasks\` to review current kanban state
+3. Send a MASTER STATUS REPORT to the team with current situation
+4. If there are pending tasks, begin assigning or working on them
+5. If no tasks, ask the user what they want the team to work on
+` : `
+1. Call \`get_team_info\` to understand your team and role
+2. Call \`list_tasks\` to see your assigned tasks and available work
+3. Report your status: "🟢 [${role.toUpperCase()}] Online and ready"
+4. If you have assigned tasks, begin working on them
+5. If no tasks, wait for assignment from Master
+`}
+`);
+
+            teamInitialized = true;
+            logger.debug('[Codex] Team initialization complete');
+
+        } catch (e) {
+            logger.debug('[Codex] Team initialization failed:', e);
+            console.log(`[Team] ⚠️ Failed to initialize team mode: ${e}`);
+        }
+    }
+
     let first = true;
 
     try {
@@ -941,13 +1118,31 @@ export async function runCodex(opts: {
                     };
 
                     const instructionBlocks: string[] = [];
-                    if (metadata.role) {
+
+                    // Inject team context if initialized (this includes role, responsibilities, kanban state, required actions)
+                    if (teamInitialized && teamContextBlock) {
+                        instructionBlocks.push(teamContextBlock);
+                    } else if (metadata.role) {
+                        // Fallback: basic role instruction if team initialization failed
                         instructionBlocks.push(
                             `You are a ${metadata.role} in a collaborative team. Coordinate with other agents via the shared Kanban board and keep task statuses accurate.`
                         );
                     }
+
                     if (desktopKanbanInstructionBlock) {
                         instructionBlocks.push(desktopKanbanInstructionBlock);
+                    } else if (!teamInitialized && (metadata.role || metadata.teamId || metadata.roomId)) {
+                        // No desktop MCP context AND team initialization failed
+                        // Instruct the agent to fetch team info via Happy MCP server
+                        instructionBlocks.push(
+                            trimIdent(`IMPORTANT: You are part of a team but don't have full team context yet.
+Before starting any work, you MUST call the get_team_info tool from the "happy" MCP server to:
+1. Understand your role and responsibilities
+2. See who else is on the team
+3. Learn the communication and workflow protocols
+
+Call functions.happy__get_team_info immediately as your first action.`)
+                        );
                     }
                     if (desktopMcpUrl) {
                         instructionBlocks.push(
