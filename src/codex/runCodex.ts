@@ -385,6 +385,22 @@ export async function runCodex(opts: {
         model: mode.model,
     }));
 
+    // Track current overrides to apply per message
+    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.HAPPY_PERMISSION_MODE);
+    if (currentPermissionMode) {
+        logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
+    }
+    if (!currentPermissionMode && process.env.HAPPY_ROOM_ID) {
+        currentPermissionMode = 'yolo';
+        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.HAPPY_ROOM_ID}`);
+    }
+    let currentModel: string | undefined = undefined;
+
+    const getCurrentEnhancedMode = (): EnhancedMode => ({
+        permissionMode: currentPermissionMode ?? 'default',
+        model: currentModel,
+    });
+
     session.on('artifact-update', (update: UpdateArtifactBody) => {
         logger.debug('[Codex] Received artifact update, forwarding to agent');
         client.sendArtifactUpdate(update);
@@ -398,7 +414,7 @@ export async function runCodex(opts: {
         const content = message.content || JSON.stringify(message);
         const formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
 
-        messageQueue.push(formattedMessage, { permissionMode: 'default' });
+        messageQueue.push(formattedMessage, getCurrentEnhancedMode());
     });
 
     session.on('metadata-update', (newMetadata: Metadata) => {
@@ -406,7 +422,7 @@ export async function runCodex(opts: {
         if (newMetadata.role && newMetadata.role !== metadata.role) {
             logger.debug(`[Codex] Role changed to ${newMetadata.role}`);
             const msg = `[System]: Your role has been updated to: ${newMetadata.role}. Please act accordingly.`;
-            messageQueue.push(msg, { permissionMode: 'default' });
+            messageQueue.push(msg, getCurrentEnhancedMode());
             metadata.role = newMetadata.role;
         }
     });
@@ -423,17 +439,6 @@ export async function runCodex(opts: {
     } catch (error) {
         logger.debug('[START] Failed to report to daemon (may not be running):', error);
     }
-
-    // Track current overrides to apply per message
-    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.HAPPY_PERMISSION_MODE);
-    if (currentPermissionMode) {
-        logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
-    }
-    if (!currentPermissionMode && process.env.HAPPY_ROOM_ID) {
-        currentPermissionMode = 'yolo';
-        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.HAPPY_ROOM_ID}`);
-    }
-    let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {
         // Resolve permission mode (validate)
