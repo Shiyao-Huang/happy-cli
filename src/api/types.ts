@@ -367,7 +367,8 @@ export const CreateSessionResponseSchema = z.object({
     metadata: z.string(),
     metadataVersion: z.number(),
     agentState: z.string().nullable(),
-    agentStateVersion: z.number()
+    agentStateVersion: z.number(),
+    dataEncryptionKey: z.string().optional()
   })
 })
 
@@ -387,10 +388,13 @@ export type UserMessage = z.infer<typeof UserMessageSchema>
 
 export const AgentMessageSchema = z.object({
   role: z.literal('agent'),
-  content: z.object({
-    type: z.literal('output'),
-    data: z.any()
-  }),
+  content: z.union([
+    z.object({
+      type: z.literal('output'),
+      data: z.any()
+    }),
+    z.any() // Allow raw message content for backward compatibility
+  ]),
   meta: MessageMetaSchema.optional()
 })
 
