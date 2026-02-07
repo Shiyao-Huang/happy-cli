@@ -1,12 +1,12 @@
-# Happy CLI Codebase Overview
+# Aha CLI Codebase Overview
 
 ## Project Overview
 
-Happy CLI (`handy-cli`) is a command-line tool that wraps Claude Code to enable remote control and session sharing. It's part of a three-component system:
+Aha CLI (`aha-cli`) is a command-line tool that wraps Claude Code to enable remote control and session sharing. It's part of a three-component system:
 
-1. **handy-cli** (this project) - CLI wrapper for Claude Code
-2. **handy** - React Native mobile client
-3. **handy-server** - Node.js server with Prisma (hosted at https://api.happy-servers.com/)
+1. **aha-cli** (this project) - CLI wrapper for Claude Code
+2. **aha** - React Native mobile client
+3. **aha-server** - Node.js server with Prisma (hosted at https://api.aha-servers.com/)
 
 ## Code Style Preferences
 
@@ -120,7 +120,7 @@ User interface components.
 
 ## Security Considerations
 
-- Private keys stored in `~/.handy/access.key` with restricted permissions
+- Private keys stored in `~/.aha/access.key` with restricted permissions
 - All communications encrypted using TweetNaCl
 - Challenge-response authentication prevents replay attacks
 - Session isolation through unique session IDs
@@ -140,21 +140,21 @@ User interface components.
 
 ## Starting the Daemon
 ```bash
-# From the happy-cli directory:
-./bin/happy.mjs daemon start
+# From the aha-cli directory:
+./bin/aha.mjs daemon start
 
 # With custom server URL (for local development):
-HAPPY_SERVER_URL=http://localhost:3005 ./bin/happy.mjs daemon start
+AHA_SERVER_URL=http://localhost:3005 ./bin/aha.mjs daemon start
 
 # Stop the daemon:
-./bin/happy.mjs daemon stop
+./bin/aha.mjs daemon stop
 
 # Check daemon status:
-./bin/happy.mjs daemon status
+./bin/aha.mjs daemon status
 ```
 
 ## Daemon Logs
-- Daemon logs are stored in `~/.happy-dev/logs/` (or `$HAPPY_HOME_DIR/logs/`)
+- Daemon logs are stored in `~/.aha-dev/logs/` (or `$AHA_HOME_DIR/logs/`)
 - Named with format: `YYYY-MM-DD-HH-MM-SS-daemon.log`
 
 # Session Forking `claude` and sdk behavior
@@ -219,7 +219,7 @@ Lines 7-8: New messages from current interaction
 {"parentUuid":"...","sessionId":"1433467f-ff14-4292-b5b2-2aac77a808f0","message":{"role":"user","content":"what file did we just see?"},...}
 ```
 
-## Implications for handy-cli
+## Implications for aha-cli
 
 When using --resume:
 1. Must handle new session ID in responses

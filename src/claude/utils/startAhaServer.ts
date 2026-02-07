@@ -1,6 +1,6 @@
 /**
- * Happy MCP server
- * Provides Happy CLI specific tools including chat session title management
+ * Aha MCP server
+ * Provides Aha CLI specific tools including chat session title management
  */
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -11,13 +11,13 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
-import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
+import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './taskStateManager';
 
-export async function startHappyServer(api: any, client: ApiSessionClient) {
+export async function startAhaServer(api: any, client: ApiSessionClient) {
     // Handler that sends title updates via the client
     const handler = async (title: string) => {
-        logger.debug('[happyMCP] Changing title to:', title);
+        logger.debug('[ahaMCP] Changing title to:', title);
         try {
             // Send title as a summary message, similar to title generator
             client.sendClaudeSessionMessage({
@@ -37,9 +37,9 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
     //
 
     const mcp = new McpServer({
-        name: "Happy MCP",
+        name: "Aha MCP",
         version: "1.0.0",
-        description: "Happy CLI MCP server with chat session management tools",
+        description: "Aha CLI MCP server with chat session management tools",
     });
 
     /**
@@ -48,7 +48,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
      */
     const getTaskStateManager = (): TaskStateManager | null => {
         const metadata = client.getMetadata();
-        // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+        // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
         const teamId = metadata?.teamId || metadata?.roomId;
         if (!teamId) {
             return null;
@@ -62,7 +62,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
 
     // Rules Resource
     mcp.registerResource(
-        "happy://context/rules",
+        "aha://context/rules",
         "Global Rules",
         {
             description: "Global rules for the agent",
@@ -87,7 +87,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
 
     // Preferences Resource
     mcp.registerResource(
-        "happy://context/preferences",
+        "aha://context/preferences",
         "User Preferences",
         {
             description: "User preferences for the agent",
@@ -270,7 +270,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
         },
     }, async (args) => {
         const response = await handler(args.title);
-        logger.debug('[happyMCP] Response:', response);
+        logger.debug('[ahaMCP] Response:', response);
 
         if (response.success) {
             return {
@@ -309,7 +309,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
@@ -364,7 +364,7 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
     }, async () => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const myRole = metadata?.role;
             const mySessionId = client.sessionId;
@@ -425,9 +425,9 @@ export async function startHappyServer(api: any, client: ApiSessionClient) {
                     return existing || { sessionId, roleId: '', displayName: sessionId };
                 });
 
-                logger.debug(`[happyMCP] get_team_info: Found ${teamMembers.length} members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
+                logger.debug(`[ahaMCP] get_team_info: Found ${teamMembers.length} members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
             } catch (e) {
-                logger.debug('[happyMCP] Failed to fetch team artifact:', e);
+                logger.debug('[ahaMCP] Failed to fetch team artifact:', e);
             }
 
             // ... (existing imports)
@@ -558,7 +558,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
@@ -628,7 +628,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
             const sessionId = client.sessionId;
@@ -735,7 +735,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
@@ -857,7 +857,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
 
@@ -932,7 +932,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
-            // Check both teamId and roomId - roomId is used for team artifacts from HAPPY_ROOM_ID env
+            // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
 
             if (!teamId) {
@@ -1254,7 +1254,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             'resolve_blocker'
         ],
         stop: () => {
-            logger.debug('[happyMCP] Stopping server');
+            logger.debug('[ahaMCP] Stopping server');
             mcp.close();
             server.close();
         }

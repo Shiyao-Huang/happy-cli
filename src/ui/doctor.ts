@@ -1,15 +1,15 @@
 /**
  * Doctor command implementation
- * 
+ *
  * Provides comprehensive diagnostics and troubleshooting information
- * for happy CLI including configuration, daemon status, logs, and links
+ * for aha CLI including configuration, daemon status, logs, and links
  */
 
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings, readCredentials } from '@/persistence'
 import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient'
-import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/daemon/doctor'
+import { findRunawayAhaProcesses, findAllAhaProcesses } from '@/daemon/doctor'
 import { readDaemonState } from '@/persistence'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -23,15 +23,15 @@ import packageJson from '../../package.json'
 export function getEnvironmentInfo(): Record<string, any> {
     return {
         PWD: process.env.PWD,
-        HAPPY_HOME_DIR: process.env.HAPPY_HOME_DIR,
-        HAPPY_SERVER_URL: process.env.HAPPY_SERVER_URL,
-        HAPPY_PROJECT_ROOT: process.env.HAPPY_PROJECT_ROOT,
+        AHA_HOME_DIR: process.env.AHA_HOME_DIR,
+        AHA_SERVER_URL: process.env.AHA_SERVER_URL,
+        AHA_PROJECT_ROOT: process.env.AHA_PROJECT_ROOT,
         DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING,
         NODE_ENV: process.env.NODE_ENV,
         DEBUG: process.env.DEBUG,
         workingDirectory: process.cwd(),
         processArgv: process.argv,
-        happyDir: configuration?.happyHomeDir,
+        ahaDir: configuration?.ahaHomeDir,
         serverUrl: configuration?.serverUrl,
         logsDir: configuration?.logsDir,
         processPid: process.pid,
@@ -77,13 +77,13 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         filter = 'all';
     }
     
-    console.log(chalk.bold.cyan('\n🩺 Happy CLI Doctor\n'));
+    console.log(chalk.bold.cyan('\n🩺 Aha CLI Doctor\n'));
 
     // For 'all' filter, show everything. For 'daemon', only show daemon-related info
     if (filter === 'all') {
         // Version and basic info
         console.log(chalk.bold('📋 Basic Information'));
-        console.log(`Happy CLI Version: ${chalk.green(packageJson.version)}`);
+        console.log(`Aha CLI Version: ${chalk.green(packageJson.version)}`);
         console.log(`Platform: ${chalk.green(process.platform)} ${process.arch}`);
         console.log(`Node.js Version: ${chalk.green(process.version)}`);
         console.log('');
@@ -91,7 +91,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Daemon spawn diagnostics
         console.log(chalk.bold('🔧 Daemon Spawn Diagnostics'));
         const projectRoot = projectPath();
-        const wrapperPath = join(projectRoot, 'bin', 'happy.mjs');
+        const wrapperPath = join(projectRoot, 'bin', 'aha.mjs');
         const cliEntrypoint = join(projectRoot, 'dist', 'index.mjs');
         
         console.log(`Project Root: ${chalk.blue(projectRoot)}`);
@@ -103,15 +103,15 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
 
         // Configuration
         console.log(chalk.bold('⚙️  Configuration'));
-        console.log(`Happy Home: ${chalk.blue(configuration.happyHomeDir)}`);
+        console.log(`Aha Home: ${chalk.blue(configuration.ahaHomeDir)}`);
         console.log(`Server URL: ${chalk.blue(configuration.serverUrl)}`);
         console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
 
         // Environment
         console.log(chalk.bold('\n🌍 Environment Variables'));
         const env = getEnvironmentInfo();
-        console.log(`HAPPY_HOME_DIR: ${env.HAPPY_HOME_DIR ? chalk.green(env.HAPPY_HOME_DIR) : chalk.gray('not set')}`);
-        console.log(`HAPPY_SERVER_URL: ${env.HAPPY_SERVER_URL ? chalk.green(env.HAPPY_SERVER_URL) : chalk.gray('not set')}`);
+        console.log(`AHA_HOME_DIR: ${env.AHA_HOME_DIR ? chalk.green(env.AHA_HOME_DIR) : chalk.gray('not set')}`);
+        console.log(`AHA_SERVER_URL: ${env.AHA_SERVER_URL ? chalk.green(env.AHA_SERVER_URL) : chalk.gray('not set')}`);
         console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
         console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);
         console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray('not set')}`);
@@ -167,10 +167,10 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
             console.log(chalk.gray(JSON.stringify(state, null, 2)));
         }
 
-        // All Happy processes
-        const allProcesses = await findAllHappyProcesses();
+        // All Aha processes
+        const allProcesses = await findAllAhaProcesses();
         if (allProcesses.length > 0) {
-            console.log(chalk.bold('\n🔍 All Happy CLI Processes'));
+            console.log(chalk.bold('\n🔍 All Aha CLI Processes'));
 
             // Group by type
             const grouped = allProcesses.reduce((groups, process) => {
@@ -205,12 +205,12 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
                 });
             });
         } else {
-            console.log(chalk.red('❌ No happy processes found'));
+            console.log(chalk.red('❌ No aha processes found'));
         }
 
         if (filter === 'all' && allProcesses.length > 1) { // More than just current process
             console.log(chalk.bold('\n💡 Process Management'));
-            console.log(chalk.gray('To clean up runaway processes: happy doctor clean'));
+            console.log(chalk.gray('To clean up runaway processes: aha doctor clean'));
         }
     } catch (error) {
         console.log(chalk.red('❌ Error checking daemon status'));
@@ -261,8 +261,8 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
 
         // Support and bug reports
         console.log(chalk.bold('\n🐛 Support & Bug Reports'));
-        console.log(`Report issues: ${chalk.blue('https://github.com/slopus/happy-cli/issues')}`);
-        console.log(`Documentation: ${chalk.blue('https://happy.engineering/')}`);
+        console.log(`Report issues: ${chalk.blue('https://github.com/slopus/aha-cli/issues')}`);
+        console.log(`Documentation: ${chalk.blue('https://aha.engineering/')}`);
     }
 
     console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));

@@ -1,4 +1,4 @@
-# Happy
+# Aha
 
 Code on the go controlling claude code from your mobile device.
 
@@ -7,13 +7,13 @@ Free. Open source. Code anywhere.
 ## Installation
 
 ```bash
-npm install -g happy-coder
+npm install -g aha-coder
 ```
 
 ## Usage
 
 ```bash
-happy
+aha
 ```
 
 This will:
@@ -23,12 +23,12 @@ This will:
 
 ## Commands
 
-- `happy auth` – Manage authentication
-- `happy codex` – Start Codex mode
-- `happy connect` – Store AI vendor API keys in Happy cloud
-- `happy notify` – Send a push notification to your devices
-- `happy daemon` – Manage background service
-- `happy doctor` – System diagnostics & troubleshooting
+- `aha auth` – Manage authentication
+- `aha codex` – Start Codex mode
+- `aha connect` – Store AI vendor API keys in Aha cloud
+- `aha notify` – Send a push notification to your devices
+- `aha daemon` – Manage background service
+- `aha doctor` – System diagnostics & troubleshooting
 
 ## Daemon
 
@@ -38,16 +38,16 @@ The daemon is a background service that enables remote control from the mobile a
 
 ```bash
 # Start daemon with default server
-./bin/happy.mjs daemon start
+./bin/aha.mjs daemon start
 
 # Start daemon with custom server URL (for local development)
-HAPPY_SERVER_URL=http://localhost:3005 ./bin/happy.mjs daemon start
+AHA_SERVER_URL=http://localhost:3005 ./bin/aha.mjs daemon start
 
 # Check daemon status
-./bin/happy.mjs daemon status
+./bin/aha.mjs daemon status
 
 # Stop daemon
-./bin/happy.mjs daemon stop
+./bin/aha.mjs daemon stop
 ```
 
 ### Daemon for Teams
@@ -56,22 +56,22 @@ HAPPY_SERVER_URL=http://localhost:3005 ./bin/happy.mjs daemon start
 
 1. Receives the spawn request from the mobile app
 2. Creates new Claude sessions with `teamId` and `role` in their metadata
-3. Sets environment variables (`HAPPY_ROOM_ID`, `HAPPY_AGENT_ROLE`) for team context
+3. Sets environment variables (`AHA_ROOM_ID`, `AHA_AGENT_ROLE`) for team context
 4. Manages the lifecycle of spawned sessions
 
 ### Daemon Logs
 
-Daemon logs are stored in `~/.happy/logs/` (or `$HAPPY_HOME_DIR/logs/`):
+Daemon logs are stored in `~/.aha/logs/` (or `$AHA_HOME_DIR/logs/`):
 - Format: `YYYY-MM-DD-HH-MM-SS-pid-PID-daemon.log`
 - Session logs: `YYYY-MM-DD-HH-MM-SS-pid-PID.log`
 
 View logs for debugging:
 ```bash
 # View daemon logs
-tail -f ~/.happy/logs/*-daemon.log
+tail -f ~/.aha/logs/*-daemon.log
 
 # View specific session logs
-tail -f ~/.happy/logs/2026-01-17-12-49-59-pid-20555.log
+tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
 ```
 
 ## Options
@@ -85,11 +85,11 @@ tail -f ~/.happy/logs/2026-01-17-12-49-59-pid-20555.log
 
 ## Environment Variables
 
-- `HAPPY_SERVER_URL` - Custom server URL (default: https://top1vibe.com)
-- `HAPPY_WEBAPP_URL` - Custom web app URL (default: https://app.happy.engineering)
-- `HAPPY_HOME_DIR` - Custom home directory for Happy data (default: ~/.happy)
-- `HAPPY_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
-- `HAPPY_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
+- `AHA_SERVER_URL` - Custom server URL (default: https://top1vibe.com)
+- `AHA_WEBAPP_URL` - Custom web app URL (default: https://app.aha.engineering)
+- `AHA_HOME_DIR` - Custom home directory for Aha data (default: ~/.aha)
+- `AHA_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
+- `AHA_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
 
 ## Requirements
 

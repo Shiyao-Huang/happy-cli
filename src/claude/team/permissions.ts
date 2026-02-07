@@ -1,5 +1,5 @@
 /**
- * Happy Team Runtime Permission Validation System
+ * Aha Team Runtime Permission Validation System
  *
  * This module provides runtime validation of tool access based on role definitions
  * from ROLE_DEFINITIONS.yaml. It enforces the principle of least privilege and
@@ -83,7 +83,7 @@ let roleDefinitions: RoleDefinitions | null = null;
 
 const ROLE_DEFINITIONS_PATH = path.join(
   __dirname,
-  '../../../../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'
+  '../../../../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'
 );
 
 /**

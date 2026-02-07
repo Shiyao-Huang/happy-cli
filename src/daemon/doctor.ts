@@ -1,6 +1,6 @@
 /**
  * Daemon doctor utilities
- * 
+ *
  * Process discovery and cleanup functions for the daemon
  * Helps diagnose and fix issues with hung or orphaned processes
  */
@@ -9,25 +9,25 @@ import psList from 'ps-list';
 import spawn from 'cross-spawn';
 
 /**
- * Find all Happy CLI processes (including current process)
+ * Find all Aha CLI processes (including current process)
  */
-export async function findAllHappyProcesses(): Promise<Array<{ pid: number, command: string, type: string }>> {
+export async function findAllAhaProcesses(): Promise<Array<{ pid: number, command: string, type: string }>> {
   try {
     const processes = await psList();
     const allProcesses: Array<{ pid: number, command: string, type: string }> = [];
-    
+
     for (const proc of processes) {
       const cmd = proc.cmd || '';
       const name = proc.name || '';
-      
-      // Check if it's a Happy process
-      const isHappy = name.includes('happy') || 
-                      name === 'node' && (cmd.includes('happy-cli') || cmd.includes('dist/index.mjs')) ||
-                      cmd.includes('happy.mjs') ||
-                      cmd.includes('happy-coder') ||
-                      (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('happy-cli'));
-      
-      if (!isHappy) continue;
+
+      // Check if it's an Aha process
+      const isAha = name.includes('aha') ||
+                    name === 'node' && (cmd.includes('aha-cli') || cmd.includes('dist/index.mjs')) ||
+                    cmd.includes('aha.mjs') ||
+                    cmd.includes('aha-coder') ||
+                    (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('aha-cli'));
+
+      if (!isAha) continue;
 
       // Classify process type
       let type = 'unknown';
@@ -57,14 +57,14 @@ export async function findAllHappyProcesses(): Promise<Array<{ pid: number, comm
 }
 
 /**
- * Find all runaway Happy CLI processes that should be killed
+ * Find all runaway Aha CLI processes that should be killed
  */
-export async function findRunawayHappyProcesses(): Promise<Array<{ pid: number, command: string }>> {
-  const allProcesses = await findAllHappyProcesses();
-  
+export async function findRunawayAhaProcesses(): Promise<Array<{ pid: number, command: string }>> {
+  const allProcesses = await findAllAhaProcesses();
+
   // Filter to just runaway processes (excluding current process)
   return allProcesses
-    .filter(p => 
+    .filter(p =>
       p.pid !== process.pid && (
         p.type === 'daemon' ||
         p.type === 'dev-daemon' ||
@@ -78,17 +78,17 @@ export async function findRunawayHappyProcesses(): Promise<Array<{ pid: number, 
 }
 
 /**
- * Kill all runaway Happy CLI processes
+ * Kill all runaway Aha CLI processes
  */
-export async function killRunawayHappyProcesses(): Promise<{ killed: number, errors: Array<{ pid: number, error: string }> }> {
-  const runawayProcesses = await findRunawayHappyProcesses();
+export async function killRunawayAhaProcesses(): Promise<{ killed: number, errors: Array<{ pid: number, error: string }> }> {
+  const runawayProcesses = await findRunawayAhaProcesses();
   const errors: Array<{ pid: number, error: string }> = [];
   let killed = 0;
-  
+
   for (const { pid, command } of runawayProcesses) {
     try {
       console.log(`Killing runaway process PID ${pid}: ${command}`);
-      
+
       if (process.platform === 'win32') {
         // Windows: use taskkill
         const result = spawn.sync('taskkill', ['/F', '/PID', pid.toString()], { stdio: 'pipe' });
@@ -97,10 +97,10 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
       } else {
         // Unix: try SIGTERM first
         process.kill(pid, 'SIGTERM');
-        
+
         // Wait a moment
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
         // Check if still alive
         const processes = await psList();
         const stillAlive = processes.find(p => p.pid === pid);
@@ -109,7 +109,7 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
           process.kill(pid, 'SIGKILL');
         }
       }
-      
+
       console.log(`Successfully killed runaway process PID ${pid}`);
       killed++;
     } catch (error) {

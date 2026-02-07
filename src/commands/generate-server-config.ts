@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Generate happy-server role configuration from ROLE_DEFINITIONS.yaml
+ * Generate aha-server role configuration from ROLE_DEFINITIONS.yaml
  *
  * This command reads the unified ROLE_DEFINITIONS.yaml and generates
- * TypeScript configuration for the happy-server runtime.
+ * TypeScript configuration for the aha-server runtime.
  *
  * Usage:
- *   happy-cli generate-server-config [--source ROLE_DEFINITIONS.yaml]
+ *   aha-cli generate-server-config [--source ROLE_DEFINITIONS.yaml]
  */
 
 import fs from 'fs';
@@ -45,10 +45,10 @@ function generateServerConfig(roleDefinitions: RoleDefinitions): string {
 
   // Generate TypeScript configuration
   let content = `/**
- * Happy Server Role Configuration
+ * Aha Server Role Configuration
  *
  * AUTO-GENERATED from ROLE_DEFINITIONS.yaml
- * DO NOT EDIT MANUALY - Regenerate with: happy-cli generate-server-config
+ * DO NOT EDIT MANUALY - Regenerate with: aha-cli generate-server-config
  *
  * Generated: ${new Date().toISOString()}
  */
@@ -176,7 +176,7 @@ export const ROLE_DEFINITIONS: Record<string, RoleConfig> = {
 function main() {
   const args = process.argv.slice(2);
   const sourceIndex = args.indexOf('--source');
-  const sourcePath = sourceIndex >= 0 ? args[sourceIndex + 1] : '.happy/roles/ROLE_DEFINITIONS.yaml';
+  const sourcePath = sourceIndex >= 0 ? args[sourceIndex + 1] : '.aha/roles/ROLE_DEFINITIONS.yaml';
 
   // Resolve absolute path
   const absoluteSourcePath = path.resolve(process.cwd(), sourcePath);
@@ -195,7 +195,7 @@ function main() {
   console.log(`✅ Found ${Object.keys(roleDefinitions.roles).length} role definitions`);
 
   // Target directory for server config
-  const targetDir = path.resolve(process.cwd(), 'happy-server/sources/config');
+  const targetDir = path.resolve(process.cwd(), 'aha-server/sources/config');
 
   // Create directory if it doesn't exist
   if (!fs.existsSync(targetDir)) {

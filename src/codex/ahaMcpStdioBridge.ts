@@ -1,10 +1,10 @@
 /**
- * Happy MCP STDIO Bridge
+ * Aha MCP STDIO Bridge
  *
- * Minimal STDIO MCP server that bridges to a Happy HTTP MCP server.
+ * Minimal STDIO MCP server that bridges to an Aha HTTP MCP server.
  * It dynamically discovers tools from the HTTP server and exposes them via STDIO.
  *
- * Configure the target HTTP MCP URL via env var `HAPPY_HTTP_MCP_URL` or
+ * Configure the target HTTP MCP URL via env var `AHA_HTTP_MCP_URL` or
  * via CLI flag `--url <http://127.0.0.1:PORT>`.
  *
  * Note: This process must not print to stdout as it would break MCP STDIO.
@@ -31,19 +31,19 @@ function parseArgs(argv: string[]): { url: string | null } {
 async function main() {
   // Resolve target HTTP MCP URL
   const { url: urlFromArgs } = parseArgs(process.argv.slice(2));
-  const baseUrl = urlFromArgs || process.env.HAPPY_HTTP_MCP_URL || '';
+  const baseUrl = urlFromArgs || process.env.AHA_HTTP_MCP_URL || '';
 
   if (!baseUrl) {
     // Write to stderr; never stdout.
     process.stderr.write(
-      '[happy-mcp] Missing target URL. Set HAPPY_HTTP_MCP_URL or pass --url <http://127.0.0.1:PORT>\n'
+      '[aha-mcp] Missing target URL. Set AHA_HTTP_MCP_URL or pass --url <http://127.0.0.1:PORT>\n'
     );
     process.exit(2);
   }
 
   // Connect to the HTTP MCP Server
   const client = new Client(
-    { name: 'happy-stdio-bridge', version: '1.0.0' },
+    { name: 'aha-stdio-bridge', version: '1.0.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -55,9 +55,9 @@ async function main() {
 
   // Create STDIO MCP server
   const server = new McpServer({
-    name: 'Happy MCP Bridge',
+    name: 'Aha MCP Bridge',
     version: '1.0.0',
-    description: 'STDIO bridge forwarding to Happy HTTP MCP',
+    description: 'STDIO bridge forwarding to Aha HTTP MCP',
   });
 
   // Dynamically register all tools found on the HTTP server
@@ -93,7 +93,7 @@ async function main() {
 // Start and surface fatal errors to stderr only
 main().catch((err) => {
   try {
-    process.stderr.write(`[happy-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`[aha-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
   } finally {
     process.exit(1);
   }

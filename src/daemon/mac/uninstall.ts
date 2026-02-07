@@ -1,10 +1,10 @@
 /**
- * Uninstallation script for Happy daemon LaunchDaemon
- * 
+ * Uninstallation script for Aha daemon LaunchDaemon
+ *
  * NOTE: This uninstallation method is currently NOT USED since we moved away from
  * system-level daemon installation. See install.ts for the full explanation.
- * 
- * This code is kept for potential future use if we decide to offer system-level 
+ *
+ * This code is kept for potential future use if we decide to offer system-level
  * installation/uninstallation as an option.
  */
 
@@ -12,7 +12,7 @@ import { existsSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { logger } from '@/ui/logger';
 
-const PLIST_LABEL = 'com.happy-cli.daemon';
+const PLIST_LABEL = 'com.aha-cli.daemon';
 const PLIST_FILE = `/Library/LaunchDaemons/${PLIST_LABEL}.plist`;
 
 export async function uninstall(): Promise<void> {

@@ -262,7 +262,7 @@ export async function runValidateSpec(args: string[]): Promise<void> {
     console.log(`
 OpenSpec Validation Tool
 
-Usage: happy validate-spec <path-to-spec.md>
+Usage: aha validate-spec <path-to-spec.md>
 
 Validates Spec documents against OpenSpec 1.0 specification:
   ✓ Checks for required sections
@@ -279,8 +279,8 @@ Exit codes:
   2 - Usage error
 
 Examples:
-  happy validate-spec ./specs/user-authentication.md
-  happy validate-spec ./changes/add-oauth/spec.md
+  aha validate-spec ./specs/user-authentication.md
+  aha validate-spec ./changes/add-oauth/spec.md
 `);
     return;
   }

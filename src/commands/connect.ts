@@ -7,11 +7,11 @@ import { authenticateGemini } from './connect/authenticateGemini';
 
 /**
  * Handle connect subcommand
- * 
+ *
  * Implements connect subcommands for storing AI vendor API keys:
- * - connect codex: Store OpenAI API key in Happy cloud
- * - connect claude: Store Anthropic API key in Happy cloud
- * - connect gemini: Store Gemini API key in Happy cloud
+ * - connect codex: Store OpenAI API key in Aha cloud
+ * - connect claude: Store Anthropic API key in Aha cloud
+ * - connect gemini: Store Gemini API key in Aha cloud
  * - connect help: Show help for connect command
  */
 export async function handleConnectCommand(args: string[]): Promise<void> {
@@ -41,39 +41,39 @@ export async function handleConnectCommand(args: string[]): Promise<void> {
 
 function showConnectHelp(): void {
     console.log(`
-${chalk.bold('happy connect')} - Connect AI vendor API keys to Happy cloud
+${chalk.bold('aha connect')} - Connect AI vendor API keys to Aha cloud
 
 ${chalk.bold('Usage:')}
-  happy connect codex        Store your Codex API key in Happy cloud
-  happy connect claude       Store your Anthropic API key in Happy cloud
-  happy connect gemini       Store your Gemini API key in Happy cloud
-  happy connect help         Show this help message
+  aha connect codex        Store your Codex API key in Aha cloud
+  aha connect claude       Store your Anthropic API key in Aha cloud
+  aha connect gemini       Store your Gemini API key in Aha cloud
+  aha connect help         Show this help message
 
 ${chalk.bold('Description:')}
   The connect command allows you to securely store your AI vendor API keys
-  in Happy cloud. This enables you to use these services through Happy
+  in Aha cloud. This enables you to use these services through Aha
   without exposing your API keys locally.
 
 ${chalk.bold('Examples:')}
-  happy connect codex
-  happy connect claude
-  happy connect gemini
+  aha connect codex
+  aha connect claude
+  aha connect gemini
 
-${chalk.bold('Notes:')} 
-  • You must be authenticated with Happy first (run 'happy auth login')
-  • API keys are encrypted and stored securely in Happy cloud
-  • You can manage your stored keys at app.happy.engineering
+${chalk.bold('Notes:')}
+  • You must be authenticated with Aha first (run 'aha auth login')
+  • API keys are encrypted and stored securely in Aha cloud
+  • You can manage your stored keys at app.aha.engineering
 `);
 }
 
 async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displayName: string): Promise<void> {
-    console.log(chalk.bold(`\n🔌 Connecting ${displayName} to Happy cloud\n`));
+    console.log(chalk.bold(`\n🔌 Connecting ${displayName} to Aha cloud\n`));
 
     // Check if authenticated
     const credentials = await readCredentials();
     if (!credentials) {
-        console.log(chalk.yellow('⚠️  Not authenticated with Happy'));
-        console.log(chalk.gray('  Please run "happy auth login" first'));
+        console.log(chalk.yellow('⚠️  Not authenticated with Aha'));
+        console.log(chalk.gray('  Please run "aha auth login" first'));
         process.exit(1);
     }
 

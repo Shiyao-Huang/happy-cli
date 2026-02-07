@@ -32,7 +32,7 @@ async function daemonPost(path: string, body?: any): Promise<{ error?: string } 
   }
 
   try {
-    const timeout = process.env.HAPPY_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.HAPPY_DAEMON_HTTP_TIMEOUT) : 10_000;
+    const timeout = process.env.AHA_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.AHA_DAEMON_HTTP_TIMEOUT) : 10_000;
     const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -90,30 +90,30 @@ export async function stopDaemonHttp(): Promise<void> {
 
 /**
  * The version check is still quite naive.
- * For instance we are not handling the case where we upgraded happy,
+ * For instance we are not handling the case where we upgraded aha,
  * the daemon is still running, and it recieves a new message to spawn a new session.
  * This is a tough case - we need to somehow figure out to restart ourselves,
  * yet still handle the original request.
- * 
+ *
  * Options:
  * 1. Periodically check during the health checks whether our version is the same as CLIs version. If not - restart.
  * 2. Wait for a command from the machine session, or any other signal to
  * check for version & restart.
  *   a. Handle the request first
  *   b. Let the request fail, restart and rely on the client retrying the request
- * 
+ *
  * I like option 1 a little better.
- * Maybe we can ... wait for it ... have another daemon to make sure 
+ * Maybe we can ... wait for it ... have another daemon to make sure
  * our daemon is always alive and running the latest version.
- * 
+ *
  * That seems like an overkill and yet another process to manage - lets not do this :D
- * 
+ *
  * TODO: This function should return a state object with
  * clear state - if it is running / or errored out or something else.
  * Not just a boolean.
- * 
+ *
  * We can destructure the response on the caller for richer output.
- * For instance when running `happy daemon status` we can show more information.
+ * For instance when running `aha daemon status` we can show more information.
  */
 export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolean> {
   const state = await readDaemonState();
@@ -136,10 +136,10 @@ export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolea
  * Check if the running daemon version matches the current CLI version.
  * This should work from both the daemon itself & a new CLI process.
  * Works via the daemon.state.json file.
- * 
+ *
  * @returns true if versions match, false if versions differ or no daemon running
  */
-export async function isDaemonRunningCurrentlyInstalledHappyVersion(): Promise<boolean> {
+export async function isDaemonRunningCurrentlyInstalledAhaVersion(): Promise<boolean> {
   logger.debug('[DAEMON CONTROL] Checking if daemon is running same version');
   const runningDaemon = await checkIfDaemonRunningAndCleanupStaleState();
   if (!runningDaemon) {
@@ -152,29 +152,29 @@ export async function isDaemonRunningCurrentlyInstalledHappyVersion(): Promise<b
     logger.debug('[DAEMON CONTROL] No daemon state found, returning false');
     return false;
   }
-  
+
   try {
     // Read package.json on demand from disk - so we are guaranteed to get the latest version
     const packageJsonPath = join(projectPath(), 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const currentCliVersion = packageJson.version;
-    
+
     logger.debug(`[DAEMON CONTROL] Current CLI version: ${currentCliVersion}, Daemon started with version: ${state.startedWithCliVersion}`);
     return currentCliVersion === state.startedWithCliVersion;
-    
+
     // PREVIOUS IMPLEMENTATION - Keeping this commented in case we need it
-    // Kirill does not understand how the upgrade of npm packages happen and whether 
-    // we will get a new path or not when happy-coder is upgraded globally.
-    // If reading package.json doesn't work correctly after npm upgrades, 
+    // Kirill does not understand how the upgrade of npm packages happen and whether
+    // we will get a new path or not when aha-coder is upgraded globally.
+    // If reading package.json doesn't work correctly after npm upgrades,
     // we can revert to spawning a process (but should add timeout and cleanup!)
     /*
-    const { spawnHappyCLI } = await import('@/utils/spawnHappyCLI');
-    const happyProcess = spawnHappyCLI(['--version'], { stdio: 'pipe' });
+    const { spawnAhaCLI } = await import('@/utils/spawnAhaCLI');
+    const ahaProcess = spawnAhaCLI(['--version'], { stdio: 'pipe' });
     let version: string | null = null;
-    happyProcess.stdout?.on('data', (data) => {
+    ahaProcess.stdout?.on('data', (data) => {
       version = data.toString().trim();
     });
-    await new Promise(resolve => happyProcess.stdout?.on('close', resolve));
+    await new Promise(resolve => ahaProcess.stdout?.on('close', resolve));
     logger.debug(`[DAEMON CONTROL] Current CLI version: ${version}, Daemon started with version: ${state.startedWithCliVersion}`);
     return version === state.startedWithCliVersion;
     */

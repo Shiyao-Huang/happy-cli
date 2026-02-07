@@ -18,7 +18,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import { projectPath } from '@/projectPath';
 import { resolve, join } from 'node:path';
 import fs from 'node:fs';
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import { trimIdent } from "@/utils/trimIdent";
@@ -34,7 +34,7 @@ import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
 import { COORDINATION_ROLES } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
-import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
+import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 
 // Helper functions for role metadata
 function getRoleTitle(roleId: string): string {
@@ -97,7 +97,7 @@ function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | und
         case 'bypasspermissions':
             return 'yolo';
         default:
-            logger.debug(`[Codex] Ignoring unknown HAPPY_PERMISSION_MODE value: ${rawMode}`);
+            logger.debug(`[Codex] Ignoring unknown AHA_PERMISSION_MODE value: ${rawMode}`);
             return undefined;
     }
 }
@@ -136,7 +136,7 @@ type DesktopKanbanState = {
 
 async function fetchDesktopKanbanState(desktopMcpUrl: string, roomId: string): Promise<DesktopKanbanState | null> {
     const client = new McpHttpClient(
-        { name: 'happy-cli-kanban-bootstrap', version: '1.0.0' },
+        { name: 'aha-cli-kanban-bootstrap', version: '1.0.0' },
         { capabilities: { tools: {} } }
     );
     let transport: StreamableHTTPClientTransport | null = null;
@@ -333,7 +333,7 @@ export async function runCodex(opts: {
     const settings = await readSettings();
     let machineId = settings?.machineId;
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/happy-cli/issues`);
+        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/aha-cli/issues`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -356,9 +356,9 @@ export async function runCodex(opts: {
         os: os.platform(),
         machineId: machineId,
         homeDir: os.homedir(),
-        happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: projectPath(),
-        happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
+        ahaHomeDir: configuration.ahaHomeDir,
+        ahaLibDir: projectPath(),
+        ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
         hostPid: process.pid,
         startedBy: opts.startedBy || 'terminal',
@@ -367,15 +367,15 @@ export async function runCodex(opts: {
         lifecycleStateSince: Date.now(),
         flavor: 'codex'
     };
-    if (process.env.HAPPY_AGENT_ROLE) {
-        metadata.role = process.env.HAPPY_AGENT_ROLE;
+    if (process.env.AHA_AGENT_ROLE) {
+        metadata.role = process.env.AHA_AGENT_ROLE;
     }
-    if (process.env.HAPPY_ROOM_ID) {
-        metadata.roomId = process.env.HAPPY_ROOM_ID;
+    if (process.env.AHA_ROOM_ID) {
+        metadata.roomId = process.env.AHA_ROOM_ID;
     }
-    if (process.env.HAPPY_ROOM_NAME) {
-        metadata.roomName = process.env.HAPPY_ROOM_NAME;
-        metadata.name = process.env.HAPPY_ROOM_NAME;
+    if (process.env.AHA_ROOM_NAME) {
+        metadata.roomName = process.env.AHA_ROOM_NAME;
+        metadata.name = process.env.AHA_ROOM_NAME;
     }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
     const session = api.sessionSyncClient(response);
@@ -386,13 +386,13 @@ export async function runCodex(opts: {
     }));
 
     // Track current overrides to apply per message
-    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.HAPPY_PERMISSION_MODE);
+    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.AHA_PERMISSION_MODE);
     if (currentPermissionMode) {
         logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
     }
-    if (!currentPermissionMode && process.env.HAPPY_ROOM_ID) {
+    if (!currentPermissionMode && process.env.AHA_ROOM_ID) {
         currentPermissionMode = 'yolo';
-        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.HAPPY_ROOM_ID}`);
+        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.AHA_ROOM_ID}`);
     }
     let currentModel: string | undefined = undefined;
 
@@ -579,8 +579,8 @@ export async function runCodex(opts: {
             // Stop caffeinate
             stopCaffeinate();
 
-            // Stop Happy MCP server
-            happyServer.stop();
+            // Stop Aha MCP server
+            ahaServer.stop();
 
             logger.debug('[Codex] Session termination complete, exiting');
             process.exit(0);
@@ -828,35 +828,35 @@ export async function runCodex(opts: {
         }
     });
 
-    // Start Happy MCP server
-    const desktopMcpUrl = process.env.HAPPY_DESKTOP_MCP_URL;
-    const happyServer = await startHappyServer(api, session);
-    logger.debug(`[START] Happy MCP server started at ${happyServer.url}`);
-    const bridgeCommand = join(projectPath(), 'bin', 'happy-mcp.mjs');
+    // Start Aha MCP server
+    const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
+    const ahaServer = await startAhaServer(api, session);
+    logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
+    const bridgeCommand = join(projectPath(), 'bin', 'aha-mcp.mjs');
     const mcpServers: Record<string, { command: string; args: string[] }> = {
-        happy: {
+        aha: {
             command: bridgeCommand,
-            args: ['--url', happyServer.url]
+            args: ['--url', ahaServer.url]
         }
     };
     if (desktopMcpUrl) {
-        mcpServers['happy-desktop'] = {
+        mcpServers['aha-desktop'] = {
             command: bridgeCommand,
             args: ['--url', desktopMcpUrl]
         };
     }
-    const happyRoomIdEnv = process.env.HAPPY_ROOM_ID;
-    const happyRoleLabelEnv = process.env.HAPPY_ROLE_LABEL;
-    const happyMemberIdEnv = process.env.HAPPY_MEMBER_ID;
+    const ahaRoomIdEnv = process.env.AHA_ROOM_ID;
+    const ahaRoleLabelEnv = process.env.AHA_ROLE_LABEL;
+    const ahaMemberIdEnv = process.env.AHA_MEMBER_ID;
     let desktopKanbanInstructionBlock: string | null = null;
-    if (desktopMcpUrl && happyRoomIdEnv) {
+    if (desktopMcpUrl && ahaRoomIdEnv) {
         try {
             desktopKanbanInstructionBlock = await buildKanbanInstructionBlock({
                 desktopMcpUrl,
-                roomId: happyRoomIdEnv,
-                roleId: process.env.HAPPY_AGENT_ROLE,
-                roleLabel: happyRoleLabelEnv,
-                memberId: happyMemberIdEnv
+                roomId: ahaRoomIdEnv,
+                roleId: process.env.AHA_AGENT_ROLE,
+                roleLabel: ahaRoleLabelEnv,
+                memberId: ahaMemberIdEnv
             });
         } catch (error) {
             logger.debug('[Codex] Failed to prepare Kanban instruction block', error);
@@ -1116,7 +1116,7 @@ ${isCoordinator ? `
 
                 if (!wasCreated) {
                     const startConfig: CodexSessionConfig = {
-                        prompt: first ? message.message + '\n\n' + trimIdent(`Based on this message, call functions.happy__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.`) : message.message,
+                        prompt: first ? message.message + '\n\n' + trimIdent(`Based on this message, call functions.aha__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.`) : message.message,
                         sandbox,
                         'approval-policy': approvalPolicy,
                         config: { mcp_servers: mcpServers }
@@ -1138,20 +1138,20 @@ ${isCoordinator ? `
                         instructionBlocks.push(desktopKanbanInstructionBlock);
                     } else if (!teamInitialized && (metadata.role || metadata.teamId || metadata.roomId)) {
                         // No desktop MCP context AND team initialization failed
-                        // Instruct the agent to fetch team info via Happy MCP server
+                        // Instruct the agent to fetch team info via Aha MCP server
                         instructionBlocks.push(
                             trimIdent(`IMPORTANT: You are part of a team but don't have full team context yet.
-Before starting any work, you MUST call the get_team_info tool from the "happy" MCP server to:
+Before starting any work, you MUST call the get_team_info tool from the "aha" MCP server to:
 1. Understand your role and responsibilities
 2. See who else is on the team
 3. Learn the communication and workflow protocols
 
-Call functions.happy__get_team_info immediately as your first action.`)
+Call functions.aha__get_team_info immediately as your first action.`)
                         );
                     }
                     if (desktopMcpUrl) {
                         instructionBlocks.push(
-                            trimIdent(`The desktop has exposed a Kanban MCP server named "happy-desktop".
+                            trimIdent(`The desktop has exposed a Kanban MCP server named "aha-desktop".
 - Use kanban_list_rooms to see available rooms.
 - Use kanban_get_room_state to inspect tasks for the active room.
 - Use kanban_create_task / kanban_update_task / kanban_assign_member to manage the board.
@@ -1260,9 +1260,9 @@ Always reflect progress on the board and call these tools whenever you start or 
         logger.debug('[codex]: client.disconnect begin');
         await client.disconnect();
         logger.debug('[codex]: client.disconnect done');
-        // Stop Happy MCP server
-        logger.debug('[codex]: happyServer.stop');
-        happyServer.stop();
+        // Stop Aha MCP server
+        logger.debug('[codex]: ahaServer.stop');
+        ahaServer.stop();
 
         // Clean up ink UI
         if (process.stdin.isTTY) {

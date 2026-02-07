@@ -1,5 +1,5 @@
-import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
-import type { SharedTeamRole } from '@happy/shared-team-config';
+import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
+import type { SharedTeamRole } from '@aha/shared-team-config';
 
 export interface RoleDefinition {
     name: string;

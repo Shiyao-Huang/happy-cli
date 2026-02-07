@@ -38,14 +38,14 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
 
 function showAuthHelp(): void {
   console.log(`
-${chalk.bold('happy auth')} - Authentication management
+${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  happy auth login [--force]    Authenticate with Happy
-  happy auth logout             Remove authentication and machine data  
-  happy auth status             Show authentication status
-  happy auth show-backup        Display backup key for mobile/web clients
-  happy auth help               Show this help message
+  aha auth login [--force]    Authenticate with Aha
+  aha auth logout             Remove authentication and machine data
+  aha auth status             Show authentication status
+  aha auth show-backup        Display backup key for mobile/web clients
+  aha auth help               Show this help message
 
 ${chalk.bold('Options:')}
   --force    Clear credentials, machine ID, and stop daemon before re-auth
@@ -93,7 +93,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       console.log(chalk.green('✓ Already authenticated'));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       console.log(chalk.gray(`  Host: ${os.hostname()}`));
-      console.log(chalk.gray(`  Use 'happy auth login --force' to re-authenticate`));
+      console.log(chalk.gray(`  Use 'aha auth login --force' to re-authenticate`));
       return;
     } else if (existingCreds && !settings?.machineId) {
       console.log(chalk.yellow('⚠️  Credentials exist but machine ID is missing'));
@@ -116,7 +116,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
 async function handleAuthLogout(): Promise<void> {
   // "auth logout will essentially clear the private key that originally came from the phone"
-  const happyDir = configuration.happyHomeDir;
+  const ahaDir = configuration.ahaHomeDir;
 
   // Check if authenticated
   const credentials = await readCredentials();
@@ -125,8 +125,8 @@ async function handleAuthLogout(): Promise<void> {
     return;
   }
 
-  console.log(chalk.blue('This will log you out of Happy'));
-  console.log(chalk.yellow('⚠️  You will need to re-authenticate to use Happy again'));
+  console.log(chalk.blue('This will log you out of Aha'));
+  console.log(chalk.yellow('⚠️  You will need to re-authenticate to use Aha again'));
 
   // Ask for confirmation
   const rl = createInterface({
@@ -148,13 +148,13 @@ async function handleAuthLogout(): Promise<void> {
         console.log(chalk.gray('Stopped daemon'));
       } catch { }
 
-      // Remove entire happy directory (as current logout does)
-      if (existsSync(happyDir)) {
-        rmSync(happyDir, { recursive: true, force: true });
+      // Remove entire aha directory (as current logout does)
+      if (existsSync(ahaDir)) {
+        rmSync(ahaDir, { recursive: true, force: true });
       }
 
       console.log(chalk.green('✓ Successfully logged out'));
-      console.log(chalk.gray('  Run "happy auth login" to authenticate again'));
+      console.log(chalk.gray('  Run "aha auth login" to authenticate again'));
     } catch (error) {
       throw new Error(`Failed to logout: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -169,7 +169,7 @@ async function handleAuthLogout(): Promise<void> {
 
 //   if (!credentials) {
 //     console.log(chalk.yellow('Not authenticated'));
-//     console.log(chalk.gray('Run "happy auth login" to authenticate first'));
+//     console.log(chalk.gray('Run "aha auth login" to authenticate first'));
 //     return;
 //   }
 
@@ -190,7 +190,7 @@ async function handleAuthLogout(): Promise<void> {
 //   console.log('');
 
 //   console.log(chalk.bold('How to use this backup key:'));
-//   console.log(chalk.gray('• In Happy mobile app: Go to restore/link device and enter this key'));
+//   console.log(chalk.gray('• In Aha mobile app: Go to restore/link device and enter this key'));
 //   console.log(chalk.gray('• This key format matches what the mobile app expects'));
 //   console.log(chalk.gray('• You can type it with or without dashes - the app will normalize it'));
 //   console.log(chalk.gray('• Common typos (0→O, 1→I) are automatically corrected'));
@@ -207,7 +207,7 @@ async function handleAuthStatus(): Promise<void> {
 
   if (!credentials) {
     console.log(chalk.red('✗ Not authenticated'));
-    console.log(chalk.gray('  Run "happy auth login" to authenticate'));
+    console.log(chalk.gray('  Run "aha auth login" to authenticate'));
     return;
   }
 
@@ -224,11 +224,11 @@ async function handleAuthStatus(): Promise<void> {
     console.log(chalk.gray(`  Host: ${os.hostname()}`));
   } else {
     console.log(chalk.yellow('⚠️  Machine not registered'));
-    console.log(chalk.gray('  Run "happy auth login --force" to fix this'));
+    console.log(chalk.gray('  Run "aha auth login --force" to fix this'));
   }
 
   // Data location
-  console.log(chalk.gray(`\n  Data directory: ${configuration.happyHomeDir}`));
+  console.log(chalk.gray(`\n  Data directory: ${configuration.ahaHomeDir}`));
 
   // Daemon status
   try {

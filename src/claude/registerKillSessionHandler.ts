@@ -13,19 +13,19 @@ interface KillSessionResponse {
 
 export function registerKillSessionHandler(
     rpcHandlerManager: RpcHandlerManager,
-    killThisHappy: () => Promise<void>
+    killThisAha: () => Promise<void>
 ) {
     rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>('killSession', async () => {
         logger.debug('Kill session request received');
 
         // This will start the cleanup process
-        void killThisHappy();
+        void killThisAha();
 
         // We should still be able to respond the the client, though they
         // should optimistically assume the session is dead.
         return {
             success: true,
-            message: 'Killing happy-cli process'
+            message: 'Killing aha-cli process'
         };
     });
 }

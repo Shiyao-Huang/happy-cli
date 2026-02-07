@@ -1,16 +1,16 @@
-# Happy CLI Daemon: Control Flow and Lifecycle
+# Aha CLI Daemon: Control Flow and Lifecycle
 
-The daemon is a persistent background process that manages Happy sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
+The daemon is a persistent background process that manages Aha sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
 
 ## 1. Daemon Lifecycle
 
 ### Starting the Daemon
 
-Command: `happy daemon start`
+Command: `aha daemon start`
 
 Control Flow:
 1. `src/index.ts` receives `daemon start` command
-2. Spawns detached process via `spawnHappyCLI(['daemon', 'start-sync'], { detached: true })`
+2. Spawns detached process via `spawnAhaCLI(['daemon', 'start-sync'], { detached: true })`
 3. New process calls `startDaemon()` from `src/daemon/run.ts`
 4. `startDaemon()` performs startup:
    - Sets up shutdown promise and handlers (SIGINT, SIGTERM, uncaughtException, unhandledRejection)
@@ -22,8 +22,8 @@ Control Flow:
    - State persistence: writes PID, version, HTTP port to daemon.state.json
    - HTTP server: starts on random port for local CLI control (list, stop, spawn)
    - WebSocket: establishes persistent connection to backend via `ApiMachineClient`
-   - RPC registration: exposes `spawn-happy-session`, `stop-session`, `requestShutdown` handlers
-   - Heartbeat loop: every 60s (or HAPPY_DAEMON_HEARTBEAT_INTERVAL) checks for version updates and prunes dead sessions
+   - RPC registration: exposes `spawn-aha-session`, `stop-session`, `requestShutdown` handlers
+   - Heartbeat loop: every 60s (or AHA_DAEMON_HEARTBEAT_INTERVAL) checks for version updates and prunes dead sessions
 5. Awaits shutdown promise which resolves when:
    - OS signal received (SIGINT/SIGTERM)
    - HTTP `/stop` endpoint called
@@ -40,11 +40,11 @@ Control Flow:
 
 ### Version Mismatch Auto-Update
 
-The daemon detects when `npm upgrade happy-coder` occurs:
+The daemon detects when `npm upgrade aha-coder` occurs:
 1. Heartbeat reads package.json from disk
 2. Compares `JSON.parse(package.json).version` with compiled `configuration.currentCliVersion`
 3. If mismatch detected:
-   - Spawns new daemon via `spawnHappyCLI(['daemon', 'start'])`
+   - Spawns new daemon via `spawnAhaCLI(['daemon', 'start'])`
    - Hangs and waits to be killed
 4. New daemon starts, sees old daemon.state.json version != its compiled version
 5. New daemon calls `stopDaemon()` which tries HTTP `/stop`, falls back to SIGKILL
@@ -52,7 +52,7 @@ The daemon detects when `npm upgrade happy-coder` occurs:
 
 ### Stopping the Daemon
 
-Command: `happy daemon stop`
+Command: `aha daemon stop`
 
 Control Flow:
 1. `stopDaemon()` in `controlClient.ts` reads daemon.state.json
@@ -70,31 +70,31 @@ Control Flow:
 ### Daemon-Spawned Sessions (Remote)
 
 Initiated by mobile app via backend RPC:
-1. Backend forwards RPC `spawn-happy-session` to daemon via WebSocket
+1. Backend forwards RPC `spawn-aha-session` to daemon via WebSocket
 2. `ApiMachineClient` invokes `spawnSession()` handler
 3. `spawnSession()`:
    - Creates directory if needed
-   - Spawns detached Happy process with `--happy-starting-mode remote --started-by daemon`
+   - Spawns detached Aha process with `--aha-starting-mode remote --started-by daemon`
    - Adds to `pidToTrackedSession` map
    - Sets up 10-second awaiter for session webhook
-4. New Happy process:
-   - Creates session with backend, receives `happySessionId`
+4. New Aha process:
+   - Creates session with backend, receives `ahaSessionId`
    - Calls `notifyDaemonSessionStarted()` to POST to daemon's `/session-started`
-5. Daemon updates tracking with `happySessionId`, resolves awaiter
+5. Daemon updates tracking with `ahaSessionId`, resolves awaiter
 6. RPC returns session info to mobile app
 
 ### Terminal-Spawned Sessions
 
-User runs `happy` directly:
+User runs `aha` directly:
 1. CLI auto-starts daemon if configured
-2. Happy process calls `notifyDaemonSessionStarted()` 
-3. Daemon receives webhook, creates `TrackedSession` with `startedBy: 'happy directly...'`
+2. Aha process calls `notifyDaemonSessionStarted()`
+3. Daemon receives webhook, creates `TrackedSession` with `startedBy: 'aha directly...'`
 4. Session tracked for health monitoring
 
 ### Session Termination
 
 Via RPC `stop-session` or health check:
-1. `stopSession()` finds session by `happySessionId`
+1. `stopSession()` finds session by `ahaSessionId`
 2. Sends SIGTERM to process
 3. `on('exit')` handler removes from tracking map
 
@@ -111,16 +111,16 @@ Local HTTP server (127.0.0.1 only) provides:
 
 ### Doctor Command
 
-`happy doctor` uses `ps aux | grep` to find all Happy processes:
-- Production: matches `happy.mjs`, `happy-coder`, `dist/index.mjs`
+`aha doctor` uses `ps aux | grep` to find all Aha processes:
+- Production: matches `aha.mjs`, `aha-coder`, `dist/index.mjs`
 - Development: matches `tsx.*src/index.ts`
 - Categorizes by command args: daemon, daemon-spawned, user-session, doctor
 
 ### Clean Runaway Processes
 
-`happy doctor clean`:
-1. `findRunawayHappyProcesses()` filters for likely orphans
-2. `killRunawayHappyProcesses()`:
+`aha doctor clean`:
+1. `findRunawayAhaProcesses()` filters for likely orphans
+2. `killRunawayAhaProcesses()`:
    - Sends SIGTERM
    - Waits 1 second
    - Sends SIGKILL if still alive
@@ -149,7 +149,7 @@ Local HTTP server (127.0.0.1 only) provides:
 
 `ApiMachineClient` handles bidirectional communication:
 - Daemon to Server: machine-alive, machine-update-metadata, machine-update-state
-- Server to Daemon: rpc-request (spawn-happy-session, stop-session, requestShutdown)
+- Server to Daemon: rpc-request (spawn-aha-session, stop-session, requestShutdown)
 - All data encrypted with TweetNaCl
 
 ## 7. Integration Testing Challenges
@@ -188,9 +188,9 @@ I do not like how
 interface MachineMetadata {
   host: string;              // hostname
   platform: string;          // darwin, linux, win32
-  happyCliVersion: string;   
-  homeDir: string;           
-  happyHomeDir: string;
+  ahaCliVersion: string;
+  homeDir: string;
+  ahaHomeDir: string;
 }
 
 // Dynamic daemon state (frequently updated)
@@ -220,9 +220,9 @@ Checks if machine ID exists in settings:
   "metadata": "base64(encrypted({
     'host': 'MacBook-Pro.local',
     'platform': 'darwin',
-    'happyCliVersion': '1.0.0',
+    'ahaCliVersion': '1.0.0',
     'homeDir': '/Users/john',
-    'happyHomeDir': '/Users/john/.happy'
+    'ahaHomeDir': '/Users/john/.aha'
   }))",
   "daemonState": "base64(encrypted({
     'status': 'running',
@@ -314,9 +314,9 @@ socket.emit('machine-update-metadata', {
   "metadata": "base64(encrypted({
     'host': 'MacBook-Pro.local',
     'platform': 'darwin',
-    'happyCliVersion': '1.0.1',  // version updated
+    'ahaCliVersion': '1.0.1',  // version updated
     'homeDir': '/Users/john',
-    'happyHomeDir': '/Users/john/.happy'
+    'ahaHomeDir': '/Users/john/.aha'
   }))",
   "expectedVersion": 1
 }, callback)

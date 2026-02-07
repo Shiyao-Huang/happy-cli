@@ -1,14 +1,14 @@
 /**
- * Installation script for Happy daemon using macOS LaunchDaemons
- * 
- * NOTE: This installation method is currently NOT USED in favor of auto-starting 
- * the daemon when the user runs the happy command. 
- * 
+ * Installation script for Aha daemon using macOS LaunchDaemons
+ *
+ * NOTE: This installation method is currently NOT USED in favor of auto-starting
+ * the daemon when the user runs the aha command.
+ *
  * Why we're not using this approach:
  * 1. Installing a LaunchDaemon requires sudo permissions, which users might not be comfortable with
- * 2. We assume users will run happy frequently (every time they open their laptop)
+ * 2. We assume users will run aha frequently (every time they open their laptop)
  * 3. The auto-start approach provides the same functionality without requiring elevated permissions
- * 
+ *
  * This code is kept for potential future use if we decide to offer system-level installation as an option.
  */
 
@@ -18,7 +18,7 @@ import { logger } from '@/ui/logger';
 import { trimIdent } from '@/utils/trimIdent';
 import os from 'os';
 
-const PLIST_LABEL = 'com.happy-cli.daemon';
+const PLIST_LABEL = 'com.aha-cli.daemon';
 const PLIST_FILE = `/Library/LaunchDaemons/${PLIST_LABEL}.plist`;
 
 // NOTE: Local installation like --local does not make too much sense I feel like
@@ -31,8 +31,8 @@ export async function install(): Promise<void> {
             execSync(`launchctl unload ${PLIST_FILE}`, { stdio: 'inherit' });
         }
 
-        // Get the path to the happy CLI executable
-        const happyPath = process.argv[0]; // Node.js executable
+        // Get the path to the aha CLI executable
+        const ahaPath = process.argv[0]; // Node.js executable
         const scriptPath = process.argv[1]; // Script path
 
         // Create plist content
@@ -46,28 +46,28 @@ export async function install(): Promise<void> {
                 
                 <key>ProgramArguments</key>
                 <array>
-                    <string>${happyPath}</string>
+                    <string>${ahaPath}</string>
                     <string>${scriptPath}</string>
-                    <string>happy-daemon</string>
+                    <string>aha-daemon</string>
                 </array>
-                
+
                 <key>EnvironmentVariables</key>
                 <dict>
-                    <key>HAPPY_DAEMON_MODE</key>
+                    <key>AHA_DAEMON_MODE</key>
                     <string>true</string>
                 </dict>
-                
+
                 <key>RunAtLoad</key>
                 <true/>
-                
+
                 <key>KeepAlive</key>
                 <true/>
-                
+
                 <key>StandardErrorPath</key>
-                <string>${os.homedir()}/.happy/daemon.err</string>
-                
+                <string>${os.homedir()}/.aha/daemon.err</string>
+
                 <key>StandardOutPath</key>
-                <string>${os.homedir()}/.happy/daemon.log</string>
+                <string>${os.homedir()}/.aha/daemon.log</string>
                 
                 <key>WorkingDirectory</key>
                 <string>/tmp</string>
@@ -85,7 +85,7 @@ export async function install(): Promise<void> {
         execSync(`launchctl load ${PLIST_FILE}`, { stdio: 'inherit' });
 
         logger.info('Daemon installed and started successfully');
-        logger.info('Check logs at ~/.happy/daemon.log');
+        logger.info('Check logs at ~/.aha/daemon.log');
 
     } catch (error) {
         logger.debug('Failed to install daemon:', error);

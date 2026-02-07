@@ -56,7 +56,7 @@ function logInfo(message) {
 async function testRoleDefinitionsLoading() {
   logTest('TEST 1: ROLE_DEFINITIONS.yaml Loading');
 
-  const roleDefsPath = path.join(__dirname, '../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml');
+  const roleDefsPath = path.join(__dirname, '../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml');
 
   try {
     // Check file exists
@@ -216,7 +216,7 @@ async function testCategoryBasedRouting() {
 async function testPermissionValidation() {
   logTest('TEST 3: Permission Validation');
 
-  const roleDefsPath = path.join(__dirname, '../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml');
+  const roleDefsPath = path.join(__dirname, '../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml');
 
   try {
     const yamlContent = fs.readFileSync(roleDefsPath, 'utf8');

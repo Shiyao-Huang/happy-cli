@@ -5,13 +5,13 @@
  * 
  * IMPORTANT: These tests MUST be run with the integration test environment:
  * yarn test:integration-test-env
- * 
+ *
  * DO NOT run with regular 'npm test' or 'yarn test' - it will use the wrong environment
  * and the daemon will not work properly!
- * 
+ *
  * The integration test environment uses .env.integration-test which sets:
- * - HAPPY_HOME_DIR=~/.happy-dev-test (DIFFERENT from dev's ~/.happy-dev!)
- * - HAPPY_SERVER_URL=https://top1vibe.com (shared server)
+ * - AHA_HOME_DIR=~/.aha-dev-test (DIFFERENT from dev's ~/.aha-dev!)
+ * - AHA_SERVER_URL=https://top1vibe.com (shared server)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -29,7 +29,7 @@ import {
 } from '@/daemon/controlClient';
 import { readDaemonState, clearDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
-import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { getLatestDaemonLog } from '@/ui/logger';
 
 // Utility to wait for condition
@@ -60,10 +60,10 @@ async function isServerHealthy(): Promise<boolean> {
     }
     
     // Check if we have test credentials
-    const testCredentials = existsSync(join(configuration.happyHomeDir, 'access.key'));
+    const testCredentials = existsSync(join(configuration.ahaHomeDir, 'access.key'));
     if (!testCredentials) {
-      console.log('[TEST] No test credentials found in', configuration.happyHomeDir);
-      console.log('[TEST] Run "happy auth login" with HAPPY_HOME_DIR=~/.happy-dev-test first');
+      console.log('[TEST] No test credentials found in', configuration.ahaHomeDir);
+      console.log('[TEST] Run "aha auth login" with AHA_HOME_DIR=~/.aha-dev-test first');
       return false;
     }
     
@@ -83,7 +83,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     
     // Start fresh daemon for this test
     // This will return and start a background process - we don't need to wait for it
-    void spawnHappyCLI(['daemon', 'start'], {
+    void spawnAhaCLI(['daemon', 'start'], {
       stdio: 'ignore'
     });
     
@@ -118,9 +118,9 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
       path: '/test/path',
       host: 'test-host',
       homeDir: '/test/home',
-      happyHomeDir: '/test/happy-home',
-      happyLibDir: '/test/happy-lib',
-      happyToolsDir: '/test/happy-tools',
+      ahaHomeDir: '/test/aha-home',
+      ahaLibDir: '/test/aha-lib',
+      ahaToolsDir: '/test/aha-tools',
       hostPid: 99999,
       startedBy: 'terminal',
       machineId: 'test-machine-123'
@@ -133,8 +133,8 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     expect(sessions).toHaveLength(1);
     
     const tracked = sessions[0];
-    expect(tracked.startedBy).toBe('happy directly - likely by user from terminal');
-    expect(tracked.happySessionId).toBe('test-session-123');
+    expect(tracked.startedBy).toBe('aha directly - likely by user from terminal');
+    expect(tracked.ahaSessionId).toBe('test-session-123');
     expect(tracked.pid).toBe(99999);
   });
 
@@ -147,15 +147,15 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     // Verify session is tracked
     const sessions = await listDaemonSessions();
     const spawnedSession = sessions.find(
-      (s: any) => s.happySessionId === response.sessionId
+      (s: any) => s.ahaSessionId === response.sessionId
     );
-    
+
     expect(spawnedSession).toBeDefined();
     expect(spawnedSession.startedBy).toBe('daemon');
-    
+
     // Clean up - stop the spawned session
-    expect(spawnedSession.happySessionId).toBeDefined();
-    await stopDaemonSession(spawnedSession.happySessionId);
+    expect(spawnedSession.ahaSessionId).toBeDefined();
+    await stopDaemonSession(spawnedSession.ahaSessionId);
   });
 
   it('stress test: spawn / stop', { timeout: 60_000 }, async () => {
@@ -189,17 +189,17 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   });
 
   it('should track both daemon-spawned and terminal sessions', async () => {
-    // Spawn a real happy process that looks like it was started from terminal
-    const terminalHappyProcess = spawnHappyCLI([
-      '--happy-starting-mode', 'remote',
+    // Spawn a real aha process that looks like it was started from terminal
+    const terminalAhaProcess = spawnAhaCLI([
+      '--aha-starting-mode', 'remote',
       '--started-by', 'terminal'
     ], {
       cwd: '/tmp',
       detached: true,
       stdio: 'ignore'
     });
-    if (!terminalHappyProcess || !terminalHappyProcess.pid) {
-      throw new Error('Failed to spawn terminal happy process');
+    if (!terminalAhaProcess || !terminalAhaProcess.pid) {
+      throw new Error('Failed to spawn terminal aha process');
     }
     // Give time to start & report itself
     await new Promise(resolve => setTimeout(resolve, 5_000));
@@ -213,25 +213,25 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
     // Verify we have one of each type
     const terminalSession = sessions.find(
-      (s: any) => s.pid === terminalHappyProcess.pid
+      (s: any) => s.pid === terminalAhaProcess.pid
     );
     const daemonSession = sessions.find(
-      (s: any) => s.happySessionId === spawnResponse.sessionId
+      (s: any) => s.ahaSessionId === spawnResponse.sessionId
     );
 
     expect(terminalSession).toBeDefined();
-    expect(terminalSession.startedBy).toBe('happy directly - likely by user from terminal');
-    
+    expect(terminalSession.startedBy).toBe('aha directly - likely by user from terminal');
+
     expect(daemonSession).toBeDefined();
     expect(daemonSession.startedBy).toBe('daemon');
 
     // Clean up both sessions
     await stopDaemonSession('terminal-session-aaa');
-    await stopDaemonSession(daemonSession.happySessionId);
-    
+    await stopDaemonSession(daemonSession.ahaSessionId);
+
     // Also kill the terminal process directly to be sure
     try {
-      terminalHappyProcess.kill('SIGTERM');
+      terminalAhaProcess.kill('SIGTERM');
     } catch (e) {
       // Process might already be dead
     }
@@ -243,7 +243,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
     // Verify webhook was processed (session ID updated)
     const sessions = await listDaemonSessions();
-    const session = sessions.find((s: any) => s.happySessionId === spawnResponse.sessionId);
+    const session = sessions.find((s: any) => s.ahaSessionId === spawnResponse.sessionId);
     expect(session).toBeDefined();
 
     // Clean up
@@ -302,14 +302,14 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     // List should show all sessions
     const sessions = await listDaemonSessions();
     const daemonSessions = sessions.filter(
-      (s: any) => s.startedBy === 'daemon' && spawnedSessionIds.includes(s.happySessionId)
+      (s: any) => s.startedBy === 'daemon' && spawnedSessionIds.includes(s.ahaSessionId)
     );
     expect(daemonSessions.length).toBeGreaterThanOrEqual(3);
 
     // Stop all spawned sessions
     for (const session of daemonSessions) {
-      expect(session.happySessionId).toBeDefined();
-      await stopDaemonSession(session.happySessionId);
+      expect(session.ahaSessionId).toBeDefined();
+      await stopDaemonSession(session.ahaSessionId);
     }
   });
 
@@ -390,13 +390,13 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
    * 3. Test runs `yarn build` to recompile with new version
    * 4. Daemon's heartbeat (every 30s) reads package.json and compares to its compiled version
    * 5. Daemon detects mismatch: package.json != configuration.currentCliVersion
-   * 6. Daemon spawns new daemon via spawnHappyCLI(['daemon', 'start'])
+   * 6. Daemon spawns new daemon via spawnAhaCLI(['daemon', 'start'])
    * 7. New daemon starts, reads daemon.state.json, sees old version != its compiled version
    * 8. New daemon calls stopDaemon() to kill old daemon, then takes over
    * 
-   * This simulates what happens during `npm upgrade happy-coder`:
+   * This simulates what happens during `npm upgrade aha-cli`:
    * - Running daemon has OLD version loaded in memory (configuration.currentCliVersion)
-   * - npm replaces node_modules/happy-coder/ with NEW version files
+   * - npm replaces node_modules/aha-cli/ with NEW version files
    * - package.json on disk now has NEW version
    * - Daemon reads package.json, detects mismatch, triggers self-update
    * - Key difference: npm atomically replaces the entire module directory, while
@@ -438,7 +438,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
       // and think it is a new version
       // We are not using yarn build here because it cleans out dist/
       // and we want to avoid that, 
-      // otherwise daemon will spawn a non existing happy js script.
+      // otherwise daemon will spawn a non existing aha js script.
       // We need to remove index, but not the other files, otherwise some of our code might fail when called from within the daemon.
       execSync('yarn build', { stdio: 'ignore' });
       
@@ -448,7 +448,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
       // The daemon should automatically detect the version mismatch and restart itself
       // We check once per minute, wait for a little longer than that
-      await new Promise(resolve => setTimeout(resolve, parseInt(process.env.HAPPY_DAEMON_HEARTBEAT_INTERVAL || '30000') + 10_000));
+      await new Promise(resolve => setTimeout(resolve, parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '30000') + 10_000));
 
       // Check that the daemon is running with the new version
       const finalState = await readDaemonState();
@@ -468,7 +468,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
   // TODO: Add a test to see if a corrupted file will work
   
-  // TODO: Test npm uninstall scenario - daemon should gracefully handle when happy-coder is uninstalled
+  // TODO: Test npm uninstall scenario - daemon should gracefully handle when aha-cli is uninstalled
   // Current behavior: daemon tries to spawn new daemon on version mismatch but dist/index.mjs is gone
   // Expected: daemon should detect missing entrypoint and either exit cleanly or at minimum not respawn infinitely
 });

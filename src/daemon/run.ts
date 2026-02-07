@@ -12,10 +12,10 @@ import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
 
-import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
+import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -25,10 +25,10 @@ import { projectPath } from '@/projectPath';
 export const initialMachineMetadata: MachineMetadata = {
   host: os.hostname(),
   platform: os.platform(),
-  happyCliVersion: packageJson.version,
+  ahaCliVersion: packageJson.version,
   homeDir: os.homedir(),
-  happyHomeDir: configuration.happyHomeDir,
-  happyLibDir: projectPath()
+  ahaHomeDir: configuration.ahaHomeDir,
+  ahaLibDir: projectPath()
 };
 
 export async function startDaemon(): Promise<void> {
@@ -41,8 +41,8 @@ export async function startDaemon(): Promise<void> {
   //
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
-  let requestShutdown: (source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
-  let resolvesWhenShutdownRequested = new Promise<({ source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
+  let requestShutdown: (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
+  let resolvesWhenShutdownRequested = new Promise<({ source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
     requestShutdown = (source, errorMessage) => {
       logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
@@ -99,7 +99,7 @@ export async function startDaemon(): Promise<void> {
 
   // Check if already running
   // Check if running daemon version matches current CLI version
-  const runningDaemonVersionMatches = await isDaemonRunningCurrentlyInstalledHappyVersion();
+  const runningDaemonVersionMatches = await isDaemonRunningCurrentlyInstalledAhaVersion();
   if (!runningDaemonVersionMatches) {
     logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
     await stopDaemon();
@@ -140,8 +140,8 @@ export async function startDaemon(): Promise<void> {
     // Helper functions
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
-    // Handle webhook from happy session reporting itself
-    const onHappySessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
+    // Handle webhook from aha session reporting itself
+    const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
       logger.debugLargeJson(`[DAEMON RUN] Session reported`, sessionMetadata);
 
       const pid = sessionMetadata.hostPid;
@@ -158,8 +158,8 @@ export async function startDaemon(): Promise<void> {
 
       if (existingSession && existingSession.startedBy === 'daemon') {
         // Update daemon-spawned session with reported data
-        existingSession.happySessionId = sessionId;
-        existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
+        existingSession.ahaSessionId = sessionId;
+        existingSession.ahaSessionMetadataFromLocalWebhook = sessionMetadata;
         logger.debug(`[DAEMON RUN] Updated daemon-spawned session ${sessionId} with metadata`);
 
         // Resolve any awaiter for this PID
@@ -172,9 +172,9 @@ export async function startDaemon(): Promise<void> {
       } else if (!existingSession) {
         // New session started externally
         const trackedSession: TrackedSession = {
-          startedBy: 'happy directly - likely by user from terminal',
-          happySessionId: sessionId,
-          happySessionMetadataFromLocalWebhook: sessionMetadata,
+          startedBy: 'aha directly - likely by user from terminal',
+          ahaSessionId: sessionId,
+          ahaSessionMetadataFromLocalWebhook: sessionMetadata,
           pid
         };
         pidToTrackedSession.set(pid, trackedSession);
@@ -258,23 +258,23 @@ export async function startDaemon(): Promise<void> {
 
         // Add team context to environment if provided
         if (options.teamId) {
-          extraEnv.HAPPY_ROOM_ID = options.teamId;
-          logger.debug(`[DAEMON RUN] Setting HAPPY_ROOM_ID=${options.teamId}`);
+          extraEnv.AHA_ROOM_ID = options.teamId;
+          logger.debug(`[DAEMON RUN] Setting AHA_ROOM_ID=${options.teamId}`);
         }
         if (options.role) {
-          extraEnv.HAPPY_AGENT_ROLE = options.role;
-          logger.debug(`[DAEMON RUN] Setting HAPPY_AGENT_ROLE=${options.role}`);
+          extraEnv.AHA_AGENT_ROLE = options.role;
+          logger.debug(`[DAEMON RUN] Setting AHA_AGENT_ROLE=${options.role}`);
         }
         if (options.sessionName) {
-          extraEnv.HAPPY_SESSION_NAME = options.sessionName;
-          logger.debug(`[DAEMON RUN] Setting HAPPY_SESSION_NAME=${options.sessionName}`);
+          extraEnv.AHA_SESSION_NAME = options.sessionName;
+          logger.debug(`[DAEMON RUN] Setting AHA_SESSION_NAME=${options.sessionName}`);
         }
         if (options.sessionPath) {
-          extraEnv.HAPPY_SESSION_PATH = options.sessionPath;
-          logger.debug(`[DAEMON RUN] Setting HAPPY_SESSION_PATH=${options.sessionPath}`);
+          extraEnv.AHA_SESSION_PATH = options.sessionPath;
+          logger.debug(`[DAEMON RUN] Setting AHA_SESSION_PATH=${options.sessionPath}`);
         }
 
-        // Merge custom env variables (e.g., HAPPY_AGENT_LANGUAGE)
+        // Merge custom env variables (e.g., AHA_AGENT_LANGUAGE)
         if (options.env) {
           Object.assign(extraEnv, options.env);
           logger.debug(`[DAEMON RUN] Merging custom env: ${JSON.stringify(options.env)}`);
@@ -283,7 +283,7 @@ export async function startDaemon(): Promise<void> {
         // Construct arguments for the CLI
         const args = [
           options.agent === 'claude' ? 'claude' : 'codex',
-          '--happy-starting-mode', 'remote',
+          '--aha-starting-mode', 'remote',
           '--started-by', 'daemon'
         ];
 
@@ -293,7 +293,7 @@ export async function startDaemon(): Promise<void> {
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session
-        const happyProcess = spawnHappyCLI(args, {
+        const ahaProcess = spawnAhaCLI(args, {
           cwd: directory,
           detached: true,  // Sessions stay alive when daemon stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
@@ -305,71 +305,71 @@ export async function startDaemon(): Promise<void> {
 
         // Log output for debugging
         if (process.env.DEBUG) {
-          happyProcess.stdout?.on('data', (data) => {
+          ahaProcess.stdout?.on('data', (data) => {
             logger.debug(`[DAEMON RUN] Child stdout: ${data.toString()}`);
           });
-          happyProcess.stderr?.on('data', (data) => {
+          ahaProcess.stderr?.on('data', (data) => {
             logger.debug(`[DAEMON RUN] Child stderr: ${data.toString()}`);
           });
         }
 
-        if (!happyProcess.pid) {
+        if (!ahaProcess.pid) {
           logger.debug('[DAEMON RUN] Failed to spawn process - no PID returned');
           return {
             type: 'error',
-            errorMessage: 'Failed to spawn Happy process - no PID returned'
+            errorMessage: 'Failed to spawn Aha process - no PID returned'
           };
         }
 
-        logger.debug(`[DAEMON RUN] Spawned process with PID ${happyProcess.pid}`);
+        logger.debug(`[DAEMON RUN] Spawned process with PID ${ahaProcess.pid}`);
 
         const trackedSession: TrackedSession = {
           startedBy: 'daemon',
-          pid: happyProcess.pid,
-          childProcess: happyProcess,
+          pid: ahaProcess.pid,
+          childProcess: ahaProcess,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
         };
 
-        pidToTrackedSession.set(happyProcess.pid, trackedSession);
+        pidToTrackedSession.set(ahaProcess.pid, trackedSession);
 
-        happyProcess.on('exit', (code, signal) => {
-          logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
-          if (happyProcess.pid) {
-            onChildExited(happyProcess.pid);
+        ahaProcess.on('exit', (code, signal) => {
+          logger.debug(`[DAEMON RUN] Child PID ${ahaProcess.pid} exited with code ${code}, signal ${signal}`);
+          if (ahaProcess.pid) {
+            onChildExited(ahaProcess.pid);
           }
         });
 
-        happyProcess.on('error', (error) => {
+        ahaProcess.on('error', (error) => {
           logger.debug(`[DAEMON RUN] Child process error:`, error);
-          if (happyProcess.pid) {
-            onChildExited(happyProcess.pid);
+          if (ahaProcess.pid) {
+            onChildExited(ahaProcess.pid);
           }
         });
 
-        // Wait for webhook to populate session with happySessionId
-        logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
+        // Wait for webhook to populate session with ahaSessionId
+        logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${ahaProcess.pid}`);
 
         return new Promise((resolve) => {
           // Set timeout for webhook
           const timeout = setTimeout(() => {
-            pidToAwaiter.delete(happyProcess.pid!);
-            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
+            pidToAwaiter.delete(ahaProcess.pid!);
+            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${ahaProcess.pid}`);
             resolve({
               type: 'error',
-              errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
+              errorMessage: `Session webhook timeout for PID ${ahaProcess.pid}`
             });
             // 15 second timeout - I have seen timeouts on 10 seconds
             // even though session was still created successfully in ~2 more seconds
           }, 15_000);
 
           // Register awaiter
-          pidToAwaiter.set(happyProcess.pid!, (completedSession) => {
+          pidToAwaiter.set(ahaProcess.pid!, (completedSession) => {
             clearTimeout(timeout);
-            logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
+            logger.debug(`[DAEMON RUN] Session ${completedSession.ahaSessionId} fully spawned with webhook`);
             resolve({
               type: 'success',
-              sessionId: completedSession.happySessionId!
+              sessionId: completedSession.ahaSessionId!
             });
           });
         });
@@ -389,7 +389,7 @@ export async function startDaemon(): Promise<void> {
 
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
-        if (session.happySessionId === sessionId ||
+        if (session.ahaSessionId === sessionId ||
           (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
 
           if (session.startedBy === 'daemon' && session.childProcess) {
@@ -430,8 +430,8 @@ export async function startDaemon(): Promise<void> {
       getChildren: getCurrentChildren,
       stopSession,
       spawnSession,
-      requestShutdown: () => requestShutdown('happy-cli'),
-      onHappySessionWebhook
+      requestShutdown: () => requestShutdown('aha-cli'),
+      onAhaSessionWebhook
     });
 
     // Write initial daemon state (no lock needed for state file)
@@ -471,7 +471,7 @@ export async function startDaemon(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
-      requestShutdown: () => requestShutdown('happy-app')
+      requestShutdown: () => requestShutdown('aha-app')
     });
 
     // Connect to server
@@ -482,7 +482,7 @@ export async function startDaemon(): Promise<void> {
     // 2. Check if daemon needs update
     // 3. If outdated, restart with latest version
     // 4. Write heartbeat
-    const heartbeatIntervalMs = parseInt(process.env.HAPPY_DAEMON_HEARTBEAT_INTERVAL || '60000');
+    const heartbeatIntervalMs = parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '60000');
     let heartbeatRunning = false
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
@@ -523,7 +523,7 @@ export async function startDaemon(): Promise<void> {
         // 3. Next it will start a new daemon with the latest version with daemon-sync :D
         // Done!
         try {
-          spawnHappyCLI(['daemon', 'start'], {
+          spawnAhaCLI(['daemon', 'start'], {
             detached: true,
             stdio: 'ignore'
           });
@@ -567,7 +567,7 @@ export async function startDaemon(): Promise<void> {
     }, heartbeatIntervalMs); // Every 60 seconds in production
 
     // Setup signal handlers
-    const cleanupAndShutdown = async (source: 'happy-app' | 'happy-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
+    const cleanupAndShutdown = async (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
 
       // Clear health check interval

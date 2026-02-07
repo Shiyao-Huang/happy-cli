@@ -54,7 +54,7 @@ export class CodexMcpClient {
 
     constructor() {
         this.client = new Client(
-            { name: 'happy-codex-client', version: '1.0.0' },
+            { name: 'aha-codex-client', version: '1.0.0' },
             { capabilities: { tools: {}, elicitation: {} } }
         );
 
@@ -300,7 +300,7 @@ export class CodexMcpClient {
 
         try {
             await this.client.notification({
-                method: 'happy/artifact-update',
+                method: 'aha/artifact-update',
                 params: update
             });
             logger.debug('[CodexMCP] Sent artifact update notification');
@@ -314,7 +314,7 @@ export class CodexMcpClient {
 
         try {
             await this.client.notification({
-                method: 'happy/team-message',
+                method: 'aha/team-message',
                 params: message
             });
             logger.debug('[CodexMCP] Sent team message notification');

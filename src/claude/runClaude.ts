@@ -20,12 +20,13 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import { getRolePermissions, generateRolePrompt, shouldListenTo, COORDINATION_ROLES, KanbanContext } from './team/roles';
 import { DEFAULT_ROLES } from './team/roles.config';
+import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
@@ -93,7 +94,7 @@ function resolveEnvPermissionMode(rawMode?: string): StartOptions['permissionMod
         case 'danger':
             return 'bypassPermissions';
         default:
-            logger.debug(`[START] Ignoring unknown HAPPY_PERMISSION_MODE value: ${rawMode}`);
+            logger.debug(`[START] Ignoring unknown AHA_PERMISSION_MODE value: ${rawMode}`);
             return undefined;
     }
 }
@@ -103,19 +104,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const sessionTag = options.sessionTag || randomUUID();
 
     if (!options.permissionMode) {
-        const envPermissionMode = resolveEnvPermissionMode(process.env.HAPPY_PERMISSION_MODE);
+        const envPermissionMode = resolveEnvPermissionMode(process.env.AHA_PERMISSION_MODE);
         if (envPermissionMode) {
             options.permissionMode = envPermissionMode;
             logger.debug(`[START] Permission mode initialized from env: ${envPermissionMode}`);
         }
     }
-    if (!options.permissionMode && process.env.HAPPY_ROOM_ID) {
+    if (!options.permissionMode && process.env.AHA_ROOM_ID) {
         options.permissionMode = 'bypassPermissions';
-        logger.debug(`[START] Permission mode defaulted to bypass for team session ${process.env.HAPPY_ROOM_ID}`);
+        logger.debug(`[START] Permission mode defaulted to bypass for team session ${process.env.AHA_ROOM_ID}`);
     }
 
     // Log environment info at startup
-    logger.debugLargeJson('[START] Happy process started', getEnvironmentInfo());
+    logger.debugLargeJson('[START] Aha process started', getEnvironmentInfo());
     logger.debug(`[START] Options: startedBy=${options.startedBy}, startingMode=${options.startingMode}`);
 
     // Validate daemon spawn requirements
@@ -136,7 +137,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const settings = await readSettings();
     let machineId = settings?.machineId
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/happy-cli/issues`);
+        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/aha-cli/issues`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -154,9 +155,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         os: os.platform(),
         machineId: machineId,
         homeDir: os.homedir(),
-        happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: projectPath(),
-        happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
+        ahaHomeDir: configuration.ahaHomeDir,
+        ahaLibDir: projectPath(),
+        ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: options.startedBy === 'daemon',
         hostPid: process.pid,
         startedBy: options.startedBy || 'terminal',
@@ -165,22 +166,22 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         lifecycleStateSince: Date.now(),
         flavor: 'claude'
     };
-    if (process.env.HAPPY_AGENT_ROLE) {
-        metadata.role = process.env.HAPPY_AGENT_ROLE;
-        logger.debug(`[runClaude] Setting metadata.role from env: ${process.env.HAPPY_AGENT_ROLE}`);
+    if (process.env.AHA_AGENT_ROLE) {
+        metadata.role = process.env.AHA_AGENT_ROLE;
+        logger.debug(`[runClaude] Setting metadata.role from env: ${process.env.AHA_AGENT_ROLE}`);
     }
-    const roomIdFromEnv = process.env.HAPPY_ROOM_ID;
+    const roomIdFromEnv = process.env.AHA_ROOM_ID;
     if (roomIdFromEnv) {
         metadata.teamId = roomIdFromEnv;
         metadata.roomId = roomIdFromEnv;
         logger.debug(`[runClaude] Setting metadata.teamId from env: ${roomIdFromEnv}`);
     }
     logger.debug(`[runClaude] Final metadata before session creation:`, { role: metadata.role, teamId: metadata.teamId });
-    if (process.env.HAPPY_ROOM_NAME) {
-        metadata.roomName = process.env.HAPPY_ROOM_NAME;
+    if (process.env.AHA_ROOM_NAME) {
+        metadata.roomName = process.env.AHA_ROOM_NAME;
     }
-    // Priority: HAPPY_SESSION_NAME > HAPPY_ROOM_NAME
-    metadata.name = process.env.HAPPY_SESSION_NAME || process.env.HAPPY_ROOM_NAME;
+    // Priority: AHA_SESSION_NAME > AHA_ROOM_NAME
+    metadata.name = process.env.AHA_SESSION_NAME || process.env.AHA_ROOM_NAME;
     if (metadata.name) {
         logger.debug(`[runClaude] Setting metadata.name: ${metadata.name}`);
     }
@@ -227,10 +228,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         (mode) => hashObject(mode)
     );
 
-    // Start Happy MCP server
-    const happyServer = await startHappyServer(api, session);
-    logger.debug(`[START] Happy MCP server started at ${happyServer.url}`);
-    const desktopMcpUrl = process.env.HAPPY_DESKTOP_MCP_URL;
+    // Start Aha MCP server
+    const ahaServer = await startAhaServer(api, session);
+    logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
+    const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
     if (desktopMcpUrl) {
         logger.debug(`[START] Desktop MCP server detected at ${desktopMcpUrl}`);
     }
@@ -281,15 +282,15 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
 
     // Initialize role from environment variables first, fallback to session metadata
-    logger.debug(`[runClaude] Initializing role - env: ${process.env.HAPPY_AGENT_ROLE}, metadata: ${session.getMetadata()?.role}`);
-    let currentRole: string | undefined = process.env.HAPPY_AGENT_ROLE || session.getMetadata()?.role;
+    logger.debug(`[runClaude] Initializing role - env: ${process.env.AHA_AGENT_ROLE}, metadata: ${session.getMetadata()?.role}`);
+    let currentRole: string | undefined = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
     if (currentRole) {
         logger.debug(`[runClaude] Initialized with role: ${currentRole}`);
     }
 
     // Initialize teamId from environment variables first, fallback to session metadata
-    logger.debug(`[runClaude] Initializing teamId - env: ${process.env.HAPPY_ROOM_ID}, metadata: ${session.getMetadata()?.teamId}`);
-    let currentTeamId: string | undefined = process.env.HAPPY_ROOM_ID || session.getMetadata()?.teamId;
+    logger.debug(`[runClaude] Initializing teamId - env: ${process.env.AHA_ROOM_ID}, metadata: ${session.getMetadata()?.teamId}`);
+    let currentTeamId: string | undefined = process.env.AHA_ROOM_ID || session.getMetadata()?.teamId;
     let cleanupTeamHandling: (() => void) | undefined;
 
     // TaskStateManager for Kanban context management
@@ -983,8 +984,8 @@ ${instructions}
             // Stop caffeinate
             stopCaffeinate();
 
-            // Stop Happy MCP server
-            happyServer.stop();
+            // Stop Aha MCP server
+            ahaServer.stop();
 
             logger.debug('[START] Cleanup complete, exiting');
             process.exit(0);
@@ -1012,13 +1013,13 @@ ${instructions}
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
     const mcpServers: Record<string, { type: string; url: string }> = {
-        happy: {
+        aha: {
             type: 'http',
-            url: happyServer.url,
+            url: ahaServer.url,
         },
     };
     if (desktopMcpUrl) {
-        mcpServers['happy-desktop'] = {
+        mcpServers['aha-desktop'] = {
             type: 'http',
             url: desktopMcpUrl,
         };
@@ -1031,7 +1032,7 @@ ${instructions}
             logger.debug('[runClaude] Delayed team initialization starting...');
 
             // Update session metadata with teamId/role/name/path
-            // This ensures metadata is encrypted with Happy-CLI's key (not Kanban's)
+            // This ensures metadata is encrypted with Aha-CLI's key (not Kanban's)
             try {
                 const updateData: Record<string, any> = {
                     teamId: currentTeamId,
@@ -1039,12 +1040,12 @@ ${instructions}
                 };
 
                 // Preserve name and path from environment or existing metadata
-                const sessionName = process.env.HAPPY_SESSION_NAME;
+                const sessionName = process.env.AHA_SESSION_NAME;
                 if (sessionName) {
                     updateData.name = sessionName;
                 }
 
-                const sessionPath = process.env.HAPPY_SESSION_PATH || workingDirectory;
+                const sessionPath = process.env.AHA_SESSION_PATH || workingDirectory;
                 if (sessionPath) {
                     updateData.path = sessionPath;
                 }
@@ -1103,9 +1104,9 @@ ${instructions}
     stopCaffeinate();
     logger.debug('Stopped sleep prevention');
 
-    // Stop Happy MCP server
-    happyServer.stop();
-    logger.debug('Stopped Happy MCP server');
+    // Stop Aha MCP server
+    ahaServer.stop();
+    logger.debug('Stopped Aha MCP server');
 
     // Exit
     process.exit(0);

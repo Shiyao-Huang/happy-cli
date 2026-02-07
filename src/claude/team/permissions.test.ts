@@ -1,5 +1,5 @@
 /**
- * Happy Team Runtime Permission Validation System Tests
+ * Aha Team Runtime Permission Validation System Tests
  *
  * Comprehensive test suite for the permissions module covering:
  * - Role definition loading from YAML

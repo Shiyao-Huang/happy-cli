@@ -478,7 +478,7 @@ function buildConstraintsSection(roleKey: string): string {
  */
 function buildToneAndStyleSection(): string {
     // Get agent language from environment variable (set during team creation)
-    const agentLanguage = process.env.HAPPY_AGENT_LANGUAGE || 'en';
+    const agentLanguage = process.env.AHA_AGENT_LANGUAGE || 'en';
     const isChinese = agentLanguage === 'zh';
 
     // Language instruction based on selection
@@ -728,13 +728,13 @@ export function generateRolePrompt(
     logger.debug(`[Roles] generateRolePrompt called - teamId: ${teamId}, role: ${role}`);
 
     // Recover from environment variables if metadata is missing
-    if (!teamId && process.env.HAPPY_ROOM_ID) {
-        teamId = process.env.HAPPY_ROOM_ID;
-        logger.debug('[Roles] Recovered teamId from HAPPY_ROOM_ID');
+    if (!teamId && process.env.AHA_ROOM_ID) {
+        teamId = process.env.AHA_ROOM_ID;
+        logger.debug('[Roles] Recovered teamId from AHA_ROOM_ID');
     }
-    if (!role && process.env.HAPPY_AGENT_ROLE) {
-        role = process.env.HAPPY_AGENT_ROLE;
-        logger.debug('[Roles] Recovered role from HAPPY_AGENT_ROLE');
+    if (!role && process.env.AHA_AGENT_ROLE) {
+        role = process.env.AHA_AGENT_ROLE;
+        logger.debug('[Roles] Recovered role from AHA_AGENT_ROLE');
     }
 
     if (!teamId || !role) {
