@@ -4,7 +4,9 @@ Code on the go controlling claude code from your mobile device.
 
 Free. Open source. Code anywhere.
 
-## Installation
+## 🚀 Quick Start
+
+### 1. Install
 
 ```bash
 npm install -g cc-aha-cli
@@ -12,7 +14,29 @@ npm install -g cc-aha-cli
 
 > **Note:** The package name is `cc-aha-cli`, but the command you use is still `aha`. Nothing changes for end users!
 
-## Usage
+### 2. Start the Daemon
+
+```bash
+aha daemon start
+```
+
+### 3. Open Web App
+
+Visit **https://top1vibe.com/webapp** in your browser or mobile device to:
+- Control Claude Code remotely from any device
+- Create multi-agent teams (Master, Builder, QA, etc.)
+- **No local configuration needed** - enjoy full team collaboration out of the box!
+
+## ✨ Features
+
+- 🌍 **Code Anywhere**: Control Claude Code from mobile, tablet, or any browser
+- 🤝 **Multi-Agent Teams**: Built-in support for 22 specialized roles (Master, Builder, Architect, QA, etc.)
+- 🔒 **End-to-End Encryption**: All communications are encrypted with TweetNaCl
+- 🔄 **Real-time Sync**: Instant session sharing across all your devices
+- 📱 **Mobile First**: Optimized for mobile coding experience
+- 🆓 **Free & Open Source**: MIT licensed
+
+## Basic Usage
 
 ```bash
 aha
@@ -100,6 +124,16 @@ tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
   `@modelcontextprotocol/sdk`, which we used to implement permission forwarding
   to mobile app
 - Claude CLI installed & logged in (`claude` command available in PATH)
+
+## 📞 Contact & Support
+
+Need help or want to contribute? Reach out to us:
+
+- **Email**: hsy863551305@gmail.com
+- **WeChat**: CopizzaH
+- **Issues**: [GitHub Issues](https://github.com/slopus/aha-cli/issues)
+
+We're here to help you get the most out of Aha!
 
 ## License
 
