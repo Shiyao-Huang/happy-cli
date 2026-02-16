@@ -125,13 +125,20 @@ tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
   to mobile app
 - Claude CLI installed & logged in (`claude` command available in PATH)
 
+## 📚 Documentation
+
+- **[Getting Started Guide](./GETTING_STARTED.md)** - Comprehensive guide with use cases and examples
+- **[Contributing Guide](./CONTRIBUTING.md)** - How to contribute to Aha development
+- **[Promotion Materials](./PROMOTION.md)** - Help spread the word about Aha
+
 ## 📞 Contact & Support
 
 Need help or want to contribute? Reach out to us:
 
 - **Email**: hsy863551305@gmail.com
-- **WeChat**: CopizzaH
+- **WeChat**: CopizzaH (add with note "Aha User")
 - **Issues**: [GitHub Issues](https://github.com/slopus/aha-cli/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/slopus/aha-cli/discussions)
 
 We're here to help you get the most out of Aha!
 
