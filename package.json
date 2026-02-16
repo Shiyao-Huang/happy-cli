@@ -1,6 +1,6 @@
 {
   "name": "cc-aha-cli",
-  "version": "1.18.1",
+  "version": "1.18.2",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
@@ -55,7 +55,11 @@
     "scripts",
     "tools/archives",
     "tools/licenses",
-    "package.json"
+    "package.json",
+    "README.md",
+    "GETTING_STARTED.md",
+    "CONTRIBUTING.md",
+    "PROMOTION.md"
   ],
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started aha",
