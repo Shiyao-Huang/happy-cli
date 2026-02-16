@@ -36,6 +36,11 @@ export async function startAhaServer(api: any, client: ApiSessionClient) {
     // Create the MCP server
     //
 
+    // Factory function: creates a fresh MCP server per request.
+    // MCP SDK 1.26.0 requires a new transport per request in stateless mode
+    // ("Stateless transport cannot be reused across requests").
+    const createMcpInstance = () => {
+
     const mcp = new McpServer({
         name: "Aha MCP",
         version: "1.0.0",
@@ -952,23 +957,72 @@ Use the \`send_team_message\` tool to communicate with your team members.
                         createdAt: Date.now()
                     };
                     const initialBody = {
-                        body: JSON.stringify({
-                            tasks: [],
-                            columns: [
-                                { id: 'todo', title: 'To Do', order: 0 },
-                                { id: 'in-progress', title: 'In Progress', order: 1 },
-                                { id: 'review', title: 'Review', order: 2 },
-                                { id: 'done', title: 'Done', order: 3 }
-                            ],
-                            members: [],
-                            createdAt: Date.now()
-                        })
+                        tasks: [],
+                        columns: [
+                            { id: 'todo', title: 'To Do', order: 0 },
+                            { id: 'in-progress', title: 'In Progress', order: 1 },
+                            { id: 'review', title: 'Review', order: 2 },
+                            { id: 'done', title: 'Done', order: 3 }
+                        ],
+                        members: [],
+                        createdAt: Date.now()
                     };
                     artifact = await api.createArtifact(teamId, initialHeader, initialBody);
                     logger.debug(`[MCP] Successfully created team artifact ${teamId}`);
+
+                    // Verify artifact body is correctly initialized
+                    try {
+                        logger.debug(`[MCP] Verifying team artifact ${teamId} body initialization...`);
+                        const verificationArtifact = await api.getArtifact(teamId);
+
+                        if (!verificationArtifact.body) {
+                            throw new Error(
+                                `Team artifact created but body not initialized. ` +
+                                `This may indicate a server-side initialization issue. ` +
+                                `Please try again or contact support.`
+                            );
+                        }
+
+                        // Try to parse the body to ensure it's valid
+                        let bodyValid = false;
+                        if (typeof verificationArtifact.body === 'string') {
+                            try {
+                                JSON.parse(verificationArtifact.body);
+                                bodyValid = true;
+                            } catch {
+                                // Body is a string but not valid JSON
+                            }
+                        } else if (typeof verificationArtifact.body === 'object') {
+                            bodyValid = true;
+                        }
+
+                        if (!bodyValid) {
+                            throw new Error(
+                                `Team artifact body is malformed. ` +
+                                `Expected valid JSON structure but got: ${typeof verificationArtifact.body}`
+                            );
+                        }
+
+                        logger.debug(`[MCP] Team artifact ${teamId} body verified successfully`);
+                        artifact = verificationArtifact; // Use the verified artifact
+
+                    } catch (verifyError) {
+                        logger.debug(`[MCP] Team artifact ${teamId} verification failed:`, verifyError);
+                        // Clean up the potentially broken artifact
+                        try {
+                            // Note: We don't have a delete artifact API yet, so we just log
+                            logger.debug(`[MCP] Team artifact ${teamId} may need manual cleanup`);
+                        } catch {
+                            // Ignore cleanup errors
+                        }
+                        throw new Error(
+                            `Team artifact verification failed: ${verifyError instanceof Error ? verifyError.message : String(verifyError)}`
+                        );
+                    }
+
                 } catch (createError) {
                     logger.debug(`[MCP] Failed to create team artifact ${teamId}:`, createError);
-                    return { content: [{ type: 'text', text: 'Error: Failed to fetch or create team artifact.' }], isError: true };
+                    return { content: [{ type: 'text', text: `Error: ${createError instanceof Error ? createError.message : 'Failed to fetch or create team artifact.'}` }], isError: true };
                 }
             }
 
@@ -1206,20 +1260,28 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // ========== End 嵌套任务工具 ==========
 
-    const transport = new StreamableHTTPServerTransport({
-        // NOTE: Returning session id here will result in claude
-        // sdk spawn to fail with `Invalid Request: Server already initialized`
-        sessionIdGenerator: undefined
-    });
-    await mcp.connect(transport);
+    return mcp;
+
+    }; // end createMcpInstance
 
     //
     // Create the HTTP server
+    // MCP SDK 1.26.0 stateless mode requires a new transport + server per request.
+    // See: simpleStatelessStreamableHttp.js in @modelcontextprotocol/sdk examples.
     //
 
     const server = createServer(async (req, res) => {
         try {
+            const mcp = createMcpInstance();
+            const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: undefined
+            });
+            await mcp.connect(transport);
             await transport.handleRequest(req, res);
+            res.on('close', () => {
+                transport.close();
+                mcp.close();
+            });
         } catch (error) {
             logger.debug("Error handling request:", error);
             if (!res.headersSent) {
@@ -1255,7 +1317,6 @@ Use the \`send_team_message\` tool to communicate with your team members.
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');
-            mcp.close();
             server.close();
         }
     }

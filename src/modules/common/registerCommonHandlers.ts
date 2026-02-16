@@ -120,7 +120,7 @@ export interface SpawnSessionOptions {
     directory: string;
     sessionId?: string;
     approvedNewDirectoryCreation?: boolean;
-    agent?: 'claude' | 'codex';
+    agent?: 'claude' | 'codex' | 'ralph';
     token?: string;
     sessionTag?: string;
     teamId?: string;
@@ -128,6 +128,9 @@ export interface SpawnSessionOptions {
     sessionName?: string;
     sessionPath?: string;
     env?: Record<string, string>;
+    // ralph-specific fields
+    prdPath?: string;           // prd.json path (ralph required)
+    maxIterations?: number;     // max loop iterations (ralph, default 10)
 }
 
 export type SpawnSessionResult =

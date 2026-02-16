@@ -87,9 +87,9 @@ function selectAuthenticationMethod(): Promise<AuthMethod | null> {
 async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | null> {
     console.clear();
     console.log('\nMobile Authentication\n');
-    console.log('Scan this QR code with your Aha mobile app:\n');
+    console.log('Scan this QR code with your Happy mobile app:\n');
 
-    const authUrl = 'aha://terminal?' + encodeBase64Url(keypair.publicKey);
+    const authUrl = 'happy://terminal?' + encodeBase64Url(keypair.publicKey);
     displayQRCode(authUrl);
 
     console.log('\nOr manually enter this URL:');

@@ -7,7 +7,7 @@ Free. Open source. Code anywhere.
 ## Installation
 
 ```bash
-npm install -g aha-coder
+npm install -g cc-aha-cli
 ```
 
 ## Usage

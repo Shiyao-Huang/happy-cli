@@ -2,6 +2,9 @@
 # yarn lockfile v1
 
 
+"@aha/shared-team-config@file:../shared/team-config":
+  version "0.1.1"
+
 "@alcalzone/ansi-tokenize@^0.2.0":
   version "0.2.0"
   resolved "https://registry.npmjs.org/@alcalzone/ansi-tokenize/-/ansi-tokenize-0.2.0.tgz"
@@ -10,10 +13,10 @@
     ansi-styles "^6.2.1"
     is-fullwidth-code-point "^5.0.0"
 
-"@anthropic-ai/claude-code@2.1.19":
-  version "2.1.19"
-  resolved "https://registry.npmmirror.com/@anthropic-ai/claude-code/-/claude-code-2.1.19.tgz#f9c0278f8673ebccccb2e0f464e137562cb7c46e"
-  integrity sha512-/bUlQuX/6nKr1Zqfi/9Q6xf7WonUBk72ZfKKENU4WVrIFWqTv/0JJsoW/dHol9QBNHvyfKIeBbYu4avHNRAnuQ==
+"@anthropic-ai/claude-code@2.1.39":
+  version "2.1.39"
+  resolved "https://registry.yarnpkg.com/@anthropic-ai/claude-code/-/claude-code-2.1.39.tgz#aacc5339a605223252b598a0d100c2feada079e6"
+  integrity sha512-3tE1xk4erW4y+iIEWNzO0XiaCnkGNFJdgdw8Q4jd1Dcpl6MWjZonuqFqXtHomKX1Tw/8n/Sa3+oc1F4huvW/rQ==
   optionalDependencies:
     "@img/sharp-darwin-arm64" "^0.33.5"
     "@img/sharp-darwin-x64" "^0.33.5"
@@ -289,9 +292,6 @@
   dependencies:
     "@fastify/forwarded" "^3.0.0"
     ipaddr.js "^2.1.0"
-
-"@happy/shared-team-config@file:../shared/team-config":
-  version "0.1.0"
 
 "@humanfs/core@^0.19.1":
   version "0.19.1"

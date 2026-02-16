@@ -1,15 +1,18 @@
 /**
- * Ralph Loop Executor Module
+ * @deprecated Use src/ralph/loop.ts instead.
  *
- * Implements the RALPH pattern for iterative task execution:
- * - Research: Gather context and understand the problem
- * - Act: Execute the planned actions
- * - Loop: Evaluate results and iterate if needed
- * - Plan: Create/refine execution plan
- * - Halt: Stop when goal is achieved or max iterations reached
+ * This module was the original in-session Ralph Loop prototype.
+ * It has been replaced by the true Ralph Loop implementation in
+ * src/ralph/ which spawns isolated Claude processes per iteration
+ * via sdk/query.ts and uses MCP tools for PRD management.
  *
- * This module coordinates complex multi-step tasks with
- * built-in feedback loops and adaptive planning.
+ * Kept to avoid breaking existing team module imports.
+ *
+ * ---
+ *
+ * Original description:
+ * Ralph Loop Executor Module - Implements the RALPH pattern for
+ * iterative task execution within a single session.
  */
 
 import { randomUUID } from 'crypto';

@@ -280,12 +280,23 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Merging custom env: ${JSON.stringify(options.env)}`);
         }
 
-        // Construct arguments for the CLI
-        const args = [
-          options.agent === 'claude' ? 'claude' : 'codex',
-          '--aha-starting-mode', 'remote',
-          '--started-by', 'daemon'
-        ];
+        // Construct arguments for the CLI based on agent type
+        let args: string[];
+        if (options.agent === 'ralph') {
+          // Ralph loop runs as a standalone process
+          args = [
+            'ralph', 'start',
+            '--prd', options.prdPath || join(directory, 'prd.json'),
+            '--max-iterations', String(options.maxIterations || 10),
+            '--started-by', 'daemon',
+          ];
+        } else {
+          args = [
+            options.agent === 'claude' ? 'claude' : 'codex',
+            '--aha-starting-mode', 'remote',
+            '--started-by', 'daemon',
+          ];
+        }
 
         if (options.sessionTag) {
           args.push('--session-tag', options.sessionTag);

@@ -50,7 +50,9 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
   ${chalk.yellow('auth')} [login|logout]      Authentication management
   ${chalk.yellow('connect')} [list|add]      AI vendor API key management
+  ${chalk.yellow('teams')} [list|archive|delete] Team management
   ${chalk.yellow('codex')}                   Start team collaboration mode
+  ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
   ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
   ${chalk.yellow('daemon')} [list|stop]      Background service management
 
@@ -141,6 +143,19 @@ For command-specific help, run:
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'teams') {
+    // Handle teams management commands
+    try {
+      const { handleTeamsCommand } = await import('./commands/teams');
+      await handleTeamsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'codex') {
     // Handle codex command
     try {
@@ -159,6 +174,19 @@ For command-specific help, run:
       } = await authAndSetupMachineIfNeeded();
       await runCodex({ credentials, startedBy });
       // Do not force exit here; allow instrumentation to show lingering handles
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'ralph') {
+    // Handle ralph autonomous loop command
+    try {
+      const { handleRalphCommand } = await import('./ralph/command.js');
+      await handleRalphCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -306,8 +334,8 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('aha doctor cle
     return;
   } else {
 
-    // If the first argument is claude, remove it
-    if (args.length > 0 && args[0] === 'claude') {
+    // If the first argument is claude or cli, remove it
+    if (args.length > 0 && (args[0] === 'claude' || args[0] === 'cli')) {
       args.shift()
     }
 
