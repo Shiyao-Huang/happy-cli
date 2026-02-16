@@ -10,6 +10,8 @@ Free. Open source. Code anywhere.
 npm install -g cc-aha-cli
 ```
 
+> **Note:** The package name is `cc-aha-cli`, but the command you use is still `aha`. Nothing changes for end users!
+
 ## Usage
 
 ```bash
