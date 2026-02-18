@@ -16,13 +16,14 @@
  */
 
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve } from 'node:path';
 import chalk from 'chalk';
 import { logger } from '@/ui/logger';
 import { query } from '@/claude/sdk/query';
-import { loadPrd, getNextStory, getPrdStats, getCodebasePatterns } from './prdManager';
+import { loadPrd, getNextStory, getPrdStats, getCodebasePatterns, appendProgress, savePrd } from './prdManager';
 import { startRalphMcpServer } from './mcpServer';
 import { buildSystemPrompt } from './systemPrompt';
+import { runQualityGate, formatQualityResult } from './qualityGate';
 import type { QueryOptions } from '@/claude/sdk/types';
 import type { RalphConfig, RalphState, ProgressPhase } from './types';
 
@@ -65,6 +66,7 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
         completed: 0,
         total: 0,
         startedAt: Date.now(),
+        retries: {},
     };
 
     try {
@@ -86,6 +88,9 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
         console.log(chalk.gray(`  Max iterations: ${maxIterations}\n`));
 
         // ─── Main Loop ─────────────────────────────────────────
+        const MAX_RETRIES_PER_STORY = 3;
+        let consecutiveFailures = 0;
+
         for (let iteration = 1; iteration <= maxIterations; iteration++) {
             state.iteration = iteration;
 
@@ -112,7 +117,27 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
 
             state.currentStoryId = nextStory.id;
 
-            console.log(chalk.bold(`\n  Iteration ${iteration}/${maxIterations}`));
+            // Track retry count for current story
+            const retryCount = state.retries[nextStory.id] ?? 0;
+
+            if (retryCount >= MAX_RETRIES_PER_STORY) {
+                console.log(chalk.yellow(`\n  Story ${nextStory.id} failed ${MAX_RETRIES_PER_STORY} times, marking blocked`));
+                await appendProgress(
+                    resolvedProgressPath,
+                    `## ${new Date().toISOString()} - ${nextStory.id} BLOCKED\nFailed after ${MAX_RETRIES_PER_STORY} attempts. Skipping to next story.`,
+                );
+                // Mark story notes as blocked so it gets skipped
+                const blockedPrd = await loadPrd(resolvedPrdPath);
+                const updatedStories = blockedPrd.userStories.map(s =>
+                    s.id === nextStory.id
+                        ? { ...s, notes: `BLOCKED: Failed after ${MAX_RETRIES_PER_STORY} attempts` }
+                        : s
+                );
+                await savePrd(resolvedPrdPath, { ...blockedPrd, userStories: updatedStories });
+                continue;
+            }
+
+            console.log(chalk.bold(`\n  Iteration ${iteration}/${maxIterations}${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES_PER_STORY})` : ''}`));
             console.log(chalk.gray(`  Story: ${nextStory.id} - ${nextStory.title}`));
             console.log(chalk.gray(`  Progress: ${stats.completed}/${stats.total}`));
 
@@ -131,6 +156,8 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
                 { ...config, prdPath: resolvedPrdPath, progressPath: resolvedProgressPath },
                 onProgress,
             );
+
+            let iterationSucceeded = false;
 
             try {
                 // 2. Build system prompt
@@ -183,12 +210,46 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
 
                 logger.debug(`[Ralph Loop] Iteration ${iteration} Claude process completed`);
 
+                // 5. Run quality gate checks
+                console.log(chalk.gray('  [quality-gate] Running checks...'));
+                const qualityResult = await runQualityGate(workingDirectory, config.qualityChecks);
+
+                if (qualityResult.passed) {
+                    console.log(chalk.green(`  [quality-gate] PASSED (${qualityResult.totalDurationMs}ms)`));
+                    iterationSucceeded = true;
+                    consecutiveFailures = 0;
+                    delete state.retries[nextStory.id];
+                } else {
+                    console.log(chalk.red(`  [quality-gate] FAILED`));
+                    console.log(chalk.red(`  ${formatQualityResult(qualityResult).split('\n').join('\n  ')}`));
+                    consecutiveFailures++;
+                    state.retries[nextStory.id] = retryCount + 1;
+
+                    // Record failure in progress
+                    await appendProgress(
+                        resolvedProgressPath,
+                        `## ${new Date().toISOString()} - ${nextStory.id} QUALITY GATE FAILED (attempt ${retryCount + 1})\n${qualityResult.summary}`,
+                    );
+                }
+
+            } catch (error) {
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                console.error(chalk.red(`\n  Iteration ${iteration} error: ${errorMsg}`));
+                logger.debug('[Ralph Loop] Iteration error:', error);
+                consecutiveFailures++;
+                state.retries[nextStory.id] = retryCount + 1;
+
+                // Record error in progress
+                await appendProgress(
+                    resolvedProgressPath,
+                    `## ${new Date().toISOString()} - ${nextStory.id} ERROR (attempt ${retryCount + 1})\n${errorMsg}`,
+                );
             } finally {
-                // 5. Always stop MCP server
+                // 6. Always stop MCP server
                 mcpServer.stop();
             }
 
-            // 6. Check completion sentinel
+            // 7. Check completion sentinel
             if (existsSync(completeSentinel)) {
                 console.log(chalk.green('\n  All stories complete! (signaled by agent)'));
                 state.status = 'complete';
@@ -196,8 +257,8 @@ export async function runRalphLoop(config: RalphConfig): Promise<RalphState> {
                 break;
             }
 
-            // 7. Brief pause between iterations
-            await sleep(2000);
+            // 8. Brief pause between iterations (longer on failure)
+            await sleep(iterationSucceeded ? 2000 : 5000);
         }
 
         // Check for max iterations exhaustion

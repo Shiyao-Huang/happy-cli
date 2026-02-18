@@ -23,6 +23,12 @@ export interface PrdJson {
     userStories: UserStory[];
 }
 
+export interface QualityChecksConfig {
+    typeCheck: boolean;
+    testRun: boolean;
+    buildVerify: boolean;
+}
+
 export interface RalphConfig {
     prdPath: string;
     progressPath: string;
@@ -30,6 +36,8 @@ export interface RalphConfig {
     maxIterations: number;
     model?: string;
     permissionMode?: string;
+    qualityChecks?: Partial<QualityChecksConfig>;
+    teamMode?: boolean;
 }
 
 export type RalphStatus = 'idle' | 'running' | 'stopped' | 'complete' | 'error';
@@ -42,6 +50,8 @@ export interface RalphState {
     completed: number;
     total: number;
     startedAt: number;
+    /** Per-story retry counts keyed by story ID */
+    retries: Record<string, number>;
 }
 
 export type ProgressPhase = 'research' | 'implementing' | 'testing' | 'committing';

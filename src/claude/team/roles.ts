@@ -60,13 +60,19 @@ export const IMPLEMENTATION_ROLES = [
     'solution-architect'
 ];
 
-// Review/QA: Code review, testing, observation
+// Review/QA: Code review, testing
 export const REVIEW_ROLES = [
     'reviewer',
     'qa-engineer',
     'qa',  // Quality Assurance (alias)
-    'observer'
 ];
+
+/**
+ * @deprecated Observer role removed in v0.2.
+ * Observer added zero valuable contributions and was a pure noise source.
+ * Progress logging is now handled automatically by Ralph Loop via appendProgress().
+ */
+export const DEPRECATED_ROLES = ['observer'];
 
 // Research: Information gathering, analysis
 export const RESEARCH_ROLES = [
@@ -146,8 +152,10 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
     'qa-engineer': ['master', 'orchestrator', 'builder', 'reviewer'],
     'qa': ['master', 'orchestrator', 'builder', 'reviewer'],
 
-    // Observer: 只读，只听协调者
-    'observer': ['master', 'orchestrator'],
+    // Observer: REMOVED in v0.2 (zero valuable contributions, pure noise source)
+    // Progress logging is now handled automatically by Ralph Loop.
+    // Kept in map for backwards compatibility with existing team configs.
+    'observer': [],  // Empty array = listens to nobody = effectively disabled
 
     // ===========================================
     // SUPPORT ROLES (按需响应)
@@ -185,12 +193,37 @@ export function getRoleCollaborators(myRole: string): string[] {
 }
 
 /**
+ * Check if a role is deprecated and should not be used for new teams.
+ */
+export function isDeprecatedRole(role: string): boolean {
+    return DEPRECATED_ROLES.includes(role);
+}
+
+/**
+ * Validate team roles and return warnings for deprecated roles.
+ */
+export function validateTeamRoles(roles: string[]): { valid: boolean; warnings: string[] } {
+    const warnings: string[] = [];
+    for (const role of roles) {
+        if (isDeprecatedRole(role)) {
+            warnings.push(`Role '${role}' is deprecated and will be ignored. Progress logging is handled automatically.`);
+        }
+    }
+    return { valid: true, warnings };
+}
+
+/**
  * Check if a role should respond to a message from another role
  * @param myRole My role
  * @param fromRole The role of the message sender
  * @returns true if I should consider responding
  */
 export function shouldListenTo(myRole: string, fromRole: string | undefined): boolean {
+    // Deprecated roles never listen
+    if (isDeprecatedRole(myRole)) {
+        return false;
+    }
+
     if (!fromRole || fromRole === 'user') {
         // User messages: coordination roles always listen, others check their map
         if (COORDINATION_ROLES.includes(myRole)) {

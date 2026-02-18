@@ -14,7 +14,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from 'node:http';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { AddressInfo } from 'node:net';
@@ -163,6 +163,145 @@ export async function startRalphMcpServer(
             } catch (error) {
                 return {
                     content: [{ type: 'text' as const, text: `Error signaling complete: ${String(error)}` }],
+                    isError: true,
+                };
+            }
+        });
+
+        // ─── ralph_heartbeat_ping ─────────────────────────────────
+        mcp.registerTool('ralph_heartbeat_ping', {
+            description: 'Heartbeat ping from Master. Updates master-state.json with current timestamp and loop status. Returns current state summary.',
+            title: 'Heartbeat Ping',
+            inputSchema: {
+                sessionId: z.string().optional().describe('Master session ID for tracking'),
+            },
+        }, async (args) => {
+            try {
+                const statePath = join(config.workingDirectory, '.aha', 'master-state.json');
+                const timestamp = new Date().toISOString();
+
+                // Load or create state
+                let state: Record<string, unknown>;
+                if (existsSync(statePath)) {
+                    state = JSON.parse(readFileSync(statePath, 'utf-8'));
+                } else {
+                    state = {
+                        version: '1.0.0',
+                        loopStatus: 'idle',
+                        currentTask: null,
+                        lastHeartbeat: timestamp,
+                        iterationCount: 0,
+                        sessionId: args.sessionId ?? 'master',
+                        agentRole: 'master',
+                        health: { status: 'healthy', lastCheck: timestamp, uptimeSeconds: 0 },
+                        recovery: { lastSuccessCommit: null, crashCount: 0, lastCrashTime: null, recoveryAttempts: 0 },
+                        taskQueue: { pending: [], inProgress: [], completed: [], blocked: [] },
+                        metadata: { createdAt: timestamp, updatedAt: timestamp, projectName: 'Aha Ralph Loop' },
+                    };
+                }
+
+                // Update heartbeat fields
+                state.lastHeartbeat = timestamp;
+                if (state.health && typeof state.health === 'object') {
+                    (state.health as Record<string, unknown>).lastCheck = timestamp;
+                }
+                if (state.metadata && typeof state.metadata === 'object') {
+                    (state.metadata as Record<string, unknown>).updatedAt = timestamp;
+                }
+                if (args.sessionId) {
+                    state.sessionId = args.sessionId;
+                }
+
+                // Get PRD stats
+                try {
+                    const prd = await loadPrd(config.prdPath);
+                    const { completed, total } = getPrdStats(prd);
+                    const nextStory = getNextStory(prd);
+                    state.currentTask = nextStory?.id ?? null;
+                    state.taskQueue = {
+                        pending: prd.userStories.filter(s => !s.passes).map(s => s.id),
+                        inProgress: nextStory ? [nextStory.id] : [],
+                        completed: prd.userStories.filter(s => s.passes).map(s => s.id),
+                        blocked: [],
+                    };
+                    state.loopStatus = total === completed ? 'idle' : 'running';
+                } catch {
+                    // PRD not available, keep existing state
+                }
+
+                writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
+                logger.debug(`[Ralph MCP] Heartbeat ping at ${timestamp}`);
+
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: JSON.stringify({
+                            success: true,
+                            timestamp,
+                            loopStatus: state.loopStatus,
+                            currentTask: state.currentTask,
+                        }),
+                    }],
+                    isError: false,
+                };
+            } catch (error) {
+                return {
+                    content: [{ type: 'text' as const, text: `Error pinging heartbeat: ${String(error)}` }],
+                    isError: true,
+                };
+            }
+        });
+
+        // ─── ralph_heartbeat_status ──────────────────────────────
+        mcp.registerTool('ralph_heartbeat_status', {
+            description: 'Get current Master heartbeat status including health, task queue, and recovery info.',
+            title: 'Heartbeat Status',
+            inputSchema: {},
+        }, async () => {
+            try {
+                const statePath = join(config.workingDirectory, '.aha', 'master-state.json');
+
+                if (!existsSync(statePath)) {
+                    return {
+                        content: [{
+                            type: 'text' as const,
+                            text: JSON.stringify({ status: 'no_state', message: 'Master state not initialized. Call ralph_heartbeat_ping first.' }),
+                        }],
+                        isError: false,
+                    };
+                }
+
+                const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+
+                // Check if heartbeat is stale (no ping in last 2 minutes)
+                const lastHeartbeat = new Date(state.lastHeartbeat).getTime();
+                const staleThreshold = 2 * 60 * 1000; // 2 minutes
+                const isStale = Date.now() - lastHeartbeat > staleThreshold;
+
+                // Get live PRD stats
+                let prdStats = { completed: 0, total: 0 };
+                try {
+                    const prd = await loadPrd(config.prdPath);
+                    prdStats = getPrdStats(prd);
+                } catch {
+                    // use defaults
+                }
+
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: JSON.stringify({
+                            ...state,
+                            isStale,
+                            prdProgress: prdStats,
+                            checkedAt: new Date().toISOString(),
+                        }, null, 2),
+                    }],
+                    isError: false,
+                };
+            } catch (error) {
+                return {
+                    content: [{ type: 'text' as const, text: `Error getting heartbeat status: ${String(error)}` }],
                     isError: true,
                 };
             }

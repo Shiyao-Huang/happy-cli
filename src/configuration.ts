@@ -5,9 +5,10 @@
  * Environment files should be loaded using Node's --env-file flag
  */
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import chalk from 'chalk'
@@ -158,7 +159,17 @@ class Configuration {
     this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.AHA_EXPERIMENTAL?.toLowerCase() || '');
     this.disableCaffeinate = ['true', '1', 'yes'].includes(process.env.AHA_DISABLE_CAFFEINATE?.toLowerCase() || '');
 
-    this.currentCliVersion = packageJson.version
+    // Read version from disk to avoid compiled/bundled version going stale.
+    // The bundler inlines package.json at build time, so if package.json is
+    // bumped without rebuilding dist/, the compiled version is wrong.
+    // Fall back to the compiled import if disk read fails.
+    try {
+      const __dir = dirname(fileURLToPath(import.meta.url))
+      const diskPkg = JSON.parse(readFileSync(resolve(__dir, '..', 'package.json'), 'utf-8'))
+      this.currentCliVersion = diskPkg.version
+    } catch {
+      this.currentCliVersion = packageJson.version
+    }
 
     if (!existsSync(this.ahaHomeDir)) {
       mkdirSync(this.ahaHomeDir, { recursive: true })

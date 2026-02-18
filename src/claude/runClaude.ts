@@ -257,7 +257,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Forward messages to the queue
     let currentPermissionMode = options.permissionMode;
-    let currentModel = options.model; // Track current model state
+
+    // Initialize model: priority = CLI args > session.modelOverride > role default > undefined
+    // Session modelOverride is set by Kanban when user selects a different model per session
+    const sessionModelOverride = (session.getMetadata() as any)?.modelOverride as string | undefined;
+    let currentModel = options.model || sessionModelOverride;
+    if (sessionModelOverride && !options.model) {
+        logger.debug(`[runClaude] Using model override from session metadata: ${sessionModelOverride}`);
+    } else if (options.model) {
+        logger.debug(`[runClaude] Using model from CLI options: ${options.model}`);
+    } else {
+        logger.debug(`[runClaude] No model override, using Claude default`);
+    }
+
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
 
@@ -1067,7 +1079,7 @@ ${instructions}
     // Create claude loop
     await loop({
         path: workingDirectory,
-        model: options.model,
+        model: currentModel, // Uses session.modelOverride if set, otherwise falls back to options.model
         permissionMode: options.permissionMode,
         startingMode: options.startingMode,
         sessionTag: options.sessionTag,

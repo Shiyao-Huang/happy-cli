@@ -1,6 +1,6 @@
 {
   "name": "cc-aha-cli",
-  "version": "1.18.2",
+  "version": "1.18.4",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
@@ -76,8 +76,8 @@
     "prerecommit": "yarn typecheck && yarn test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.39",
-    "@anthropic-ai/sdk": "0.71.2",
+    "@anthropic-ai/claude-code": "2.1.45",
+    "@anthropic-ai/sdk": "0.76.0",
     "@aha/shared-team-config": "file:../shared/team-config",
     "@modelcontextprotocol/sdk": "^1.15.1",
     "@stablelib/base64": "^2.0.1",

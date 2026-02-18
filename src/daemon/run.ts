@@ -10,7 +10,8 @@ import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
-import packageJson from '../../package.json';
+// Note: packageJson import removed — all version reads now use disk package.json
+// to prevent stale compiled versions from causing daemon restart loops.
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
@@ -21,11 +22,12 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
 
-// Prepare initial metadata
+// Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
+// instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
 export const initialMachineMetadata: MachineMetadata = {
   host: os.hostname(),
   platform: os.platform(),
-  ahaCliVersion: packageJson.version,
+  ahaCliVersion: configuration.currentCliVersion,
   homeDir: os.homedir(),
   ahaHomeDir: configuration.ahaHomeDir,
   ahaLibDir: projectPath()
@@ -445,16 +447,22 @@ export async function startDaemon(): Promise<void> {
       onAhaSessionWebhook
     });
 
+    // Read version from disk (not compiled import) to avoid build/publish desync.
+    // The compiled `packageJson.version` can be stale if package.json was bumped
+    // without rebuilding dist/. Reading from disk ensures the version written to
+    // daemon.state.json matches what isDaemonRunningCurrentlyInstalledAhaVersion() reads.
+    const diskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
+
     // Write initial daemon state (no lock needed for state file)
     const fileState: DaemonLocallyPersistedState = {
       pid: process.pid,
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
-      startedWithCliVersion: packageJson.version,
+      startedWithCliVersion: diskVersion,
       daemonLogPath: logger.logFilePath
     };
     writeDaemonState(fileState);
-    logger.debug('[DAEMON RUN] Daemon state written');
+    logger.debug(`[DAEMON RUN] Daemon state written (version: ${diskVersion})`);
 
     // Prepare initial daemon state
     const initialDaemonState: DaemonState = {
@@ -517,35 +525,35 @@ export async function startDaemon(): Promise<void> {
         }
       }
 
-      // Check if daemon needs update
-      // If version on disk is different from the one in package.json - we need to restart
-      // BIG if - does this get updated from underneath us on npm upgrade?
-      const projectVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
-      if (projectVersion !== configuration.currentCliVersion) {
-        logger.debug('[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version, clearing heartbeat interval');
+      // Check if daemon needs update by comparing current disk version with
+      // the version we recorded at startup. This detects real npm upgrades
+      // (where the dist/ files AND package.json both change on disk).
+      // Previous implementation compared disk vs compiled version, which broke
+      // when package.json was bumped without rebuilding — causing infinite restart loops.
+      const currentDiskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
+      if (currentDiskVersion !== diskVersion) {
+        // Cooldown: don't restart if daemon started less than 2 minutes ago
+        const uptimeMs = Date.now() - new Date(fileState.startTime).getTime();
+        if (uptimeMs < 120_000) {
+          logger.debug(`[DAEMON RUN] Version changed on disk (${diskVersion} → ${currentDiskVersion}) but daemon uptime is only ${Math.round(uptimeMs / 1000)}s — skipping restart to avoid loop`);
+        } else {
+          logger.debug(`[DAEMON RUN] Version changed on disk (${diskVersion} → ${currentDiskVersion}), triggering self-restart`);
 
-        clearInterval(restartOnStaleVersionAndHeartbeat);
+          clearInterval(restartOnStaleVersionAndHeartbeat);
 
-        // Spawn new daemon through the CLI
-        // We do not need to clean ourselves up - we will be killed by
-        // the CLI start command.
-        // 1. It will first check if daemon is running (yes in this case)
-        // 2. If the version is stale (it will read daemon.state.json file and check startedWithCliVersion) & compare it to its own version
-        // 3. Next it will start a new daemon with the latest version with daemon-sync :D
-        // Done!
-        try {
-          spawnAhaCLI(['daemon', 'start'], {
-            detached: true,
-            stdio: 'ignore'
-          });
-        } catch (error) {
-          logger.debug('[DAEMON RUN] Failed to spawn new daemon, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
+          try {
+            spawnAhaCLI(['daemon', 'start'], {
+              detached: true,
+              stdio: 'ignore'
+            });
+          } catch (error) {
+            logger.debug('[DAEMON RUN] Failed to spawn new daemon', error);
+          }
+
+          logger.debug('[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us');
+          await new Promise(resolve => setTimeout(resolve, 10_000));
+          process.exit(0);
         }
-
-        // So we can just hang forever
-        logger.debug('[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-        await new Promise(resolve => setTimeout(resolve, 10_000));
-        process.exit(0);
       }
 
       // Before wrecklessly overriting the daemon state file, we should check if we are the ones who own it
@@ -562,7 +570,7 @@ export async function startDaemon(): Promise<void> {
           pid: process.pid,
           httpPort: controlPort,
           startTime: fileState.startTime,
-          startedWithCliVersion: packageJson.version,
+          startedWithCliVersion: diskVersion,
           lastHeartbeat: new Date().toLocaleString(),
           daemonLogPath: fileState.daemonLogPath
         };

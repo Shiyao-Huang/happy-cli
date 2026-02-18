@@ -1,10 +1,13 @@
 import { logger } from "@/ui/logger";
 
+export type MessagePriority = 'user' | 'system' | 'agent';
+
 interface QueueItem<T> {
     message: string;
     mode: T;
     modeHash: string;
     isolate?: boolean; // If true, this message must be processed alone
+    priority?: MessagePriority; // User messages take precedence over agent messages
 }
 
 /**
@@ -37,20 +40,31 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the queue with a mode.
      */
-    push(message: string, mode: T): void {
+    push(message: string, mode: T, priority?: MessagePriority): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
 
         const modeHash = this.modeHasher(mode);
-        logger.debug(`[MessageQueue2] push() called with mode hash: ${modeHash}`);
+        logger.debug(`[MessageQueue2] push() called with mode hash: ${modeHash}, priority: ${priority ?? 'none'}`);
 
-        this.queue.push({
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
-            isolate: false
-        });
+            isolate: false,
+            priority,
+        };
+
+        // User messages go to the front of the queue and clear pending acks
+        if (priority === 'user') {
+            // Remove any pending acknowledgment-style messages to reduce noise
+            this.queue = this.queue.filter(q => q.priority !== 'agent' || q.isolate);
+            this.queue.unshift(item);
+            logger.debug(`[MessageQueue2] User message inserted at front, cleared agent acks`);
+        } else {
+            this.queue.push(item);
+        }
 
         // Trigger message handler if set
         if (this.onMessageHandler) {

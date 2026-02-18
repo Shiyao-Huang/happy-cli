@@ -297,6 +297,42 @@ export function suggestRoleForTask(task: KanbanTask): string[] {
 }
 
 /**
+ * Check whether a session is authorized to complete a task.
+ *
+ * A session can complete a task if:
+ * - It is the assignee
+ * - It has an active execution link
+ * - It is a coordinator (coordinators can manage any task)
+ *
+ * Returns { allowed, reason } for audit logging.
+ */
+export function canCompleteTask(
+    task: KanbanTask,
+    sessionId: string,
+    roleId: string,
+): { allowed: boolean; reason: string } {
+    // Coordinators can manage any task
+    if (COORDINATION_ROLES.includes(roleId)) {
+        return { allowed: true, reason: 'Coordinator override' };
+    }
+
+    // Task assignee
+    if (task.assigneeId === sessionId) {
+        return { allowed: true, reason: 'Task assignee' };
+    }
+
+    // Active execution link
+    if (isActivelyWorkedBy(task, sessionId)) {
+        return { allowed: true, reason: 'Active execution link' };
+    }
+
+    return {
+        allowed: false,
+        reason: `Session ${sessionId} (${roleId}) is not the assignee (${task.assigneeId ?? 'unassigned'}) and has no active execution link`,
+    };
+}
+
+/**
  * Get all tasks that are blocked and need attention
  */
 export function getBlockedTasks(allTasks: KanbanTask[]): KanbanTaskSummary[] {

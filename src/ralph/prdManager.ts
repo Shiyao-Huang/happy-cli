@@ -12,20 +12,64 @@ import { logger } from '@/ui/logger';
 import type { PrdJson, UserStory } from './types';
 
 /**
- * Load and parse a prd.json file
+ * Load and parse a prd.json file.
+ *
+ * Supports two schemas:
+ *   - Ralph format:   { project, userStories[] }
+ *   - Project format: { projectName, tasks[] }
+ *
+ * Project format is normalized to Ralph format on load.
  */
 export async function loadPrd(path: string): Promise<PrdJson> {
     const raw = await readFile(path, 'utf-8');
-    const parsed = JSON.parse(raw) as PrdJson;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
 
-    if (!parsed.userStories || !Array.isArray(parsed.userStories)) {
-        throw new Error(`Invalid prd.json: missing or invalid userStories array`);
-    }
-    if (!parsed.project || typeof parsed.project !== 'string') {
-        throw new Error(`Invalid prd.json: missing project name`);
+    // Normalize project-format PRD (tasks[] + projectName) to Ralph format
+    if (Array.isArray(parsed.tasks) && !Array.isArray(parsed.userStories)) {
+        const tasks = parsed.tasks as Array<Record<string, unknown>>;
+        const normalized: PrdJson = {
+            project: (parsed.projectName as string) ?? (parsed.project as string) ?? '',
+            branchName: (parsed.metadata as Record<string, unknown>)?.branch as string ?? '',
+            description: (parsed.description as string) ?? '',
+            userStories: tasks.map((t, i) => ({
+                id: (t.id as string) ?? `task-${i + 1}`,
+                title: (t.title as string) ?? '',
+                description: (t.description as string) ?? '',
+                acceptanceCriteria: Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria as string[] : [],
+                priority: priorityToNumber(t.priority as string) ?? i + 1,
+                passes: (t.passes as boolean) ?? false,
+                notes: (t.notes as string) ?? '',
+            })),
+        };
+
+        if (normalized.userStories.length === 0) {
+            throw new Error('Invalid prd.json: tasks array is empty');
+        }
+
+        return normalized;
     }
 
-    return parsed;
+    // Standard Ralph format
+    const prd = parsed as unknown as PrdJson;
+
+    if (!prd.userStories || !Array.isArray(prd.userStories)) {
+        throw new Error('Invalid prd.json: missing or invalid userStories array');
+    }
+    if (!prd.project || typeof prd.project !== 'string') {
+        throw new Error('Invalid prd.json: missing project name');
+    }
+
+    return prd;
+}
+
+/**
+ * Convert string priority to numeric priority.
+ * Returns undefined if already numeric or unrecognized.
+ */
+function priorityToNumber(priority: string | undefined): number | undefined {
+    if (priority === undefined) return undefined;
+    const map: Record<string, number> = { high: 1, medium: 2, low: 3 };
+    return map[priority];
 }
 
 /**
