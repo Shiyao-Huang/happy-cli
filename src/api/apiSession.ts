@@ -251,9 +251,13 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendCodexMessage(body: any) {
+        // Wrap body in codex envelope so kanban can detect it
         let content = {
             role: 'agent',
-            content: body,
+            content: {
+                type: 'codex',
+                data: body
+            },
             meta: {
                 sentFrom: 'cli'
             }

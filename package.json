@@ -76,10 +76,10 @@
     "prerecommit": "yarn typecheck && yarn test"
   },
   "dependencies": {
+    "@aha/shared-team-config": "file:../shared/team-config",
     "@anthropic-ai/claude-code": "2.1.45",
     "@anthropic-ai/sdk": "0.76.0",
-    "@aha/shared-team-config": "file:../shared/team-config",
-    "@modelcontextprotocol/sdk": "^1.15.1",
+    "@modelcontextprotocol/sdk": "1.17.3",
     "@stablelib/base64": "^2.0.1",
     "@stablelib/hex": "^2.0.1",
     "axios": "^1.10.0",
