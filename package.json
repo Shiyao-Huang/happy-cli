@@ -1,6 +1,6 @@
 {
   "name": "cc-aha-cli",
-  "version": "1.18.4",
+  "version": "1.19.0",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
