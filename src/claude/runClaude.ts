@@ -24,7 +24,7 @@ import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
-import { getRolePermissions, generateRolePrompt, shouldListenTo, COORDINATION_ROLES, KanbanContext } from './team/roles';
+import { getRolePermissions, generateRolePrompt, COORDINATION_ROLES, KanbanContext } from './team/roles';
 import { DEFAULT_ROLES } from './team/roles.config';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
@@ -407,102 +407,56 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         await teamStorage.saveMessage(teamId, message);
                         logger.debug(`[runClaude] Saved team message ${message.id} to local storage`);
 
-                        // Determine if this agent should respond
-                        // Check for direct session ID mention OR role name mention (e.g. @builder)
-                        const contentLower = (message.content || '').toLowerCase();
-                        const isRoleMentioned = role && contentLower.includes(`@${role.toLowerCase()}`);
-                        const isMentioned = message.mentions?.includes(response.id) || isRoleMentioned || false;
-
-                        const isUrgent = message.metadata?.priority === 'urgent';
-                        const isTaskUpdate = message.type === 'task-update';
-
-                        const fromRole = message.fromRole;
-                        const isFromUser = !fromRole || fromRole === 'user';
-
-                        // 1. Self-filter: IGNORE messages from myself
+                        // Self-filter: IGNORE messages from myself
                         if (message.fromSessionId === response.id) {
                             logger.debug(`[Team] Ignoring my own message`);
                             return;
                         }
 
-                        // =============================================================
-                        // NEW COLLABORATION MODEL: Peer-to-Peer Communication
-                        // =============================================================
-                        // Each role has a defined set of collaborators they listen to.
-                        // This removes the master bottleneck and enables direct teamwork.
-                        // =============================================================
+                        // Check for direct session ID mention OR role name mention (e.g. @builder)
+                        const contentLower = (message.content || '').toLowerCase();
+                        const isRoleMentioned = role && contentLower.includes(`@${role.toLowerCase()}`);
+                        const isMentioned = message.mentions?.includes(response.id) || isRoleMentioned || false;
 
-                        let shouldRespond = false;
+                        const fromRole = message.fromRole;
+                        logger.debug(`[runClaude] Injecting team message (from:${fromRole || 'user'}, mentioned:${isMentioned})`);
 
-                        // Priority 1: Always respond if directly mentioned
-                        if (isMentioned) {
-                            shouldRespond = true;
-                            logger.debug(`[Team] Responding: directly mentioned`);
-                        }
-                        // Priority 2: Always respond to urgent messages
-                        else if (isUrgent) {
-                            shouldRespond = true;
-                            logger.debug(`[Team] Responding: urgent message`);
-                        }
-                        // Priority 3: Check role collaboration map
-                        else if (role && shouldListenTo(role, fromRole)) {
-                            shouldRespond = true;
-                            logger.debug(`[Team] Responding: ${role} listens to ${fromRole || 'user'}`);
-                        }
-                        // Priority 4: Coordination roles respond to task updates
-                        else if (isTaskUpdate && COORDINATION_ROLES.includes(role || '')) {
-                            shouldRespond = true;
-                            logger.debug(`[Team] Responding: coordinator receiving task update`);
-                        }
-                        // Otherwise: don't respond
-                        else {
-                            logger.debug(`[Team] Not responding: ${role} does not listen to ${fromRole || 'user'}`);
-                        }
+                        // Format the message for injection
+                        const formattedMessage = formatTeamMessage(message, teamId!, role!, isMentioned);
 
-                        console.log(`[Team] Should respond? ${shouldRespond} (Role:${role}, From:${fromRole || 'User'}, Mentioned:${isMentioned}, Collaborator:${role ? shouldListenTo(role, fromRole) : 'N/A'})`);
-
-                        if (shouldRespond) {
-                            logger.debug(`[runClaude] Injecting team message (mentioned:${isMentioned}, urgent:${isUrgent}, from:${fromRole || 'user'})`);
-
-                            // Format the message for injection
-                            const formattedMessage = formatTeamMessage(message, teamId!, role!, isMentioned);
-
-                            // Get Kanban context for role-aware prompt injection
-                            let kanbanContext: KanbanContext | undefined;
-                            if (taskStateManager) {
-                                try {
-                                    kanbanContext = await taskStateManager.getFilteredContext();
-                                    logger.debug(`[runClaude] Got Kanban context: ${kanbanContext.myTasks.length} my tasks, ${kanbanContext.availableTasks.length} available`);
-                                } catch (err) {
-                                    logger.debug('[runClaude] Failed to get Kanban context:', err);
-                                }
+                        // Get Kanban context for role-aware prompt injection
+                        let kanbanContext: KanbanContext | undefined;
+                        if (taskStateManager) {
+                            try {
+                                kanbanContext = await taskStateManager.getFilteredContext();
+                                logger.debug(`[runClaude] Got Kanban context: ${kanbanContext.myTasks.length} my tasks, ${kanbanContext.availableTasks.length} available`);
+                            } catch (err) {
+                                logger.debug('[runClaude] Failed to get Kanban context:', err);
                             }
-
-                            // Generate role prompt to include in system prompt
-                            const sessionMetadataForTeamMsg = session.getMetadata() || {} as any;
-                            // Ensure we have role and teamId in metadata for generateRolePrompt
-                            if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
-                            if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
-                            const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext);
-                            const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
-
-                            // Inject into message queue
-                            const enhancedMode: EnhancedMode = {
-                                permissionMode: currentPermissionMode || 'default',
-                                model: currentModel,
-                                fallbackModel: currentFallbackModel,
-                                customSystemPrompt: currentCustomSystemPrompt,
-                                appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForTeamMsg,
-                                allowedTools: currentAllowedTools,
-                                disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedToolsForMsg]
-                            };
-
-                            messageQueue.push(formattedMessage, enhancedMode);
-                            console.log('[Team] ✅ Message injected into queue');
-                            logger.debug('[runClaude] Team message injected into queue with role prompt');
-                        } else {
-                            logger.debug(`[runClaude] Team message received but not injecting (not relevant for this role)`);
                         }
+
+                        // Generate role prompt to include in system prompt
+                        const sessionMetadataForTeamMsg = session.getMetadata() || {} as any;
+                        // Ensure we have role and teamId in metadata for generateRolePrompt
+                        if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
+                        if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
+                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext);
+                        const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
+
+                        // Inject into message queue
+                        const enhancedMode: EnhancedMode = {
+                            permissionMode: currentPermissionMode || 'default',
+                            model: currentModel,
+                            fallbackModel: currentFallbackModel,
+                            customSystemPrompt: currentCustomSystemPrompt,
+                            appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForTeamMsg,
+                            allowedTools: currentAllowedTools,
+                            disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedToolsForMsg]
+                        };
+
+                        messageQueue.push(formattedMessage, enhancedMode);
+                        console.log('[Team] ✅ Message injected into queue');
+                        logger.debug('[runClaude] Team message injected into queue with role prompt');
                     }
                 } catch (error) {
                     console.error('[Team] Error processing message:', error);

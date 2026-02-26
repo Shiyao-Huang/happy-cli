@@ -8,10 +8,38 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { stopDaemonTeamSessions } from '@/daemon/controlClient';
+import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
 
 interface TeamCommandOptions {
     force?: boolean;
     verbose?: boolean;
+}
+
+/**
+ * Stop all daemon-managed sessions for a team
+ */
+async function stopTeamSessionsInDaemon(teamId: string): Promise<void> {
+    try {
+        const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
+        if (!isRunning) {
+            logger.debug('[Teams] Daemon not running, no local sessions to stop');
+            return;
+        }
+
+        console.log(chalk.gray(`Stopping local daemon sessions for team ${teamId}...`));
+        const result = await stopDaemonTeamSessions(teamId);
+
+        if (result.stopped > 0) {
+            console.log(chalk.gray(`Stopped ${result.stopped} local session(s)`));
+        }
+        if (result.errors.length > 0) {
+            logger.debug('[Teams] Errors stopping sessions:', result.errors);
+        }
+    } catch (error) {
+        // Non-fatal: daemon may not be running
+        logger.debug('[Teams] Failed to stop daemon sessions (non-fatal):', error);
+    }
 }
 
 /**
@@ -227,6 +255,9 @@ async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandO
 
         console.log(chalk.cyan(`Archiving team ${teamId}...`));
 
+        // Stop daemon-managed sessions for this team first
+        await stopTeamSessionsInDaemon(teamId);
+
         const result = await api.archiveTeam(teamId);
 
         if (result.success) {
@@ -268,6 +299,9 @@ async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOp
         }
 
         console.log(chalk.cyan(`Deleting team ${teamId}...`));
+
+        // Stop daemon-managed sessions for this team first
+        await stopTeamSessionsInDaemon(teamId);
 
         const result = await api.deleteTeam(teamId);
 

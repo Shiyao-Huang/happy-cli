@@ -79,6 +79,15 @@ export async function stopDaemonSession(sessionId: string): Promise<boolean> {
   return result.success || false;
 }
 
+export async function stopDaemonTeamSessions(teamId: string): Promise<{ success: boolean; stopped: number; errors: string[] }> {
+  const result = await daemonPost('/stop-team-sessions', { teamId });
+  return {
+    success: result.success || false,
+    stopped: result.stopped || 0,
+    errors: result.errors || []
+  };
+}
+
 export async function spawnDaemonSession(directory: string, sessionId?: string): Promise<any> {
   const result = await daemonPost('/spawn-session', { directory, sessionId });
   return result;

@@ -11,6 +11,7 @@ import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from 
 import { encodeBase64, decodeBase64, encrypt, decrypt } from './encryption';
 import { backoff } from '@/utils/time';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
+import { buildSocketPath } from './socketPath';
 
 interface ServerToDaemonEvents {
     update: (data: Update) => void;
@@ -215,6 +216,7 @@ export class ApiMachineClient {
 
     connect() {
         const serverUrl = configuration.serverUrl.replace(/^http/, 'ws');
+        const socketPath = buildSocketPath(configuration.serverUrl, '/v1/updates');
         logger.debug(`[API MACHINE] Connecting to ${serverUrl}`);
 
         this.socket = io(serverUrl, {
@@ -224,7 +226,7 @@ export class ApiMachineClient {
                 clientType: 'machine-scoped' as const,
                 machineId: this.machine.id
             },
-            path: '/v1/updates',
+            path: socketPath,
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000

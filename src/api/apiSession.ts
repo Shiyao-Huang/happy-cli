@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLock } from '@/utils/lock';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers';
+import { buildSocketPath } from './socketPath';
 
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string;
@@ -50,6 +51,7 @@ export class ApiSessionClient extends EventEmitter {
         //
         // Create socket
         //
+        const socketPath = buildSocketPath(configuration.serverUrl, '/v1/updates');
 
         this.socket = io(configuration.serverUrl, {
             auth: {
@@ -57,7 +59,7 @@ export class ApiSessionClient extends EventEmitter {
                 clientType: 'session-scoped' as const,
                 sessionId: this.sessionId
             },
-            path: '/v1/updates',
+            path: socketPath,
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,

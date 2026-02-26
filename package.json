@@ -1,6 +1,6 @@
 {
-  "name": "cc-aha-cli",
-  "version": "1.19.1",
+  "name": "cc-aha-cli-v2",
+  "version": "2.0.1",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
@@ -9,10 +9,10 @@
   "bugs": "https://github.com/slopus/aha-cli/issues",
   "repository": "slopus/aha-cli",
   "bin": {
-    "aha": "./bin/aha.mjs",
-    "aha-mcp": "./bin/aha-mcp.mjs",
-    "kanban": "./bin/aha.mjs",
-    "kanban-mcp": "./bin/aha-mcp.mjs"
+    "aha-v2": "./bin/aha.mjs",
+    "aha-v2-mcp": "./bin/aha-mcp.mjs",
+    "kanban-v2": "./bin/aha.mjs",
+    "kanban-v2-mcp": "./bin/aha-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -79,7 +79,7 @@
     "@aha/shared-team-config": "file:../shared/team-config",
     "@anthropic-ai/claude-code": "2.1.47",
     "@anthropic-ai/sdk": "0.76.0",
-    "@modelcontextprotocol/sdk": "1.17.3",
+    "@modelcontextprotocol/sdk": "^1.15.1",
     "@stablelib/base64": "^2.0.1",
     "@stablelib/hex": "^2.0.1",
     "axios": "^1.10.0",

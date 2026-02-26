@@ -51,6 +51,7 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('auth')} [login|logout]      Authentication management
   ${chalk.yellow('connect')} [list|add]      AI vendor API key management
   ${chalk.yellow('teams')} [list|archive|delete] Team management
+  ${chalk.yellow('roles')} [pool|review|team-score] Role pool and public review
   ${chalk.yellow('codex')}                   Start team collaboration mode
   ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
   ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
@@ -148,6 +149,19 @@ For command-specific help, run:
     try {
       const { handleTeamsCommand } = await import('./commands/teams');
       await handleTeamsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'roles') {
+    // Handle role pool and review commands
+    try {
+      const { handleRolesCommand } = await import('./commands/roles');
+      await handleRolesCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -441,16 +455,21 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     if (!(await isDaemonRunningCurrentlyInstalledAhaVersion())) {
       logger.debug('Starting Aha background service...');
 
-      // Use the built binary to spawn daemon
-      const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env
-      })
-      daemonProcess.unref();
+      try {
+        // Use the built binary to spawn daemon
+        const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env
+        })
+        daemonProcess.unref();
 
-      // Give daemon a moment to write PID & port file
-      await new Promise(resolve => setTimeout(resolve, 200));
+        // Give daemon a moment to write PID & port file
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (error) {
+        logger.debug('Failed to start daemon (non-fatal):', error);
+        console.log(chalk.yellow('Warning: Could not start background service. Some features may be limited.'));
+      }
     }
 
     // Start the CLI

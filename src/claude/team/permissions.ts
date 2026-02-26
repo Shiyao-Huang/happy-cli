@@ -23,6 +23,7 @@ import { logger } from '@/ui/logger';
 // =============================================================================
 
 export interface ToolPermission {
+  name?: string;
   access: 'allow' | 'deny';
   description?: string;
 }
@@ -81,10 +82,106 @@ let roleDefinitions: RoleDefinitions | null = null;
 // ROLE_DEFINITIONS.yaml Loader
 // =============================================================================
 
-const ROLE_DEFINITIONS_PATH = path.join(
-  __dirname,
-  '../../../../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'
-);
+const ROLE_DEFINITIONS_PATH_CANDIDATES = [
+  // Current monorepo layout
+  path.join(__dirname, '../../../../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
+  // Legacy layout
+  path.join(__dirname, '../../../../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
+  // Shared package source YAML (different schema, normalized below)
+  path.join(__dirname, '../../../../shared/team-config/ROLE_DEFINITIONS.yaml'),
+];
+
+function resolveRoleDefinitionsPath(): string {
+  const envCandidates = [process.env.AHA_ROLE_DEFINITIONS_PATH, process.env.ROLE_DEFINITIONS_PATH]
+    .map((p) => String(p || '').trim())
+    .filter(Boolean);
+
+  const candidates = [...envCandidates, ...ROLE_DEFINITIONS_PATH_CANDIDATES];
+
+  for (const candidate of candidates) {
+    const absPath = path.isAbsolute(candidate) ? candidate : path.resolve(candidate);
+    if (fs.existsSync(absPath)) {
+      return absPath;
+    }
+  }
+
+  throw new Error(
+    `ROLE_DEFINITIONS.yaml not found. Checked: ${candidates.map((c) => path.resolve(c)).join(', ')}`
+  );
+}
+
+type LegacyRoleRecord = {
+  title?: string;
+  category?: string;
+  summary?: string;
+  capabilities?: string[];
+  required_tools?: string[];
+  disallowed_tools?: string[];
+  access_level?: 'read-only' | 'full-access';
+};
+
+function normalizeRoleDefinitions(raw: unknown): RoleDefinitions {
+  if (raw && typeof raw === 'object' && Array.isArray((raw as any).roles)) {
+    return raw as RoleDefinitions;
+  }
+
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid ROLE_DEFINITIONS.yaml structure');
+  }
+
+  // Support legacy map schema used by shared/team-config/ROLE_DEFINITIONS.yaml
+  const record = raw as Record<string, unknown>;
+  const metadata = record._metadata as Record<string, unknown> | undefined;
+
+  const roles: RoleDefinition[] = Object.entries(record)
+    .filter(([key, value]) => !key.startsWith('_') && typeof value === 'object' && value !== null)
+    .map(([id, value]) => {
+      const role = value as LegacyRoleRecord;
+      const accessLevel = role.access_level === 'read-only' ? 'read-only' : 'full-access';
+      const disallowedTools = Array.isArray(role.disallowed_tools)
+        ? role.disallowed_tools
+        : [];
+
+      const tools: ToolPermission[] = (Array.isArray(role.required_tools) ? role.required_tools : []).map(
+        (name) => ({
+          name,
+          access: 'allow',
+          description: 'Allowed tool from required_tools',
+        })
+      );
+
+      const toolsToAvoid = disallowedTools.map((name) => ({
+        name,
+        reason: 'Disallowed by role definition',
+      }));
+
+      return {
+        id,
+        name: role.title || id,
+        category: role.category || 'support',
+        description: role.summary,
+        capabilities: Array.isArray(role.capabilities) ? role.capabilities : [],
+        tools,
+        toolsToAvoid,
+        policy: {
+          accessLevel,
+          permissionMode: accessLevel === 'read-only' ? 'read-only' : 'yolo',
+          disallowedTools,
+        },
+      };
+    });
+
+  return {
+    metadata: {
+      version: String(metadata?.version || '2.0.0'),
+      lastUpdated: String(metadata?.lastUpdated || metadata?.last_updated || new Date().toISOString().slice(0, 10)),
+      schemaVersion: String(metadata?.schemaVersion || metadata?.schema_version || '1.0'),
+      license: String(metadata?.license || 'MIT'),
+      compatibility: String(metadata?.compatibility || 'ohmyopencode'),
+    },
+    roles,
+  };
+}
 
 /**
  * Load and parse ROLE_DEFINITIONS.yaml
@@ -95,10 +192,13 @@ export function loadRoleDefinitions(): RoleDefinitions {
   }
 
   try {
-    const yamlContent = fs.readFileSync(ROLE_DEFINITIONS_PATH, 'utf8');
-    roleDefinitions = YAML.load(yamlContent) as RoleDefinitions;
+    const roleDefinitionsPath = resolveRoleDefinitionsPath();
+    const yamlContent = fs.readFileSync(roleDefinitionsPath, 'utf8');
+    roleDefinitions = normalizeRoleDefinitions(YAML.load(yamlContent));
 
-    logger.debug(`[Permissions] Loaded ROLE_DEFINITIONS.yaml v${roleDefinitions.metadata.version}`);
+    logger.debug(
+      `[Permissions] Loaded ROLE_DEFINITIONS.yaml v${roleDefinitions.metadata.version} from ${roleDefinitionsPath}`
+    );
     logger.debug(`[Permissions] Found ${roleDefinitions.roles.length} defined roles`);
 
     return roleDefinitions;

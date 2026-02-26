@@ -432,6 +432,42 @@ export async function startDaemon(): Promise<void> {
       return false;
     };
 
+    // Stop all sessions belonging to a team
+    const stopTeamSessions = (teamId: string): { stopped: number; errors: string[] } => {
+      logger.debug(`[DAEMON RUN] Attempting to stop all sessions for team ${teamId}`);
+
+      const errors: string[] = [];
+      let stopped = 0;
+
+      for (const [pid, session] of pidToTrackedSession.entries()) {
+        const metadata = session.ahaSessionMetadataFromLocalWebhook;
+        const sessionTeamId = metadata?.teamId || metadata?.roomId;
+
+        if (sessionTeamId === teamId) {
+          const sessionId = session.ahaSessionId || `PID-${pid}`;
+          logger.debug(`[DAEMON RUN] Stopping team session ${sessionId} (PID: ${pid})`);
+
+          try {
+            if (session.startedBy === 'daemon' && session.childProcess) {
+              session.childProcess.kill('SIGTERM');
+            } else {
+              process.kill(pid, 'SIGTERM');
+            }
+            pidToTrackedSession.delete(pid);
+            stopped++;
+            logger.debug(`[DAEMON RUN] Stopped team session ${sessionId}`);
+          } catch (error) {
+            const errorMsg = `Failed to stop session ${sessionId}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            logger.debug(`[DAEMON RUN] ${errorMsg}`);
+            errors.push(errorMsg);
+          }
+        }
+      }
+
+      logger.debug(`[DAEMON RUN] Stopped ${stopped} sessions for team ${teamId}, errors: ${errors.length}`);
+      return { stopped, errors };
+    };
+
     // Handle child process exit
     const onChildExited = (pid: number) => {
       logger.debug(`[DAEMON RUN] Removing exited process PID ${pid} from tracking`);
@@ -442,6 +478,7 @@ export async function startDaemon(): Promise<void> {
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
       stopSession,
+      stopTeamSessions,
       spawnSession,
       requestShutdown: () => requestShutdown('aha-cli'),
       onAhaSessionWebhook

@@ -14,7 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { z } from 'zod';
+import { buildToolInputShapeFromJsonSchema } from './bridgeSchema';
 
 function parseArgs(argv: string[]): { url: string | null } {
   let url: string | null = null;
@@ -62,11 +62,13 @@ async function main() {
 
   // Dynamically register all tools found on the HTTP server
   for (const tool of toolsList.tools) {
+    const inputShape = buildToolInputShapeFromJsonSchema(tool.inputSchema);
+
     server.registerTool(
       tool.name,
       {
         description: tool.description,
-        inputSchema: tool.inputSchema as any,
+        inputSchema: inputShape,
       },
       async (args: any) => {
         try {

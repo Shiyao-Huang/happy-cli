@@ -134,8 +134,8 @@ class Configuration {
     validateConfiguration()
 
     // Server configuration - priority: parameter > environment > default
-    this.serverUrl = process.env.AHA_SERVER_URL || 'https://top1vibe.com'
-    this.webappUrl = process.env.AHA_WEBAPP_URL || 'https://app.aha.engineering'
+    this.serverUrl = process.env.AHA_SERVER_URL || 'https://top1vibe.com/api/v2'
+    this.webappUrl = process.env.AHA_WEBAPP_URL || 'https://top1vibe.com/webappv2'
 
     // Check if we're running as daemon based on process args
     const args = process.argv.slice(2)

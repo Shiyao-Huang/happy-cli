@@ -1192,4 +1192,198 @@ export class ApiClient {
       throw new Error(`Failed to batch delete teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
+
+  // === Role Pool & Reviews API Methods ===
+
+  /**
+   * List server-provided default role templates.
+   */
+  async listDefaultRoles(): Promise<{ roles: Array<{ id: string; title: string; summary: string; icon?: string; category?: string }> }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/roles/defaults`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list default roles:`, error);
+      throw new Error(`Failed to list default roles: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List current user's custom roles.
+   */
+  async listRoles(limit = 100): Promise<{ roles: any[]; total: number }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/roles`,
+        {
+          params: { limit },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list roles:`, error);
+      throw new Error(`Failed to list roles: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List public roles from role pool.
+   */
+  async listRolePool(limit = 100, search?: string): Promise<{ roles: any[]; total: number }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/roles/pool`,
+        {
+          params: { limit, search },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list role pool:`, error);
+      throw new Error(`Failed to list role pool: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Submit a public review for a role.
+   */
+  async reviewRole(roleId: string, payload: {
+    rating: number;
+    codeScore?: number;
+    qualityScore?: number;
+    source?: 'user' | 'master' | 'system';
+    sourceScores?: { user?: number; master?: number; system?: number };
+    teamId?: string;
+    comment?: string;
+  }): Promise<{ success: true; review: any; stats: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/roles/${roleId}/reviews`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to review role:`, error);
+      throw new Error(`Failed to review role: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List public role reviews.
+   */
+  async listRoleReviews(roleId: string, limit = 50): Promise<{ reviews: any[]; total: number }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/roles/${roleId}/reviews`,
+        {
+          params: { limit },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list role reviews:`, error);
+      throw new Error(`Failed to list role reviews: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Submit a public review for a team.
+   */
+  async reviewTeam(teamId: string, payload: {
+    rating: number;
+    codeScore?: number;
+    qualityScore?: number;
+    source?: 'user' | 'master' | 'system';
+    sourceScores?: { user?: number; master?: number; system?: number };
+    roleIds?: string[];
+    comment?: string;
+  }): Promise<{ success: true; review: any; scorecard: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/reviews`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to review team:`, error);
+      throw new Error(`Failed to review team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List public team reviews.
+   */
+  async listTeamReviews(teamId: string, limit = 50): Promise<{ reviews: any[]; total: number }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/reviews`,
+        {
+          params: { limit },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list team reviews:`, error);
+      throw new Error(`Failed to list team reviews: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get cumulative team scorecard.
+   */
+  async getTeamScore(teamId: string): Promise<any> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/score`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get team score:`, error);
+      throw new Error(`Failed to get team score: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 }

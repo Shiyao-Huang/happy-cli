@@ -407,6 +407,11 @@ export async function runCodex(opts: {
     });
 
     session.on('team-message', (message: any) => {
+        // CRITICAL: Filter by teamId to prevent cross-team message leakage
+        if (message.teamId !== teamId) {
+            logger.debug(`[Codex] Ignoring message from other team: ${message.teamId} !== ${teamId}`);
+            return;
+        }
         logger.debug('[Codex] Received team message, injecting as user message');
         const senderLabel = message.fromDisplayName || message.fromRole || message.fromSessionId || 'Unknown';
         if (message.fromSessionId === session.sessionId) return;

@@ -14,12 +14,14 @@ import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/regist
 export function startDaemonControlServer({
   getChildren,
   stopSession,
+  stopTeamSessions,
   spawnSession,
   requestShutdown,
   onAhaSessionWebhook
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
+  stopTeamSessions?: (teamId: string) => { stopped: number; errors: string[] };
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onAhaSessionWebhook: (sessionId: string, metadata: Metadata) => void;
@@ -101,6 +103,38 @@ export function startDaemonControlServer({
       logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
       const success = stopSession(sessionId);
       return { success };
+    });
+
+    // Stop all sessions for a team
+    typed.post('/stop-team-sessions', {
+      schema: {
+        body: z.object({
+          teamId: z.string()
+        }),
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            stopped: z.number(),
+            errors: z.array(z.string())
+          })
+        }
+      }
+    }, async (request) => {
+      const { teamId } = request.body;
+
+      logger.debug(`[CONTROL SERVER] Stop team sessions request: ${teamId}`);
+
+      if (!stopTeamSessions) {
+        logger.debug('[CONTROL SERVER] stopTeamSessions not available');
+        return { success: false, stopped: 0, errors: ['Team session stopping not supported'] };
+      }
+
+      const result = stopTeamSessions(teamId);
+      return {
+        success: result.errors.length === 0,
+        stopped: result.stopped,
+        errors: result.errors
+      };
     });
 
     // Spawn new session
