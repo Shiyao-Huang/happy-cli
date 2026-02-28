@@ -2,9 +2,10 @@
  * Ralph CLI Command Handler
  *
  * Handles `aha ralph <subcommand>` commands:
- *   - start [--prd <path>] [--max-iterations <n>]
+ *   - start [--prd <path>] [--max-iterations <n>] [--interactive]
  *   - status [--prd <path>]
  *   - stop
+ *   - interactive
  *
  * Follows the pattern from src/commands/connect.ts.
  */
@@ -15,6 +16,7 @@ import { resolve, join } from 'node:path';
 import { runRalphLoop } from './loop';
 import { loadPrd, getPrdStats } from './prdManager';
 import type { RalphConfig } from './types';
+import { startInteractiveShell } from './interactive';
 
 export async function handleRalphCommand(args: string[]): Promise<void> {
     const subcommand = args[0];
@@ -33,6 +35,9 @@ export async function handleRalphCommand(args: string[]): Promise<void> {
             break;
         case 'stop':
             handleStop(args.slice(1));
+            break;
+        case 'interactive':
+            await handleInteractive(args.slice(1));
             break;
         case 'heartbeat':
             handleHeartbeat(args.slice(1));
@@ -222,6 +227,53 @@ function handleHeartbeat(args: string[]): void {
     }
 }
 
+async function handleInteractive(args: string[]): Promise<void> {
+    let prdPath = 'prd.json';
+    let maxIterations = 10;
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--prd' && i + 1 < args.length) {
+            prdPath = args[++i];
+        } else if (arg === '--max-iterations' && i + 1 < args.length) {
+            maxIterations = parseInt(args[++i], 10);
+            if (isNaN(maxIterations) || maxIterations < 1) {
+                console.error(chalk.red('--max-iterations must be a positive integer'));
+                process.exit(1);
+            }
+        }
+    }
+
+    const workingDirectory = process.cwd();
+    const resolvedPrd = resolve(workingDirectory, prdPath);
+
+    if (!existsSync(resolvedPrd)) {
+        console.error(chalk.red(`PRD not found: ${resolvedPrd}`));
+        console.log(chalk.gray('Create a prd.json file or specify the path with --prd'));
+        process.exit(1);
+    }
+
+    const progressPath = prdPath.replace(/\.json$/, '') + '-progress.txt';
+
+    const config: RalphConfig = {
+        prdPath,
+        progressPath,
+        workingDirectory,
+        maxIterations,
+        permissionMode: 'bypassPermissions',
+        qualityChecks: {
+            typeCheck: true,
+            testRun: true,
+            buildVerify: true,
+        },
+    };
+
+    console.log(chalk.cyan('\n  Interactive Ralph Shell'));
+    console.log(chalk.gray(`  PRD: ${resolvedPrd}\n`));
+
+    await startInteractiveShell(config);
+}
+
 function showRalphHelp(): void {
     console.log(`
 ${chalk.bold('aha ralph')} - Ralph autonomous loop
@@ -230,6 +282,7 @@ ${chalk.bold('Usage:')}
   aha ralph start [options]        Start the Ralph loop
   aha ralph status [options]       Show PRD progress
   aha ralph stop                   Stop a running loop gracefully
+  aha ralph interactive [options]  Start interactive shell mode
   aha ralph heartbeat [status|ping] Master heartbeat management
 
 ${chalk.bold('Start Options:')}
@@ -240,6 +293,10 @@ ${chalk.bold('Start Options:')}
   --skip-typecheck          Skip TypeScript type checking in quality gate
   --skip-tests              Skip test suite in quality gate
   --skip-build              Skip build verification in quality gate
+
+${chalk.bold('Interactive Options:')}
+  --prd <path>              Path to prd.json (default: ./prd.json)
+  --max-iterations <n>      Maximum iterations (default: 10)
 
 ${chalk.bold('Status Options:')}
   --prd <path>              Path to prd.json (default: ./prd.json)
@@ -253,6 +310,7 @@ ${chalk.bold('Examples:')}
   aha ralph start --max-iterations 20 --team
   aha ralph start --skip-typecheck --skip-tests
   aha ralph status
+  aha ralph interactive
   aha ralph heartbeat status
   aha ralph stop
 `);

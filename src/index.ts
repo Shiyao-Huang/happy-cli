@@ -25,6 +25,7 @@ import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
+import { handleInteractiveCommand, showInteractiveHelp } from './commands/interactive'
 import { spawnAhaCLI } from './utils/spawnAhaCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
@@ -50,10 +51,12 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
   ${chalk.yellow('auth')} [login|logout]      Authentication management
   ${chalk.yellow('connect')} [list|add]      AI vendor API key management
-  ${chalk.yellow('teams')} [list|archive|delete] Team management
+  ${chalk.yellow('teams')} [list|archive|delete|rename|compose] Team management & adaptive composition
   ${chalk.yellow('roles')} [pool|review|team-score] Role pool and public review
+  ${chalk.yellow('rating')} [team|role|leaderboard|submit|auto] Rating workflow commands
   ${chalk.yellow('codex')}                   Start team collaboration mode
-  ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
+  ${chalk.yellow('ralph')} [start|status|stop|interactive] Ralph autonomous loop
+  ${chalk.yellow('interactive')}             Start interactive shell mode
   ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
   ${chalk.yellow('daemon')} [list|stop]      Background service management
 
@@ -170,6 +173,19 @@ For command-specific help, run:
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'rating') {
+    // Handle rating workflow commands
+    try {
+      const { handleRatingCommand } = await import('./commands/rating');
+      await handleRatingCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'codex') {
     // Handle codex command
     try {
@@ -226,6 +242,18 @@ For command-specific help, run:
     // Handle notification command
     try {
       await handleNotifyCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'interactive') {
+    // Handle interactive shell command
+    try {
+      await handleInteractiveCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
