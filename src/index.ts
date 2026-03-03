@@ -15,7 +15,7 @@ import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './daemon/controlClient'
+import { checkIfDaemonRunningAndCleanupStaleState, stopDaemon } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayAhaProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
@@ -29,6 +29,7 @@ import { handleInteractiveCommand, showInteractiveHelp } from './commands/intera
 import { spawnAhaCLI } from './utils/spawnAhaCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
+import { ensureDaemonRunningForCommand } from '@/daemon/autoStart'
 
 /**
  * Show general CLI help
@@ -110,6 +111,8 @@ For command-specific help, run:
     showGeneralHelp();
     return;
   }
+
+  await ensureDaemonRunningForCommand(args);
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -476,29 +479,6 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     const {
       credentials
     } = await authAndSetupMachineIfNeeded();
-
-    // Always auto-start daemon for simplicity
-    logger.debug('Ensuring Aha background service is running & matches our version...');
-
-    if (!(await isDaemonRunningCurrentlyInstalledAhaVersion())) {
-      logger.debug('Starting Aha background service...');
-
-      try {
-        // Use the built binary to spawn daemon
-        const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
-          detached: true,
-          stdio: 'ignore',
-          env: process.env
-        })
-        daemonProcess.unref();
-
-        // Give daemon a moment to write PID & port file
-        await new Promise(resolve => setTimeout(resolve, 200));
-      } catch (error) {
-        logger.debug('Failed to start daemon (non-fatal):', error);
-        console.log(chalk.yellow('Warning: Could not start background service. Some features may be limited.'));
-      }
-    }
 
     // Start the CLI
     try {
