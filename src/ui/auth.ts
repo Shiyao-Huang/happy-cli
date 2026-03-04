@@ -157,7 +157,7 @@ export async function doDeviceCodeAuth(headless: boolean = false): Promise<Crede
 
     try {
         // Request a device code from the server
-        const response = await axios.post(`${configuration.serverUrl}/v1/auth/device-code`, {
+        const response = await axios.post(`${configuration.serverUrl}/v1/device/code`, {
             publicKey: publicKeyBase64
         });
 
@@ -207,9 +207,7 @@ export async function doDeviceCodeAuth(headless: boolean = false): Promise<Crede
             cancelled = true;
             console.log(chalk.yellow('\n\nCancelling authentication...'));
             try {
-                await axios.delete(`${configuration.serverUrl}/v1/auth/device-code/cancel`, {
-                    data: { deviceCode }
-                });
+                await axios.delete(`${configuration.serverUrl}/v1/device/${encodeURIComponent(userCode)}`);
             } catch {
                 // Best effort cancel
             }
@@ -232,8 +230,9 @@ export async function doDeviceCodeAuth(headless: boolean = false): Promise<Crede
                 }
 
                 try {
+                    // Poll using userCode to check approval status
                     const pollResponse = await axios.get(
-                        `${configuration.serverUrl}/v1/auth/device-code/poll?device_code=${deviceCode}`
+                        `${configuration.serverUrl}/v1/device/${encodeURIComponent(userCode)}/status`
                     );
 
                     if (pollResponse.data.status === 'approved') {

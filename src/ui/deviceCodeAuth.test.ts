@@ -62,7 +62,7 @@ describe('Device Code Auth (R2)', () => {
 
       // Verify POST was called
       expect(mockedAxios.post).toHaveBeenCalledWith(
-        'http://localhost:3005/v1/auth/device-code',
+        'http://localhost:3005/v1/device/code',
         expect.objectContaining({})
       );
 
