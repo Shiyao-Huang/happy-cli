@@ -1,0 +1,18 @@
+aha-cli - Claude Code 命令行包装器
+
+STACK:
+- Node.js + TypeScript
+- @anthropic-ai/claude-code SDK
+- Socket.io, TweetNaCl, MCP SDK
+
+FEATURES:
+- 远程控制 Claude Code
+- 会话共享
+- 移动端配对认证
+
+DEPS:
+- happy-server (API)
+
+COMMANDS:
+- aha daemon start
+- aha connect

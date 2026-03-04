@@ -86,6 +86,7 @@ interface KanbanTask {
     hasBlockedChild?: boolean;
     executionLinks?: TaskExecutionLink[];
     blockers?: TaskBlocker[];
+    labels?: string[];
 }
 
 interface KanbanBoard {
@@ -208,6 +209,170 @@ export class TaskStateManager {
                 return `${roleLabel} ✅ Completed "${change.taskTitle}"`;
             default:
                 return `${roleLabel} Updated task: "${change.taskTitle}"`;
+        }
+    }
+
+    private parseMetricFromText(
+        text: string,
+        patterns: RegExp[],
+        min: number,
+        max: number
+    ): number | undefined {
+        for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (!match?.[1]) continue;
+            const parsed = Number(match[1]);
+            if (!Number.isFinite(parsed)) continue;
+            return Math.min(max, Math.max(min, Math.round(parsed)));
+        }
+        return undefined;
+    }
+
+    private deriveTaskMetrics(task?: Partial<KanbanTask>): {
+        codeLines: number;
+        commits: number;
+        bugsCount: number;
+        filesChanged: number;
+        reviewComments: number;
+        testCoverage?: number;
+    } {
+        const title = task?.title || "";
+        const description = task?.description || "";
+        const textBlob = `${title}\n${description}`;
+        const blockers = Array.isArray(task?.blockers) ? task.blockers : [];
+        const labels = Array.isArray(task?.labels) ? task.labels : [];
+        const subtaskCount = Array.isArray(task?.subtaskIds) ? task.subtaskIds.length : 0;
+
+        const codeLines = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:code[\s_-]*lines?|loc)\s*[:=]\s*(\d+)/i,
+                /(?:代码行数|代码行)\s*[:：=]\s*(\d+)/i,
+            ],
+            0,
+            5000
+        );
+        const commits = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:commits?)\s*[:=]\s*(\d+)/i,
+                /(?:提交次数|提交数)\s*[:：=]\s*(\d+)/i,
+            ],
+            0,
+            200
+        );
+        const bugsCount = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:bugs?|defects?)\s*[:=]\s*(\d+)/i,
+                /(?:bug[s]?[\s_-]*fixed|缺陷数|bug数|问题数)\s*[:：=]\s*(\d+)/i,
+            ],
+            0,
+            200
+        );
+        const filesChanged = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:files?[\s_-]*changed)\s*[:=]\s*(\d+)/i,
+                /(?:变更文件数|文件变更数)\s*[:：=]\s*(\d+)/i,
+            ],
+            1,
+            200
+        );
+        const reviewComments = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:review[\s_-]*comments?)\s*[:=]\s*(\d+)/i,
+                /(?:评审评论数|评审意见数)\s*[:：=]\s*(\d+)/i,
+            ],
+            0,
+            200
+        );
+        const testCoverage = this.parseMetricFromText(
+            textBlob,
+            [
+                /(?:test[\s_-]*coverage)\s*[:=]\s*(\d+(?:\.\d+)?)/i,
+                /(?:测试覆盖率)\s*[:：=]\s*(\d+(?:\.\d+)?)/i,
+            ],
+            0,
+            100
+        );
+
+        const textScale = Math.max(12, title.length + description.length);
+        const estimatedCodeLines = Math.min(500, Math.max(20, Math.round(textScale * 1.8)));
+        const estimatedCommits = Math.min(8, Math.max(1, Math.ceil(estimatedCodeLines / 120)));
+        const unresolvedBlockers = blockers.filter((blocker) => !blocker?.resolvedAt).length;
+        const estimatedFilesChanged = Math.min(
+            20,
+            Math.max(1, labels.length || subtaskCount || Math.ceil(estimatedCodeLines / 100))
+        );
+        const estimatedReviewComments = subtaskCount > 0 ? 1 : 0;
+
+        return {
+            codeLines: codeLines ?? estimatedCodeLines,
+            commits: commits ?? estimatedCommits,
+            bugsCount: bugsCount ?? unresolvedBlockers,
+            filesChanged: filesChanged ?? estimatedFilesChanged,
+            reviewComments: reviewComments ?? estimatedReviewComments,
+            testCoverage: testCoverage,
+        };
+    }
+
+    private async triggerSystemRating(taskId: string, task?: Partial<KanbanTask>): Promise<void> {
+        const roleId = this.roleId || "builder";
+        const metrics = this.deriveTaskMetrics(task);
+
+        try {
+            const calculated = await this.api.calculateSystemRating({
+                roleId,
+                teamId: this.teamId,
+                taskId,
+                ...metrics,
+                persist: false,
+            });
+
+            if (!calculated.success || !calculated.result) {
+                logger.debug(`[TaskStateManager] Auto-rating calculation returned empty result for task ${taskId}`);
+                return;
+            }
+
+            const resolvedRating = Number(calculated.result.rating) || 1;
+            const resolvedQuality = Number(calculated.result.qualityScore) || 0;
+
+            try {
+                await this.api.createRatingRecord({
+                    teamId: this.teamId,
+                    roleId,
+                    taskId,
+                    rating: resolvedRating,
+                    systemRating: resolvedRating,
+                    codeLines: metrics.codeLines,
+                    commits: metrics.commits,
+                    bugsCount: metrics.bugsCount,
+                    qualityScore: resolvedQuality,
+                    source: "system",
+                    comment: `auto-task-complete:${taskId}`,
+                });
+            } catch (createRatingError) {
+                // Fallback for older API deployments that only expose role reviews.
+                await this.api.reviewRole(roleId, {
+                    rating: resolvedRating,
+                    codeScore: metrics.codeLines,
+                    qualityScore: resolvedQuality,
+                    source: "system",
+                    sourceScores: { system: resolvedQuality },
+                    teamId: this.teamId,
+                    comment: `auto-task-complete:${taskId}`,
+                });
+            }
+
+            logger.debug(
+                `[TaskStateManager] Auto-rating submitted for task ${taskId} (team=${this.teamId}, role=${roleId}, rating=${resolvedRating.toFixed(2)})`
+            );
+        } catch (error: any) {
+            logger.debug(
+                `[TaskStateManager] Auto-rating skipped for task ${taskId}: ${error?.message || String(error)}`
+            );
         }
     }
 
@@ -492,6 +657,8 @@ export class TaskStateManager {
                         propagatedTasks: [taskId]
                     }
                 });
+
+                await this.triggerSystemRating(taskId, result.task);
 
                 return { success: true, propagatedTasks: [taskId] };
             }

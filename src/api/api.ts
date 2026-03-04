@@ -9,6 +9,71 @@ import { configuration } from '@/configuration';
 import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 
+export interface TeamCompositionSignals {
+  readyPingRatio?: number;
+  coordinatorMessageRatio?: number;
+  deploymentIncidentRatio?: number;
+  idleStatusRatio?: number;
+  cliFocusRatio?: number;
+  serverFocusRatio?: number;
+  kanbanFocusRatio?: number;
+  historySampleSize?: number;
+}
+
+export interface TeamCompositionRequest {
+  goal: string;
+  context?: string;
+  versionTrack?: 'v1' | 'v2' | 'dual';
+  mode?: 'single' | 'multi';
+  maxTeams?: number;
+  deploymentTarget?: 'wow' | 'uv1' | 'uv2' | 'local' | 'generic';
+  evolutionSignals?: TeamCompositionSignals;
+}
+
+export interface TeamEvoMap {
+  score: number;
+  tier: 'S' | 'A' | 'B' | 'C';
+  trend: 'up' | 'flat' | 'down';
+  highlights: string[];
+}
+
+export interface TeamCompositionSlice {
+  key: string;
+  name: string;
+  objective: string;
+  versionTrack: 'v1' | 'v2' | 'shared';
+  branchSuggestion?: string;
+  roleCounts: Record<string, number>;
+  evoMap: TeamEvoMap;
+  rationale: string[];
+  risks: string[];
+}
+
+export interface TeamReleaseGateCheck {
+  component: 'aha-cli' | 'happy-server' | 'kanban';
+  environments: Array<'uv1' | 'uv2' | 'wow' | 'local'>;
+  status: 'pending' | 'passed' | 'failed';
+}
+
+export interface TeamReleaseGate {
+  versionTrack: 'v1' | 'v2' | 'shared';
+  branch: string;
+  completionRule: string;
+  requiredChecks: TeamReleaseGateCheck[];
+}
+
+export interface TeamCompositionPlan {
+  mode: 'single' | 'multi';
+  versionTrack: 'v1' | 'v2' | 'dual';
+  deploymentTarget: 'wow' | 'uv1' | 'uv2' | 'local' | 'generic';
+  inferredFocus: string[];
+  constraints: string[];
+  recommendations: string[];
+  signalsUsed: Required<TeamCompositionSignals>;
+  releaseGates: TeamReleaseGate[];
+  teams: TeamCompositionSlice[];
+}
+
 export class ApiClient {
 
   static async create(credential: Credentials) {
@@ -21,6 +86,38 @@ export class ApiClient {
   private constructor(credential: Credentials) {
     this.credential = credential
     this.pushClient = new PushNotificationClient(credential.token, configuration.serverUrl)
+  }
+
+  private getRatingApiBaseCandidates(): string[] {
+    const base = configuration.serverUrl.replace(/\/+$/, '')
+    if (base.includes('/api/v2')) {
+      return [base]
+    }
+    return [base, `${base}/api/v2`]
+  }
+
+  private shouldRetryOnAlternateRatingBase(error: unknown): boolean {
+    const status = (error as any)?.response?.status
+    return status === 404 || status === 405
+  }
+
+  private async withRatingBaseFallback<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
+    const bases = this.getRatingApiBaseCandidates()
+    let lastError: unknown
+
+    for (let i = 0; i < bases.length; i++) {
+      const base = bases[i]
+      try {
+        return await run(base)
+      } catch (error) {
+        lastError = error
+        if (i === bases.length - 1 || !this.shouldRetryOnAlternateRatingBase(error)) {
+          throw error
+        }
+      }
+    }
+
+    throw lastError ?? new Error('Unknown rating API failure')
   }
 
   private normalizeTeamArtifactBody(body: any): string {
@@ -80,7 +177,12 @@ export class ApiClient {
   async getOrCreateSession(opts: {
     tag: string,
     metadata: Metadata,
-    state: AgentState | null
+    state: AgentState | null,
+    displayName?: string,
+    mode?: string,
+    machineId?: string,
+    roleId?: string,
+    rootPathHash?: string
   }): Promise<Session> {
 
     // Resolve encryption key
@@ -127,6 +229,11 @@ export class ApiClient {
           metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
           agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
           dataEncryptionKey: encodedDataEncryptionKey,
+          displayName: opts.displayName,
+          mode: opts.mode,
+          machineId: opts.machineId,
+          roleId: opts.roleId,
+          rootPathHash: opts.rootPathHash,
         },
         {
           headers: {
@@ -1074,6 +1181,30 @@ export class ApiClient {
   }
 
   /**
+   * Generate adaptive team composition plan (single or multi-team).
+   */
+  async composeTeams(payload: TeamCompositionRequest): Promise<TeamCompositionPlan> {
+    try {
+      const response = await axios.post<TeamCompositionPlan>(
+        `${configuration.serverUrl}/v1/teams/compose`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        }
+      );
+      logger.debug(`[API] Generated team composition plan: mode=${response.data.mode} teams=${response.data.teams.length}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to compose teams:`, error);
+      throw new Error(`Failed to compose teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Batch archive multiple sessions
    */
   async batchArchiveSessions(sessionIds: string[]): Promise<{ success: boolean; archived: number; results: any[] }> {
@@ -1384,6 +1515,261 @@ export class ApiClient {
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to get team score:`, error);
       throw new Error(`Failed to get team score: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Create a unified rating record.
+   */
+  async createRatingRecord(payload: {
+    teamId: string;
+    roleId: string;
+    taskId?: string;
+    userRating?: number;
+    masterRating?: number;
+    systemRating?: number;
+    rating?: number;
+    codeLines?: number;
+    commits?: number;
+    bugsCount?: number;
+    qualityScore?: number;
+    source?: 'user' | 'master' | 'system';
+    comment?: string;
+  }): Promise<{ success: boolean; rating: any }> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.post(
+        `${base}/v1/ratings`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to create rating record:`, error);
+      throw new Error(`Failed to create rating record: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List team rating records.
+   */
+  async getRatingHistory(teamId: string, limit = 200): Promise<{ ratings: any[]; total: number }> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.get(
+        `${base}/v1/ratings/${teamId}`,
+        {
+          params: { limit },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get rating history:`, error);
+      throw new Error(`Failed to get rating history: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List role rating records within a team.
+   */
+  async getRoleRatingHistory(teamId: string, roleId: string, limit = 200): Promise<{ ratings: any[]; total: number }> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.get(
+        `${base}/v1/ratings/${teamId}/role/${roleId}`,
+        {
+          params: { limit },
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get role rating history:`, error);
+      throw new Error(`Failed to get role rating history: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get team rating analytics.
+   */
+  async getRatingAnalytics(teamId: string): Promise<any> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.get(
+        `${base}/v1/ratings/${teamId}/analytics`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get rating analytics:`, error);
+      throw new Error(`Failed to get rating analytics: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Run system auto-rating algorithm.
+   */
+  async calculateSystemRating(payload: {
+    roleId: string;
+    teamId?: string;
+    taskId?: string;
+    codeLines?: number;
+    commits?: number;
+    bugsCount?: number;
+    filesChanged?: number;
+    reviewComments?: number;
+    testCoverage?: number;
+    persist?: boolean;
+  }): Promise<{ success: boolean; result: any; persisted: boolean }> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.post(
+        `${base}/v1/ratings/system/calculate`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to calculate system rating:`, error);
+      throw new Error(`Failed to calculate system rating: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // === V5-AI-001: Smart Role Recommendation API ===
+
+  /**
+   * Get role recommendations based on project requirements.
+   * V5-AI-001: Smart Role Recommendation
+   */
+  async getRoleRecommendations(payload: {
+    techStack: string[];
+    teamSize: number;
+    projectType: 'webapp' | 'api' | 'mobile' | 'fullstack';
+    description?: string;
+    timeline?: string;
+    maxRecommendations?: number;
+  }): Promise<{
+    success: boolean;
+    recommendations: Array<{
+      role: {
+        id: string;
+        name: string;
+        category: string;
+        assignedSkills: string[];
+        description: string;
+        rating?: number;
+        completedTasks?: number;
+        successRate?: number;
+      };
+      matchScore: number;
+      reasons: string[];
+      skillMatch: {
+        matched: string[];
+        missing: string[];
+        bonus: string[];
+      };
+    }>;
+  }> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.post(
+        `${base}/api/v5/recommendations`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000 // AI calls may take longer
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get role recommendations:`, error);
+      throw new Error(`Failed to get role recommendations: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // === R9: Auto-Rating API ===
+
+  /**
+   * Compute an auto-rating for a team using server-side metrics.
+   */
+  async getAutoRating(teamId: string, days = 7): Promise<any> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.post(
+        `${base}/v1/ratings/auto-calculate`,
+        { teamId, days },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get auto-rating:`, error);
+      throw new Error(`Failed to get auto-rating: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Fetch rating score history for a team.
+   */
+  async getAutoRatingHistory(teamId: string, limit = 30): Promise<any> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.get(
+        `${base}/v1/ratings/${teamId}/history`,
+        {
+          params: { limit },
+          headers: { 'Authorization': `Bearer ${this.credential.token}` },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get auto-rating history:`, error);
+      throw new Error(`Failed to get auto-rating history: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Fetch the team performance leaderboard.
+   */
+  async getAutoRatingLeaderboard(timeWindow: '7d' | '30d' | 'all' = '7d', limit = 20): Promise<any> {
+    try {
+      const response = await this.withRatingBaseFallback((base) => axios.get(
+        `${base}/v1/ratings/leaderboard`,
+        {
+          params: { timeWindow, limit },
+          headers: { 'Authorization': `Bearer ${this.credential.token}` },
+          timeout: 10000
+        }
+      ));
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get leaderboard:`, error);
+      throw new Error(`Failed to get leaderboard: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }

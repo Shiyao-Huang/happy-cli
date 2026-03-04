@@ -73,7 +73,8 @@
     "prepublishOnly": "yarn build && yarn test",
     "release": "release-it",
     "postinstall": "node scripts/unpack-tools.cjs",
-    "prerecommit": "yarn typecheck && yarn test"
+    "prerecommit": "yarn typecheck && yarn test",
+    "v1v2:closed-loop": "./scripts/v1v2_closed_loop.sh"
   },
   "dependencies": {
     "@aha/shared-team-config": "file:../shared/team-config",
@@ -82,8 +83,11 @@
     "@modelcontextprotocol/sdk": "^1.15.1",
     "@stablelib/base64": "^2.0.1",
     "@stablelib/hex": "^2.0.1",
+    "@types/js-yaml": "^4.0.9",
+    "async-mutex": "^0.5.0",
     "axios": "^1.10.0",
     "chalk": "^5.4.1",
+    "commander": "^14.0.3",
     "cross-spawn": "^7.0.6",
     "expo-server-sdk": "^3.15.0",
     "fastify": "^5.5.0",

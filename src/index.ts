@@ -31,6 +31,85 @@ import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 
 /**
+ * Commands that should NOT trigger auto-start
+ * These are daemon management commands and queries that don't need background service
+ */
+const SKIP_AUTOSTART_COMMANDS = [
+  'daemon',
+  '--version',
+  '-v',
+  '--help',
+  '-h',
+]
+
+/**
+ * Ensure daemon is running and matches current CLI version
+ * Auto-starts daemon if not running or version mismatch
+ * Silent unless AHA_VERBOSE is set
+ */
+async function ensureDaemonRunning(args: string[]): Promise<void> {
+  // Skip auto-start for daemon management commands
+  const subcommand = args[0]
+  if (SKIP_AUTOSTART_COMMANDS.includes(subcommand)) {
+    return
+  }
+
+  // Skip for daemon subcommands
+  if (subcommand === 'daemon' && ['start', 'start-sync', 'stop', 'status', 'logs', 'install', 'uninstall', 'list', 'stop-session'].includes(args[1])) {
+    return
+  }
+
+  try {
+    const running = await isDaemonRunningCurrentlyInstalledAhaVersion()
+    if (!running) {
+      // Clean up any stale/orphan daemon processes before starting new one
+      try {
+        const { killed } = await killRunawayAhaProcesses()
+        if (killed > 0 && process.env.AHA_VERBOSE) {
+          console.error(`[aha] cleaned up ${killed} stale daemon process(es)`)
+        }
+      } catch {
+        // Ignore cleanup errors - not critical
+      }
+
+      // Start daemon in background
+      const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
+        detached: true,
+        stdio: 'ignore',
+        env: process.env
+      })
+      daemonProcess.unref()
+
+      // Wait for daemon to be ready (poll with timeout)
+      const startTime = Date.now()
+      const timeout = 5000 // 5 seconds max
+      let daemonReady = false
+
+      while (Date.now() - startTime < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        if (await checkIfDaemonRunningAndCleanupStaleState()) {
+          daemonReady = true
+          break
+        }
+      }
+
+      if (process.env.AHA_VERBOSE) {
+        if (daemonReady) {
+          console.error('[aha] daemon started successfully')
+        } else {
+          console.error('[aha] daemon start timed out after 5s')
+        }
+      }
+    }
+  } catch (error) {
+    // Silent failure - don't block user commands
+    if (process.env.AHA_VERBOSE) {
+      console.error('[aha] failed to start daemon:', error)
+    }
+  }
+}
+
+/**
  * Show general CLI help
  * Displays all available commands with descriptions
  */
@@ -64,6 +143,7 @@ ${chalk.bold('Options:')}
   ${chalk.cyan('-h, --help')}              Show help information
   ${chalk.cyan('-v, --version')}           Show version number
   ${chalk.cyan('--debug')}                 Enable debug logging
+  ${chalk.cyan('--headless')}              Skip browser opening (for SSH/CI environments)
 
 ${chalk.bold('Documentation:')}
   GitHub: ${chalk.blue.underline('https://github.com/slopus/aha')}
@@ -97,10 +177,23 @@ For command-specific help, run:
 (async () => {
   const args = process.argv.slice(2)
 
+  // Check for --headless flag (for SSH/CI environments)
+  const headless = args.includes('--headless')
+  if (headless) {
+    // Remove --headless from args so it doesn't interfere with command parsing
+    const headlessIndex = args.indexOf('--headless')
+    args.splice(headlessIndex, 1)
+    process.env.AHA_HEADLESS = '1'
+  }
+
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
     logger.debug('Starting aha CLI with args: ', process.argv)
   }
+
+  // Auto-start daemon for all commands (except daemon management commands)
+  // This ensures daemon is always available for remote session spawning
+  await ensureDaemonRunning(args)
 
   // Check if first argument is a subcommand
   const subcommand = args[0]
@@ -201,7 +294,7 @@ For command-specific help, run:
 
       const {
         credentials
-      } = await authAndSetupMachineIfNeeded();
+      } = await authAndSetupMachineIfNeeded(headless);
       await runCodex({ credentials, startedBy });
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
@@ -475,30 +568,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     // Normal flow - auth and machine setup
     const {
       credentials
-    } = await authAndSetupMachineIfNeeded();
-
-    // Always auto-start daemon for simplicity
-    logger.debug('Ensuring Aha background service is running & matches our version...');
-
-    if (!(await isDaemonRunningCurrentlyInstalledAhaVersion())) {
-      logger.debug('Starting Aha background service...');
-
-      try {
-        // Use the built binary to spawn daemon
-        const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
-          detached: true,
-          stdio: 'ignore',
-          env: process.env
-        })
-        daemonProcess.unref();
-
-        // Give daemon a moment to write PID & port file
-        await new Promise(resolve => setTimeout(resolve, 200));
-      } catch (error) {
-        logger.debug('Failed to start daemon (non-fatal):', error);
-        console.log(chalk.yellow('Warning: Could not start background service. Some features may be limited.'));
-      }
-    }
+    } = await authAndSetupMachineIfNeeded(headless);
 
     // Start the CLI
     try {

@@ -44,19 +44,27 @@ export async function startDaemon(): Promise<void> {
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
   let requestShutdown: (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
+  let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let shutdownAlreadyRequested = false;
   let resolvesWhenShutdownRequested = new Promise<({ source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
     requestShutdown = (source, errorMessage) => {
+      if (shutdownAlreadyRequested) {
+        logger.debug(`[DAEMON RUN] Duplicate shutdown request ignored (source: ${source}, errorMessage: ${errorMessage})`);
+        return;
+      }
+      shutdownAlreadyRequested = true;
       logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
-      // Fallback - in case startup malfunctions - we will force exit the process with code 1
-      setTimeout(async () => {
-        logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
+      // Fallback in case graceful shutdown hangs unexpectedly.
+      // Cleared as soon as cleanup starts.
+      fallbackTimer = setTimeout(async () => {
+        logger.debug('[DAEMON RUN] Graceful shutdown timed out, forcing exit with code 1');
 
         // Give time for logs to be flushed
         await new Promise(resolve => setTimeout(resolve, 100))
 
         process.exit(1);
-      }, 1_000);
+      }, 15_000);
 
       // Start graceful shutdown
       resolve({ source, errorMessage });
@@ -625,6 +633,13 @@ export async function startDaemon(): Promise<void> {
     // Setup signal handlers
     const cleanupAndShutdown = async (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
+
+      // Clear the fallback timer since cleanup is proceeding normally
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = undefined;
+        logger.debug('[DAEMON RUN] Fallback timer cleared');
+      }
 
       // Clear health check interval
       if (restartOnStaleVersionAndHeartbeat) {

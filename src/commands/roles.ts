@@ -88,6 +88,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('team-reviews')} <teamId>          List public reviews for one team
   ${chalk.yellow('team-review')} <teamId> --rating <n> Submit a team review
   ${chalk.yellow('team-score')} <teamId>            Show team cumulative scorecard
+  ${chalk.yellow('recommend')} [--tech-stack <skills>] [--type <webapp|api|mobile|fullstack>] [--size <n>]  Get AI role recommendations
 
 ${chalk.bold('Review options:')}
   ${chalk.cyan('--rating <1-5>')}                  Required for review/team-review
@@ -99,11 +100,20 @@ ${chalk.bold('Review options:')}
   ${chalk.cyan('--roles <id1,id2>')}               Optional role ids for team-review
   ${chalk.cyan('--limit <n>')}                     Limit results (default 20/50 depending command)
 
+${chalk.bold('Recommendation options:')}
+  ${chalk.cyan('--tech-stack <skills>')}           Comma-separated tech stack (e.g., "React,TypeScript,Node.js")
+  ${chalk.cyan('--type <webapp|api|mobile|fullstack>')}  Project type (default: webapp)
+  ${chalk.cyan('--size <n>')}                      Team size (default: 3)
+  ${chalk.cyan('--description <text>')}            Project description
+  ${chalk.cyan('--timeline <text>')}               Project timeline (e.g., "1个月")
+  ${chalk.cyan('--limit <n>')}                     Max recommendations (default: 5)
+
 ${chalk.bold('Examples:')}
   ${chalk.green('aha roles defaults')}
   ${chalk.green('aha roles pool --search qa --limit 20')}
   ${chalk.green('aha roles review custom-abcd1234 --rating 4.7 --code 88 --quality 91 --source user')}
   ${chalk.green('aha roles team-review team_123 --rating 4.5 --source master --comment "Solid collaboration"')}
+  ${chalk.green('aha roles recommend --tech-stack "React,TypeScript,Node.js" --type fullstack --size 5')}
 `);
 }
 
@@ -168,6 +178,9 @@ export async function handleRolesCommand(args: string[]) {
           throw new Error('Usage: aha roles team-score <teamId>');
         }
         await showTeamScore(api, positional[1]);
+        break;
+      case 'recommend':
+        await getRoleRecommendations(api, args);
         break;
       default:
         throw new Error(`Unknown roles command: ${subcommand}`);
@@ -342,4 +355,85 @@ async function showTeamScore(api: ApiClient, teamId: string) {
     console.log(`${chalk.green('Last Reviewed:')} ${new Date(score.lastReviewedAt).toLocaleString()}`);
   }
   console.log();
+}
+
+// === V5-AI-001: Smart Role Recommendation ===
+
+async function getRoleRecommendations(api: ApiClient, args: string[]) {
+  const techStackRaw = getOption(args, 'tech-stack');
+  const projectType = getOption(args, 'type') as 'webapp' | 'api' | 'mobile' | 'fullstack' | undefined;
+  const teamSize = parseNumberOption(args, 'size', 3) || 3;
+  const description = getOption(args, 'description');
+  const timeline = getOption(args, 'timeline');
+  const limit = parseNumberOption(args, 'limit', 5) || 5;
+
+  if (!techStackRaw) {
+    throw new Error('--tech-stack is required. Example: --tech-stack "React,TypeScript,Node.js"');
+  }
+
+  const techStack = techStackRaw.split(',').map(s => s.trim()).filter(Boolean);
+  const validTypes = ['webapp', 'api', 'mobile', 'fullstack'];
+  const finalProjectType = projectType && validTypes.includes(projectType) ? projectType : 'webapp';
+
+  console.log(chalk.bold('\n🧠 AI Role Recommendations\n'));
+  console.log(chalk.gray(`Project: ${finalProjectType} | Team Size: ${teamSize}`));
+  console.log(chalk.gray(`Tech Stack: ${techStack.join(', ')}`));
+  if (description) console.log(chalk.gray(`Description: ${description}`));
+  if (timeline) console.log(chalk.gray(`Timeline: ${timeline}`));
+  console.log();
+
+  try {
+    const response = await api.getRoleRecommendations({
+      techStack,
+      teamSize,
+      projectType: finalProjectType,
+      description,
+      timeline,
+      maxRecommendations: limit
+    });
+
+    if (!response.success || !response.recommendations.length) {
+      console.log(chalk.yellow('No recommendations found.'));
+      return;
+    }
+
+    console.log(chalk.bold(`Found ${response.recommendations.length} recommended roles:\n`));
+
+    for (let i = 0; i < response.recommendations.length; i++) {
+      const rec = response.recommendations[i];
+      const rank = i + 1;
+      const scoreColor = rec.matchScore >= 80 ? chalk.green : rec.matchScore >= 60 ? chalk.yellow : chalk.red;
+
+      console.log(`${chalk.bold.cyan(`#${rank}`)} ${chalk.bold(rec.role.name)} ${chalk.gray(`(${rec.role.category})`)}`);
+      console.log(`   ${chalk.green('Match:')} ${scoreColor(`${rec.matchScore}%`)}`);
+
+      if (rec.role.rating) {
+        console.log(`   ${chalk.green('Rating:')} ${chalk.cyan(`${rec.role.rating}/5`)}`);
+      }
+      if (rec.role.completedTasks) {
+        console.log(`   ${chalk.green('Tasks:')} ${rec.role.completedTasks}`);
+      }
+
+      console.log(`   ${chalk.green('Skills:')} ${rec.role.assignedSkills.join(', ')}`);
+
+      if (rec.reasons.length > 0) {
+        console.log(`   ${chalk.green('Reasons:')} ${rec.reasons.join('; ')}`);
+      }
+
+      if (rec.skillMatch.matched.length > 0) {
+        console.log(`   ${chalk.green('Matched:')} ${chalk.green(rec.skillMatch.matched.join(', '))}`);
+      }
+      if (rec.skillMatch.missing.length > 0) {
+        console.log(`   ${chalk.yellow('Missing:')} ${chalk.yellow(rec.skillMatch.missing.join(', '))}`);
+      }
+
+      console.log();
+    }
+
+    console.log(chalk.gray('Tip: Use these recommendations to build your team composition.'));
+    console.log();
+  } catch (error) {
+    console.log(chalk.red('Failed to get recommendations:'), error instanceof Error ? error.message : 'Unknown error');
+    throw error;
+  }
 }

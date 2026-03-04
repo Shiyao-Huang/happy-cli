@@ -11,6 +11,42 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
 
+function parseSemver(version: string): [number, number, number] | null {
+  const match = version.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+
+  return [
+    parseInt(match[1], 10),
+    parseInt(match[2], 10),
+    parseInt(match[3], 10)
+  ];
+}
+
+/**
+ * Returns:
+ * - > 0 when `a` is newer than `b`
+ * - < 0 when `a` is older than `b`
+ * - 0 when equal
+ * - null when either version is not semver-like
+ */
+function compareSemver(a: string, b: string): number | null {
+  const parsedA = parseSemver(a);
+  const parsedB = parseSemver(b);
+  if (!parsedA || !parsedB) {
+    return null;
+  }
+
+  for (let i = 0; i < 3; i++) {
+    if (parsedA[i] !== parsedB[i]) {
+      return parsedA[i] - parsedB[i];
+    }
+  }
+
+  return 0;
+}
+
 async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();
   if (!state?.httpPort) {
@@ -167,9 +203,22 @@ export async function isDaemonRunningCurrentlyInstalledAhaVersion(): Promise<boo
     const packageJsonPath = join(projectPath(), 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const currentCliVersion = packageJson.version;
+    const daemonVersion = state.startedWithCliVersion;
 
-    logger.debug(`[DAEMON CONTROL] Current CLI version: ${currentCliVersion}, Daemon started with version: ${state.startedWithCliVersion}`);
-    return currentCliVersion === state.startedWithCliVersion;
+    logger.debug(`[DAEMON CONTROL] Current CLI version: ${currentCliVersion}, Daemon started with version: ${daemonVersion}`);
+
+    if (currentCliVersion === daemonVersion) {
+      return true;
+    }
+
+    // Prevent old CLIs from force-downgrading a newer daemon.
+    const semverDiff = compareSemver(daemonVersion, currentCliVersion);
+    if (semverDiff !== null && semverDiff > 0) {
+      logger.debug('[DAEMON CONTROL] Running daemon is newer than current CLI; treating as compatible');
+      return true;
+    }
+
+    return false;
 
     // PREVIOUS IMPLEMENTATION - Keeping this commented in case we need it
     // Kirill does not understand how the upgrade of npm packages happen and whether

@@ -12,6 +12,57 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { readDaemonState } from '@/persistence'
 
+function stringifyForLog(value: unknown, space?: number): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value === null || value === undefined) {
+    return String(value)
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value)
+  }
+
+  const seen = new WeakSet<object>()
+
+  try {
+    return JSON.stringify(value, (_key, nestedValue) => {
+      if (typeof nestedValue === 'bigint') {
+        return nestedValue.toString()
+      }
+
+      if (nestedValue instanceof Error) {
+        return {
+          name: nestedValue.name,
+          message: nestedValue.message,
+          stack: nestedValue.stack
+        }
+      }
+
+      if (typeof nestedValue === 'function') {
+        return `[Function ${nestedValue.name || 'anonymous'}]`
+      }
+
+      if (typeof nestedValue === 'symbol') {
+        return nestedValue.toString()
+      }
+
+      if (nestedValue && typeof nestedValue === 'object') {
+        if (seen.has(nestedValue as object)) {
+          return '[Circular]'
+        }
+        seen.add(nestedValue as object)
+      }
+
+      return nestedValue
+    }, space)
+  } catch (error) {
+    return `[Unserializable: ${error instanceof Error ? error.message : String(error)}]`
+  }
+}
+
 /**
  * Consistent date/time formatting functions
  */
@@ -125,7 +176,7 @@ class Logger {
   
   info(message: string, ...args: unknown[]): void {
     this.logToConsole('info', '', message, ...args)
-    this.debug(message, args)
+    this.debug(message, ...args)
   }
   
   infoDeveloper(message: string, ...args: unknown[]): void {
@@ -187,9 +238,7 @@ class Logger {
         body: JSON.stringify({
           timestamp: new Date().toISOString(),
           level,
-          message: `${message} ${args.map(a => 
-            typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)
-          ).join(' ')}`,
+          message: `${message} ${args.map(arg => stringifyForLog(arg, 2)).join(' ')}`,
           source: 'cli',
           platform: process.platform
         })
@@ -200,9 +249,7 @@ class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg => 
-      typeof arg === 'string' ? arg : JSON.stringify(arg)
-    ).join(' ')}\n`
+    const logLine = `${prefix} ${message} ${args.map(arg => stringifyForLog(arg)).join(' ')}\n`
     
     // Send to remote server if configured
     if (this.dangerouslyUnencryptedServerLoggingUrl) {

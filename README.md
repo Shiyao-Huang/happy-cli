@@ -31,6 +31,7 @@ Visit **https://top1vibe.com/webapp** in your browser or mobile device to:
 
 - 🌍 **Code Anywhere**: Control Claude Code from mobile, tablet, or any browser
 - 🤝 **Multi-Agent Teams**: Built-in support for 22 specialized roles (Master, Builder, Architect, QA, etc.)
+- ⭐ **Rating System**: Role and team performance ratings (大众点评 style)
 - 🔒 **End-to-End Encryption**: All communications are encrypted with TweetNaCl
 - 🔄 **Real-time Sync**: Instant session sharing across all your devices
 - 📱 **Mobile First**: Optimized for mobile coding experience
@@ -55,6 +56,12 @@ This will:
 - `aha notify` – Send a push notification to your devices
 - `aha daemon` – Manage background service
 - `aha doctor` – System diagnostics & troubleshooting
+- `aha rating` – Role and team rating system
+  - `aha rating team <teamId>` – View team ratings
+  - `aha rating role <roleId>` – View role ratings
+  - `aha rating leaderboard` – View rating leaderboards
+  - `aha rating submit` – Submit a rating
+  - `aha rating auto` – Trigger automatic system rating
 
 ## Daemon
 

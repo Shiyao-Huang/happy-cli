@@ -24,5 +24,12 @@ pnpm-lock.yaml
 # Local installation
 .aha/
 
-**/*.log
+*.log
 .release-notes-temp.md
+
+# Build artifacts
+*.tgz
+package/
+
+# Claude Code
+.claude/

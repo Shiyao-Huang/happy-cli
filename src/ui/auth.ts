@@ -13,11 +13,19 @@ import { render } from 'ink';
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { logger } from './logger';
+import chalk from 'chalk';
 
-export async function doAuth(): Promise<Credentials | null> {
+export async function doAuth(headless: boolean = false): Promise<Credentials | null> {
     console.clear();
 
-    // Show authentication method selector
+    // R2: Device code auth is now the primary method (one-click)
+    // Try device code auth first, fall back to selector if user cancels
+    const deviceCodeResult = await doDeviceCodeAuth(headless);
+    if (deviceCodeResult) {
+        return deviceCodeResult;
+    }
+
+    // Fallback: Show authentication method selector
     const authMethod = await selectAuthenticationMethod();
     if (!authMethod) {
         console.log('\nAuthentication cancelled.\n');
@@ -130,6 +138,153 @@ async function doWebAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | n
 }
 
 /**
+ * Handle device code authentication flow (R2: One-Click Auth)
+ * This is the primary auth method for CLI - displays a 6-char code and auto-opens browser
+ * @param headless - If true, skip browser opening (for SSH/CI environments)
+ */
+export async function doDeviceCodeAuth(headless: boolean = false): Promise<Credentials | null> {
+    console.clear();
+    console.log(chalk.bold('\n🔑 Device Code Authentication\n'));
+
+    if (headless) {
+        console.log(chalk.yellow('Headless mode: Browser will not open automatically\n'));
+    }
+
+    // Generate ephemeral keypair for this device
+    const secret = new Uint8Array(randomBytes(32));
+    const keypair = tweetnacl.box.keyPair.fromSecretKey(secret);
+    const publicKeyBase64 = encodeBase64(keypair.publicKey);
+
+    try {
+        // Request a device code from the server
+        const response = await axios.post(`${configuration.serverUrl}/v1/auth/device-code`, {
+            publicKey: publicKeyBase64
+        });
+
+        const { userCode, deviceCode, expiresIn, verificationUri } = response.data;
+
+        // Display the device code prominently
+        console.log(chalk.gray('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
+        console.log(chalk.bold.white(`  Your device code: `) + chalk.cyan.bold(userCode));
+        console.log(chalk.gray('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
+        console.log('');
+        console.log(chalk.gray(`  Expires in ${Math.floor(expiresIn / 60)} minutes`));
+        console.log('');
+
+        // Display QR code for easy mobile scanning
+        console.log(chalk.gray('Scan this QR code or visit:'));
+        console.log('');
+        displayQRCode(verificationUri);
+        console.log('');
+        console.log(chalk.gray(verificationUri));
+        console.log('');
+
+        // Auto-open browser with verification URL (skip in headless mode)
+        if (!headless) {
+            console.log('Opening browser for verification...');
+            const browserOpened = await openBrowser(verificationUri);
+
+            if (browserOpened) {
+                console.log(chalk.green('✓ Browser opened'));
+            } else {
+                console.log(chalk.yellow('⚠ Could not open browser automatically'));
+                console.log(chalk.gray('Please visit the URL above to verify'));
+            }
+        } else {
+            console.log(chalk.cyan('Visit the URL above to verify your device'));
+        }
+
+        // Poll for approval with cancel support
+        console.log('');
+        console.log(chalk.gray('Waiting for verification (press Ctrl+C to cancel)'));
+        process.stdout.write(chalk.gray('.'));
+
+        const startTime = Date.now();
+        const timeoutMs = expiresIn * 1000;
+        let cancelled = false;
+
+        const handleCancel = async () => {
+            cancelled = true;
+            console.log(chalk.yellow('\n\nCancelling authentication...'));
+            try {
+                await axios.delete(`${configuration.serverUrl}/v1/auth/device-code/cancel`, {
+                    data: { deviceCode }
+                });
+            } catch {
+                // Best effort cancel
+            }
+            console.log(chalk.yellow('Authentication cancelled.\n'));
+        };
+
+        process.on('SIGINT', handleCancel);
+
+        try {
+            while (!cancelled && Date.now() - startTime < timeoutMs) {
+                await delay(2000);
+
+                if (cancelled) break;
+
+                // Show remaining time every 30 seconds
+                const elapsed = Date.now() - startTime;
+                const remaining = Math.ceil((timeoutMs - elapsed) / 1000);
+                if (remaining % 30 === 0 && remaining > 0) {
+                    process.stdout.write(chalk.gray(` ${Math.floor(remaining / 60)}m${remaining % 60}s `));
+                }
+
+                try {
+                    const pollResponse = await axios.get(
+                        `${configuration.serverUrl}/v1/auth/device-code/poll?device_code=${deviceCode}`
+                    );
+
+                    if (pollResponse.data.status === 'approved') {
+                        const token = pollResponse.data.token;
+                        console.log(chalk.green('\n\n✓ Authentication successful!\n'));
+
+                        // Store credentials
+                        const credentials: Credentials = {
+                            encryption: {
+                                type: 'legacy',
+                                secret: secret
+                            },
+                            token: token
+                        };
+                        await writeCredentialsLegacy(credentials);
+                        return credentials;
+                    }
+
+                    if (pollResponse.data.status === 'expired') {
+                        console.log(chalk.red('\n\n✗ Device code expired. Please try again.\n'));
+                        return null;
+                    }
+
+                    // Still pending - show progress
+                    process.stdout.write(chalk.gray('.'));
+
+                } catch (pollError) {
+                    // Log but continue polling on transient errors
+                    logger.debug('Poll error:', pollError);
+                    process.stdout.write(chalk.yellow('!'));
+                }
+            }
+        } finally {
+            process.off('SIGINT', handleCancel);
+        }
+
+        if (cancelled) {
+            return null;
+        }
+
+        console.log(chalk.red('\n\n✗ Authentication timed out. Please try again.\n'));
+        return null;
+
+    } catch (error) {
+        console.log(chalk.red('\nFailed to start device code authentication.\n'));
+        logger.error('Device code auth error:', error);
+        return null;
+    }
+}
+
+/**
  * Wait for authentication to complete and return credentials
  */
 async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | null> {
@@ -235,8 +390,9 @@ export function decryptWithEphemeralKey(encryptedBundle: Uint8Array, recipientSe
 /**
  * Ensure authentication and machine setup
  * This replaces the onboarding flow and ensures everything is ready
+ * @param headless - If true, skip browser opening during auth (for SSH/CI environments)
  */
-export async function authAndSetupMachineIfNeeded(): Promise<{
+export async function authAndSetupMachineIfNeeded(headless: boolean = false): Promise<{
     credentials: Credentials;
     machineId: string;
 }> {
@@ -248,7 +404,7 @@ export async function authAndSetupMachineIfNeeded(): Promise<{
 
     if (!credentials) {
         logger.debug('[AUTH] No credentials found, starting authentication flow...');
-        const authResult = await doAuth();
+        const authResult = await doAuth(headless);
         if (!authResult) {
             throw new Error('Authentication failed or was cancelled');
         }
