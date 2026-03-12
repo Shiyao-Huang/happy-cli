@@ -101,7 +101,7 @@ function validateConfiguration(): void {
       console.error(chalk.gray('\n─'.repeat(60)))
       console.error(chalk.cyan('\n💡 To fix this issue:'))
       console.error(chalk.gray('  1. Check your .env file or environment variables'))
-      console.error(chalk.gray('  2. Run "aha doctor" for system diagnostics'))
+      console.error(chalk.gray('  2. Run "aha-v2 doctor" for system diagnostics'))
       console.error(chalk.gray('  3. See documentation at https://github.com/slopus/aha'))
 
       process.exit(1)
@@ -134,8 +134,10 @@ class Configuration {
     validateConfiguration()
 
     // Server configuration - priority: parameter > environment > default
-    this.serverUrl = process.env.AHA_SERVER_URL || 'https://top1vibe.com/api/v2'
-    this.webappUrl = process.env.AHA_WEBAPP_URL || 'https://top1vibe.com/webappv2'
+    // Default to local dev; production URLs are set via env vars at release time
+    this.serverUrl = process.env.AHA_SERVER_URL || 'http://localhost:3005'
+    const isLocalServer = this.serverUrl.includes('localhost') || this.serverUrl.includes('127.0.0.1')
+    this.webappUrl = process.env.AHA_WEBAPP_URL || (isLocalServer ? 'http://localhost:19006' : 'https://top1vibe.com/webappv2')
 
     // Check if we're running as daemon based on process args
     const args = process.argv.slice(2)

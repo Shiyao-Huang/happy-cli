@@ -15,7 +15,7 @@ import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './daemon/controlClient'
+import { checkIfDaemonRunningAndCleanupStaleState, stopDaemon } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayAhaProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
@@ -29,6 +29,7 @@ import { handleInteractiveCommand, showInteractiveHelp } from './commands/intera
 import { spawnAhaCLI } from './utils/spawnAhaCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
+import { ensureDaemonRunningForCommand } from '@/daemon/autoStart'
 
 /**
  * Commands that should NOT trigger auto-start
@@ -203,6 +204,8 @@ For command-specific help, run:
     showGeneralHelp();
     return;
   }
+
+  await ensureDaemonRunningForCommand(args);
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand

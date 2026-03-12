@@ -74,6 +74,24 @@ export interface TeamCompositionPlan {
   teams: TeamCompositionSlice[];
 }
 
+export interface MetaActorHeaders {
+  sessionId?: string;
+  roleId?: string;
+  machineId?: string;
+}
+
+export class ApiClientRequestError extends Error {
+  readonly status: number;
+  readonly data: Record<string, unknown> | null;
+
+  constructor(message: string, status: number, data: Record<string, unknown> | null = null) {
+    super(message);
+    this.name = 'ApiClientRequestError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
 export class ApiClient {
 
   static async create(credential: Credentials) {
@@ -118,6 +136,52 @@ export class ApiClient {
     }
 
     throw lastError ?? new Error('Unknown rating API failure')
+  }
+
+  private buildAuthHeaders(actor?: MetaActorHeaders): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this.credential.token}`,
+    };
+
+    if (actor?.sessionId) {
+      headers['x-agent-session-id'] = actor.sessionId;
+      headers['x-session-id'] = actor.sessionId;
+    }
+    if (actor?.roleId) {
+      headers['x-agent-role-id'] = actor.roleId;
+      headers['x-role'] = actor.roleId;
+    }
+    if (actor?.machineId) {
+      headers['x-agent-machine-id'] = actor.machineId;
+      headers['x-machine-id'] = actor.machineId;
+    }
+
+    return headers;
+  }
+
+  private buildJsonHeaders(actor?: MetaActorHeaders): Record<string, string> {
+    return {
+      ...this.buildAuthHeaders(actor),
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private throwApiClientError(error: unknown, fallback: string): never {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status ?? 500;
+      const body = error.response?.data;
+      const data = body && typeof body === 'object'
+        ? body as Record<string, unknown>
+        : null;
+      const message = typeof data?.message === 'string'
+        ? data.message
+        : typeof data?.error === 'string'
+          ? data.error
+          : error.message || fallback;
+      throw new ApiClientRequestError(message, status, data);
+    }
+
+    throw new Error(`${fallback}: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 
   private normalizeTeamArtifactBody(body: any): string {
@@ -338,7 +402,7 @@ export class ApiClient {
 
     if (response.status !== 200) {
       console.error(chalk.red(`[API] Failed to create machine: ${response.statusText}`));
-      console.log(chalk.yellow(`[API] Failed to create machine: ${response.statusText}, most likely you have re-authenticated, but you still have a machine associated with the old account. Now we are trying to re-associate the machine with the new account. That is not allowed. Please run 'aha doctor clean' to clean up your aha state, and try your original command again. Please create an issue on github if this is causing you problems. We apologize for the inconvenience.`));
+      console.log(chalk.yellow(`[API] Failed to create machine: ${response.statusText}, most likely you have re-authenticated, but you still have a machine associated with the old account. Now we are trying to re-associate the machine with the new account. That is not allowed. Please run 'aha-v2 doctor clean' to clean up your aha state, and try your original command again. Please create an issue on github if this is causing you problems. We apologize for the inconvenience.`));
       process.exit(1);
     }
 
@@ -920,6 +984,157 @@ export class ApiClient {
     }
   }
 
+  // === Runtime Agent API Methods ===
+
+  async listTeamAgents(
+    teamId: string,
+    filters?: { active?: boolean; mode?: string; roleId?: string },
+    actor?: MetaActorHeaders
+  ): Promise<any[]> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/agents`,
+        {
+          params: filters,
+          headers: this.buildAuthHeaders(actor),
+          timeout: 10000,
+        }
+      );
+      return Array.isArray(response.data?.agents) ? response.data.agents : [];
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list team agents:`, error);
+      this.throwApiClientError(error, 'Failed to list team agents');
+    }
+  }
+
+  async spawnTeamAgent(params: {
+    teamId: string;
+    roleId: string;
+    mode: 'claude' | 'codex' | 'ralph';
+    machineId?: string;
+    rootPath?: string;
+    displayName?: string;
+    count?: number;
+    executionPlane?: 'mainline' | 'bypass';
+    bypass?: {
+      trigger: 'init' | 'periodic' | 'event' | 'manual';
+      profile?: 'org-manager' | 'evolution-bypass' | 'help-agent' | 'custom';
+      prompt: string;
+      readAccess?: string[];
+      writeAccess?: string[];
+      autoTerminate?: boolean;
+      ttlMinutes?: number;
+    };
+    oneShotBypass?: boolean;
+    bypassProfile?: 'audit' | 'init' | 'repair';
+    autoTerminate?: boolean;
+    bypassPrompt?: string;
+    genomeId?: string;
+    taskProfile?: {
+      domain: string[];
+      stage: string;
+      risk?: string;
+      constraints?: string[];
+    };
+    parentSessionId?: string;
+    actor?: MetaActorHeaders;
+  }): Promise<{ sessions: any[]; spawnedAt?: string; spawnLineageId?: string; meta?: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/agents/spawn`,
+        {
+          roleId: params.roleId,
+          mode: params.mode,
+          ...(params.machineId ? { machineId: params.machineId } : {}),
+          ...(params.rootPath ? { rootPath: params.rootPath } : {}),
+          ...(params.displayName ? { displayName: params.displayName } : {}),
+          ...(params.count !== undefined ? { count: params.count } : {}),
+          ...(params.executionPlane ? { executionPlane: params.executionPlane } : {}),
+          ...(params.bypass ? { bypass: params.bypass } : {}),
+          ...(params.oneShotBypass !== undefined ? { oneShotBypass: params.oneShotBypass } : {}),
+          ...(params.bypassProfile ? { bypassProfile: params.bypassProfile } : {}),
+          ...(params.autoTerminate !== undefined ? { autoTerminate: params.autoTerminate } : {}),
+          ...(params.bypassPrompt ? { bypassPrompt: params.bypassPrompt } : {}),
+          ...(params.genomeId ? { genomeId: params.genomeId } : {}),
+          ...(params.taskProfile ? { taskProfile: params.taskProfile } : {}),
+          ...(params.parentSessionId ? { parentSessionId: params.parentSessionId } : {}),
+        },
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 30000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to spawn team agent:`, error);
+      this.throwApiClientError(error, 'Failed to spawn team agent');
+    }
+  }
+
+  async pauseTeamAgent(params: {
+    teamId: string;
+    sessionId: string;
+    actor?: MetaActorHeaders;
+  }): Promise<{ status: string; sessionId: string; meta?: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/agents/${params.sessionId}/pause`,
+        {},
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 10000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to pause team agent:`, error);
+      this.throwApiClientError(error, 'Failed to pause team agent');
+    }
+  }
+
+  async resumeTeamAgent(params: {
+    teamId: string;
+    sessionId: string;
+    actor?: MetaActorHeaders;
+  }): Promise<{ status: string; sessionId: string; meta?: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/agents/${params.sessionId}/resume`,
+        {},
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 10000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to resume team agent:`, error);
+      this.throwApiClientError(error, 'Failed to resume team agent');
+    }
+  }
+
+  async removeTeamAgent(params: {
+    teamId: string;
+    sessionId: string;
+    graceful?: boolean;
+    actor?: MetaActorHeaders;
+  }): Promise<{ status: string; sessionId: string; meta?: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/agents/${params.sessionId}/stop`,
+        { graceful: params.graceful ?? true },
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 10000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to stop team agent:`, error);
+      this.throwApiClientError(error, 'Failed to stop team agent');
+    }
+  }
+
   /**
    * Update an existing task
    */
@@ -964,6 +1179,28 @@ export class ApiClient {
       logger.debug(`[API] [ERROR] Failed to delete task:`, error);
       throw new Error(`Failed to delete task: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  /**
+   * Report the result of a bypass evaluation back to the server.
+   * Called by bypass agents via the report_bypass_result MCP tool.
+   */
+  async reportBypassResult(params: {
+    sessionId: string;
+    fitnessScore: number;
+    summary: string;
+    recommendation: string;
+    directive?: string;
+    targetAgent?: string;
+    actor?: MetaActorHeaders;
+  }): Promise<{ ok: boolean }> {
+    const { sessionId, actor, ...body } = params;
+    const response = await axios.post(
+      `${configuration.serverUrl}/v1/sessions/${sessionId}/bypass-result`,
+      body,
+      { headers: this.buildJsonHeaders(actor), timeout: 15000 },
+    );
+    return response.data;
   }
 
   /**
@@ -1062,7 +1299,230 @@ export class ApiClient {
     }
   }
 
+  // === Session and Machine Control API Methods ===
+
+  async listSessions(): Promise<{ sessions: any[] }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/sessions`,
+        {
+          headers: this.buildAuthHeaders(),
+          timeout: 10000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list sessions:`, error);
+      this.throwApiClientError(error, 'Failed to list sessions');
+    }
+  }
+
+  async spawnMachineSession(params: {
+    machineId: string;
+    directory: string;
+    approvedNewDirectoryCreation?: boolean;
+    agent?: 'claude' | 'codex' | 'ralph';
+    teamId?: string;
+    role?: string;
+    sessionName?: string;
+    sessionPath?: string;
+    env?: Record<string, string>;
+  }): Promise<{ success: boolean; machineId: string; sessionId: string | null }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/machines/${params.machineId}/sessions/spawn`,
+        {
+          directory: params.directory,
+          approvedNewDirectoryCreation: params.approvedNewDirectoryCreation ?? true,
+          agent: params.agent ?? 'claude',
+          ...(params.teamId ? { teamId: params.teamId } : {}),
+          ...(params.role ? { role: params.role } : {}),
+          ...(params.sessionName ? { sessionName: params.sessionName } : {}),
+          ...(params.sessionPath ? { sessionPath: params.sessionPath } : {}),
+          ...(params.env ? { env: params.env } : {}),
+        },
+        {
+          headers: this.buildJsonHeaders(),
+          timeout: 30000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to spawn machine session:`, error);
+      this.throwApiClientError(error, 'Failed to spawn machine session');
+    }
+  }
+
+  async stopMachineSession(params: {
+    machineId: string;
+    sessionId: string;
+    graceful?: boolean;
+  }): Promise<{ success: boolean; status: string; sessionId: string; machineId: string }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/machines/${params.machineId}/sessions/${params.sessionId}/stop`,
+        {
+          graceful: params.graceful ?? true,
+        },
+        {
+          headers: this.buildJsonHeaders(),
+          timeout: 30000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to stop machine session:`, error);
+      this.throwApiClientError(error, 'Failed to stop machine session');
+    }
+  }
+
+  async stopSession(sessionId: string): Promise<{ success: boolean; status: string; sessionId: string }> {
+    try {
+      const response = await this.batchArchiveSessions([sessionId]);
+      return {
+        success: response.success,
+        status: response.archived > 0 ? 'stopped' : 'not-found',
+        sessionId,
+      };
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to stop session:`, error);
+      throw new Error(`Failed to stop session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async runAutoRating(
+    teamId: string,
+    triggerType: 'periodic' | 'task-complete' | 'manual' = 'manual',
+    roleIds?: string[]
+  ): Promise<{
+    success: boolean;
+    ratings: any[];
+    triggerType: string;
+    timestamp: string;
+  }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/auto-rate`,
+        { triggerType },
+        {
+          headers: this.buildJsonHeaders(),
+          timeout: 30000,
+        }
+      );
+
+      const data = response.data as {
+        success: boolean;
+        ratings?: any[];
+        triggerType: string;
+        timestamp: string;
+      };
+
+      const filteredRatings = Array.isArray(roleIds) && roleIds.length > 0
+        ? (data.ratings || []).filter((rating) => roleIds.includes(String(rating?.roleId)))
+        : (data.ratings || []);
+
+      return {
+        success: Boolean(data.success),
+        ratings: filteredRatings,
+        triggerType: data.triggerType,
+        timestamp: data.timestamp,
+      };
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to run auto-rating:`, error);
+      this.throwApiClientError(error, 'Failed to run auto-rating');
+    }
+  }
+
   // === Team Management API Methods ===
+
+  async createTeam(params: {
+    name: string;
+    roles?: Array<{ name: string; description?: string }>;
+    blueprint?: Record<string, unknown>;
+    actor?: MetaActorHeaders;
+  }): Promise<{ team: any; metaContractVersion?: string; blueprintSeed?: any; meta?: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v2/teams`,
+        {
+          name: params.name,
+          ...(params.roles && params.roles.length > 0 ? { roles: params.roles } : {}),
+          ...(params.blueprint ? { blueprint: params.blueprint } : {}),
+        },
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 30000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to create team:`, error);
+      this.throwApiClientError(error, 'Failed to create team');
+    }
+  }
+
+  async selectAgentGenome(params: {
+    teamId: string;
+    taskProfile: {
+      domain: string[];
+      stage: string;
+      risk?: string;
+      constraints?: string[];
+    };
+    limit?: number;
+    actor?: MetaActorHeaders;
+  }): Promise<{ candidates: any[]; recommended: string | null; fallback: string }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/genomes/select`,
+        {
+          taskProfile: params.taskProfile,
+          ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        },
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 15000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to select agent genome:`, error);
+      this.throwApiClientError(error, 'Failed to select agent genome');
+    }
+  }
+
+  async captureAgentGenome(params: {
+    teamId: string;
+    sessionId: string;
+    roleId: string;
+    model: string;
+    tools?: string[];
+    permissions?: string[];
+    promptVersion?: string;
+    actor?: MetaActorHeaders;
+  }): Promise<{ genomeId: string; snapshotId: string; capturedAt: string }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${params.teamId}/genomes/capture`,
+        {
+          sessionId: params.sessionId,
+          roleId: params.roleId,
+          model: params.model,
+          ...(params.tools && params.tools.length > 0 ? { tools: params.tools } : {}),
+          ...(params.permissions && params.permissions.length > 0 ? { permissions: params.permissions } : {}),
+          ...(params.promptVersion ? { promptVersion: params.promptVersion } : {}),
+        },
+        {
+          headers: this.buildJsonHeaders(params.actor),
+          timeout: 15000,
+        }
+      );
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to capture agent genome:`, error);
+      this.throwApiClientError(error, 'Failed to capture agent genome');
+    }
+  }
 
   /**
    * Add a member to a team
