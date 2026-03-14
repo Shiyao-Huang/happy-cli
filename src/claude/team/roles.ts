@@ -848,6 +848,7 @@ create_agent({
   role: "implementer",
   teamId: "${teamId}",
   directory: "<same directory you are in>",
+  agent: "claude",
   sessionName: "Implementer 1",
   prompt: "Your task: <specific sub-task for this agent>"
 })
@@ -855,6 +856,8 @@ create_agent({
 
 **Rules:**
 - Always spawn a \`master\` first — it coordinates the team after you leave
+- If the task prompt says Claude Code only or Codex only, set the \`agent\` field on every \`create_agent\` call to match
+- If the task prompt says mixed, choose \`agent: "claude"\` or \`agent: "codex"\` deliberately per role
 - Spawn 1-3 implementation roles depending on task complexity
 - Spawn \`qa-engineer\` if testing is mentioned or implied
 - Spawn \`researcher\` only if external research is clearly needed
