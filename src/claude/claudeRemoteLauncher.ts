@@ -129,17 +129,21 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
 
-        // Detect bootstrap completion — auto-retire the session
+        // Detect bootstrap/supervisor/help completion — auto-retire the session
         if (message.type === 'assistant') {
             const umessage = message as SDKAssistantMessage;
             const content = (umessage.message as any)?.content;
             const contentStr = typeof content === 'string' ? content : '';
-            const hasBootstrapComplete = contentStr.includes('BOOTSTRAP_COMPLETE') ||
-                (Array.isArray(content) && content.some((b: any) => b.type === 'text' && typeof b.text === 'string' && b.text.includes('BOOTSTRAP_COMPLETE')));
-            if (hasBootstrapComplete) {
-                logger.debug('[remote]: Bootstrap complete detected — scheduling auto-retire');
+            const completionSignals = ['BOOTSTRAP_COMPLETE', 'SUPERVISOR_COMPLETE', 'HELP_COMPLETE'];
+            const hasCompletion = completionSignals.some(signal =>
+                contentStr.includes(signal) ||
+                (Array.isArray(content) && content.some((b: any) => b.type === 'text' && typeof b.text === 'string' && b.text.includes(signal)))
+            );
+            if (hasCompletion) {
+                const matched = completionSignals.find(s => contentStr.includes(s)) || 'UNKNOWN';
+                logger.debug(`[remote]: ${matched} detected — scheduling auto-retire`);
                 setTimeout(() => {
-                    logger.debug('[remote]: Auto-retiring bootstrap agent');
+                    logger.debug(`[remote]: Auto-retiring agent (${matched})`);
                     if (!exitReason) {
                         exitReason = 'exit';
                     }

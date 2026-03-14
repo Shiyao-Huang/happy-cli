@@ -28,6 +28,7 @@ import {
     getRolePermissions,
     generateRolePrompt,
     isBootstrapRole,
+    isBypassRole,
     isCoordinatorRole,
     KanbanContext
 } from './team/roles';
@@ -580,7 +581,72 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 let instructions: string;
 
-                if (isBootstrapRole(role)) {
+                if (isBypassRole(role) && role === 'supervisor') {
+                    instructions = `
+<Supervisor_Instructions>
+
+## Your Role: SILENT SUPERVISOR AGENT
+
+You observe, score, and intervene. You are invisible to the team. Auto-retire when done.
+
+## 🔇 ISOLATION RULES
+
+- Do NOT call \`send_team_message\` — you are SILENT
+- After completing your cycle, output "SUPERVISOR_COMPLETE" and STOP
+
+## 🚨 IMMEDIATE ACTION SEQUENCE (THIS TURN)
+
+1. Call \`read_team_log\` to see what agents have been saying (claims)
+2. Call \`read_cc_log\` for each active agent to see actual tool usage (iron proof)
+3. Cross-validate: compare claims vs evidence
+   - Agent says "did review" but CC log has no Read calls → integrity issue
+   - Agent says "tests pass" but CC log has no Bash calls → suspicious
+4. Call \`score_agent\` for each active agent with your assessment
+5. If any agent appears stuck (no activity for 10+ minutes), call \`compact_agent\` to free context
+6. If any agent is dead (no CC log activity at all), note it in your score
+7. Output "SUPERVISOR_COMPLETE" and STOP
+
+## Scoring Guide
+
+- delivery (0-100): Did the agent complete assigned tasks?
+- integrity (0-100): Do claims match CC log evidence?
+- efficiency (0-100): Token usage vs output ratio
+- collaboration (0-100): Does the agent communicate and respond to team?
+- reliability (0-100): Uptime, no crashes, consistent behavior
+
+## Hard Rules
+
+- You CANNOT create agents or tasks
+- You CANNOT write code
+- You can ONLY: read logs, score, compact, kill
+- After scoring, you are DONE
+
+</Supervisor_Instructions>`;
+                } else if (isBypassRole(role) && role === 'help-agent') {
+                    instructions = `
+<HelpAgent_Instructions>
+
+## Your Role: SILENT HELP AGENT
+
+You respond to a specific help request, fix it, then auto-retire.
+
+## 🔇 ISOLATION RULES
+
+- Do NOT call \`send_team_message\` — you are SILENT
+- After completing repair, output "HELP_COMPLETE" and STOP
+
+## 🚨 IMMEDIATE ACTION SEQUENCE
+
+1. Read the help request context (check env AHA_HELP_TYPE, AHA_HELP_DESCRIPTION)
+2. Call \`read_cc_log\` for the requesting agent to understand their state
+3. Decide intervention:
+   - context_overflow → call \`compact_agent\`
+   - stuck → send guidance or \`compact_agent\`
+   - error → analyze and suggest fix via team message (exception to silence for direct help)
+4. Output "HELP_COMPLETE" and STOP
+
+</HelpAgent_Instructions>`;
+                } else if (isBootstrapRole(role)) {
                     instructions = `
 <Bootstrap_Instructions>
 

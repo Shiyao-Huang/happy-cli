@@ -224,9 +224,18 @@ export function isCoordinatorRole(role: string | undefined): boolean {
     return !!role && COORDINATION_ROLES.includes(role);
 }
 
+export function isBypassRole(role: string | undefined): boolean {
+    return !!role && BYPASS_ROLES.includes(role);
+}
+
 export function isBootstrapRole(role: string | undefined): boolean {
     if (!role) {
         return false;
+    }
+
+    // Bypass roles (supervisor, help-agent) are also "bootstrap-like" — they act immediately and auto-retire
+    if (isBypassRole(role)) {
+        return true;
     }
 
     const roleDef = DEFAULT_ROLES[role];
