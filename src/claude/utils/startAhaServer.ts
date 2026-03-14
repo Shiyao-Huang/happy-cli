@@ -1291,17 +1291,55 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Create Agent - Spawns a new agent session via the daemon
     mcp.registerTool('create_agent', {
-        description: 'Spawn a new AI agent session in the team. The agent will be started via the daemon and join the team automatically. Only mainline execution plane is allowed from agents. Default agent type is claude (Claude Code). Use codex only when explicitly requested.',
+        description: `Spawn a new AI agent and register it to the team. The agent starts immediately and can communicate with the team.
+
+## When to Create Agents
+
+- You need capabilities your current role doesn't have (e.g., you're a master and need implementers)
+- The task requires parallel work that one agent can't do alone
+- A specialized role (qa-engineer, architect, researcher) would improve quality
+
+## Decision Framework
+
+1. **Analyze the task** — What work needs to be done? What skills are required?
+2. **Check existing roster** — Call get_team_info first. Don't duplicate roles that already exist.
+3. **Minimum viable team** — Spawn the fewest agents that can accomplish the goal. Over-staffing wastes resources.
+4. **Role selection guide:**
+   - master: Coordinator. Spawn FIRST if no coordinator exists. Breaks down tasks, assigns work, monitors progress.
+   - implementer: Code writer. The primary worker. Spawn 1-2 for most tasks.
+   - architect: System designer. Spawn only for complex architectural decisions.
+   - qa-engineer: Tester. Spawn when quality assurance is explicitly needed.
+   - researcher: Information gatherer. Spawn when external research or analysis is required.
+   - reviewer: Code reviewer. Spawn for review-heavy workflows.
+
+## Agent Type Selection
+
+- \`agent: "claude"\` — Default. Full Claude Code with MCP tools, file editing, terminal access. Best for most tasks.
+- \`agent: "codex"\` — OpenAI Codex. Use only when explicitly requested by user.
+- Rule: Default to claude. Only use codex when user says "codex", "openai", or "mixed mode".
+
+## Prompt Engineering for Spawned Agents
+
+The \`prompt\` field is injected as the agent's initial task context. Write it as a clear, actionable instruction:
+- BAD: "You are an implementer" (too vague, agent already knows its role)
+- GOOD: "Implement the iOS subscription paywall UI using SwiftUI. The design specs are in docs/paywall-spec.md. Focus on the purchase flow first."
+
+## Anti-Patterns
+
+- Don't spawn agents for tasks you can do yourself
+- Don't spawn more than 4 agents without explicit user approval
+- Don't spawn agents without checking get_team_info first
+- Don't use codex unless user explicitly requested it`,
         title: 'Create Agent',
         inputSchema: {
-            role: z.string().describe('Role for the new agent: implementer, architect, reviewer, qa-engineer, researcher, master, etc.'),
-            teamId: z.string().describe('Team ID to add the new agent to'),
-            directory: z.string().describe('Working directory for the new agent'),
-            sessionName: z.string().optional().describe('Display name for the agent session'),
-            prompt: z.string().optional().describe('Additional context/instructions for the agent'),
-            model: z.string().optional().describe('Model to use, defaults to current model'),
-            agent: z.enum(['claude', 'codex']).default('claude').describe('Agent runtime: claude (default, full Claude Code) or codex (OpenAI Codex)'),
-            executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane'),
+            role: z.string().describe('Role ID: master, implementer, architect, qa-engineer, researcher, reviewer, builder, observer, etc.'),
+            teamId: z.string().describe('Team ID to register the new agent to'),
+            directory: z.string().describe('Working directory (repository root) for the new agent'),
+            sessionName: z.string().optional().describe('Human-readable display name, e.g. "Frontend Implementer"'),
+            prompt: z.string().optional().describe('Task-specific instructions for the agent. Be concrete — what exactly should this agent work on?'),
+            model: z.string().optional().describe('Model override. Omit to use system default.'),
+            agent: z.enum(['claude', 'codex']).default('claude').describe('Runtime: claude (default, recommended) or codex (only when user explicitly requests)'),
+            executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane. Agents can only create mainline agents.'),
         },
     }, async (args) => {
         try {
