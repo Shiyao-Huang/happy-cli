@@ -552,6 +552,7 @@ export async function startDaemon(): Promise<void> {
     // 4. Write heartbeat
     const heartbeatIntervalMs = parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '60000');
     let heartbeatRunning = false
+    let heartbeatCount = 0;
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
@@ -571,6 +572,52 @@ export async function startDaemon(): Promise<void> {
           // Process is dead, remove from tracking
           logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           pidToTrackedSession.delete(pid);
+        }
+      }
+
+      // Supervisor check: every N heartbeats, spawn a supervisor agent if there are active team sessions
+      heartbeatCount++;
+      const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '5'); // Every 5 heartbeats = 5 minutes
+      if (heartbeatCount % supervisorInterval === 0 && pidToTrackedSession.size > 0) {
+        // Find active team sessions (those with a teamId)
+        let teamId: string | null = null;
+        for (const [_, session] of pidToTrackedSession.entries()) {
+          const meta = session.ahaSessionMetadataFromLocalWebhook;
+          const sessionTeamId = meta?.teamId || meta?.roomId;
+          if (sessionTeamId && meta?.role !== 'supervisor' && meta?.role !== 'help-agent') {
+            teamId = sessionTeamId;
+            break;
+          }
+        }
+
+        if (teamId) {
+          // Check if a supervisor is already running
+          let supervisorAlreadyRunning = false;
+          for (const [_, session] of pidToTrackedSession.entries()) {
+            if (session.ahaSessionMetadataFromLocalWebhook?.role === 'supervisor') {
+              supervisorAlreadyRunning = true;
+              break;
+            }
+          }
+
+          if (!supervisorAlreadyRunning) {
+            logger.debug(`[DAEMON RUN] Supervisor check triggered (heartbeat #${heartbeatCount}, team ${teamId})`);
+            try {
+              const supervisorResult = await spawnSession({
+                directory: process.cwd(),
+                agent: 'claude',
+                teamId,
+                role: 'supervisor',
+                sessionName: 'Supervisor',
+                executionPlane: 'bypass',
+              });
+              if (supervisorResult.type === 'success') {
+                logger.debug(`[DAEMON RUN] Supervisor agent spawned: ${supervisorResult.sessionId}`);
+              }
+            } catch (e) {
+              logger.debug(`[DAEMON RUN] Failed to spawn supervisor: ${e}`);
+            }
+          }
         }
       }
 

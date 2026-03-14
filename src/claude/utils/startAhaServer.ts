@@ -19,6 +19,7 @@ import {
     canManageExistingTasks,
     canSpawnAgents
 } from '@/claude/team/roles';
+import { writeScore } from '@/claude/utils/scoreStorage';
 
 export async function startAhaServer(api: any, client: ApiSessionClient) {
     // Handler that sends title updates via the client
@@ -1509,6 +1510,272 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    // ========== Supervisor-Only Tools ==========
+
+    mcp.registerTool('read_team_log', {
+        description: 'Read the team message log. Returns recent team messages for analysis. Supervisor/help-agent only.',
+        title: 'Read Team Log',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to read logs for'),
+            limit: z.number().default(50).describe('Max messages to return'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read team logs.' }], isError: true };
+        }
+        try {
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const localPath = path.join(process.cwd(), '.aha', 'teams', args.teamId, 'messages.jsonl');
+            if (fs.existsSync(localPath)) {
+                const lines = fs.readFileSync(localPath, 'utf-8').split('\n').filter(Boolean);
+                const recent = lines.slice(-args.limit);
+                return { content: [{ type: 'text', text: recent.join('\n') }], isError: false };
+            }
+            const messages = await api.getTeamMessages(args.teamId, args.limit);
+            return { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error reading team log: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('read_cc_log', {
+        description: 'Read Claude Code session log (the iron proof). Shows actual tool calls, token usage, and real actions taken by an agent. Supervisor/help-agent only.',
+        title: 'Read CC Log',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID to read CC log for'),
+            limit: z.number().default(100).describe('Max log entries to return'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read CC logs.' }], isError: true };
+        }
+        try {
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const homeDir = process.env.HOME || '/tmp';
+            const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+            if (!fs.existsSync(claudeProjectsDir)) {
+                return { content: [{ type: 'text', text: 'No Claude Code logs directory found.' }], isError: false };
+            }
+            const projectDirs = fs.readdirSync(claudeProjectsDir);
+            for (const dir of projectDirs) {
+                const sessionFile = path.join(claudeProjectsDir, dir, `${args.sessionId}.jsonl`);
+                if (fs.existsSync(sessionFile)) {
+                    const lines = fs.readFileSync(sessionFile, 'utf-8').split('\n').filter(Boolean);
+                    const recent = lines.slice(-args.limit);
+                    const summary = recent.map(line => {
+                        try {
+                            const entry = JSON.parse(line);
+                            if (entry.type === 'assistant' && entry.message?.content) {
+                                const tools = Array.isArray(entry.message.content)
+                                    ? entry.message.content.filter((c: any) => c.type === 'tool_use').map((c: any) => c.name)
+                                    : [];
+                                return tools.length > 0 ? `[tool_use] ${tools.join(', ')}` : null;
+                            }
+                            if (entry.type === 'user' && entry.message?.content) {
+                                const results = Array.isArray(entry.message.content)
+                                    ? entry.message.content.filter((c: any) => c.type === 'tool_result')
+                                    : [];
+                                return results.length > 0 ? `[tool_result] ${results.length} results` : null;
+                            }
+                            return null;
+                        } catch { return null; }
+                    }).filter(Boolean);
+                    return { content: [{ type: 'text', text: `CC Log for ${args.sessionId} (${summary.length} entries):\n${summary.join('\n')}` }], isError: false };
+                }
+            }
+            return { content: [{ type: 'text', text: `No CC log found for session ${args.sessionId}` }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error reading CC log: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('score_agent', {
+        description: 'Write an evaluation score for an agent to the local score table. Based on cross-validation of team log claims vs CC log evidence. Supervisor only.',
+        title: 'Score Agent',
+        inputSchema: {
+            sessionId: z.string(),
+            teamId: z.string(),
+            role: z.string(),
+            delivery: z.number().min(0).max(100),
+            integrity: z.number().min(0).max(100),
+            efficiency: z.number().min(0).max(100),
+            collaboration: z.number().min(0).max(100),
+            reliability: z.number().min(0).max(100),
+            evidence: z.record(z.any()).optional(),
+            recommendations: z.array(z.string()).optional(),
+            action: z.enum(['keep', 'keep_with_guardrails', 'mutate', 'discard']),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can score agents.' }], isError: true };
+        }
+        const overall = Math.round((args.delivery + args.integrity + args.efficiency + args.collaboration + args.reliability) / 5);
+        writeScore({
+            sessionId: args.sessionId,
+            teamId: args.teamId,
+            role: args.role,
+            timestamp: Date.now(),
+            scorer: client.sessionId,
+            dimensions: { delivery: args.delivery, integrity: args.integrity, efficiency: args.efficiency, collaboration: args.collaboration, reliability: args.reliability },
+            overall,
+            evidence: args.evidence || {},
+            recommendations: args.recommendations || [],
+            action: args.action,
+        });
+        return { content: [{ type: 'text', text: `Scored ${args.role} (${args.sessionId}): overall=${overall}, action=${args.action}` }], isError: false };
+    });
+
+    mcp.registerTool('compact_agent', {
+        description: 'Trigger context compaction on a running agent. Sends /compact command to reduce context window usage while preserving key information. Supervisor/help-agent only.',
+        title: 'Compact Agent',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID of agent to compact'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can compact agents.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
+            }
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/session-command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: args.sessionId, command: '/compact' }),
+                signal: AbortSignal.timeout(10_000),
+            });
+            const result = await response.json() as any;
+            return { content: [{ type: 'text', text: result.success ? `Compacted ${args.sessionId}` : `Failed: ${result.error}` }], isError: !result.success };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('kill_agent', {
+        description: 'Terminate a running agent. Use as last resort when an agent is unresponsive or causing problems. Supervisor/help-agent only.',
+        title: 'Kill Agent',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID of agent to kill'),
+            reason: z.string().describe('Why this agent needs to be killed'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can kill agents.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
+            }
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop-session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: args.sessionId }),
+                signal: AbortSignal.timeout(10_000),
+            });
+            await response.json();
+            return { content: [{ type: 'text', text: `Killed ${args.sessionId}: ${args.reason}` }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== Request Help Tool (ALL agents) ==========
+
+    mcp.registerTool('request_help', {
+        description: `Request help from the supervisor system. Call this when you are stuck, encountering errors, running low on context, or need a collaborator.
+
+The help request will be logged and may trigger a help-agent to assist you. Common scenarios:
+- You've been stuck on a task for multiple attempts
+- You're getting repeated errors you can't resolve
+- Your context window is getting full (you notice degraded performance)
+- You need a role/skill that doesn't exist on the team yet
+
+The supervisor will see your request and may: send you guidance, compact your context, restart your session, or spawn a helper agent.`,
+        title: 'Request Help',
+        inputSchema: {
+            type: z.enum(['stuck', 'context_overflow', 'need_collaborator', 'error', 'custom']).describe('Type of help needed'),
+            description: z.string().describe('Detailed description of the problem and what you have tried'),
+            severity: z.enum(['low', 'medium', 'high', 'critical']).default('medium').describe('Urgency level'),
+            taskId: z.string().optional().describe('Related task ID if applicable'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const role = metadata?.role;
+            const sessionId = client.sessionId;
+
+            if (!teamId) {
+                return {
+                    content: [{ type: 'text', text: 'Error: You are not part of a team.' }],
+                    isError: true,
+                };
+            }
+
+            // Write help request event to JSONL file
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const eventsDir = path.join(process.cwd(), '.aha', 'events');
+            fs.mkdirSync(eventsDir, { recursive: true });
+
+            const event = {
+                timestamp: new Date().toISOString(),
+                sessionId,
+                teamId,
+                role,
+                type: args.type,
+                description: args.description,
+                severity: args.severity,
+                taskId: args.taskId,
+            };
+
+            const eventsFile = path.join(eventsDir, 'help_requests.jsonl');
+            fs.appendFileSync(eventsFile, JSON.stringify(event) + '\n');
+
+            // Send a team message so supervisor can see it
+            try {
+                const severityEmoji = args.severity === 'critical' ? '🚨' : args.severity === 'high' ? '🆘' : '🙋';
+                const shortDesc = args.description.length > 150 ? args.description.substring(0, 150) + '...' : args.description;
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `${severityEmoji} Help requested (${args.type}, ${args.severity}): ${args.description}`,
+                    shortContent: `${severityEmoji} Help: ${shortDesc}`,
+                    type: 'notification',
+                    timestamp: Date.now(),
+                    fromSessionId: sessionId,
+                    fromRole: role,
+                    metadata: { helpType: args.type, severity: args.severity, taskId: args.taskId },
+                });
+            } catch (e) {
+                logger.debug('Failed to send help request notification', e);
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Help request logged (${args.type}, severity: ${args.severity}). The supervisor has been notified and may respond with guidance, restart your session, or spawn a helper agent.`,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error requesting help: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
     // ========== End Agent Spawning Tools ==========
 
     return mcp;
@@ -1567,7 +1834,14 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             'resolve_blocker',
             // Agent spawning tools
             'create_agent',
-            'list_team_agents'
+            'list_team_agents',
+            'request_help',
+            // Supervisor-only tools
+            'read_team_log',
+            'read_cc_log',
+            'score_agent',
+            'compact_agent',
+            'kill_agent'
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');

@@ -231,6 +231,47 @@ export function startDaemonControlServer({
       return { status: 'stopping' };
     });
 
+    // Help request — spawn a help-agent for the requesting session
+    typed.post('/help-request', {
+      schema: {
+        body: z.object({
+          teamId: z.string(),
+          sessionId: z.string(),
+          type: z.string(),
+          description: z.string(),
+          severity: z.string(),
+        }),
+      },
+    }, async (request, reply) => {
+      const { teamId, sessionId, type, description, severity } = request.body;
+      logger.debug(`[CONTROL SERVER] Help request from ${sessionId}: ${type} (${severity})`);
+
+      try {
+        const result = await spawnSession({
+          directory: process.cwd(),
+          agent: 'claude',
+          teamId,
+          role: 'help-agent',
+          sessionName: 'Help Agent',
+          executionPlane: 'bypass',
+          env: {
+            AHA_HELP_TARGET_SESSION: sessionId,
+            AHA_HELP_TYPE: type,
+            AHA_HELP_DESCRIPTION: description,
+            AHA_HELP_SEVERITY: severity,
+          },
+        });
+
+        if (result.type === 'success') {
+          return { success: true, helpAgentSessionId: result.sessionId };
+        }
+        return { success: false, error: 'Failed to spawn help-agent' };
+      } catch (error) {
+        reply.code(500);
+        return { success: false, error: String(error) };
+      }
+    });
+
     app.listen({ port: 0, host: '127.0.0.1' }, (err, address) => {
       if (err) {
         logger.debug('[CONTROL SERVER] Failed to start:', err);

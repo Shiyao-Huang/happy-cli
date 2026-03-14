@@ -88,6 +88,10 @@ export const REVIEW_ROLES = [
  */
 export const DEPRECATED_ROLES = ['observer'];
 
+// Bypass roles: operate outside the normal task workflow.
+// They observe, score, and intervene but never execute implementation tasks.
+export const BYPASS_ROLES = ['supervisor', 'help-agent'];
+
 // Research: Information gathering, analysis
 export const RESEARCH_ROLES = [
     'researcher',
@@ -191,6 +195,15 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
     // Documentation: 只听协调者
     'scribe': ['master', 'orchestrator'],
     'technical-writer': ['master', 'orchestrator'],
+
+    // ===========================================
+    // BYPASS ROLES (observe + intervene, no tasks)
+    // ===========================================
+    // Supervisor: reads logs and scores agents, listens to nobody (self-triggered)
+    'supervisor': [],
+
+    // Help Agent: responds to help requests, listens to nobody (event-triggered)
+    'help-agent': [],
 };
 
 /**
