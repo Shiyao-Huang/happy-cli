@@ -1291,15 +1291,16 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Create Agent - Spawns a new agent session via the daemon
     mcp.registerTool('create_agent', {
-        description: 'Spawn a new AI agent session in the team. The agent will be started via the daemon and join the team automatically. Only mainline execution plane is allowed from agents.',
+        description: 'Spawn a new AI agent session in the team. The agent will be started via the daemon and join the team automatically. Only mainline execution plane is allowed from agents. Default agent type is claude (Claude Code). Use codex only when explicitly requested.',
         title: 'Create Agent',
         inputSchema: {
-            role: z.string().describe('Role for the new agent: implementer, architect, reviewer, qa-engineer, researcher, etc.'),
+            role: z.string().describe('Role for the new agent: implementer, architect, reviewer, qa-engineer, researcher, master, etc.'),
             teamId: z.string().describe('Team ID to add the new agent to'),
             directory: z.string().describe('Working directory for the new agent'),
             sessionName: z.string().optional().describe('Display name for the agent session'),
             prompt: z.string().optional().describe('Additional context/instructions for the agent'),
             model: z.string().optional().describe('Model to use, defaults to current model'),
+            agent: z.enum(['claude', 'codex']).default('claude').describe('Agent runtime: claude (default, full Claude Code) or codex (OpenAI Codex)'),
             executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane'),
         },
     }, async (args) => {
@@ -1340,6 +1341,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 sessionName: args.sessionName || `${args.role}-agent`,
                 role: args.role,
                 teamId: args.teamId,
+                agent: args.agent || 'claude',
                 parentSessionId,
                 executionPlane: args.executionPlane || 'mainline',
                 env: {
