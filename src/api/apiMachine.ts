@@ -13,6 +13,33 @@ import { backoff } from '@/utils/time';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
 import { buildSocketPath } from './socketPath';
 
+const IGNORED_MACHINE_UPDATE_TYPES = new Set<string>([
+    'new-message',
+    'update-session',
+    'new-artifact',
+    'update-artifact',
+    'delete-artifact',
+    'kv-batch-update',
+    'team-message',
+    'team-update',
+    'task-created',
+    'task-updated',
+    'task-deleted'
+]);
+
+export function classifyMachineUpdate(
+    update: { body?: { t?: string, machineId?: string } },
+    machineId: string
+): 'apply-machine-update' | 'ignore' | 'unknown' {
+    if (update.body?.t === 'update-machine') {
+        return update.body.machineId === machineId ? 'apply-machine-update' : 'ignore';
+    }
+
+    return IGNORED_MACHINE_UPDATE_TYPES.has(update.body?.t ?? '')
+        ? 'ignore'
+        : 'unknown';
+}
+
 interface ServerToDaemonEvents {
     update: (data: Update) => void;
     'rpc-request': (data: { method: string, params: string }, callback: (response: string) => void) => void;
@@ -101,8 +128,7 @@ export class ApiMachineClient {
         stopSession,
         requestShutdown
     }: MachineRpcHandlers) {
-        // Register spawn session handler
-        this.rpcHandlerManager.registerHandler('spawn-aha-session', async (params: any) => {
+        const handleSpawnSession = async (params: any) => {
             const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, token, sessionTag, teamId, role, sessionName, sessionPath, env } = params || {};
             logger.debug(`[API MACHINE] Spawning session with params: ${JSON.stringify(params)}`);
 
@@ -124,7 +150,11 @@ export class ApiMachineClient {
                 case 'error':
                     throw new Error(result.errorMessage);
             }
-        });
+        };
+
+        // Keep the legacy alias while standardizing on spawn-aha-session.
+        this.rpcHandlerManager.registerHandler('spawn-aha-session', handleSpawnSession);
+        this.rpcHandlerManager.registerHandler('spawn-happy-session', handleSpawnSession);
 
         // Register stop session handler  
         this.rpcHandlerManager.registerHandler('stop-session', (params: any) => {
@@ -268,24 +298,30 @@ export class ApiMachineClient {
 
         // Handle update events from server
         this.socket.on('update', (data: Update) => {
-            // Machine clients should only care about machine updates
-            if (data.body.t === 'update-machine' && (data.body as UpdateMachineBody).machineId === this.machine.id) {
-                // Handle machine metadata or daemon state updates from other clients (e.g., mobile app)
-                const update = data.body as UpdateMachineBody;
+            const action = classifyMachineUpdate(data as any, this.machine.id);
 
-                if (update.metadata) {
-                    logger.debug('[API MACHINE] Received external metadata update');
-                    this.machine.metadata = decrypt(this.machine.encryptionKey, this.machine.encryptionVariant, decodeBase64(update.metadata.value));
-                    this.machine.metadataVersion = update.metadata.version;
-                }
+            if (action === 'ignore') {
+                return;
+            }
 
-                if (update.daemonState) {
-                    logger.debug('[API MACHINE] Received external daemon state update');
-                    this.machine.daemonState = decrypt(this.machine.encryptionKey, this.machine.encryptionVariant, decodeBase64(update.daemonState.value));
-                    this.machine.daemonStateVersion = update.daemonState.version;
-                }
-            } else {
+            if (action === 'unknown') {
                 logger.debug(`[API MACHINE] Received unknown update type: ${(data.body as any).t}`);
+                return;
+            }
+
+            // Handle machine metadata or daemon state updates from other clients (e.g., mobile app)
+            const update = data.body as UpdateMachineBody;
+
+            if (update.metadata) {
+                logger.debug('[API MACHINE] Received external metadata update');
+                this.machine.metadata = decrypt(this.machine.encryptionKey, this.machine.encryptionVariant, decodeBase64(update.metadata.value));
+                this.machine.metadataVersion = update.metadata.version;
+            }
+
+            if (update.daemonState) {
+                logger.debug('[API MACHINE] Received external daemon state update');
+                this.machine.daemonState = decrypt(this.machine.encryptionKey, this.machine.encryptionVariant, decodeBase64(update.daemonState.value));
+                this.machine.daemonStateVersion = update.daemonState.version;
             }
         });
 

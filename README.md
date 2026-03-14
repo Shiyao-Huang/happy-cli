@@ -114,8 +114,18 @@ tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
 - `AHA_SERVER_URL` - Custom server URL (default: https://top1vibe.com)
 - `AHA_WEBAPP_URL` - Custom web app URL (default: https://app.aha.engineering)
 - `AHA_HOME_DIR` - Custom home directory for Aha data (default: ~/.aha)
+- `AHA_CONFIG_FILE` - Path to persistent CLI config JSON. Environment variables still take priority.
 - `AHA_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
 - `AHA_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
+
+Persistent config can also live in `~/.aha/config.json` or `~/.aha-v3/config.json`:
+
+```json
+{
+  "serverUrl": "http://localhost:3005",
+  "webappUrl": "http://localhost:8081"
+}
+```
 
 ## Requirements
 

@@ -10,6 +10,7 @@ import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
+import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 
 async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();
@@ -200,6 +201,38 @@ export async function cleanupDaemonState(): Promise<void> {
   } catch (error) {
     logger.debug('[DAEMON RUN] Error cleaning up daemon metadata', error);
   }
+}
+
+export async function startDaemonDetached(): Promise<boolean> {
+  const child = spawnAhaCLI(['daemon', 'start-sync'], {
+    detached: true,
+    stdio: 'ignore',
+    env: process.env
+  });
+  child.unref();
+
+  for (let i = 0; i < 50; i++) {
+    if (await checkIfDaemonRunningAndCleanupStaleState()) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  return false;
+}
+
+export async function ensureDaemonRunning(): Promise<'already-running' | 'started'> {
+  const runningCurrentVersion = await isDaemonRunningCurrentlyInstalledAhaVersion();
+  if (runningCurrentVersion) {
+    return 'already-running';
+  }
+
+  const started = await startDaemonDetached();
+  if (!started) {
+    throw new Error('Failed to start daemon');
+  }
+
+  return 'started';
 }
 
 export async function stopDaemon() {

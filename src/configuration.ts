@@ -6,12 +6,17 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import chalk from 'chalk'
+import {
+  readPersistentCliConfig,
+  resolveAhaHomeDir,
+  resolvePersistentConfigFile,
+  resolveServerConfig
+} from '@/configurationResolver'
 
 /**
  * Zod schema for environment variable validation
@@ -24,6 +29,7 @@ const envSchema = z.object({
 
   // Directory configuration
   AHA_HOME_DIR: z.string().optional().describe('Aha home directory path'),
+  AHA_CONFIG_FILE: z.string().optional().describe('Path to persistent CLI config file'),
 
   // Feature flags
   AHA_EXPERIMENTAL: z.enum(['true', 'false', '1', '0', 'yes', 'no']).optional().describe('Enable experimental features'),
@@ -119,6 +125,7 @@ class Configuration {
 
   // Directories and paths (from persistence)
   public readonly ahaHomeDir: string
+  public readonly configFile: string
   public readonly logsDir: string
   public readonly settingsFile: string
   public readonly privateKeyFile: string
@@ -133,28 +140,23 @@ class Configuration {
     // Validate configuration before initializing
     validateConfiguration()
 
-    // Server configuration - priority: parameter > environment > default
-    this.serverUrl = process.env.AHA_SERVER_URL || 'https://top1vibe.com/api/v2'
-    this.webappUrl = process.env.AHA_WEBAPP_URL || 'https://top1vibe.com/webappv2'
-
     // Check if we're running as daemon based on process args
     const args = process.argv.slice(2)
     this.isDaemonProcess = args.length >= 2 && args[0] === 'daemon' && (args[1] === 'start-sync')
 
-    // Directory configuration - Priority: AHA_HOME_DIR env > default home dir
-    if (process.env.AHA_HOME_DIR) {
-      // Expand ~ to home directory if present
-      const expandedPath = process.env.AHA_HOME_DIR.replace(/^~/, homedir())
-      this.ahaHomeDir = expandedPath
-    } else {
-      this.ahaHomeDir = join(homedir(), '.aha')
-    }
-
+    // Directory configuration - Priority: explicit env > package defaults
+    this.ahaHomeDir = resolveAhaHomeDir(process.env, packageJson.name)
+    this.configFile = resolvePersistentConfigFile(process.env, packageJson.name)
     this.logsDir = join(this.ahaHomeDir, 'logs')
     this.settingsFile = join(this.ahaHomeDir, 'settings.json')
     this.privateKeyFile = join(this.ahaHomeDir, 'access.key')
     this.daemonStateFile = join(this.ahaHomeDir, 'daemon.state.json')
     this.daemonLockFile = join(this.ahaHomeDir, 'daemon.state.json.lock')
+
+    const persistentConfig = this.readPersistentConfig()
+    const resolvedServerConfig = resolveServerConfig(process.env, persistentConfig)
+    this.serverUrl = resolvedServerConfig.serverUrl
+    this.webappUrl = resolvedServerConfig.webappUrl
 
     this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.AHA_EXPERIMENTAL?.toLowerCase() || '');
     this.disableCaffeinate = ['true', '1', 'yes'].includes(process.env.AHA_DISABLE_CAFFEINATE?.toLowerCase() || '');
@@ -177,6 +179,19 @@ class Configuration {
     // Ensure directories exist
     if (!existsSync(this.logsDir)) {
       mkdirSync(this.logsDir, { recursive: true })
+    }
+  }
+
+  private readPersistentConfig() {
+    try {
+      return readPersistentCliConfig(this.configFile)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown error'
+      console.error(chalk.red('Error: failed to read persistent CLI config'))
+      console.error(chalk.gray(`  File: ${this.configFile}`))
+      console.error(chalk.gray(`  Details: ${detail}`))
+      console.error(chalk.gray('  Expected JSON example: {"serverUrl":"http://localhost:3005","webappUrl":"http://localhost:8081"}'))
+      process.exit(1)
     }
   }
 }

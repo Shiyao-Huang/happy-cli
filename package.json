@@ -1,5 +1,5 @@
 {
-  "name": "cc-aha-cli-v2",
+  "name": "cc-aha-cli-v3",
   "version": "2.0.1",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
@@ -9,10 +9,10 @@
   "bugs": "https://github.com/slopus/aha-cli/issues",
   "repository": "slopus/aha-cli",
   "bin": {
-    "aha-v2": "./bin/aha.mjs",
-    "aha-v2-mcp": "./bin/aha-mcp.mjs",
-    "kanban-v2": "./bin/aha.mjs",
-    "kanban-v2-mcp": "./bin/aha-mcp.mjs"
+    "aha-v3": "./bin/aha.mjs",
+    "aha-v3-mcp": "./bin/aha-mcp.mjs",
+    "kanban-v3": "./bin/aha.mjs",
+    "kanban-v3-mcp": "./bin/aha-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",

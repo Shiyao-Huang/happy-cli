@@ -104,6 +104,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Configuration
         console.log(chalk.bold('⚙️  Configuration'));
         console.log(`Aha Home: ${chalk.blue(configuration.ahaHomeDir)}`);
+        console.log(`Config File: ${chalk.blue(configuration.configFile)}`);
         console.log(`Server URL: ${chalk.blue(configuration.serverUrl)}`);
         console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
 
@@ -111,6 +112,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         console.log(chalk.bold('\n🌍 Environment Variables'));
         const env = getEnvironmentInfo();
         console.log(`AHA_HOME_DIR: ${env.AHA_HOME_DIR ? chalk.green(env.AHA_HOME_DIR) : chalk.gray('not set')}`);
+        console.log(`AHA_CONFIG_FILE: ${env.AHA_CONFIG_FILE ? chalk.green(env.AHA_CONFIG_FILE) : chalk.gray('not set')}`);
         console.log(`AHA_SERVER_URL: ${env.AHA_SERVER_URL ? chalk.green(env.AHA_SERVER_URL) : chalk.gray('not set')}`);
         console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
         console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);

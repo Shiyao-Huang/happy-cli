@@ -4,7 +4,7 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import { existsSync, rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { stopDaemon, checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
+import { stopDaemon, checkIfDaemonRunningAndCleanupStaleState, ensureDaemonRunning } from '@/daemon/controlClient';
 import { logger } from '@/ui/logger';
 import os from 'node:os';
 
@@ -41,19 +41,21 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--force]    Authenticate with Aha
+  aha auth login [--force] [--mobile] Authenticate with Aha
   aha auth logout             Remove authentication and machine data
   aha auth status             Show authentication status
   aha auth show-backup        Display backup key for mobile/web clients
   aha auth help               Show this help message
 
 ${chalk.bold('Options:')}
-  --force    Clear credentials, machine ID, and stop daemon before re-auth
+  --force     Clear credentials, machine ID, and stop daemon before re-auth
+  --mobile    Use the old mobile QR/manual flow instead of default web login
 `);
 }
 
 async function handleAuthLogin(args: string[]): Promise<void> {
   const forceAuth = args.includes('--force') || args.includes('-f');
+  const useMobileAuth = args.includes('--mobile');
 
   if (forceAuth) {
     // As per user's request: "--force-auth will clear credentials, clear machine ID, stop daemon"
@@ -93,6 +95,8 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       console.log(chalk.green('✓ Already authenticated'));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       console.log(chalk.gray(`  Host: ${os.hostname()}`));
+      const daemonResult = await ensureDaemonRunning();
+      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
       console.log(chalk.gray(`  Use 'aha auth login --force' to re-authenticate`));
       return;
     } else if (existingCreds && !settings?.machineId) {
@@ -105,9 +109,14 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   // Perform authentication and machine setup
   // "Finally we'll run the auth and setup machine if needed"
   try {
-    const result = await authAndSetupMachineIfNeeded();
+    const result = await authAndSetupMachineIfNeeded({
+      method: useMobileAuth ? 'mobile' : 'web',
+      webNextPath: useMobileAuth ? undefined : '/teams/new'
+    });
+    const daemonResult = await ensureDaemonRunning();
     console.log(chalk.green('\n✓ Authentication successful'));
     console.log(chalk.gray(`  Machine ID: ${result.machineId}`));
+    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
   } catch (error) {
     console.error(chalk.red('Authentication failed:'), error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
