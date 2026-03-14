@@ -129,14 +129,14 @@ export class ApiMachineClient {
         requestShutdown
     }: MachineRpcHandlers) {
         const handleSpawnSession = async (params: any) => {
-            const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, token, sessionTag, teamId, role, sessionName, sessionPath, env } = params || {};
+            const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, token, sessionTag, teamId, role, sessionName, sessionPath, env, parentSessionId, specId, executionPlane } = params || {};
             logger.debug(`[API MACHINE] Spawning session with params: ${JSON.stringify(params)}`);
 
             if (!directory) {
                 throw new Error('Directory is required');
             }
 
-            const result = await spawnSession({ directory, sessionId, machineId, approvedNewDirectoryCreation, agent, token, sessionTag, teamId, role, sessionName, sessionPath, env });
+            const result = await spawnSession({ directory, sessionId, machineId, approvedNewDirectoryCreation, agent, token, sessionTag, teamId, role, sessionName, sessionPath, env, parentSessionId, specId, executionPlane });
 
             switch (result.type) {
                 case 'success':

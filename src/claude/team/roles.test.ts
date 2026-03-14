@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { getRolePermissions } from './roles';
+import {
+    canCreateTeamTasks,
+    canManageExistingTasks,
+    canSpawnAgents,
+    getRolePermissions,
+    isBootstrapRole,
+    isCoordinatorRole
+} from './roles';
 
 /**
  * Unit tests for role permissions system
@@ -50,6 +57,22 @@ describe('Role Permissions System', () => {
 
             expect(result.permissionMode).toBe('default');
             expect(result.disallowedTools).toEqual([]);
+        });
+    });
+
+    describe('role behavior helpers', () => {
+        it('should detect org-manager as bootstrap role', () => {
+            expect(isBootstrapRole('org-manager')).toBe(true);
+        });
+
+        it('should detect master as coordinator role', () => {
+            expect(isCoordinatorRole('master')).toBe(true);
+        });
+
+        it('should allow org-manager to spawn agents and create tasks', () => {
+            expect(canSpawnAgents('org-manager')).toBe(true);
+            expect(canCreateTeamTasks('org-manager')).toBe(true);
+            expect(canManageExistingTasks('org-manager')).toBe(true);
         });
     });
 });

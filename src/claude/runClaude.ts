@@ -24,7 +24,13 @@ import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
-import { getRolePermissions, generateRolePrompt, COORDINATION_ROLES, KanbanContext } from './team/roles';
+import {
+    getRolePermissions,
+    generateRolePrompt,
+    isBootstrapRole,
+    isCoordinatorRole,
+    KanbanContext
+} from './team/roles';
 import { DEFAULT_ROLES } from './team/roles.config';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
@@ -338,7 +344,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug(`[runClaude] StatusReporter initialized for role ${role}`);
 
             // Initialize ApprovalWorkflow for coordination roles (master, orchestrator, team-lead)
-            if (COORDINATION_ROLES.includes(role)) {
+            if (isCoordinatorRole(role)) {
                 approvalWorkflow = createApprovalWorkflow(api, taskStateManager, teamId, response.id, role);
                 logger.debug(`[runClaude] ApprovalWorkflow initialized for coordinator role ${role}`);
             }
@@ -479,9 +485,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     const roleTitle = roleDef?.name || role;
                     const roleResponsibilities = roleDef?.responsibilities?.slice(0, 3) || [];
 
-                    let introContent: string;
+                    let introContent: string = '';
 
-                    if (role === 'master' || role === 'orchestrator') {
+                    if (isBootstrapRole(role)) {
+                        // Bootstrap agents work SILENTLY — no handshake to team chat
+                        // They spawn agents, seed tasks, then auto-retire
+                        logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
+                        console.log(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
+                    } else if (isCoordinatorRole(role)) {
                         // Master/Orchestrator: Announce leadership and request status
                         introContent = `🎯 **${roleTitle}** reporting for duty!
 
@@ -517,9 +528,11 @@ Awaiting task assignment from @master or @orchestrator.`;
                         fromRole: role,
                         metadata: { type: 'handshake', roleTitle }
                     };
-                    await api.sendTeamMessage(teamId, handshakeMsg);
-                    logger.debug('[runClaude] Sent handshake message to team');
-                    console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+                    if (!isBootstrapRole(role)) {
+                        await api.sendTeamMessage(teamId, handshakeMsg);
+                        logger.debug('[runClaude] Sent handshake message to team');
+                        console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+                    }
                 } catch (e) {
                     logger.debug('[runClaude] Failed to send handshake:', e);
                     console.log(`[Team] ⚠️ Failed to send handshake for ${role}`);
@@ -551,7 +564,7 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 // Filter Kanban Board for Context Isolation (only if we have data)
                 let filteredBoard = teamData ? { ...teamData } : { message: 'Team data not yet available. Wait for tasks from Master.' };
-                if (teamData && role !== 'master' && role !== 'orchestrator') {
+                if (teamData && !isCoordinatorRole(role) && !isBootstrapRole(role)) {
                     // Workers only see:
                     // 1. Tasks assigned to them
                     // 2. Unassigned tasks (todo)
@@ -567,7 +580,40 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 let instructions: string;
 
-                if (role === 'master' || role === 'orchestrator') {
+                if (isBootstrapRole(role)) {
+                    instructions = `
+<Bootstrap_Instructions>
+
+## Your Role: SILENT TEAM BOOTSTRAP AGENT
+
+You assemble the team, then AUTO-RETIRE. You are invisible to the team.
+
+## 🔇 ISOLATION RULES (NON-NEGOTIABLE)
+
+- Do NOT call \`send_team_message\` — you are SILENT
+- Do NOT announce yourself — team members should never see you
+- Do NOT join the team as a member — you are a one-shot bootstrap process
+- After completing the steps below, output "BOOTSTRAP_COMPLETE" and STOP
+
+## 🚨 IMMEDIATE ACTION SEQUENCE (THIS TURN)
+
+1. Read the user's task request below
+2. Decide the minimum viable team (typically: 1 master + 1-2 implementers + optional qa)
+3. Use \`create_agent\` to spawn each team member — always spawn \`master\` FIRST
+4. Use \`create_task\` to seed the initial backlog
+5. Output "BOOTSTRAP_COMPLETE" and STOP — do nothing else
+
+## Hard Rules
+
+- ALWAYS spawn a \`master\` role first — it coordinates the team
+- Do NOT spawn more than 4 agents
+- Do NOT do implementation work yourself
+- Do NOT send any team messages
+- Do NOT explore files or read code
+- After all create_agent and create_task calls, you are DONE
+
+</Bootstrap_Instructions>`;
+                } else if (isCoordinatorRole(role)) {
                     // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
 <Coordinator_Instructions>
@@ -582,7 +628,8 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 
 1. **CALL \`get_team_info\`** - Understand who is on your team
 2. **CALL \`list_tasks\`** - See current kanban board state
-3. **SEND STATUS REPORT** via \`send_team_message\`:
+3. **IF REQUIRED ROLES ARE MISSING** - Use \`create_agent\` to assemble the minimum viable team
+4. **SEND STATUS REPORT** via \`send_team_message\`:
    \`\`\`
    🎯 [MASTER] Team Status Report
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -591,7 +638,7 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
    Status: Ready for instructions
    \`\`\`
 
-**DO NOT SKIP THIS SEQUENCE. DO NOT SAY "Ready and waiting" WITHOUT FIRST COMPLETING STEPS 1-3.**
+**DO NOT SKIP THIS SEQUENCE. DO NOT SAY "Ready and waiting" WITHOUT FIRST COMPLETING STEPS 1-4.**
 
 ## Phase 0 - Intent Gate (BLOCKING)
 
@@ -607,10 +654,11 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 
 1. **INITIALIZE** (done via MANDATORY STARTUP SEQUENCE above)
 2. **WAIT** for user to provide instruction
-3. **PLAN** by creating tasks via 'create_task' (only when asked)
-4. **ASSIGN** tasks to appropriate roles (builder, framer, reviewer) using team roster from get_team_info
-5. **ANNOUNCE** plan via 'send_team_message'
-6. **MONITOR** progress, resolve blockers
+3. **ASSEMBLE** missing agents via 'create_agent' when the team cannot execute the request as-is
+4. **PLAN** by creating tasks via 'create_task' (only when asked)
+5. **ASSIGN** tasks to appropriate roles using team roster from get_team_info
+6. **ANNOUNCE** plan via 'send_team_message'
+7. **MONITOR** progress, resolve blockers
 
 ## Anti-Patterns (BLOCKING)
 
@@ -728,10 +776,22 @@ ${instructions}
                     disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedTools]
                 };
 
-                // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
-                // This prevents context leakage from previous teams or sessions
-                messageQueue.pushIsolateAndClear(contextMsg, enhancedMode);
-                logger.debug('[runClaude] Injected team context into queue (cleared previous context) with role prompt');
+                // For org-manager with task prompt, merge it into the context message
+                // so it's processed in the SAME conversation turn (not a separate turn)
+                const taskPrompt = process.env.AHA_TASK_PROMPT;
+                let finalContextMsg = contextMsg;
+                if (role === 'org-manager' && taskPrompt) {
+                    finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
+                    logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for org-manager');
+                    // Use pushImmediate (non-isolated) so Claude treats this as actionable user message
+                    messageQueue.pushImmediate(finalContextMsg, enhancedMode);
+                    logger.debug('[runClaude] Pushed org-manager context+task as immediate message');
+                } else {
+                    // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
+                    // This prevents context leakage from previous teams or sessions
+                    messageQueue.pushIsolateAndClear(finalContextMsg, enhancedMode);
+                    logger.debug('[runClaude] Injected team context into queue (cleared previous context) with role prompt');
+                }
             }
 
         } else {

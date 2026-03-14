@@ -84,11 +84,11 @@ let roleDefinitions: RoleDefinitions | null = null;
 
 const ROLE_DEFINITIONS_PATH_CANDIDATES = [
   // Current monorepo layout
-  path.join(__dirname, '../../../../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
+  path.join(path.dirname(new URL(import.meta.url).pathname), '../../../../happy-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
   // Legacy layout
-  path.join(__dirname, '../../../../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
+  path.join(path.dirname(new URL(import.meta.url).pathname), '../../../../aha-server/shared/role-definitions/ROLE_DEFINITIONS.yaml'),
   // Shared package source YAML (different schema, normalized below)
-  path.join(__dirname, '../../../../shared/team-config/ROLE_DEFINITIONS.yaml'),
+  path.join(path.dirname(new URL(import.meta.url).pathname), '../../../../shared/team-config/ROLE_DEFINITIONS.yaml'),
 ];
 
 function resolveRoleDefinitionsPath(): string {

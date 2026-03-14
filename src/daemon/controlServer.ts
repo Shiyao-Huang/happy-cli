@@ -142,7 +142,14 @@ export function startDaemonControlServer({
       schema: {
         body: z.object({
           directory: z.string(),
-          sessionId: z.string().optional()
+          sessionId: z.string().optional(),
+          parentSessionId: z.string().optional(),
+          executionPlane: z.enum(['mainline', 'bypass']).optional(),
+          specId: z.string().optional(),
+          teamId: z.string().optional(),
+          role: z.string().optional(),
+          sessionName: z.string().optional(),
+          env: z.record(z.string()).optional(),
         }),
         response: {
           200: z.object({
@@ -163,10 +170,10 @@ export function startDaemonControlServer({
         }
       }
     }, async (request, reply) => {
-      const { directory, sessionId } = request.body;
+      const { directory, sessionId, parentSessionId, executionPlane, specId, teamId, role, sessionName, env } = request.body;
 
       logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}`);
-      const result = await spawnSession({ directory, sessionId });
+      const result = await spawnSession({ directory, sessionId, parentSessionId, executionPlane, specId, teamId, role, sessionName, env });
 
       switch (result.type) {
         case 'success':

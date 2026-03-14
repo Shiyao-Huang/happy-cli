@@ -1,6 +1,7 @@
 import { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { DEFAULT_ROLES } from './roles.config';
+import { getRolesByCategory } from './permissions';
 
 // === Kanban Context Types ===
 // Used for injecting task context into role prompts
@@ -44,12 +45,25 @@ export interface KanbanContext {
 // These cover all 23 roles defined in kanban/sources/team-config/skills/
 
 // Coordination: Task management, team coordination, planning
-export const COORDINATION_ROLES = [
+const FALLBACK_COORDINATION_ROLES = [
     'master',
     'orchestrator',
+    'org-manager',
     'project-manager',
     'product-owner'
 ];
+
+function getRoleIdsByCategory(category: string, fallback: string[]): string[] {
+    try {
+        const roleIds = getRolesByCategory(category).map((role) => role.id);
+        return roleIds.length > 0 ? roleIds : fallback;
+    } catch (error) {
+        logger.debug(`[Roles] Failed to load roles for category ${category}, using fallback`, error);
+        return fallback;
+    }
+}
+
+export const COORDINATION_ROLES = getRoleIdsByCategory('coordination', FALLBACK_COORDINATION_ROLES);
 
 // Implementation: Code writing, building, architecture
 export const IMPLEMENTATION_ROLES = [
@@ -125,6 +139,7 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
     // ===========================================
     'master': ['user'],        // Master ONLY listens to user, receives reports via task-update
     'orchestrator': ['user'],  // Same as master
+    'org-manager': [],         // Seed agent: listens to NO ONE, it is the first agent spawned
     'project-manager': ['master', 'orchestrator'],
     'product-owner': ['master', 'orchestrator'],
 
@@ -192,6 +207,35 @@ export function getRoleCollaborators(myRole: string): string[] {
     return ['master', 'orchestrator', 'user'];
 }
 
+export function isCoordinatorRole(role: string | undefined): boolean {
+    return !!role && COORDINATION_ROLES.includes(role);
+}
+
+export function isBootstrapRole(role: string | undefined): boolean {
+    if (!role) {
+        return false;
+    }
+
+    const roleDef = DEFAULT_ROLES[role];
+    if (!roleDef) {
+        return false;
+    }
+
+    return roleDef.protocol.some((line) => /seed agent|assemble the team|create_agent/i.test(line));
+}
+
+export function canSpawnAgents(role: string | undefined): boolean {
+    return isBootstrapRole(role) || isCoordinatorRole(role);
+}
+
+export function canCreateTeamTasks(role: string | undefined): boolean {
+    return isBootstrapRole(role) || isCoordinatorRole(role);
+}
+
+export function canManageExistingTasks(role: string | undefined): boolean {
+    return isCoordinatorRole(role);
+}
+
 /**
  * Check if a role is deprecated and should not be used for new teams.
  */
@@ -226,7 +270,7 @@ export function shouldListenTo(myRole: string, fromRole: string | undefined): bo
 
     if (!fromRole || fromRole === 'user') {
         // User messages: coordination roles always listen, others check their map
-        if (COORDINATION_ROLES.includes(myRole)) {
+        if (isCoordinatorRole(myRole)) {
             return true;
         }
         const collaborators = getRoleCollaborators(myRole);
@@ -278,6 +322,12 @@ export function getRolePermissions(role: string | undefined, requestedMode: stri
     } else {
         // Unknown role - no restrictions
         logger.warn(`[Role Enforcement] Unknown role: ${role}. Defaulting to full access (subject to permission mode).`);
+    }
+
+    if (role && DEFAULT_ROLES[role] && !canSpawnAgents(role)) {
+        const topologyTools = ['spawn_session', 'create_agent'];
+        roleDisallowedTools = Array.from(new Set([...roleDisallowedTools, ...topologyTools]));
+        logger.debug(`[Role Enforcement] ${role} cannot change team topology; disallowed: ${topologyTools.join(', ')}`);
     }
 
     return {
@@ -417,6 +467,11 @@ function buildPhase1CoordinatorSection(): string {
 2. DO NOT read files to "discover" work
 3. If user request is ambiguous, ask ONE clarifying question
 
+### Team Assembly (When roster is incomplete):
+1. Inspect the team roster via 'get_team_info'
+2. If required execution roles are missing, use 'create_agent' to spawn the minimum viable team
+3. Assemble team members BEFORE creating tasks when the team cannot execute the request as-is
+
 ### Task Creation (ONLY when user asks):
 1. Break down user request into atomic tasks via 'create_task'
 2. Assign each task to appropriate role
@@ -433,7 +488,7 @@ function buildPhase1CoordinatorSection(): string {
  * Build the <Task_Management> section
  */
 function buildTaskManagementSection(roleKey: string): string {
-    const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+    const isCoordinator = isCoordinatorRole(roleKey);
 
     return `<Task_Management>
 ## Task Management (CRITICAL)
@@ -751,6 +806,88 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
  * @param kanbanContext - Optional Kanban context for task injection
  * @returns Formatted prompt string
  */
+/**
+ * Build the org-manager specific prompt.
+ * This agent acts IMMEDIATELY — it reads the task prompt and spawns team members.
+ */
+function buildOrgManagerPrompt(teamId: string, taskPrompt: string): string {
+    return `<Role>
+You are "Org Manager" — the SEED AGENT that bootstraps teams automatically.
+
+**Team ID**: ${teamId}
+**Role**: Org Manager (Seed Agent)
+**Access Level**: full-access
+
+You are NOT a regular team member. You are the team ASSEMBLER.
+Your job: analyze the user's task, decide what roles are needed, spawn them, then step back.
+</Role>
+
+<Task_Prompt>
+${taskPrompt || '(No specific task prompt provided. Ask the user what they need.)'}
+</Task_Prompt>
+
+<Behavior_Instructions>
+
+## IMMEDIATE ACTION REQUIRED
+
+You MUST act NOW. Do NOT wait for instructions. Do NOT announce yourself and wait.
+
+### Step 1: Analyze the Task (30 seconds max)
+
+Read the <Task_Prompt> above. Determine:
+- What kind of work is needed? (frontend, backend, testing, research, design, etc.)
+- How many agents are needed? (minimum viable team — do NOT over-staff)
+- What roles map to the work? Pick from: master, implementer, architect, qa-engineer, researcher, reviewer, observer
+
+### Step 2: Spawn Team Members
+
+Use the \`create_agent\` tool to spawn each team member:
+
+\`\`\`
+create_agent({
+  role: "implementer",
+  teamId: "${teamId}",
+  directory: "<same directory you are in>",
+  sessionName: "Implementer 1",
+  prompt: "Your task: <specific sub-task for this agent>"
+})
+\`\`\`
+
+**Rules:**
+- Always spawn a \`master\` first — it coordinates the team after you leave
+- Spawn 1-3 implementation roles depending on task complexity
+- Spawn \`qa-engineer\` if testing is mentioned or implied
+- Spawn \`researcher\` only if external research is clearly needed
+- Do NOT spawn more than 5 agents total
+- Do NOT spawn yourself (org-manager)
+
+### Step 3: Create Initial Tasks
+
+After spawning agents, use \`create_task\` to create tasks on the Kanban board:
+- Create 1 task per major work item
+- Assign each task to the appropriate role
+- Set priority: high for core work, medium for supporting work
+
+### Step 4: Announce and Step Back
+
+Send ONE team message via \`send_team_message\` summarizing:
+- What team you assembled and why
+- What tasks were created
+- Who should start first
+
+Then STOP. Do not continue working. The master agent takes over from here.
+
+</Behavior_Instructions>
+
+<Constraints>
+- You MUST call create_agent at least once
+- You MUST NOT do any implementation work yourself
+- You MUST NOT write code
+- You MUST step back after team assembly
+- If create_agent fails, report the error via send_team_message and stop
+</Constraints>`;
+}
+
 export function generateRolePrompt(
     metadata: Metadata,
     kanbanContext?: KanbanContext
@@ -784,6 +921,8 @@ export function generateRolePrompt(
     }
 
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+    const isOrgManager = roleKey === 'org-manager';
+    const taskPrompt = process.env.AHA_TASK_PROMPT || '';
 
     // Build prompt sections
     const sections = [
@@ -792,25 +931,30 @@ export function generateRolePrompt(
         '                    [SYSTEM: TEAM AGENT CONTEXT]                   ',
         '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
         '',
-        buildRoleSection(roleKey, roleDef, teamId),
-        '',
-        '<Behavior_Instructions>',
-        '',
-        buildPhase0Section(roleKey),
-        '',
-        '---',
-        '',
-        isCoordinator ? buildPhase1CoordinatorSection() : buildPhase1WorkerSection(),
-        '',
-        '</Behavior_Instructions>',
-        '',
-        buildTaskManagementSection(roleKey),
-        '',
-        buildConstraintsSection(roleKey),
-        '',
-        buildToneAndStyleSection(),
-        '',
     ];
+
+    if (isOrgManager) {
+        sections.push(buildOrgManagerPrompt(teamId, taskPrompt));
+    } else {
+        sections.push(buildRoleSection(roleKey, roleDef, teamId));
+        sections.push('');
+        sections.push('<Behavior_Instructions>');
+        sections.push('');
+        sections.push(buildPhase0Section(roleKey));
+        sections.push('');
+        sections.push('---');
+        sections.push('');
+        sections.push(isCoordinator ? buildPhase1CoordinatorSection() : buildPhase1WorkerSection());
+        sections.push('');
+        sections.push('</Behavior_Instructions>');
+        sections.push('');
+        sections.push(buildTaskManagementSection(roleKey));
+        sections.push('');
+        sections.push(buildConstraintsSection(roleKey));
+        sections.push('');
+        sections.push(buildToneAndStyleSection());
+        sections.push('');
+    }
 
     // Add Kanban context if provided
     if (kanbanContext) {

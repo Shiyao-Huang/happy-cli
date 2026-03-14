@@ -13,6 +13,12 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './taskStateManager';
+import { readDaemonState } from '@/persistence';
+import {
+    canCreateTeamTasks,
+    canManageExistingTasks,
+    canSpawnAgents
+} from '@/claude/team/roles';
 
 export async function startAhaServer(api: any, client: ApiSessionClient) {
     // Handler that sends title updates via the client
@@ -552,7 +558,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Create Task - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('create_task', {
-        description: 'Create a new task for the team. Use this to assign work to team members. ONLY MASTER role can use this.',
+        description: 'Create a new task for the team. Use this to assign work to team members. Bootstrap/coordinator roles can use this.',
         title: 'Create Task',
         inputSchema: {
             title: z.string().describe('Task title'),
@@ -571,9 +577,14 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create tasks.' }], isError: true };
             }
 
-            // Role Check: Only Master can create tasks
-            if (role !== 'master') {
-                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can create tasks. Please ask the Master to create this task.' }], isError: true };
+            if (!canCreateTeamTasks(role)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot create team tasks. Use a coordinator/bootstrap role such as master, orchestrator, or org-manager.`
+                    }],
+                    isError: true
+                };
             }
 
             // Use REST API - server handles artifact update + WebSocket event emission
@@ -732,7 +743,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Delete Task - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('delete_task', {
-        description: 'Delete a task from the team board. ONLY MASTER role can delete tasks.',
+        description: 'Delete a task from the team board. Coordinator roles can delete tasks.',
         title: 'Delete Task',
         inputSchema: {
             taskId: z.string().describe('The ID of the task to delete'),
@@ -748,9 +759,14 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to delete tasks.' }], isError: true };
             }
 
-            // Role Check: Only Master can delete tasks
-            if (role !== 'master') {
-                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can delete tasks. Please ask the Master to delete this task.' }], isError: true };
+            if (!canManageExistingTasks(role)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot delete tasks. Ask a coordinator role to handle this.`
+                    }],
+                    isError: true
+                };
             }
 
             // Use REST API - server handles artifact update + WebSocket event emission
@@ -850,7 +866,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Create Subtask - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('create_subtask', {
-        description: 'Create a subtask under an existing task. Use this to break down complex tasks into smaller, manageable pieces. ONLY MASTER role can create subtasks.',
+        description: 'Create a subtask under an existing task. Use this to break down complex tasks into smaller, manageable pieces. Coordinator roles can create subtasks.',
         title: 'Create Subtask',
         inputSchema: {
             parentTaskId: z.string().describe('ID of the parent task'),
@@ -870,8 +886,14 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create subtasks.' }], isError: true };
             }
 
-            if (role !== 'master') {
-                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can create subtasks.' }], isError: true };
+            if (!canManageExistingTasks(role)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot create subtasks. Ask a coordinator role to handle this.`
+                    }],
+                    isError: true
+                };
             }
 
             // Get parent task to inherit properties
@@ -1201,7 +1223,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Resolve Blocker - Uses TaskStateManager for blocker resolution and state broadcasting
     mcp.registerTool('resolve_blocker', {
-        description: 'Resolve a blocker on a task. ONLY MASTER role can resolve blockers.',
+        description: 'Resolve a blocker on a task. Coordinator roles can resolve blockers.',
         title: 'Resolve Blocker',
         inputSchema: {
             taskId: z.string().describe('ID of the task with the blocker'),
@@ -1213,9 +1235,14 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const metadata = client.getMetadata();
             const role = metadata?.role;
 
-            // Role check - only master can resolve blockers
-            if (role !== 'master') {
-                return { content: [{ type: 'text', text: 'Error: Only the MASTER role can resolve blockers.' }], isError: true };
+            if (!canManageExistingTasks(role)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot resolve blockers. Ask a coordinator role to handle this.`
+                    }],
+                    isError: true
+                };
             }
 
             const taskManager = getTaskStateManager();
@@ -1259,6 +1286,190 @@ Use the \`send_team_message\` tool to communicate with your team members.
     });
 
     // ========== End 嵌套任务工具 ==========
+
+    // ========== Agent Spawning Tools ==========
+
+    // Create Agent - Spawns a new agent session via the daemon
+    mcp.registerTool('create_agent', {
+        description: 'Spawn a new AI agent session in the team. The agent will be started via the daemon and join the team automatically. Only mainline execution plane is allowed from agents.',
+        title: 'Create Agent',
+        inputSchema: {
+            role: z.string().describe('Role for the new agent: implementer, architect, reviewer, qa-engineer, researcher, etc.'),
+            teamId: z.string().describe('Team ID to add the new agent to'),
+            directory: z.string().describe('Working directory for the new agent'),
+            sessionName: z.string().optional().describe('Display name for the agent session'),
+            prompt: z.string().optional().describe('Additional context/instructions for the agent'),
+            model: z.string().optional().describe('Model to use, defaults to current model'),
+            executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const role = metadata?.role;
+
+            if (!canSpawnAgents(role)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot create agents. Only bootstrap/coordinator roles may spawn team members.`
+                    }],
+                    isError: true,
+                };
+            }
+
+            // Security constraint: agents cannot create bypass sessions
+            if (args.executionPlane === 'bypass') {
+                return {
+                    content: [{ type: 'text', text: 'Error: Agents cannot create bypass sessions. Only the system (hook router) can create bypass agents. This is the mainline-cannot-create-bypass constraint.' }],
+                    isError: true,
+                };
+            }
+
+            // Read daemon state to get the control port
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return {
+                    content: [{ type: 'text', text: 'Error: Daemon is not running. Cannot spawn agent sessions without a running daemon.' }],
+                    isError: true,
+                };
+            }
+            const parentSessionId = client.sessionId;
+
+            const spawnBody = {
+                directory: args.directory,
+                sessionName: args.sessionName || `${args.role}-agent`,
+                role: args.role,
+                teamId: args.teamId,
+                parentSessionId,
+                executionPlane: args.executionPlane || 'mainline',
+                env: {
+                    AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
+                    ...(args.prompt ? { AHA_AGENT_PROMPT: args.prompt } : {}),
+                    ...(args.model ? { AHA_AGENT_MODEL: args.model } : {}),
+                },
+            };
+
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(spawnBody),
+                signal: AbortSignal.timeout(15_000),
+            });
+
+            const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+
+            if (!response.ok || !result.success) {
+                return {
+                    content: [{ type: 'text', text: `Error spawning agent: ${result.error || `HTTP ${response.status}`}` }],
+                    isError: true,
+                };
+            }
+
+            // Register spawned agent as a team member
+            const spawnedSessionId = result.sessionId;
+            if (spawnedSessionId && args.teamId) {
+                try {
+                    await api.addTeamMember(
+                        args.teamId,
+                        spawnedSessionId,
+                        args.role,
+                        args.sessionName || `${args.role}-agent`
+                    );
+                    logger.debug(`[create_agent] Added ${args.role} (${spawnedSessionId}) to team ${args.teamId}`);
+                } catch (memberError) {
+                    logger.debug(`[create_agent] Warning: Failed to add to team roster: ${memberError}`);
+                    // Don't fail the whole operation — agent is spawned, just not in roster yet
+                }
+            }
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ sessionId: spawnedSessionId, role: args.role, teamId: args.teamId, status: 'spawned_and_registered' }) }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error creating agent: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    // List Team Agents - Lists current team members/agents
+    mcp.registerTool('list_team_agents', {
+        description: 'List all agents currently in the team, including their roles, session IDs, and status.',
+        title: 'List Team Agents',
+        inputSchema: {},
+    }, async () => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+
+            if (!teamId) {
+                return {
+                    content: [{ type: 'text', text: 'Error: You are not part of a team.' }],
+                    isError: true,
+                };
+            }
+
+            // Fetch team artifact to get members (same pattern as get_team_info)
+            const artifact = await api.getArtifact(teamId);
+
+            let board: any = null;
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                const bodyValue = (artifact.body as { body?: unknown }).body;
+                if (typeof bodyValue === 'string') {
+                    try { board = JSON.parse(bodyValue); } catch (e) { /* ignore */ }
+                } else if (bodyValue && typeof bodyValue === 'object') {
+                    board = bodyValue;
+                }
+            } else {
+                board = artifact.body;
+            }
+
+            const boardMembers = (board && board.team && Array.isArray(board.team.members))
+                ? board.team.members
+                : [];
+            const headerSessions = (artifact.header && Array.isArray(artifact.header.sessions))
+                ? artifact.header.sessions
+                : [];
+
+            const memberMap = new Map(boardMembers.map((m: any) => [m.sessionId, m]));
+            const allSessionIds = new Set([
+                ...headerSessions,
+                ...boardMembers.map((m: any) => m.sessionId)
+            ]);
+
+            // Role definitions from shared config
+            const roleDefinitions: Record<string, any> = {};
+            TEAM_ROLE_LIBRARY.forEach((role: any) => {
+                roleDefinitions[role.id] = { title: role.title };
+            });
+
+            const agents = Array.from(allSessionIds).map((sessionId: string) => {
+                const member = memberMap.get(sessionId) as Record<string, any> | undefined;
+                const roleId = member?.roleId || member?.role || '';
+                const roleDef = roleDefinitions[roleId];
+                return {
+                    sessionId,
+                    role: roleDef?.title || roleId || 'unknown',
+                    roleId,
+                    displayName: member?.displayName || sessionId?.substring(0, 8),
+                };
+            });
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ teamId, agents, count: agents.length }, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error listing team agents: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    // ========== End Agent Spawning Tools ==========
 
     return mcp;
 
@@ -1313,7 +1524,10 @@ Use the \`send_team_message\` tool to communicate with your team members.
             'start_task',
             'complete_task',
             'report_blocker',
-            'resolve_blocker'
+            'resolve_blocker',
+            // Agent spawning tools
+            'create_agent',
+            'list_team_agents'
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');

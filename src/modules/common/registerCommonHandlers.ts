@@ -131,6 +131,10 @@ export interface SpawnSessionOptions {
     // ralph-specific fields
     prdPath?: string;           // prd.json path (ralph required)
     maxIterations?: number;     // max loop iterations (ralph, default 10)
+    // session lineage / execution plane
+    parentSessionId?: string;
+    executionPlane?: 'mainline' | 'bypass';
+    specId?: string;
 }
 
 export type SpawnSessionResult =

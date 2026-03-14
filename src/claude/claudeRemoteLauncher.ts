@@ -129,6 +129,25 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
 
+        // Detect bootstrap completion — auto-retire the session
+        if (message.type === 'assistant') {
+            const umessage = message as SDKAssistantMessage;
+            const content = (umessage.message as any)?.content;
+            const contentStr = typeof content === 'string' ? content : '';
+            const hasBootstrapComplete = contentStr.includes('BOOTSTRAP_COMPLETE') ||
+                (Array.isArray(content) && content.some((b: any) => b.type === 'text' && typeof b.text === 'string' && b.text.includes('BOOTSTRAP_COMPLETE')));
+            if (hasBootstrapComplete) {
+                logger.debug('[remote]: Bootstrap complete detected — scheduling auto-retire');
+                setTimeout(() => {
+                    logger.debug('[remote]: Auto-retiring bootstrap agent');
+                    if (!exitReason) {
+                        exitReason = 'exit';
+                    }
+                    abort().catch(() => {});
+                }, 2000);
+            }
+        }
+
         // Detect plan mode tool call
         if (message.type === 'assistant') {
             let umessage = message as SDKAssistantMessage;

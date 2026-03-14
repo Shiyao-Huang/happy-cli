@@ -275,6 +275,18 @@ export async function startDaemon(): Promise<void> {
           extraEnv.AHA_SESSION_PATH = options.sessionPath;
           logger.debug(`[DAEMON RUN] Setting AHA_SESSION_PATH=${options.sessionPath}`);
         }
+        if (options.parentSessionId) {
+          extraEnv.AHA_PARENT_SESSION_ID = options.parentSessionId;
+          logger.debug(`[DAEMON RUN] Setting AHA_PARENT_SESSION_ID=${options.parentSessionId}`);
+        }
+        if (options.specId) {
+          extraEnv.AHA_SPEC_ID = options.specId;
+          logger.debug(`[DAEMON RUN] Setting AHA_SPEC_ID=${options.specId}`);
+        }
+        if (options.executionPlane) {
+          extraEnv.AHA_EXECUTION_PLANE = options.executionPlane;
+          logger.debug(`[DAEMON RUN] Setting AHA_EXECUTION_PLANE=${options.executionPlane}`);
+        }
 
         // Merge custom env variables (e.g., AHA_AGENT_LANGUAGE)
         if (options.env) {
