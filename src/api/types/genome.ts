@@ -35,6 +35,29 @@ export interface GenomeSpec {
      * 没有的字段回退到内置 role。
      */
     baseRoleId?: string;
+    /**
+     * Namespace 作用域。格式：
+     *   '@official'   — 官方内置 genome（supervisor、help-agent 等）
+     *   '@org-name'   — 组织级 genome
+     *   null          — 个人 / 无作用域
+     */
+    namespace?: string;
+    /**
+     * 版本号（1-based，只增不减）。
+     * 引用时可 pin 到特定版本：fetchGenomeSpec('@official/supervisor', 2)
+     * 不填则使用 latest。
+     */
+    version?: number;
+    /**
+     * 可搜索的标签列表，用于 Marketplace 搜索过滤。
+     * 例：['supervisor', 'bypass', 'monitoring', 'read-only']
+     */
+    tags?: string[];
+    /**
+     * Marketplace 分类，用于浏览和路由决策。
+     * 例：'coordination' | 'development' | 'qa' | 'support' | 'data'
+     */
+    category?: string;
 
     // =========================================================================
     // Tier 1 — Prompt
@@ -50,6 +73,20 @@ export interface GenomeSpec {
      * 无需重写整个 prompt。
      */
     systemPromptSuffix?: string;
+    /**
+     * agent 的职责列表（来自 ROLE_DEFINITIONS.yaml 的 responsibilities 字段）。
+     * 用于动态生成 systemPrompt（当 systemPrompt 未设置时）。
+     * 也用于 UI 展示和 org-manager 路由决策。
+     * 例：['Break down user requests', 'Assign tasks based on role expertise']
+     */
+    responsibilities?: string[];
+    /**
+     * agent 的协作协议（来自 ROLE_DEFINITIONS.yaml 的 protocol 字段）。
+     * 描述 agent 如何与团队互动的规则。
+     * 用于动态生成 systemPrompt（当 systemPrompt 未设置时）。
+     * 例：['Always announce when starting a task', 'Report blockers immediately']
+     */
+    protocol?: string[];
 
     // =========================================================================
     // Tier 2 — 模型
