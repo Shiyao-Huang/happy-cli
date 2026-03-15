@@ -135,6 +135,12 @@ export interface SpawnSessionOptions {
     parentSessionId?: string;
     executionPlane?: 'mainline' | 'bypass';
     specId?: string;
+    /**
+     * Called immediately after the child process is forked (before waiting
+     * for the session-started webhook). Use this to persist the PID for
+     * singleton-style guards that must survive daemon restarts.
+     */
+    onPidKnown?: (pid: number) => void;
 }
 
 export type SpawnSessionResult =

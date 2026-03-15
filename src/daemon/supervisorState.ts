@@ -25,6 +25,24 @@ export interface SupervisorState {
     terminated: boolean;
     /** How many consecutive runs found no new content */
     idleRuns: number;
+    /**
+     * PID of the currently running (or last) supervisor process.
+     * Persisted across daemon restarts so we can do a liveness check
+     * (process.kill(pid, 0)) before spawning a second supervisor.
+     * 0 means no supervisor has ever been spawned for this team.
+     */
+    lastSupervisorPid: number;
+    /**
+     * Deferred action to execute on the NEXT run if there is still no new
+     * content (i.e. the situation has not changed since this was set).
+     * Set by supervisor when it concludes "if nothing changes, intervene".
+     * Cleared after execution or when new content arrives and supervisor
+     * decides the situation has resolved.
+     */
+    pendingAction: {
+        type: 'notify_help';
+        message: string;  // message text to send to help-agent
+    } | null;
 }
 
 function getStatePath(teamId: string): string {
@@ -43,10 +61,14 @@ export function readSupervisorState(teamId: string): SupervisorState {
             lastSessionId: null,
             terminated: false,
             idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: null,
         };
     }
     try {
-        return JSON.parse(readFileSync(statePath, 'utf-8')) as SupervisorState;
+        const raw = JSON.parse(readFileSync(statePath, 'utf-8')) as Partial<SupervisorState> & Omit<SupervisorState, 'lastSupervisorPid' | 'pendingAction'>;
+        // Back-fill fields added after initial rollout
+        return { lastSupervisorPid: 0, pendingAction: null, ...raw } as SupervisorState;
     } catch {
         return {
             teamId,
@@ -57,6 +79,8 @@ export function readSupervisorState(teamId: string): SupervisorState {
             lastSessionId: null,
             terminated: false,
             idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: null,
         };
     }
 }
@@ -74,7 +98,7 @@ export function markTeamTerminated(teamId: string): void {
 
 export function updateSupervisorRun(
     teamId: string,
-    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns'>>
+    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction'>>
 ): void {
     const state = readSupervisorState(teamId);
     writeSupervisorState({

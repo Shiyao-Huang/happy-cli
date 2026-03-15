@@ -18,7 +18,7 @@ import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquire
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
-import { readSupervisorState, updateSupervisorRun } from './supervisorState';
+import { readSupervisorState, writeSupervisorState, updateSupervisorRun } from './supervisorState';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
@@ -351,6 +351,11 @@ export async function startDaemon(): Promise<void> {
 
         logger.debug(`[DAEMON RUN] Spawned process with PID ${ahaProcess.pid}`);
 
+        // Notify caller immediately — before waiting for webhook — so callers
+        // that need to persist the PID (e.g. supervisor singleton guard) can do
+        // so without relying on the webhook arriving within the timeout window.
+        options.onPidKnown?.(ahaProcess.pid);
+
         const trackedSession: TrackedSession = {
           startedBy: 'daemon',
           pid: ahaProcess.pid,
@@ -590,26 +595,19 @@ export async function startDaemon(): Promise<void> {
 
       // Supervisor check: every N heartbeats, spawn a supervisor agent if there are active team sessions
       heartbeatCount++;
-      const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '5'); // Every 5 heartbeats = 5 minutes
+      const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '20'); // Every 20 heartbeats = 20 minutes
       if (heartbeatCount % supervisorInterval === 0 && pidToTrackedSession.size > 0) {
         // Collect all unique teamIds with active non-bypass sessions
         const activeTeamIds = new Set<string>();
-        const runningSupervisorTeams = new Set<string>();
         for (const [_, session] of pidToTrackedSession.entries()) {
           const meta = session.ahaSessionMetadataFromLocalWebhook;
           const sessionTeamId = meta?.teamId || meta?.roomId;
           if (!sessionTeamId) continue;
-          if (meta?.role === 'supervisor' || meta?.role === 'help-agent') {
-            runningSupervisorTeams.add(sessionTeamId);
-          } else {
-            activeTeamIds.add(sessionTeamId);
-          }
+          if (meta?.role === 'supervisor' || meta?.role === 'help-agent') continue;
+          activeTeamIds.add(sessionTeamId);
         }
 
         for (const teamId of activeTeamIds) {
-          // Skip if supervisor already running for this team
-          if (runningSupervisorTeams.has(teamId)) continue;
-
           // Skip if team is marked as terminated
           const supervisorState = readSupervisorState(teamId);
           if (supervisorState.terminated) {
@@ -617,12 +615,27 @@ export async function startDaemon(): Promise<void> {
             continue;
           }
 
+          // ── Singleton guard ────────────────────────────────────────────────
+          // Use the persisted PID to detect a running supervisor even across
+          // daemon restarts (supervisors are spawned detached and outlive the
+          // daemon process that created them).
+          if (supervisorState.lastSupervisorPid > 0) {
+            try {
+              process.kill(supervisorState.lastSupervisorPid, 0); // signal 0 = liveness check, no-op
+              logger.debug(`[DAEMON RUN] Supervisor already running (PID ${supervisorState.lastSupervisorPid}) for team ${teamId}, skipping`);
+              continue;
+            } catch {
+              // ESRCH: process not found — previous supervisor has exited, safe to spawn
+              logger.debug(`[DAEMON RUN] Previous supervisor PID ${supervisorState.lastSupervisorPid} is gone for team ${teamId}, will spawn new one`);
+            }
+          }
+          // ──────────────────────────────────────────────────────────────────
+
           // Auto-retire if too many idle runs (no new content found N times in a row)
           const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6'); // 6 × 5 min = 30 min
           if (supervisorState.idleRuns >= maxIdleRuns) {
             logger.debug(`[DAEMON RUN] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`);
-            const { writeSupervisorState, readSupervisorState: rs } = await import('./supervisorState');
-            writeSupervisorState({ ...rs(teamId), terminated: true });
+            writeSupervisorState({ ...supervisorState, terminated: true });
             continue;
           }
 
@@ -651,6 +664,16 @@ export async function startDaemon(): Promise<void> {
                 AHA_SUPERVISOR_CC_LOG_CURSORS: JSON.stringify(supervisorState.ccLogCursors),
                 AHA_SUPERVISOR_LAST_CONCLUSION: supervisorState.lastConclusion,
                 AHA_SUPERVISOR_LAST_SESSION_ID: supervisorState.lastSessionId || '',
+                AHA_SUPERVISOR_PENDING_ACTION: supervisorState.pendingAction
+                    ? JSON.stringify(supervisorState.pendingAction)
+                    : '',
+              },
+              // Persist PID immediately on fork — before the webhook arrives — so
+              // the singleton guard works even if the webhook times out or the
+              // daemon restarts during the 15-second webhook wait window.
+              onPidKnown: (pid) => {
+                updateSupervisorRun(teamId, { lastSupervisorPid: pid });
+                logger.debug(`[DAEMON RUN] Persisted supervisor PID ${pid} for team ${teamId} (pre-webhook)`);
               },
             });
             if (supervisorResult.type === 'success') {
