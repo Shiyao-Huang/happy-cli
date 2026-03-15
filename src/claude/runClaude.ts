@@ -707,6 +707,9 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 - Phase 2 only adds: \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`compact_agent\`, \`kill_agent\`
 
 </Supervisor_Instructions>`;
+                    if (_genomeSpec?.systemPromptSuffix) {
+                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    }
                 } else if (isBypassRole(role) && role === 'help-agent') {
                     instructions = `
 <HelpAgent_Instructions>
@@ -731,6 +734,9 @@ You respond to a specific help request, fix it, then auto-retire.
 4. Output "HELP_COMPLETE" and STOP
 
 </HelpAgent_Instructions>`;
+                    if (_genomeSpec?.systemPromptSuffix) {
+                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    }
                 } else if (isBootstrapRole(role)) {
                     instructions = `
 <Bootstrap_Instructions>
@@ -771,6 +777,9 @@ You assemble the team, then AUTO-RETIRE. You are invisible to the team.
 - After all create_agent and create_task calls, you are DONE
 
 </Bootstrap_Instructions>`;
+                    if (_genomeSpec?.systemPromptSuffix) {
+                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    }
                 } else if (isCoordinatorRole(role)) {
                     // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
@@ -830,6 +839,9 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 **NO USER INSTRUCTION = WAIT. DO NOT explore files for "tasks to do".**
 
 </Coordinator_Instructions>`;
+                    if (_genomeSpec?.systemPromptSuffix) {
+                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    }
                 } else {
                     // Worker instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
@@ -882,6 +894,9 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 **NO ASSIGNED TASKS = ANNOUNCE + WAIT. DO NOT search for work.**
 
 </Worker_Instructions>`;
+                    if (_genomeSpec?.systemPromptSuffix) {
+                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    }
                 }
 
                 const contextMsg = `
