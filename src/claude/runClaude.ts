@@ -37,6 +37,7 @@ import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
+import { fetchGenomeSpec } from './utils/fetchGenome';
 
 export interface StartOptions {
     model?: string
@@ -584,7 +585,23 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 let instructions: string;
 
-                if (isBypassRole(role) && role === 'supervisor') {
+                // ── Genome spec injection ──────────────────────────────────
+                // If AHA_SPEC_ID is set, fetch the GenomeSpec from the server
+                // and apply it before building the role-specific instructions.
+                // This is the "agent docker" layer: server-side spec overrides
+                // compiled defaults for systemPrompt, tools, model, etc.
+                const specId = process.env.AHA_SPEC_ID;
+                const genomeSpec = specId
+                    ? await fetchGenomeSpec(credentials.token, specId)
+                    : null;
+
+                // If genome supplies a full system prompt, use it directly and
+                // skip the compiled role prompt below.
+                if (genomeSpec?.systemPrompt) {
+                    instructions = genomeSpec.systemPrompt
+                        + (genomeSpec.systemPromptSuffix ? '\n\n' + genomeSpec.systemPromptSuffix : '');
+                    logger.debug(`[runClaude] Using genome spec system prompt (specId=${specId})`);
+                } else if (isBypassRole(role) && role === 'supervisor') {
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
                     const ccLogCursors = process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}';
