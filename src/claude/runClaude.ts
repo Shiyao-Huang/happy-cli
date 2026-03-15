@@ -35,6 +35,7 @@ import {
 import { DEFAULT_ROLES } from './team/roles.config';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
+import { resolveModel, setModelRouteRules } from './utils/modelRouter';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchGenomeSpec } from './utils/fetchGenome';
@@ -338,6 +339,49 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
 
         logger.debug(`[genome] Genome spec applied at startup (specId=${_genomeSpecId})`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Model Router（Tier 2 扩展）────────────────────────────────────────────
+    // 从 KV 加载自定义路由规则（如果有），然后用 resolveModel() 决定最终模型。
+    // 优先级: genome.modelId > KV rules > built-in defaults
+    // 只有在 currentModel 还没被 CLI/session 覆盖时才使用路由规则。
+    try {
+        const modelRoutesKv = await api.kvGet('config.model-routes');
+        if (modelRoutesKv?.value) {
+            setModelRouteRules(JSON.parse(modelRoutesKv.value));
+        }
+    } catch (e) {
+        logger.debug('[modelRouter] Failed to load KV model routes (non-fatal):', e);
+    }
+
+    // 只有没有手动指定 model 时才走路由逻辑
+    if (!currentModel) {
+        const roleForRouter = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
+        const execPlane = (process.env.AHA_EXECUTION_PLANE as 'bypass' | 'mainline' | undefined)
+            || (process.env.AHA_ROOM_ID ? 'mainline' : undefined);
+
+        const resolved = resolveModel({
+            role: roleForRouter,
+            executionPlane: execPlane,
+            genomeModelId: _genomeSpec?.modelId,
+            genomeModelProvider: _genomeSpec?.modelProvider,
+        });
+
+        if (resolved.isSupported) {
+            currentModel = resolved.modelId;
+            logger.debug(`[modelRouter] Resolved model: ${resolved.provider}/${resolved.modelId} (role=${roleForRouter}, plane=${execPlane})`);
+        } else {
+            // 非 Anthropic provider 降级：记录警告，使用 fallback model
+            logger.debug(
+                `[modelRouter] Provider not supported, falling back to anthropic/${resolved.fallbackModelId}. ` +
+                `(genome requested: ${_genomeSpec?.modelProvider}/${_genomeSpec?.modelId})`
+            );
+            currentModel = resolved.fallbackModelId;
+            if (!currentFallbackModel) {
+                currentFallbackModel = resolved.fallbackModelId;
+            }
+        }
     }
     // ─────────────────────────────────────────────────────────────────────────
 

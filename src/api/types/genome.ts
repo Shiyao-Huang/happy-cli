@@ -98,6 +98,12 @@ export interface GenomeSpec {
      * 对应 EnhancedMode.fallbackModel。
      */
     fallbackModelId?: string;
+    /**
+     * 模型 provider。当前仅支持 'anthropic'。
+     * 设置为 'zhipu'/'openai' 等时 CLI 会记录警告并降级到 anthropic。
+     * 为后续 OpenAI 兼容层预留接口。
+     */
+    modelProvider?: 'anthropic' | 'zhipu' | 'openai' | 'local';
 
     // =========================================================================
     // Tier 3 — 工具访问控制
