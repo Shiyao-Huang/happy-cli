@@ -1945,7 +1945,12 @@ Genomes can be instantiated later via the \`specId\` parameter of \`create_agent
 Use this tool when:
 - You have refined an agent's behavior and want to preserve it for future spawns
 - You want to share an agent specification with team members
-- You are evolving an existing genome after observing performance`,
+- You are evolving an existing genome after observing performance
+
+Namespace conventions:
+- "@official" — curated by the platform team
+- "@<org-name>" — scoped to an organization (e.g. "@acme")
+- omit or leave empty — personal genome (default)`,
         title: 'Create / Update Genome',
         inputSchema: {
             name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
@@ -1954,6 +1959,9 @@ Use this tool when:
             teamId: z.string().optional().describe('Scope the genome to a specific team (null = personal/public)'),
             isPublic: z.boolean().default(false).describe('Whether other users can discover and use this genome'),
             id: z.string().optional().describe('Existing genome ID to update. Omit to create a new genome.'),
+            namespace: z.string().optional().describe('Namespace scope: "@official", "@<org-name>", or omit for personal'),
+            tags: z.string().optional().describe('JSON-serialized string array of discovery tags, e.g. \'["typescript","backend","testing"]\''),
+            category: z.string().optional().describe('Genome category for browsing, e.g. "coding", "research", "devops", "writing"'),
         },
     }, async (args) => {
         try {
@@ -1973,6 +1981,9 @@ Use this tool when:
                 parentSessionId: sessionId,
                 teamId: args.teamId,
                 isPublic: args.isPublic,
+                namespace: args.namespace,
+                tags: args.tags,
+                category: args.category,
             });
 
             return {

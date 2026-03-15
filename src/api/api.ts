@@ -1476,6 +1476,9 @@ export class ApiClient {
     parentSessionId: string;
     teamId?: string;
     isPublic?: boolean;
+    namespace?: string;
+    tags?: string;
+    category?: string;
   }): Promise<{ genome: any }> {
     try {
       const response = await axios.post(
