@@ -10,6 +10,7 @@ import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
+import axios from 'axios';
 // Note: packageJson import removed — all version reads now use disk package.json
 // to prevent stale compiled versions from causing daemon restart loops.
 import { getEnvironmentInfo } from '@/ui/doctor';
@@ -542,6 +543,19 @@ export async function startDaemon(): Promise<void> {
     // Create API client
     const api = await ApiClient.create(credentials);
 
+    /** Resolve the specId of a @official genome by name. Returns null on failure (caller falls back to hardcoded role). */
+    const resolveSystemGenomeId = async (name: string): Promise<string | null> => {
+      try {
+        const res = await axios.get(
+          `${configuration.serverUrl}/v1/genomes/%40official/${name}/latest`,
+          { headers: { Authorization: `Bearer ${credentials.token}` }, timeout: 5000 }
+        );
+        return res.data?.genome?.id ?? null;
+      } catch {
+        return null;
+      }
+    };
+
     // Get or create machine
     const machine = await api.getOrCreateMachine({
       machineId,
@@ -651,6 +665,10 @@ export async function startDaemon(): Promise<void> {
           }
 
           try {
+            // Resolve @official/supervisor genome specId; fall back to hardcoded role if unavailable
+            const supervisorSpecId = await resolveSystemGenomeId('supervisor');
+            logger.debug(`[DAEMON RUN] Supervisor genome specId: ${supervisorSpecId ?? 'not found, using hardcode role'}`);
+
             const supervisorResult = await spawnSession({
               directory: process.cwd(),
               agent: 'claude',
@@ -658,6 +676,7 @@ export async function startDaemon(): Promise<void> {
               role: 'supervisor',
               sessionName: 'Supervisor',
               executionPlane: 'bypass',
+              specId: supervisorSpecId ?? undefined,
               env: {
                 // Pass state so supervisor reads only new content
                 AHA_SUPERVISOR_TEAM_LOG_CURSOR: String(supervisorState.teamLogCursor),
