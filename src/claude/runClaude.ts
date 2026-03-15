@@ -301,6 +301,46 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
 
+    // ── Genome 启动注入（Tier 2–4）────────────────────────────────────────────
+    // 在 session 启动阶段就把 model / permissionMode / tools 从 genome spec 注入，
+    // 这样整个 session 生命周期都生效，不只是 team join 时。
+    // Tier 1（prompt）在下面 team join 的时候注入，因为 instructions 是在那时构建的。
+    const _genomeSpecId = process.env.AHA_SPEC_ID;
+    const _genomeSpec = _genomeSpecId
+        ? await fetchGenomeSpec(credentials.token, _genomeSpecId).catch(() => null)
+        : null;
+
+    if (_genomeSpec) {
+        // Tier 2 — 模型覆盖
+        if (_genomeSpec.modelId && !currentModel) {
+            currentModel = _genomeSpec.modelId;
+            logger.debug(`[genome] Model set from genome: ${currentModel}`);
+        }
+        if (_genomeSpec.fallbackModelId && !currentFallbackModel) {
+            currentFallbackModel = _genomeSpec.fallbackModelId;
+            logger.debug(`[genome] Fallback model set from genome: ${currentFallbackModel}`);
+        }
+
+        // Tier 3 — 工具访问控制
+        if (_genomeSpec.allowedTools?.length) {
+            currentAllowedTools = _genomeSpec.allowedTools;
+            logger.debug(`[genome] Allowed tools set from genome: ${currentAllowedTools.join(', ')}`);
+        }
+        if (_genomeSpec.disallowedTools?.length) {
+            currentDisallowedTools = _genomeSpec.disallowedTools;
+            logger.debug(`[genome] Disallowed tools set from genome: ${currentDisallowedTools.join(', ')}`);
+        }
+
+        // Tier 4 — 权限模式（优先级低于 CLI 参数）
+        if (_genomeSpec.permissionMode && !currentPermissionMode) {
+            currentPermissionMode = _genomeSpec.permissionMode;
+            logger.debug(`[genome] Permission mode set from genome: ${currentPermissionMode}`);
+        }
+
+        logger.debug(`[genome] Genome spec applied at startup (specId=${_genomeSpecId})`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Initialize role from environment variables first, fallback to session metadata
     logger.debug(`[runClaude] Initializing role - env: ${process.env.AHA_AGENT_ROLE}, metadata: ${session.getMetadata()?.role}`);
     let currentRole: string | undefined = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
@@ -585,22 +625,14 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 let instructions: string;
 
-                // ── Genome spec injection ──────────────────────────────────
-                // If AHA_SPEC_ID is set, fetch the GenomeSpec from the server
-                // and apply it before building the role-specific instructions.
-                // This is the "agent docker" layer: server-side spec overrides
-                // compiled defaults for systemPrompt, tools, model, etc.
-                const specId = process.env.AHA_SPEC_ID;
-                const genomeSpec = specId
-                    ? await fetchGenomeSpec(credentials.token, specId)
-                    : null;
-
+                // ── Genome Tier 1：Prompt 注入（复用启动阶段已 fetch 的 _genomeSpec）──
+                // _genomeSpec 在启动时已 fetch 并缓存，这里直接用，不重复请求。
                 // If genome supplies a full system prompt, use it directly and
                 // skip the compiled role prompt below.
-                if (genomeSpec?.systemPrompt) {
-                    instructions = genomeSpec.systemPrompt
-                        + (genomeSpec.systemPromptSuffix ? '\n\n' + genomeSpec.systemPromptSuffix : '');
-                    logger.debug(`[runClaude] Using genome spec system prompt (specId=${specId})`);
+                if (_genomeSpec?.systemPrompt) {
+                    instructions = _genomeSpec.systemPrompt
+                        + (_genomeSpec.systemPromptSuffix ? '\n\n' + _genomeSpec.systemPromptSuffix : '');
+                    logger.debug(`[genome] Using genome systemPrompt (specId=${_genomeSpecId})`);
                 } else if (isBypassRole(role) && role === 'supervisor') {
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
