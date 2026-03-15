@@ -318,12 +318,14 @@ export async function startDaemon(): Promise<void> {
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session
+        // Build env: inherit parent but unset CLAUDECODE to prevent nested session detection
+        const { CLAUDECODE: _, ...cleanEnv } = process.env;
         const ahaProcess = spawnAhaCLI(args, {
           cwd: directory,
           detached: true,  // Sessions stay alive when daemon stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
-            ...process.env,
+            ...cleanEnv,
             ...extraEnv
           }
         });
