@@ -450,20 +450,23 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext);
                         const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
 
-                        // Inject into message queue
+                        // Inject into message queue using the SAME mode as the initial context injection
+                        // CRITICAL: Do NOT regenerate role prompt here — dynamic Kanban context changes
+                        // the mode hash, causing claudeRemote to restart the conversation and lose context.
+                        // Instead, just push the formatted message with a stable mode.
                         const enhancedMode: EnhancedMode = {
                             permissionMode: currentPermissionMode || 'default',
                             model: currentModel,
                             fallbackModel: currentFallbackModel,
                             customSystemPrompt: currentCustomSystemPrompt,
-                            appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForTeamMsg,
+                            appendSystemPrompt: currentAppendSystemPrompt || '',
                             allowedTools: currentAllowedTools,
-                            disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedToolsForMsg]
+                            disallowedTools: currentDisallowedTools || []
                         };
 
                         messageQueue.push(formattedMessage, enhancedMode);
                         console.log('[Team] ✅ Message injected into queue');
-                        logger.debug('[runClaude] Team message injected into queue with role prompt');
+                        logger.debug('[runClaude] Team message injected into queue (stable mode hash)');
                     }
                 } catch (error) {
                     console.error('[Team] Error processing message:', error);
