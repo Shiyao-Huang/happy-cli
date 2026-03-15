@@ -15,6 +15,7 @@ import { EnhancedMode } from "./loop";
 import { RawJSONLines } from "@/claude/types";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { getToolName } from "./utils/getToolName";
+import { daemonPost } from "@/daemon/controlClient";
 
 interface PermissionsField {
     date: number;
@@ -389,6 +390,13 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         // Update converter's session ID when new session is found
                         sdkToLogConverter.updateSessionId(sessionId);
                         session.onSessionFound(sessionId);
+                        // Notify daemon so it can map ahaSessionId → claudeLocalSessionId
+                        // (used by supervisor to locate CC JSONL logs by teamId)
+                        const ahaSessionId = session.client.sessionId;
+                        if (ahaSessionId) {
+                            daemonPost('/session-found', { ahaSessionId, claudeLocalSessionId: sessionId })
+                                .catch((e: unknown) => logger.debug(`[remote]: Failed to report local session to daemon: ${e}`));
+                        }
                     },
                     onThinkingChange: session.onThinkingChange,
                     claudeEnvVars: session.claudeEnvVars,

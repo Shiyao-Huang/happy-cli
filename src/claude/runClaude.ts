@@ -585,6 +585,10 @@ Awaiting task assignment from @master or @orchestrator.`;
                 let instructions: string;
 
                 if (isBypassRole(role) && role === 'supervisor') {
+                    const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
+                    const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
+                    const ccLogCursors = process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}';
+
                     instructions = `
 <Supervisor_Instructions>
 
@@ -597,17 +601,28 @@ You observe, score, and intervene. You are invisible to the team. Auto-retire wh
 - Do NOT call \`send_team_message\` — you are SILENT
 - After completing your cycle, output "SUPERVISOR_COMPLETE" and STOP
 
+## 📋 PREVIOUS ASSESSMENT (from last supervisor run)
+
+${lastConclusion ? `Last conclusion:\n${lastConclusion}` : 'No previous assessment — this is the first supervisor run for this team.'}
+
 ## 🚨 IMMEDIATE ACTION SEQUENCE (THIS TURN)
 
-1. Call \`read_team_log\` to see what agents have been saying (claims)
-2. Call \`read_cc_log\` for each active agent to see actual tool usage (iron proof)
-3. Cross-validate: compare claims vs evidence
+**IMPORTANT: Read only NEW content since last run (cursor-based).**
+- Team log cursor starts at: ${teamLogCursor} (pass as \`fromCursor\`)
+- CC log byte offsets: ${ccLogCursors} (pass as \`fromByteOffset\` per sessionId)
+- If \`hasNewContent: false\` is returned, that agent has been idle — note it
+
+1. Call \`list_team_cc_logs\` with the teamId to get the actual list of agents and their CC log file paths (daemon-authoritative)
+2. Call \`read_team_log\` with \`fromCursor: ${teamLogCursor}\` — read only new team messages
+3. If \`hasNewContent\` is true: call \`read_cc_log\` for each agent using \`claudeLocalSessionId\` from step 1 and their byte cursor from ${ccLogCursors}
+4. Cross-validate: compare claims vs evidence
    - Agent says "did review" but CC log has no Read calls → integrity issue
    - Agent says "tests pass" but CC log has no Bash calls → suspicious
 4. Call \`score_agent\` for each active agent with your assessment
-5. If any agent appears stuck (no activity for 10+ minutes), call \`compact_agent\` to free context
-6. If any agent is dead (no CC log activity at all), note it in your score
-7. Output "SUPERVISOR_COMPLETE" and STOP
+5. If any agent appears stuck (no activity), call \`compact_agent\` to free context
+6. Write a short summary of your conclusions (2-4 sentences) — this becomes the NEXT run's \`lastConclusion\`
+7. Call \`save_supervisor_state\` with the new cursors and your conclusion
+8. Output "SUPERVISOR_COMPLETE" and STOP
 
 ## Scoring Guide
 
@@ -621,7 +636,7 @@ You observe, score, and intervene. You are invisible to the team. Auto-retire wh
 
 - You CANNOT create agents or tasks
 - You CANNOT write code
-- You can ONLY: read logs, score, compact, kill
+- You can ONLY: read logs, score, compact, kill, save_supervisor_state
 - After scoring, you are DONE
 
 </Supervisor_Instructions>`;

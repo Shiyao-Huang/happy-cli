@@ -18,6 +18,7 @@ import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquire
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
+import { readSupervisorState, updateSupervisorRun } from './supervisorState';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
@@ -495,7 +496,17 @@ export async function startDaemon(): Promise<void> {
       stopTeamSessions,
       spawnSession,
       requestShutdown: () => requestShutdown('aha-cli'),
-      onAhaSessionWebhook
+      onAhaSessionWebhook,
+      onClaudeLocalSessionFound: (ahaSessionId, claudeLocalSessionId) => {
+        // Map from ahaSessionId back to pid, then store the local Claude session file ID
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+          if (session.ahaSessionId === ahaSessionId) {
+            pidToTrackedSession.set(pid, { ...session, claudeLocalSessionId });
+            logger.debug(`[DAEMON RUN] Mapped aha session ${ahaSessionId} → claude local ${claudeLocalSessionId}`);
+            break;
+          }
+        }
+      },
     });
 
     // Read version from disk (not compiled import) to avoid build/publish desync.
@@ -581,44 +592,72 @@ export async function startDaemon(): Promise<void> {
       heartbeatCount++;
       const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '5'); // Every 5 heartbeats = 5 minutes
       if (heartbeatCount % supervisorInterval === 0 && pidToTrackedSession.size > 0) {
-        // Find active team sessions (those with a teamId)
-        let teamId: string | null = null;
+        // Collect all unique teamIds with active non-bypass sessions
+        const activeTeamIds = new Set<string>();
+        const runningSupervisorTeams = new Set<string>();
         for (const [_, session] of pidToTrackedSession.entries()) {
           const meta = session.ahaSessionMetadataFromLocalWebhook;
           const sessionTeamId = meta?.teamId || meta?.roomId;
-          if (sessionTeamId && meta?.role !== 'supervisor' && meta?.role !== 'help-agent') {
-            teamId = sessionTeamId;
-            break;
+          if (!sessionTeamId) continue;
+          if (meta?.role === 'supervisor' || meta?.role === 'help-agent') {
+            runningSupervisorTeams.add(sessionTeamId);
+          } else {
+            activeTeamIds.add(sessionTeamId);
           }
         }
 
-        if (teamId) {
-          // Check if a supervisor is already running
-          let supervisorAlreadyRunning = false;
-          for (const [_, session] of pidToTrackedSession.entries()) {
-            if (session.ahaSessionMetadataFromLocalWebhook?.role === 'supervisor') {
-              supervisorAlreadyRunning = true;
-              break;
-            }
+        for (const teamId of activeTeamIds) {
+          // Skip if supervisor already running for this team
+          if (runningSupervisorTeams.has(teamId)) continue;
+
+          // Skip if team is marked as terminated
+          const supervisorState = readSupervisorState(teamId);
+          if (supervisorState.terminated) {
+            logger.debug(`[DAEMON RUN] Skipping supervisor for terminated team ${teamId}`);
+            continue;
           }
 
-          if (!supervisorAlreadyRunning) {
-            logger.debug(`[DAEMON RUN] Supervisor check triggered (heartbeat #${heartbeatCount}, team ${teamId})`);
-            try {
-              const supervisorResult = await spawnSession({
-                directory: process.cwd(),
-                agent: 'claude',
-                teamId,
-                role: 'supervisor',
-                sessionName: 'Supervisor',
-                executionPlane: 'bypass',
-              });
-              if (supervisorResult.type === 'success') {
-                logger.debug(`[DAEMON RUN] Supervisor agent spawned: ${supervisorResult.sessionId}`);
-              }
-            } catch (e) {
-              logger.debug(`[DAEMON RUN] Failed to spawn supervisor: ${e}`);
+          // Auto-retire if too many idle runs (no new content found N times in a row)
+          const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6'); // 6 × 5 min = 30 min
+          if (supervisorState.idleRuns >= maxIdleRuns) {
+            logger.debug(`[DAEMON RUN] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`);
+            const { writeSupervisorState, readSupervisorState: rs } = await import('./supervisorState');
+            writeSupervisorState({ ...rs(teamId), terminated: true });
+            continue;
+          }
+
+          logger.debug(`[DAEMON RUN] Supervisor check triggered (heartbeat #${heartbeatCount}, team ${teamId}, cursor=${supervisorState.teamLogCursor})`);
+
+          // If the state hasn't been updated since last heartbeat trigger, the previous
+          // supervisor found nothing new and didn't call save_supervisor_state → idle run
+          const heartbeatMs = heartbeatIntervalMs * supervisorInterval;
+          const stateIsStale = supervisorState.lastRunAt > 0 && (Date.now() - supervisorState.lastRunAt) > heartbeatMs * 1.5;
+          if (stateIsStale) {
+            updateSupervisorRun(teamId, { idleRuns: supervisorState.idleRuns + 1 });
+            logger.debug(`[DAEMON RUN] Supervisor idle run detected for team ${teamId}, idleRuns now ${supervisorState.idleRuns + 1}`);
+          }
+
+          try {
+            const supervisorResult = await spawnSession({
+              directory: process.cwd(),
+              agent: 'claude',
+              teamId,
+              role: 'supervisor',
+              sessionName: 'Supervisor',
+              executionPlane: 'bypass',
+              env: {
+                // Pass state so supervisor reads only new content
+                AHA_SUPERVISOR_TEAM_LOG_CURSOR: String(supervisorState.teamLogCursor),
+                AHA_SUPERVISOR_CC_LOG_CURSORS: JSON.stringify(supervisorState.ccLogCursors),
+                AHA_SUPERVISOR_LAST_CONCLUSION: supervisorState.lastConclusion,
+                AHA_SUPERVISOR_LAST_SESSION_ID: supervisorState.lastSessionId || '',
+              },
+            });
+            if (supervisorResult.type === 'success') {
+              logger.debug(`[DAEMON RUN] Supervisor agent spawned: ${supervisorResult.sessionId}`);
             }
+          } catch (e) {
+            logger.debug(`[DAEMON RUN] Failed to spawn supervisor: ${e}`);
           }
         }
       }

@@ -17,7 +17,8 @@ export function startDaemonControlServer({
   stopTeamSessions,
   spawnSession,
   requestShutdown,
-  onAhaSessionWebhook
+  onAhaSessionWebhook,
+  onClaudeLocalSessionFound,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
@@ -25,6 +26,7 @@ export function startDaemonControlServer({
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onAhaSessionWebhook: (sessionId: string, metadata: Metadata) => void;
+  onClaudeLocalSessionFound?: (ahaSessionId: string, claudeLocalSessionId: string) => void;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -58,6 +60,26 @@ export function startDaemonControlServer({
       return { status: 'ok' as const };
     });
 
+    // Claude Code local session ID reported after SDK starts
+    typed.post('/session-found', {
+      schema: {
+        body: z.object({
+          ahaSessionId: z.string(),
+          claudeLocalSessionId: z.string(),
+        }),
+        response: {
+          200: z.object({ status: z.literal('ok') })
+        }
+      }
+    }, async (request) => {
+      const { ahaSessionId, claudeLocalSessionId } = request.body;
+      logger.debug(`[CONTROL SERVER] Claude local session found: aha=${ahaSessionId} → local=${claudeLocalSessionId}`);
+      if (onClaudeLocalSessionFound) {
+        onClaudeLocalSessionFound(ahaSessionId, claudeLocalSessionId);
+      }
+      return { status: 'ok' as const };
+    });
+
     // List all tracked sessions
     typed.post('/list', {
       schema: {
@@ -83,6 +105,40 @@ export function startDaemonControlServer({
             pid: child.pid
           }))
       }
+    });
+
+    // List sessions for a specific team — used by supervisor to find CC log files
+    typed.post('/list-team-sessions', {
+      schema: {
+        body: z.object({ teamId: z.string() }),
+        response: {
+          200: z.object({
+            sessions: z.array(z.object({
+              ahaSessionId: z.string(),
+              claudeLocalSessionId: z.string().optional(),
+              role: z.string().optional(),
+              pid: z.number(),
+            }))
+          })
+        }
+      }
+    }, async (request) => {
+      const { teamId } = request.body;
+      const children = getChildren();
+      const sessions = children
+        .filter(child => {
+          const meta = child.ahaSessionMetadataFromLocalWebhook;
+          const childTeamId = meta?.teamId || meta?.roomId;
+          return childTeamId === teamId && child.ahaSessionId;
+        })
+        .map(child => ({
+          ahaSessionId: child.ahaSessionId!,
+          claudeLocalSessionId: child.claudeLocalSessionId,
+          role: child.ahaSessionMetadataFromLocalWebhook?.role,
+          pid: child.pid,
+        }));
+      logger.debug(`[CONTROL SERVER] list-team-sessions for ${teamId}: ${sessions.length} sessions`);
+      return { sessions };
     });
 
     // Stop specific session

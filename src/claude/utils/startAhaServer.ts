@@ -1513,11 +1513,12 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     // ========== Supervisor-Only Tools ==========
 
     mcp.registerTool('read_team_log', {
-        description: 'Read the team message log. Returns recent team messages for analysis. Supervisor/help-agent only.',
+        description: 'Read the team message log. Returns messages since the last supervisor run (cursor-based, incremental). Pass fromCursor=0 to read all. Supervisor/help-agent only.',
         title: 'Read Team Log',
         inputSchema: {
             teamId: z.string().describe('Team ID to read logs for'),
-            limit: z.number().default(50).describe('Max messages to return'),
+            limit: z.number().default(100).describe('Max messages to return'),
+            fromCursor: z.number().default(-1).describe('Line index to read from. -1 = use env AHA_SUPERVISOR_TEAM_LOG_CURSOR (auto-incremental). 0 = read all.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -1528,10 +1529,29 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const fs = await import('node:fs');
             const path = await import('node:path');
             const localPath = path.join(process.cwd(), '.aha', 'teams', args.teamId, 'messages.jsonl');
+
+            const cursor = args.fromCursor >= 0
+                ? args.fromCursor
+                : parseInt(process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0');
+
             if (fs.existsSync(localPath)) {
                 const lines = fs.readFileSync(localPath, 'utf-8').split('\n').filter(Boolean);
-                const recent = lines.slice(-args.limit);
-                return { content: [{ type: 'text', text: recent.join('\n') }], isError: false };
+                const newLines = lines.slice(cursor, cursor + args.limit);
+                const newCursor = cursor + newLines.length;
+                const hasNew = newLines.length > 0;
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            fromCursor: cursor,
+                            nextCursor: newCursor,
+                            totalLines: lines.length,
+                            hasNewContent: hasNew,
+                            messages: newLines.map(l => { try { return JSON.parse(l); } catch { return l; } }),
+                        }, null, 2)
+                    }],
+                    isError: false
+                };
             }
             const messages = await api.getTeamMessages(args.teamId, args.limit);
             return { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }], isError: false };
@@ -1541,11 +1561,12 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     });
 
     mcp.registerTool('read_cc_log', {
-        description: 'Read Claude Code session log (the iron proof). Shows actual tool calls, token usage, and real actions taken by an agent. Supervisor/help-agent only.',
+        description: 'Read Claude Code session log (the iron proof). Shows actual tool calls since last supervisor run (cursor-based). Supervisor/help-agent only.',
         title: 'Read CC Log',
         inputSchema: {
             sessionId: z.string().describe('Session ID to read CC log for'),
             limit: z.number().default(100).describe('Max log entries to return'),
+            fromByteOffset: z.number().default(-1).describe('Byte offset to read from. -1 = use env AHA_SUPERVISOR_CC_LOG_CURSORS for this sessionId. 0 = read all.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -1560,13 +1581,33 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             if (!fs.existsSync(claudeProjectsDir)) {
                 return { content: [{ type: 'text', text: 'No Claude Code logs directory found.' }], isError: false };
             }
+
+            // Resolve cursor
+            let byteOffset = args.fromByteOffset >= 0 ? args.fromByteOffset : 0;
+            if (args.fromByteOffset < 0) {
+                try {
+                    const cursors = JSON.parse(process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}') as Record<string, number>;
+                    byteOffset = cursors[args.sessionId] ?? 0;
+                } catch { byteOffset = 0; }
+            }
+
             const projectDirs = fs.readdirSync(claudeProjectsDir);
             for (const dir of projectDirs) {
                 const sessionFile = path.join(claudeProjectsDir, dir, `${args.sessionId}.jsonl`);
                 if (fs.existsSync(sessionFile)) {
-                    const lines = fs.readFileSync(sessionFile, 'utf-8').split('\n').filter(Boolean);
-                    const recent = lines.slice(-args.limit);
-                    const summary = recent.map(line => {
+                    const stat = fs.statSync(sessionFile);
+                    const fileSize = stat.size;
+                    const readFrom = Math.min(byteOffset, fileSize);
+                    const buf = Buffer.alloc(fileSize - readFrom);
+                    const fd = fs.openSync(sessionFile, 'r');
+                    fs.readSync(fd, buf, 0, buf.length, readFrom);
+                    fs.closeSync(fd);
+
+                    const lines = buf.toString('utf-8').split('\n').filter(Boolean).slice(0, args.limit);
+                    const nextOffset = fileSize;
+                    const hasNew = lines.length > 0;
+
+                    const summary = lines.map(line => {
                         try {
                             const entry = JSON.parse(line);
                             if (entry.type === 'assistant' && entry.message?.content) {
@@ -1584,7 +1625,21 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                             return null;
                         } catch { return null; }
                     }).filter(Boolean);
-                    return { content: [{ type: 'text', text: `CC Log for ${args.sessionId} (${summary.length} entries):\n${summary.join('\n')}` }], isError: false };
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                sessionId: args.sessionId,
+                                fromByteOffset: readFrom,
+                                nextByteOffset: nextOffset,
+                                fileSize,
+                                hasNewContent: hasNew,
+                                entries: summary,
+                            }, null, 2)
+                        }],
+                        isError: false
+                    };
                 }
             }
             return { content: [{ type: 'text', text: `No CC log found for session ${args.sessionId}` }], isError: false };
@@ -1686,6 +1741,101 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: `Killed ${args.sessionId}: ${args.reason}` }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== List Team CC Logs (supervisor only) ==========
+
+    mcp.registerTool('list_team_cc_logs', {
+        description: 'List Claude Code log files for all agents in a team by querying the daemon. Returns ahaSessionId → claudeLocalSessionId + log file path. Call this first before read_cc_log to get correct session IDs. Supervisor/help-agent only.',
+        title: 'List Team CC Logs',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to list CC logs for'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can use this tool.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running or port unknown.' }], isError: true };
+            }
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list-team-sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ teamId: args.teamId }),
+                signal: AbortSignal.timeout(5_000),
+            });
+            const result = await response.json() as { sessions: Array<{ ahaSessionId: string; claudeLocalSessionId?: string; role?: string; pid: number }> };
+
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const homeDir = process.env.HOME || '/tmp';
+            const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+
+            const enriched = result.sessions.map(session => {
+                let logFilePath: string | null = null;
+                let logFileSize: number | null = null;
+                if (session.claudeLocalSessionId && fs.existsSync(claudeProjectsDir)) {
+                    for (const dir of fs.readdirSync(claudeProjectsDir)) {
+                        const candidate = path.join(claudeProjectsDir, dir, `${session.claudeLocalSessionId}.jsonl`);
+                        if (fs.existsSync(candidate)) {
+                            logFilePath = candidate;
+                            logFileSize = fs.statSync(candidate).size;
+                            break;
+                        }
+                    }
+                }
+                return { ...session, logFilePath, logFileSize };
+            });
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== Save Supervisor State Tool (supervisor only) ==========
+    mcp.registerTool('save_supervisor_state', {
+        description: 'Persist supervisor state (log cursors + conclusion) so the next supervisor run reads only new content. Call this after scoring agents, before SUPERVISOR_COMPLETE. Supervisor only.',
+        title: 'Save Supervisor State',
+        inputSchema: {
+            teamId: z.string().describe('Team ID being supervised'),
+            teamLogCursor: z.number().describe('nextCursor value returned by read_team_log'),
+            ccLogCursors: z.record(z.string(), z.number()).describe('Map of sessionId → nextByteOffset from read_cc_log results'),
+            conclusion: z.string().describe('2-4 sentence plain-text summary of this supervisor cycle findings'),
+            sessionId: z.string().optional().describe('This supervisor session ID (for potential --resume on next run)'),
+            teamTerminated: z.boolean().default(false).describe('Set true if the team appears fully done and no further supervision is needed'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can save supervisor state.' }], isError: true };
+        }
+        try {
+            const { updateSupervisorRun, readSupervisorState, writeSupervisorState } = await import('@/daemon/supervisorState');
+            const existing = readSupervisorState(args.teamId);
+            writeSupervisorState({
+                ...existing,
+                lastRunAt: Date.now(),
+                teamLogCursor: args.teamLogCursor,
+                ccLogCursors: args.ccLogCursors,
+                lastConclusion: args.conclusion,
+                lastSessionId: args.sessionId ?? existing.lastSessionId,
+                terminated: args.teamTerminated,
+                idleRuns: 0, // reset idle counter when supervisor actually ran
+            });
+            return {
+                content: [{ type: 'text', text: `Supervisor state saved. Next run will start team log at cursor ${args.teamLogCursor}. Terminated=${args.teamTerminated}` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error saving supervisor state: ${String(error)}` }], isError: true };
         }
     });
 
@@ -1839,9 +1989,11 @@ The supervisor will see your request and may: send you guidance, compact your co
             // Supervisor-only tools
             'read_team_log',
             'read_cc_log',
+            'list_team_cc_logs',
             'score_agent',
             'compact_agent',
-            'kill_agent'
+            'kill_agent',
+            'save_supervisor_state'
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');

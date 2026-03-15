@@ -12,7 +12,7 @@ import { join } from 'path';
 import { configuration } from '@/configuration';
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 
-async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
+export async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();
   if (!state?.httpPort) {
     const errorMessage = 'No daemon running, no state file found';
