@@ -958,13 +958,34 @@ export class ApiClient {
   // === Team Management API Methods ===
 
   /**
-   * Add a member to a team
+   * Add a member to a team.
+   * Supports M1 extended fields: specId, parentSessionId, executionPlane, runtimeType.
    */
-  async addTeamMember(teamId: string, sessionId: string, roleId?: string, displayName?: string): Promise<{ success: boolean; member: any }> {
+  async addTeamMember(
+    teamId: string,
+    sessionId: string,
+    roleId?: string,
+    displayName?: string,
+    opts?: {
+      specId?: string;
+      parentSessionId?: string;
+      executionPlane?: string;
+      runtimeType?: string;
+    }
+  ): Promise<{ success: boolean; member: any }> {
     try {
+      const body: Record<string, unknown> = {
+        sessionId,
+        roleId: roleId || 'member',
+        displayName,
+        ...(opts?.specId !== undefined && { specId: opts.specId }),
+        ...(opts?.parentSessionId !== undefined && { parentSessionId: opts.parentSessionId }),
+        ...(opts?.executionPlane !== undefined && { executionPlane: opts.executionPlane }),
+        ...(opts?.runtimeType !== undefined && { runtimeType: opts.runtimeType }),
+      };
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/members`,
-        { sessionId, roleId: roleId || 'member', displayName },
+        body,
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1384,6 +1405,98 @@ export class ApiClient {
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to get team score:`, error);
       throw new Error(`Failed to get team score: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // === Evolution / Genome API Methods (M3) ===
+
+  /**
+   * List bypass agents (executionPlane === 'bypass') registered for a team.
+   * These are supervisor and help-agent sessions stored in the team artifact.
+   */
+  async listBypassAgents(teamId: string): Promise<{ agents: any[] }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}/bypass-agents`,
+        {
+          headers: { 'Authorization': `Bearer ${this.credential.token}` },
+          timeout: 10000,
+        }
+      );
+      logger.debug(`[API] Listed ${response.data?.agents?.length ?? 0} bypass agents for team ${teamId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list bypass agents:`, error);
+      throw new Error(`Failed to list bypass agents: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List genomes visible to the current user.
+   * Supports optional teamId and parentSessionId filters.
+   */
+  async listGenomes(opts?: {
+    teamId?: string;
+    parentSessionId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ genomes: any[]; total: number }> {
+    try {
+      const params: Record<string, string | number> = {};
+      if (opts?.teamId) params.teamId = opts.teamId;
+      if (opts?.parentSessionId) params.parentSessionId = opts.parentSessionId;
+      if (opts?.limit !== undefined) params.limit = opts.limit;
+      if (opts?.offset !== undefined) params.offset = opts.offset;
+
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/genomes`,
+        {
+          headers: { 'Authorization': `Bearer ${this.credential.token}` },
+          params,
+          timeout: 10000,
+        }
+      );
+      logger.debug(`[API] Listed ${response.data?.total ?? 0} genomes`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list genomes:`, error);
+      throw new Error(`Failed to list genomes: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Register or update a genome (reusable agent specification).
+   * Called by the create_genome MCP tool.
+   */
+  async createGenome(genome: {
+    id?: string;
+    name: string;
+    description?: string;
+    spec: string;
+    parentSessionId: string;
+    teamId?: string;
+    isPublic?: boolean;
+  }): Promise<{ genome: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/genomes`,
+        {
+          ...genome,
+          isPublic: genome.isPublic ?? false,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }
+      );
+      logger.debug(`[API] Created/updated genome ${response.data?.genome?.id}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to create genome:`, error);
+      throw new Error(`Failed to create genome: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }

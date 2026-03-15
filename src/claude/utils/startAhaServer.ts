@@ -1341,6 +1341,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             model: z.string().optional().describe('Model override. Omit to use system default.'),
             agent: z.enum(['claude', 'codex']).default('claude').describe('Runtime: claude (default, recommended) or codex (only when user explicitly requests)'),
             executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane. Agents can only create mainline agents.'),
+            specId: z.string().optional().describe('Optional spec/role-definition ID to pass to the spawned agent via AHA_SPEC_ID env var.'),
         },
     }, async (args) => {
         try {
@@ -1383,6 +1384,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 agent: args.agent || 'claude',
                 parentSessionId,
                 executionPlane: args.executionPlane || 'mainline',
+                ...(args.specId !== undefined && { specId: args.specId }),
                 env: {
                     AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
                     ...(args.prompt ? { AHA_AGENT_PROMPT: args.prompt } : {}),
@@ -1414,7 +1416,13 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         args.teamId,
                         spawnedSessionId,
                         args.role,
-                        args.sessionName || `${args.role}-agent`
+                        args.sessionName || `${args.role}-agent`,
+                        {
+                            specId: args.specId,
+                            parentSessionId,
+                            executionPlane: args.executionPlane || 'mainline',
+                            runtimeType: args.agent || 'claude',
+                        }
                     );
                     logger.debug(`[create_agent] Added ${args.role} (${spawnedSessionId}) to team ${args.teamId}`);
                 } catch (memberError) {
@@ -1926,6 +1934,59 @@ The supervisor will see your request and may: send you guidance, compact your co
         }
     });
 
+    // ========== Create Genome Tool (Evolution System, M3) ==========
+    mcp.registerTool('create_genome', {
+        description: `Save or update a reusable agent specification (genome) in the team evolution store.
+A genome captures everything needed to reproduce a high-performing agent: system prompt,
+tool access list, model, permission mode, and any domain knowledge to seed the agent's context.
+
+Genomes can be instantiated later via the \`specId\` parameter of \`create_agent\`.
+
+Use this tool when:
+- You have refined an agent's behavior and want to preserve it for future spawns
+- You want to share an agent specification with team members
+- You are evolving an existing genome after observing performance`,
+        title: 'Create / Update Genome',
+        inputSchema: {
+            name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
+            spec: z.string().describe('JSON-serialized GenomeSpec: { systemPrompt, tools?, modelId?, permissionMode?, seedContext? }'),
+            description: z.string().optional().describe('Longer explanation of what this genome is optimized for'),
+            teamId: z.string().optional().describe('Scope the genome to a specific team (null = personal/public)'),
+            isPublic: z.boolean().default(false).describe('Whether other users can discover and use this genome'),
+            id: z.string().optional().describe('Existing genome ID to update. Omit to create a new genome.'),
+        },
+    }, async (args) => {
+        try {
+            const sessionId = client.sessionId;
+            if (!sessionId) {
+                return {
+                    content: [{ type: 'text', text: 'Error: No session ID available.' }],
+                    isError: true,
+                };
+            }
+
+            const result = await api.createGenome({
+                id: args.id,
+                name: args.name,
+                description: args.description,
+                spec: args.spec,
+                parentSessionId: sessionId,
+                teamId: args.teamId,
+                isPublic: args.isPublic,
+            });
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ success: true, genome: result.genome }) }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error creating genome: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
     // ========== End Agent Spawning Tools ==========
 
     return mcp;
@@ -1986,6 +2047,8 @@ The supervisor will see your request and may: send you guidance, compact your co
             'create_agent',
             'list_team_agents',
             'request_help',
+            // Evolution system (M3)
+            'create_genome',
             // Supervisor-only tools
             'read_team_log',
             'read_cc_log',
