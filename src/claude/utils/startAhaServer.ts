@@ -1919,6 +1919,20 @@ The supervisor will see your request and may: send you guidance, compact your co
                 logger.debug('Failed to send help request notification', e);
             }
 
+            // Write pendingAction so the daemon supervisor loop picks it up
+            try {
+                const { updateSupervisorRun } = await import('@/daemon/supervisorState');
+                updateSupervisorRun(teamId, {
+                    pendingAction: {
+                        type: 'notify_help',
+                        message: `[${args.severity}] ${args.description}`,
+                    },
+                });
+                logger.debug(`[request_help] pendingAction saved for team ${teamId}`);
+            } catch (e) {
+                logger.debug('[request_help] Failed to save pendingAction (non-fatal)', e);
+            }
+
             return {
                 content: [{
                     type: 'text',
