@@ -26,7 +26,59 @@
  *   Action recommendations (keep / mutate / discard)
  */
 
-import type { AgentScore } from './scoreStorage';
+import type { AgentScore, HardMetrics } from './scoreStorage';
+
+/**
+ * Convert raw event counts (HardMetrics) into the canonical 0-100 dimension scores.
+ *
+ * Mapping:
+ *   delivery      = task completion rate (tasksCompleted / tasksAssigned)
+ *   integrity     = low blocked-task rate (1 - tasksBlocked / tasksAssigned)
+ *   efficiency    = token efficiency (50k tokens/task → 100; 200k → ~25)
+ *   collaboration = protocol adherence (protocolMessages / messagesSent)
+ *   reliability   = tool success rate (1 - toolErrors / toolCalls)
+ *
+ * Defaults are neutral (50-80) when the denominator is zero (no data available).
+ */
+export function computeDimensionsFromHardMetrics(m: HardMetrics): {
+    delivery: number;
+    integrity: number;
+    efficiency: number;
+    collaboration: number;
+    reliability: number;
+} {
+    // delivery: task completion rate
+    const delivery = m.tasksAssigned > 0
+        ? Math.min(100, Math.round((m.tasksCompleted / m.tasksAssigned) * 100))
+        : 50;
+
+    // integrity: low blocker rate
+    const integrity = m.tasksAssigned > 0
+        ? Math.min(100, Math.round((1 - Math.min(1, m.tasksBlocked / m.tasksAssigned)) * 100))
+        : 75;
+
+    // efficiency: tokens consumed per completed task, normalized
+    // Baseline: 50 000 tokens/task → score 100; 200 000 tokens/task → ~25
+    const tokensPerTask = m.tasksCompleted > 0 && m.tokensUsed > 0
+        ? m.tokensUsed / m.tasksCompleted
+        : null;
+    const efficiency = tokensPerTask !== null
+        ? Math.min(100, Math.max(10, Math.round(5_000_000 / tokensPerTask)))
+        : 60;
+
+    // collaboration: ratio of protocol-correct messages (task-updates + notifications)
+    // 50 % protocol messages → 100 score (so we multiply by 2, cap at 100)
+    const collaboration = m.messagesSent > 0
+        ? Math.min(100, Math.round((m.protocolMessages / m.messagesSent) * 200))
+        : 50;
+
+    // reliability: tool success rate
+    const reliability = m.toolCallCount > 0
+        ? Math.min(100, Math.round(((m.toolCallCount - m.toolErrorCount) / m.toolCallCount) * 100))
+        : 80;
+
+    return { delivery, integrity, efficiency, collaboration, reliability };
+}
 
 // ── Pattern library for PII detection ────────────────────────────────────────
 

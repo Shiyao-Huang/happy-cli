@@ -3,10 +3,40 @@
  *
  * Provides local JSON file storage for agent performance scores.
  * Scores are stored at `.aha/scores/agent_scores.json` relative to cwd.
+ *
+ * v2 scoring model: hard (objective) metrics replace subjective 5-dimension input.
+ * The 5 dimensions (delivery, integrity, efficiency, collaboration, reliability)
+ * are now DERIVED from raw event counts rather than manually assigned by the supervisor.
+ * Legacy manually-assigned dimensions are still accepted for backward compatibility.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
+
+/**
+ * Objective event counts recorded during a session.
+ * These raw numbers are the source of truth for the derived dimension scores.
+ */
+export interface HardMetrics {
+    /** Tasks formally assigned to this agent during the session */
+    tasksAssigned: number;
+    /** Tasks marked done/completed during the session */
+    tasksCompleted: number;
+    /** Tasks that entered a blocked state */
+    tasksBlocked: number;
+    /** Total tool/MCP calls made (from CC log) */
+    toolCallCount: number;
+    /** Tool calls that returned isError=true */
+    toolErrorCount: number;
+    /** Total messages sent to the team (all types) */
+    messagesSent: number;
+    /** Messages of type task-update or notification (protocol-correct messages) */
+    protocolMessages: number;
+    /** Total session duration in minutes */
+    sessionDurationMinutes: number;
+    /** Total tokens consumed (input + output, from CC log) */
+    tokensUsed: number;
+}
 
 export interface AgentScore {
     sessionId: string;
@@ -17,6 +47,11 @@ export interface AgentScore {
     specName?: string;      // e.g. 'implementer'
     timestamp: number;
     scorer: string;
+    /**
+     * Raw event counts (v2). When present, `dimensions` are computed from these.
+     * When absent, `dimensions` contain manually-assigned values (v1 legacy).
+     */
+    hardMetrics?: HardMetrics;
     dimensions: {
         delivery: number;      // 0-100
         integrity: number;     // 0-100

@@ -663,6 +663,16 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: REVIEWER role is read-only and cannot update tasks.' }], isError: true };
             }
 
+            if (args.status === 'in-progress') {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: 'Error: Use start_task to acknowledge and begin a task. update_task cannot move a task into in-progress.'
+                    }],
+                    isError: true
+                };
+            }
+
             // First fetch the task to check permissions for workers
             if (isWorker) {
                 try {
@@ -1930,18 +1940,36 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     });
 
     mcp.registerTool('score_agent', {
-        description: 'Write an evaluation score for an agent to the local score table. Based on cross-validation of team log claims vs CC log evidence. Supervisor only.',
+        description: [
+            'Write an evaluation score for an agent to the local score table.',
+            'v2 (preferred): provide hardMetrics with raw event counts — dimensions are auto-computed from objective data.',
+            'v1 (legacy): provide delivery/integrity/efficiency/collaboration/reliability manually.',
+            'Supervisor only. Source data: read_team_log for message counts, read_cc_log for tool/token counts, list_tasks for task counts.',
+        ].join(' '),
         title: 'Score Agent',
         inputSchema: {
             sessionId: z.string(),
             teamId: z.string(),
             role: z.string(),
             specId: z.string().optional().describe('Genome ID of the agent being scored. Get from list_team_agents. Used as primary key for feedback aggregation — more important than role name.'),
-            delivery: z.number().min(0).max(100),
-            integrity: z.number().min(0).max(100),
-            efficiency: z.number().min(0).max(100),
-            collaboration: z.number().min(0).max(100),
-            reliability: z.number().min(0).max(100),
+            // ── v2: hard metrics (preferred) ──────────────────────────────────
+            hardMetrics: z.object({
+                tasksAssigned: z.number().int().min(0).describe('Tasks formally assigned to this agent during the session'),
+                tasksCompleted: z.number().int().min(0).describe('Tasks marked done/completed'),
+                tasksBlocked: z.number().int().min(0).default(0).describe('Tasks that entered a blocked state'),
+                toolCallCount: z.number().int().min(0).default(0).describe('Total tool/MCP calls made (from read_cc_log)'),
+                toolErrorCount: z.number().int().min(0).default(0).describe('Tool calls that returned isError=true'),
+                messagesSent: z.number().int().min(0).default(0).describe('Total messages sent to the team'),
+                protocolMessages: z.number().int().min(0).default(0).describe('Messages of type task-update or notification (protocol-correct)'),
+                sessionDurationMinutes: z.number().min(0).default(0).describe('Session wall-clock duration in minutes'),
+                tokensUsed: z.number().int().min(0).default(0).describe('Total tokens consumed (input + output, from read_cc_log)'),
+            }).optional().describe('Objective event counts. When provided, dimension scores are computed automatically.'),
+            // ── v1: manual dimensions (legacy fallback) ────────────────────────
+            delivery: z.number().min(0).max(100).optional().describe('Legacy: manual delivery score. Ignored when hardMetrics is provided.'),
+            integrity: z.number().min(0).max(100).optional().describe('Legacy: manual integrity score. Ignored when hardMetrics is provided.'),
+            efficiency: z.number().min(0).max(100).optional().describe('Legacy: manual efficiency score. Ignored when hardMetrics is provided.'),
+            collaboration: z.number().min(0).max(100).optional().describe('Legacy: manual collaboration score. Ignored when hardMetrics is provided.'),
+            reliability: z.number().min(0).max(100).optional().describe('Legacy: manual reliability score. Ignored when hardMetrics is provided.'),
             evidence: z.record(z.any()).optional(),
             recommendations: z.array(z.string()).optional(),
             action: z.enum(['keep', 'keep_with_guardrails', 'mutate', 'discard']),
@@ -1967,7 +1995,26 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             } catch { /* proceed without */ }
         }
 
-        const overall = Math.round((args.delivery + args.integrity + args.efficiency + args.collaboration + args.reliability) / 5);
+        // Resolve dimension scores: prefer hard metrics (objective), fall back to manual (legacy)
+        let dimensions: { delivery: number; integrity: number; efficiency: number; collaboration: number; reliability: number };
+        let scoringMode: 'hard_metrics' | 'manual';
+
+        if (args.hardMetrics) {
+            const { computeDimensionsFromHardMetrics } = await import('@/claude/utils/feedbackPrivacy');
+            dimensions = computeDimensionsFromHardMetrics(args.hardMetrics);
+            scoringMode = 'hard_metrics';
+        } else {
+            // Legacy: require all 5 dimensions to be present
+            const d = args.delivery ?? 50;
+            const i = args.integrity ?? 50;
+            const e = args.efficiency ?? 50;
+            const c = args.collaboration ?? 50;
+            const r = args.reliability ?? 50;
+            dimensions = { delivery: d, integrity: i, efficiency: e, collaboration: c, reliability: r };
+            scoringMode = 'manual';
+        }
+
+        const overall = Math.round((dimensions.delivery + dimensions.integrity + dimensions.efficiency + dimensions.collaboration + dimensions.reliability) / 5);
         writeScore({
             sessionId: args.sessionId,
             teamId: args.teamId,
@@ -1977,13 +2024,22 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             specName,
             timestamp: Date.now(),
             scorer: client.sessionId,
-            dimensions: { delivery: args.delivery, integrity: args.integrity, efficiency: args.efficiency, collaboration: args.collaboration, reliability: args.reliability },
+            hardMetrics: args.hardMetrics,
+            dimensions,
             overall,
             evidence: args.evidence || {},
             recommendations: args.recommendations || [],
             action: args.action,
         });
-        return { content: [{ type: 'text', text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall}, action=${args.action}` }], isError: false };
+
+        const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
+        return {
+            content: [{
+                type: 'text',
+                text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall}, action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
+            }],
+            isError: false,
+        };
     });
 
     mcp.registerTool('update_genome_feedback', {
