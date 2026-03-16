@@ -168,6 +168,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         ahaLibDir: projectPath(),
         ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: options.startedBy === 'daemon',
+        processStartedAt: Date.now(),
         hostPid: process.pid,
         startedBy: options.startedBy || 'terminal',
         // Initialize lifecycle state
@@ -742,7 +743,20 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 4. Cross-validate: compare team log claims vs CC log evidence
    - Agent says "did review" but CC log has no Read calls → integrity issue
    - Agent says "tests pass" but CC log has no Bash calls → suspicious
-5. Call \`score_agent\` for each active agent
+5. Call \`score_agent\` for each active agent — **hard-first protocol**:
+   **a. Collect hardMetrics** (layer 1, required) from data already gathered:
+      - \`tasksAssigned\` / \`tasksCompleted\` / \`tasksBlocked\` → from list_tasks output
+      - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from read_cc_log totals
+      - \`messagesSent\` / \`protocolMessages\` → from read_team_log (count task-update + notification types)
+   **b. Derive businessMetrics** (layer 2, recommended) from cross-validation in step 4:
+      - \`taskCompletionRate\` = tasksCompleted / tasksAssigned
+      - \`firstPassReviewRate\` = tasks passing review without rework / tasks reviewed
+      - \`verifiedToolCallCount\` = tool calls present in CC log matching agent claims
+      - \`boardComplianceRate\` = protocol-correct board updates / total board updates
+      - \`claimEvidenceDelta\` = 0 if claims match CC log; approach 1 if agent over-claims
+      - \`bugRate\` = confirmed regressions introduced per task completed
+   **c. Set overall**: defaults to \`hardMetricsScore\` (auto-computed). Override allowed only within ±20. Gap > 20 is rejected.
+   **d. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
 6. **Upload feedback to marketplace**: For each role that now has ≥ 3 scores in local storage, call \`update_genome_feedback\` with namespace \`@official\` and the role name. This closes the scoring loop — data that stays local is invisible to the ecosystem.
 7. Decide on action:
    - If an agent looks stuck (same state as last run, no meaningful progress):

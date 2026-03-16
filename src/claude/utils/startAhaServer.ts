@@ -1614,6 +1614,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     role: roleDef?.title || roleId || 'unknown',
                     roleId,
                     displayName: member?.displayName || sessionId?.substring(0, 8),
+                    specId: member?.specId || null,
+                    executionPlane: member?.executionPlane || null,
+                    runtimeType: member?.runtimeType || null,
                 };
             });
 
@@ -1941,35 +1944,54 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
     mcp.registerTool('score_agent', {
         description: [
-            'Write an evaluation score for an agent to the local score table.',
-            'v2 (preferred): provide hardMetrics with raw event counts — dimensions are auto-computed from objective data.',
-            'v1 (legacy): provide delivery/integrity/efficiency/collaboration/reliability manually.',
-            'Supervisor only. Source data: read_team_log for message counts, read_cc_log for tool/token counts, list_tasks for task counts.',
+            'Write an evaluation score for an agent to the local score table. Hard-first protocol:',
+            '1. Always provide hardMetrics (raw event counts from read_cc_log + list_tasks).',
+            '2. Optionally provide businessMetrics (derived rates from CC-log cross-validation) for richer dimension accuracy.',
+            '3. Supervisor session scoring should explicitly judge 3 business axes: task_completion + code_quality + collaboration.',
+            '4. sessionScore.overall must stay within ±20 of hardMetricsScore unless you intentionally override the guardrail.',
+            'v1 legacy (no hardMetrics): manual delivery/integrity/efficiency/collaboration/reliability still accepted.',
+            'Supervisor only.',
         ].join(' '),
         title: 'Score Agent',
         inputSchema: {
             sessionId: z.string(),
             teamId: z.string(),
             role: z.string(),
-            specId: z.string().optional().describe('Genome ID of the agent being scored. Get from list_team_agents. Used as primary key for feedback aggregation — more important than role name.'),
-            // ── v2: hard metrics (preferred) ──────────────────────────────────
+            specId: z.string().optional().describe('Genome ID of the agent being scored. Get from list_team_agents.'),
+            // ── v2 layer 1: raw event counts (required for hard-first) ───────────
             hardMetrics: z.object({
-                tasksAssigned: z.number().int().min(0).describe('Tasks formally assigned to this agent during the session'),
-                tasksCompleted: z.number().int().min(0).describe('Tasks marked done/completed'),
+                tasksAssigned: z.number().int().min(0).describe('Tasks formally assigned to this agent (from list_tasks)'),
+                tasksCompleted: z.number().int().min(0).describe('Tasks marked done/completed (from list_tasks)'),
                 tasksBlocked: z.number().int().min(0).default(0).describe('Tasks that entered a blocked state'),
                 toolCallCount: z.number().int().min(0).default(0).describe('Total tool/MCP calls made (from read_cc_log)'),
-                toolErrorCount: z.number().int().min(0).default(0).describe('Tool calls that returned isError=true'),
-                messagesSent: z.number().int().min(0).default(0).describe('Total messages sent to the team'),
-                protocolMessages: z.number().int().min(0).default(0).describe('Messages of type task-update or notification (protocol-correct)'),
+                toolErrorCount: z.number().int().min(0).default(0).describe('Tool calls that returned isError=true (from read_cc_log)'),
+                messagesSent: z.number().int().min(0).default(0).describe('Total messages sent to the team (from read_team_log)'),
+                protocolMessages: z.number().int().min(0).default(0).describe('task-update or notification messages (protocol-correct, from read_team_log)'),
                 sessionDurationMinutes: z.number().min(0).default(0).describe('Session wall-clock duration in minutes'),
-                tokensUsed: z.number().int().min(0).default(0).describe('Total tokens consumed (input + output, from read_cc_log)'),
-            }).optional().describe('Objective event counts. When provided, dimension scores are computed automatically.'),
+                tokensUsed: z.number().int().min(0).default(0).describe('Total tokens consumed input+output (from read_cc_log)'),
+            }).optional().describe('Raw event counts (layer 1). Required for hard-first scoring.'),
+            // ── v2 layer 2: business-level metrics (optional, improves accuracy) ─
+            businessMetrics: z.object({
+                taskCompletionRate: z.number().min(0).max(1).describe('tasksCompleted / tasksAssigned (0.0–1.0)'),
+                firstPassReviewRate: z.number().min(0).max(1).describe('Fraction of submissions passing review without rework (0.0–1.0)'),
+                verifiedToolCallCount: z.number().int().min(0).describe('Tool calls confirmed in CC log evidence (≥0)'),
+                boardComplianceRate: z.number().min(0).max(1).describe('Fraction of board updates following protocol (0.0–1.0)'),
+                claimEvidenceDelta: z.number().min(0).max(1).describe('Claim-evidence gap: 0=perfect CC-log match, 1=all claims unverified'),
+                bugRate: z.number().min(0).describe('Confirmed regressions per completed task (0.0+; 0=none introduced)'),
+            }).optional().describe('Business-level hard metrics (layer 2). Derived from CC-log cross-validation. Improves dimension accuracy when provided.'),
+            sessionScore: z.object({
+                taskCompletion: z.number().min(0).max(100).describe('Supervisor business score for task completion / closure'),
+                codeQuality: z.number().min(0).max(100).describe('Supervisor business score for code quality / rework risk'),
+                collaboration: z.number().min(0).max(100).describe('Supervisor business score for collaboration / protocol fit'),
+            }).optional().describe('Canonical 3-axis session score written to the genome feedback loop. If omitted, derived automatically from dimensions.'),
             // ── v1: manual dimensions (legacy fallback) ────────────────────────
             delivery: z.number().min(0).max(100).optional().describe('Legacy: manual delivery score. Ignored when hardMetrics is provided.'),
             integrity: z.number().min(0).max(100).optional().describe('Legacy: manual integrity score. Ignored when hardMetrics is provided.'),
             efficiency: z.number().min(0).max(100).optional().describe('Legacy: manual efficiency score. Ignored when hardMetrics is provided.'),
             collaboration: z.number().min(0).max(100).optional().describe('Legacy: manual collaboration score. Ignored when hardMetrics is provided.'),
             reliability: z.number().min(0).max(100).optional().describe('Legacy: manual reliability score. Ignored when hardMetrics is provided.'),
+            overall: z.number().min(0).max(100).optional().describe('Optional explicit overall override. Defaults to sessionScore.overall (or hardMetricsScore if no sessionScore). Must satisfy the score-gap guardrail.'),
+            maxScoreGap: z.number().min(0).max(100).default(20).optional().describe('Maximum allowed |hardMetricsScore - overall| before returning an error. Default 20.'),
             evidence: z.record(z.any()).optional(),
             recommendations: z.array(z.string()).optional(),
             action: z.enum(['keep', 'keep_with_guardrails', 'mutate', 'discard']),
@@ -1986,7 +2008,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         if (args.specId) {
             try {
                 const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                const res = await fetch(`${hubUrl}/genomes/${encodeURIComponent(args.specId)}`, { signal: AbortSignal.timeout(3_000) });
+                const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(args.specId)}`, { signal: AbortSignal.timeout(3_000) });
                 if (res.ok) {
                     const data = await res.json() as { genome?: { namespace?: string; name?: string } };
                     specNamespace = data.genome?.namespace ?? undefined;
@@ -1995,14 +2017,18 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             } catch { /* proceed without */ }
         }
 
-        // Resolve dimension scores: prefer hard metrics (objective), fall back to manual (legacy)
+        // Resolve dimension scores: hard-first (business > raw counts > manual legacy)
+        const { computeDimensionsFromMetrics, computeHardMetricsScore, validateScoreGap } = await import('@/claude/utils/feedbackPrivacy');
+        const { computeSessionScoreFromDimensions, computeSessionScoreOverall } = await import('@/claude/utils/sessionScoring');
+
         let dimensions: { delivery: number; integrity: number; efficiency: number; collaboration: number; reliability: number };
-        let scoringMode: 'hard_metrics' | 'manual';
+        let hardMetricsScore: number | undefined;
+        let scoringMode: 'business_metrics' | 'hard_metrics' | 'manual';
 
         if (args.hardMetrics) {
-            const { computeDimensionsFromHardMetrics } = await import('@/claude/utils/feedbackPrivacy');
-            dimensions = computeDimensionsFromHardMetrics(args.hardMetrics);
-            scoringMode = 'hard_metrics';
+            dimensions = computeDimensionsFromMetrics(args.hardMetrics, args.businessMetrics);
+            hardMetricsScore = computeHardMetricsScore(args.hardMetrics, args.businessMetrics);
+            scoringMode = args.businessMetrics ? 'business_metrics' : 'hard_metrics';
         } else {
             // Legacy: require all 5 dimensions to be present
             const d = args.delivery ?? 50;
@@ -2014,7 +2040,33 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             scoringMode = 'manual';
         }
 
-        const overall = Math.round((dimensions.delivery + dimensions.integrity + dimensions.efficiency + dimensions.collaboration + dimensions.reliability) / 5);
+        const sessionScore = args.sessionScore
+            ? computeSessionScoreOverall(args.sessionScore)
+            : computeSessionScoreFromDimensions(dimensions);
+
+        // Compute overall: use provided override or default to the 3-axis session score
+        const baseOverall = sessionScore.overall ?? hardMetricsScore ?? Math.round(
+            (dimensions.delivery + dimensions.integrity + dimensions.efficiency + dimensions.collaboration + dimensions.reliability) / 5,
+        );
+        const overall = args.overall !== undefined ? args.overall : baseOverall;
+
+        // Gap guard: overall must be within ±maxScoreGap of hardMetricsScore
+        const maxScoreGap = args.maxScoreGap ?? 20;
+        if (hardMetricsScore !== undefined) {
+            const gapWarning = validateScoreGap(hardMetricsScore, overall);
+            if (gapWarning && Math.abs(hardMetricsScore - overall) > maxScoreGap) {
+                return { content: [{ type: 'text', text: `Error: ${gapWarning}` }], isError: true };
+            }
+        }
+
+        const scoreGap = hardMetricsScore !== undefined
+            ? {
+                ok: Math.abs(hardMetricsScore - overall) <= maxScoreGap,
+                gap: Math.abs(hardMetricsScore - overall),
+                maxGap: maxScoreGap,
+            }
+            : { ok: true, gap: 0, maxGap: maxScoreGap };
+
         writeScore({
             sessionId: args.sessionId,
             teamId: args.teamId,
@@ -2025,6 +2077,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             timestamp: Date.now(),
             scorer: client.sessionId,
             hardMetrics: args.hardMetrics,
+            businessMetrics: args.businessMetrics,
+            hardMetricsScore,
+            sessionScore,
+            scoreGap,
             dimensions,
             overall,
             evidence: args.evidence || {},
@@ -2033,10 +2089,12 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         });
 
         const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
+        const hardInfo = hardMetricsScore !== undefined ? ` hardMetricsScore=${hardMetricsScore}` : '';
+        const sessionInfo = ` sessionScore(task_completion=${sessionScore.taskCompletion}, code_quality=${sessionScore.codeQuality}, collaboration=${sessionScore.collaboration}, overall=${sessionScore.overall})`;
         return {
             content: [{
                 type: 'text',
-                text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall}, action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
+                text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
             }],
             isError: false,
         };
@@ -2088,6 +2146,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const summary = [
             `Aggregated ${feedback.evaluationCount} evaluations for ${args.role}`,
             `Overall avg: ${feedback.avgScore}/100`,
+            `Session score: task_completion=${feedback.sessionScore.taskCompletion} code_quality=${feedback.sessionScore.codeQuality} collaboration=${feedback.sessionScore.collaboration} overall=${feedback.sessionScore.overall}`,
             `Dimensions: delivery=${feedback.dimensions.delivery} integrity=${feedback.dimensions.integrity} efficiency=${feedback.dimensions.efficiency} collaboration=${feedback.dimensions.collaboration} reliability=${feedback.dimensions.reliability}`,
             `Distribution: excellent=${feedback.distribution.excellent} good=${feedback.distribution.good} fair=${feedback.distribution.fair} poor=${feedback.distribution.poor}`,
             `Latest action: ${feedback.latestAction}`,
@@ -2392,6 +2451,11 @@ Use this tool when:
 - You have refined an agent's behavior and want to preserve it for future spawns
 - You want to share an agent specification with team members
 - You are evolving an existing genome after observing performance
+
+On genome-hub, repeated saves of the same namespace/name go through version promotion:
+- first save creates v1
+- later saves create vN+1 only if the latest version has enough supervisor score
+- otherwise the call fails with validation details instead of silently overwriting history
 
 Namespace conventions:
 - "@official" — curated by the platform team

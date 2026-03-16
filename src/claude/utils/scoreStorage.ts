@@ -4,10 +4,15 @@
  * Provides local JSON file storage for agent performance scores.
  * Scores are stored at `.aha/scores/agent_scores.json` relative to cwd.
  *
- * v2 scoring model: hard (objective) metrics replace subjective 5-dimension input.
- * The 5 dimensions (delivery, integrity, efficiency, collaboration, reliability)
- * are now DERIVED from raw event counts rather than manually assigned by the supervisor.
- * Legacy manually-assigned dimensions are still accepted for backward compatibility.
+ * v2 scoring model — two-layer hard metrics:
+ *   Layer 1 — HardMetrics: raw event counts (tasksAssigned, toolCallCount, tokensUsed, …)
+ *   Layer 2 — BusinessMetrics: business-level rates derived from CC-log cross-validation
+ *             (taskCompletionRate, firstPassReviewRate, boardComplianceRate, …)
+ *
+ * The 5 dimensions are computed from BusinessMetrics when available, otherwise
+ * from HardMetrics raw counts. Manual dimension override (v1 legacy) is still
+ * accepted for backward compatibility, but `overall` must stay within ±20 of
+ * the objective `hardMetricsScore`.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
@@ -38,6 +43,37 @@ export interface HardMetrics {
     tokensUsed: number;
 }
 
+/**
+ * Business-level hard metrics — layer 2 above raw event counts.
+ * These map directly to the 5 evaluation dimensions and require
+ * supervisor cross-validation of team log vs CC log evidence.
+ */
+export interface BusinessMetrics {
+    /** Task completion rate (0.0–1.0): tasksCompleted / tasksAssigned */
+    taskCompletionRate: number;
+    /** Fraction of submitted items that passed review without rework (0.0–1.0) */
+    firstPassReviewRate: number;
+    /** Count of tool calls confirmed in CC log evidence (≥ 0) */
+    verifiedToolCallCount: number;
+    /** Board protocol compliance rate (0.0–1.0): correct board updates / total board updates */
+    boardComplianceRate: number;
+    /** Claim-evidence delta (0.0–1.0): 0 = perfect CC-log alignment, 1 = all claims unverified */
+    claimEvidenceDelta: number;
+    /** Bug/regression rate per completed task (0.0+): 0 = no regressions introduced */
+    bugRate: number;
+}
+
+export interface SessionScore {
+    /** Business-facing score: did the session finish the assigned work? */
+    taskCompletion: number;
+    /** Business-facing score: was the produced work high quality / low rework? */
+    codeQuality: number;
+    /** Business-facing score: did the agent collaborate correctly with the team? */
+    collaboration: number;
+    /** Average of the 3 business-facing axes */
+    overall: number;
+}
+
 export interface AgentScore {
     sessionId: string;
     teamId: string;
@@ -48,10 +84,35 @@ export interface AgentScore {
     timestamp: number;
     scorer: string;
     /**
-     * Raw event counts (v2). When present, `dimensions` are computed from these.
-     * When absent, `dimensions` contain manually-assigned values (v1 legacy).
+     * Raw event counts (v2 layer 1). Source of truth for derived dimensions
+     * when businessMetrics is absent.
      */
     hardMetrics?: HardMetrics;
+    /**
+     * Business-level hard metrics (v2 layer 2). When present, dimensions are
+     * computed from these instead of raw HardMetrics counts.
+     * Requires supervisor CC-log cross-validation.
+     */
+    businessMetrics?: BusinessMetrics;
+    /**
+     * Score computed purely from hard metrics (0-100).
+     * `overall` must satisfy |hardMetricsScore - overall| ≤ 20.
+     */
+    hardMetricsScore?: number;
+    /**
+     * Canonical 3-axis session score used by the supervisor scoring pipeline.
+     * This is what the supervisor explicitly judges per session:
+     * task_completion + code_quality + collaboration.
+     */
+    sessionScore?: SessionScore;
+    /**
+     * Guardrail result for |hardMetricsScore - sessionScore.overall|.
+     */
+    scoreGap?: {
+        ok: boolean;
+        gap: number;
+        maxGap: number;
+    };
     dimensions: {
         delivery: number;      // 0-100
         integrity: number;     // 0-100

@@ -26,10 +26,12 @@
  *   Action recommendations (keep / mutate / discard)
  */
 
-import type { AgentScore, HardMetrics } from './scoreStorage';
+import type { AgentScore, HardMetrics, BusinessMetrics } from './scoreStorage';
+import { computeSessionScoreFromDimensions } from './sessionScoring';
 
 /**
- * Convert raw event counts (HardMetrics) into the canonical 0-100 dimension scores.
+ * Convert raw event counts (HardMetrics layer 1) into dimension scores.
+ * Used as fallback when BusinessMetrics are not available.
  *
  * Mapping:
  *   delivery      = task completion rate (tasksCompleted / tasksAssigned)
@@ -80,6 +82,92 @@ export function computeDimensionsFromHardMetrics(m: HardMetrics): {
     return { delivery, integrity, efficiency, collaboration, reliability };
 }
 
+/**
+ * Compute dimension scores from BusinessMetrics (layer 2), falling back to
+ * HardMetrics (layer 1) when businessMetrics is not provided.
+ *
+ * BusinessMetrics dimension mapping:
+ *   delivery      = taskCompletionRate × 100
+ *   integrity     = (1 − claimEvidenceDelta) × 100  (claim truthfulness)
+ *   efficiency    = token efficiency from raw HardMetrics (still needs raw counts)
+ *   collaboration = boardComplianceRate × 100
+ *   reliability   = (1 − min(1, bugRate)) × 100  (regressions per task)
+ *
+ * firstPassReviewRate and verifiedToolCallCount inform the `evidence` context
+ * but are also folded into reliability/integrity respectively:
+ *   - firstPassReviewRate weights into reliability (first-pass quality proxy)
+ *   - verifiedToolCallCount/toolCallCount ratio adjusts integrity
+ */
+export function computeDimensionsFromMetrics(
+    raw: HardMetrics,
+    business?: BusinessMetrics,
+): {
+    delivery: number;
+    integrity: number;
+    efficiency: number;
+    collaboration: number;
+    reliability: number;
+} {
+    if (!business) {
+        return computeDimensionsFromHardMetrics(raw);
+    }
+
+    // delivery: directly from taskCompletionRate
+    const delivery = Math.min(100, Math.max(0, Math.round(business.taskCompletionRate * 100)));
+
+    // integrity: claim-evidence alignment + verified tool call ratio
+    // claimEvidenceDelta=0 → perfect; weighted 70% claim truth + 30% firstPassReview
+    const claimTruth = Math.min(100, Math.max(0, Math.round((1 - business.claimEvidenceDelta) * 100)));
+    const firstPassBonus = Math.min(100, Math.max(0, Math.round(business.firstPassReviewRate * 100)));
+    const integrity = Math.round(claimTruth * 0.7 + firstPassBonus * 0.3);
+
+    // efficiency: still token-based from raw counts (business layer doesn't track tokens)
+    const tokensPerTask = raw.tasksCompleted > 0 && raw.tokensUsed > 0
+        ? raw.tokensUsed / raw.tasksCompleted
+        : null;
+    const efficiency = tokensPerTask !== null
+        ? Math.min(100, Math.max(10, Math.round(5_000_000 / tokensPerTask)))
+        : 60;
+
+    // collaboration: board protocol compliance
+    const collaboration = Math.min(100, Math.max(0, Math.round(business.boardComplianceRate * 100)));
+
+    // reliability: first-pass quality (no regressions) weighted 60%, tool success 40%
+    const noBugScore = Math.min(100, Math.max(0, Math.round((1 - Math.min(1, business.bugRate)) * 100)));
+    const toolSuccessScore = raw.toolCallCount > 0
+        ? Math.min(100, Math.round(((raw.toolCallCount - raw.toolErrorCount) / raw.toolCallCount) * 100))
+        : 80;
+    const reliability = Math.round(noBugScore * 0.6 + toolSuccessScore * 0.4);
+
+    return { delivery, integrity, efficiency, collaboration, reliability };
+}
+
+/**
+ * Compute the hard-metrics-only score (0-100).
+ * This value is stored as `hardMetricsScore` and must stay within ±20 of `overall`.
+ */
+export function computeHardMetricsScore(
+    raw: HardMetrics,
+    business?: BusinessMetrics,
+): number {
+    const dims = computeDimensionsFromMetrics(raw, business);
+    return Math.round(
+        (dims.delivery + dims.integrity + dims.efficiency + dims.collaboration + dims.reliability) / 5,
+    );
+}
+
+/**
+ * Validate that the overall score is within 20 points of the hard metrics score.
+ * Returns a warning string if the gap is too large, or null if within bounds.
+ */
+export function validateScoreGap(hardMetricsScore: number, overall: number, maxGap: number = 20): string | null {
+    const gap = Math.abs(hardMetricsScore - overall);
+    if (gap > maxGap) {
+        return `Score gap too large: hardMetricsScore=${hardMetricsScore}, overall=${overall}, gap=${gap} (max ${maxGap}). Override must stay within ±${maxGap} of objective score.`;
+    }
+    return null;
+}
+
 // ── Pattern library for PII detection ────────────────────────────────────────
 
 /** UUID v4 pattern */
@@ -124,6 +212,12 @@ export function sanitizeSuggestion(text: string): string | null {
 export interface AggregatedFeedback {
     evaluationCount: number;
     avgScore: number;
+    sessionScore: {
+        taskCompletion: number;
+        codeQuality: number;
+        collaboration: number;
+        overall: number;
+    };
     dimensions: {
         delivery: number;
         integrity: number;
@@ -156,6 +250,18 @@ export function aggregateScores(scores: AgentScore[]): AggregatedFeedback | null
         }),
         { delivery: 0, integrity: 0, efficiency: 0, collaboration: 0, reliability: 0 }
     );
+    const sumSession = scores.reduce(
+        (acc, s) => {
+            const session = s.sessionScore ?? computeSessionScoreFromDimensions(s.dimensions);
+            return {
+                taskCompletion: acc.taskCompletion + session.taskCompletion,
+                codeQuality: acc.codeQuality + session.codeQuality,
+                collaboration: acc.collaboration + session.collaboration,
+                overall: acc.overall + session.overall,
+            };
+        },
+        { taskCompletion: 0, codeQuality: 0, collaboration: 0, overall: 0 }
+    );
 
     const avgDims = {
         delivery: Math.round(sumDims.delivery / count),
@@ -164,11 +270,14 @@ export function aggregateScores(scores: AgentScore[]): AggregatedFeedback | null
         collaboration: Math.round(sumDims.collaboration / count),
         reliability: Math.round(sumDims.reliability / count),
     };
+    const avgSessionScore = {
+        taskCompletion: Math.round(sumSession.taskCompletion / count),
+        codeQuality: Math.round(sumSession.codeQuality / count),
+        collaboration: Math.round(sumSession.collaboration / count),
+        overall: Math.round(sumSession.overall / count),
+    };
 
-    const avgScore = Math.round(
-        (avgDims.delivery + avgDims.integrity + avgDims.efficiency +
-            avgDims.collaboration + avgDims.reliability) / 5
-    );
+    const avgScore = Math.round(scores.reduce((sum, s) => sum + s.overall, 0) / count);
 
     // Score distribution
     const distribution = { excellent: 0, good: 0, fair: 0, poor: 0 };
@@ -195,6 +304,7 @@ export function aggregateScores(scores: AgentScore[]): AggregatedFeedback | null
     return {
         evaluationCount: count,
         avgScore,
+        sessionScore: avgSessionScore,
         dimensions: avgDims,
         distribution,
         latestAction,
