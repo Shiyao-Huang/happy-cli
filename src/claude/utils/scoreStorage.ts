@@ -12,6 +12,9 @@ export interface AgentScore {
     sessionId: string;
     teamId: string;
     role: string;
+    specId?: string;       // genome ID — primary key for feedback aggregation
+    specNamespace?: string; // e.g. '@official'
+    specName?: string;      // e.g. 'implementer'
     timestamp: number;
     scorer: string;
     dimensions: {

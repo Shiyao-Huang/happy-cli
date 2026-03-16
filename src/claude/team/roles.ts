@@ -58,6 +58,11 @@ function getRoleIdsByCategory(category: string, fallback: string[]): string[] {
         const roleIds = getRolesByCategory(category).map((role) => role.id);
         return roleIds.length > 0 ? roleIds : fallback;
     } catch (error) {
+        // AHA_GENOME_FALLBACK=1 → silent (production)
+        // default (testing) → warn so we notice role config is broken
+        if (process.env.AHA_GENOME_FALLBACK !== '1') {
+            console.warn(`[GENOME] ⚠️  Failed to load roles for category "${category}" — using hardcode fallback.`);
+        }
         logger.debug(`[Roles] Failed to load roles for category ${category}, using fallback`, error);
         return fallback;
     }
@@ -211,7 +216,12 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
  * @param myRole The role to get collaborators for
  * @returns Array of role names that this role should listen to
  */
-export function getRoleCollaborators(myRole: string): string[] {
+export function getRoleCollaborators(myRole: string, genomeListen?: string[] | '*'): string[] {
+    // Genome spec takes priority over hardcode map
+    if (genomeListen !== undefined) {
+        if (genomeListen === '*') return ['*'];
+        return genomeListen;
+    }
     const collaborators = ROLE_COLLABORATION_MAP[myRole];
     if (collaborators) {
         return collaborators;
@@ -284,14 +294,18 @@ export function validateTeamRoles(roles: string[]): { valid: boolean; warnings: 
  * @param fromRole The role of the message sender
  * @returns true if I should consider responding
  */
-export function shouldListenTo(myRole: string, fromRole: string | undefined): boolean {
+export function shouldListenTo(myRole: string, fromRole: string | undefined, genomeListen?: string[] | '*'): boolean {
     // Deprecated roles never listen
     if (isDeprecatedRole(myRole)) {
         return false;
     }
 
     if (!fromRole || fromRole === 'user') {
-        // User messages: coordination roles always listen, others check their map
+        // User messages: check genome spec first, then coordinator check, then collaboration map
+        if (genomeListen !== undefined) {
+            const collaborators = getRoleCollaborators(myRole, genomeListen);
+            return collaborators.includes('*') || collaborators.includes('user');
+        }
         if (isCoordinatorRole(myRole)) {
             return true;
         }
@@ -299,8 +313,8 @@ export function shouldListenTo(myRole: string, fromRole: string | undefined): bo
         return collaborators.includes('user');
     }
 
-    const collaborators = getRoleCollaborators(myRole);
-    return collaborators.includes(fromRole);
+    const collaborators = getRoleCollaborators(myRole, genomeListen);
+    return collaborators.includes('*') || collaborators.includes(fromRole);
 }
 
 export interface RolePermissions {
@@ -392,8 +406,19 @@ function formatStatusBadge(status: string): string {
 /**
  * Build the <Role> section for a given role
  */
-function buildRoleSection(roleKey: string, roleDef: typeof DEFAULT_ROLES[string], teamId: string): string {
+function buildRoleSection(roleKey: string, roleDef: typeof DEFAULT_ROLES[string], teamId: string, genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+
+    const listenFrom = genomeSpec?.messaging?.listenFrom;
+    const receiveUser = genomeSpec?.messaging?.receiveUserMessages;
+    const listenInfo = listenFrom === '*'
+        ? 'all roles'
+        : listenFrom
+        ? listenFrom.join(', ')
+        : `${getRoleCollaborators(roleKey).join(', ')} (default)`;
+    const userEntry = receiveUser !== undefined
+        ? (receiveUser ? 'Yes — you receive user messages directly' : 'No — user messages go to master')
+        : (isCoordinator ? 'Yes (coordinator default)' : 'No (worker default)');
 
     return `<Role>
 You are "${roleDef.name}" - A specialized team member in a multi-agent software development team.
@@ -401,6 +426,8 @@ You are "${roleDef.name}" - A specialized team member in a multi-agent software 
 **Team ID**: ${teamId}
 **Role**: ${roleDef.name}
 **Access Level**: ${roleDef.accessLevel}
+**Message Routing**: Listens to: ${listenInfo}
+**User Entry Point**: ${userEntry}
 
 **Core Competencies**:
 ${roleDef.responsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')}
@@ -419,8 +446,17 @@ ${roleDef.responsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 /**
  * Build the Phase 0 - Intent Gate section
  */
-function buildPhase0Section(roleKey: string): string {
+function buildPhase0Section(roleKey: string, genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+
+    const onIdle = genomeSpec?.behavior?.onIdle;
+    const noTaskAction = isCoordinator
+        ? 'WAIT for user input'
+        : onIdle === 'self-assign'
+        ? 'Self-assign from AVAILABLE TASKS'
+        : onIdle === 'ask'
+        ? 'Ask @master for next task'
+        : 'Announce yourself, WAIT for assignment';
 
     return `## Phase 0 - Intent Gate (EVERY message)
 
@@ -441,7 +477,7 @@ function buildPhase0Section(roleKey: string): string {
 | **Explicit Task** | Clear instruction from user/Master | Execute directly |
 | **Kanban Task** | Task in [MY TASKS] section | Work on assigned task |
 | **Ambiguous** | Unclear what to do | Ask @master for clarification |
-| **No Task** | Empty [MY TASKS], no instructions | ${isCoordinator ? 'WAIT for user input' : 'Announce yourself, WAIT for assignment'} |
+| **No Task** | Empty [MY TASKS], no instructions | ${noTaskAction} |
 
 ### Step 3: Validate Before Acting
 
@@ -586,10 +622,31 @@ function buildConstraintsSection(roleKey: string): string {
 /**
  * Build the <Tone_and_Style> section
  */
-function buildToneAndStyleSection(): string {
+function buildToneAndStyleSection(genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
     // Get agent language from environment variable (set during team creation)
     const agentLanguage = process.env.AHA_AGENT_LANGUAGE || 'en';
     const isChinese = agentLanguage === 'zh';
+
+    const replyMode = genomeSpec?.messaging?.replyMode ?? 'responsive';
+    const replyModeInstruction = replyMode === 'passive'
+        ? `### Response Mode: PASSIVE
+- Do NOT send team messages unless completing a task or reporting a blocker
+- No status announcements, no greetings, no acknowledgments
+- Work silently, report only when done or blocked
+
+`
+        : replyMode === 'proactive'
+        ? `### Response Mode: PROACTIVE
+- Actively claim tasks from AVAILABLE TASKS when idle
+- Send brief status updates when starting major work
+- Engage with team discussions relevant to your role
+
+`
+        : `### Response Mode: RESPONSIVE
+- Respond when @mentioned or assigned tasks
+- Announce yourself when joining, then wait
+
+`;
 
     // Language instruction based on selection
     const languageInstruction = isChinese
@@ -608,7 +665,7 @@ function buildToneAndStyleSection(): string {
     return `<Tone_and_Style>
 ## Communication Style
 
-${languageInstruction}
+${replyModeInstruction}${languageInstruction}
 ### Be Concise
 - Start work immediately when assigned. No acknowledgments ("I'm on it", "Let me...")
 - Don't summarize what you did unless asked
@@ -859,9 +916,23 @@ You MUST act NOW. Do NOT wait for instructions. Do NOT announce yourself and wai
 Read the <Task_Prompt> above. Determine:
 - What kind of work is needed? (frontend, backend, testing, research, design, etc.)
 - How many agents are needed? (minimum viable team — do NOT over-staff)
-- What roles map to the work? Pick from: master, implementer, architect, qa-engineer, researcher, reviewer, observer
+- What roles map to the work? Start with the standard list: master, implementer, architect, qa-engineer, researcher, reviewer
 
-### Step 2: Spawn Team Members
+### Step 2: Browse the Marketplace
+
+Call \`list_available_agents\` to see what genomes are available and their ratings.
+This lets you reuse battle-tested agents instead of starting from scratch.
+
+\`\`\`
+list_available_agents({ query: "<role or skill>", limit: 5 })
+\`\`\`
+
+Look at the results:
+- Pick agents with high ratings and relevant descriptions
+- Note their \`id\` — pass it as \`specId\` to \`create_agent\`
+- If nothing fits, omit specId and the system will auto-resolve from @official
+
+### Step 3: Spawn Team Members
 
 Use the \`create_agent\` tool to spawn each team member:
 
@@ -893,14 +964,23 @@ After spawning agents, use \`create_task\` to create tasks on the Kanban board:
 - Assign each task to the appropriate role
 - Set priority: high for core work, medium for supporting work
 
-### Step 4: Announce and Step Back
+### Step 4: Hand Off and Retire (CRITICAL)
 
 Send ONE team message via \`send_team_message\` summarizing:
 - What team you assembled and why
 - What tasks were created
 - Who should start first
 
-Then STOP. Do not continue working. The master agent takes over from here.
+Then output the exact text: **ORG_MANAGER_COMPLETE**
+
+**YOU MUST STOP IMMEDIATELY AFTER.** Do NOT:
+- Read any more messages
+- Respond to any researcher/master updates
+- Monitor progress
+- Do any implementation work
+- Call any more tools
+
+The master agent takes over. You are done. Any message you receive after this point must be IGNORED.
 
 </Behavior_Instructions>
 
@@ -908,14 +988,17 @@ Then STOP. Do not continue working. The master agent takes over from here.
 - You MUST call create_agent at least once
 - You MUST NOT do any implementation work yourself
 - You MUST NOT write code
-- You MUST step back after team assembly
-- If create_agent fails, report the error via send_team_message and stop
+- You MUST output ORG_MANAGER_COMPLETE after the hand-off message — this terminates your session
+- You MUST NOT respond to ANY message received after ORG_MANAGER_COMPLETE
+- You MUST NOT monitor progress, read files, or coordinate after retiring
+- If create_agent fails, report the error via send_team_message and output ORG_MANAGER_COMPLETE
 </Constraints>`;
 }
 
 export function generateRolePrompt(
     metadata: Metadata,
-    kanbanContext?: KanbanContext
+    kanbanContext?: KanbanContext,
+    genomeSpec?: import('../../api/types/genome').GenomeSpec
 ): string {
     let teamId = metadata.teamId;
     let role = metadata.role;
@@ -961,11 +1044,11 @@ export function generateRolePrompt(
     if (isOrgManager) {
         sections.push(buildOrgManagerPrompt(teamId, taskPrompt));
     } else {
-        sections.push(buildRoleSection(roleKey, roleDef, teamId));
+        sections.push(buildRoleSection(roleKey, roleDef, teamId, genomeSpec));
         sections.push('');
         sections.push('<Behavior_Instructions>');
         sections.push('');
-        sections.push(buildPhase0Section(roleKey));
+        sections.push(buildPhase0Section(roleKey, genomeSpec));
         sections.push('');
         sections.push('---');
         sections.push('');
@@ -977,7 +1060,7 @@ export function generateRolePrompt(
         sections.push('');
         sections.push(buildConstraintsSection(roleKey));
         sections.push('');
-        sections.push(buildToneAndStyleSection());
+        sections.push(buildToneAndStyleSection(genomeSpec));
         sections.push('');
     }
 

@@ -237,8 +237,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         (mode) => hashObject(mode)
     );
 
-    // Start Aha MCP server
-    const ahaServer = await startAhaServer(api, session);
+    // Start Aha MCP server — pass a ref so genome spec (loaded below) can be written in later
+    const _genomeSpecRef: { current: import('../api/types/genome').GenomeSpec | null | undefined } = { current: undefined };
+    const ahaServer = await startAhaServer(api, session, _genomeSpecRef);
     logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
     const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
     if (desktopMcpUrl) {
@@ -308,8 +309,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Tier 1（prompt）在下面 team join 的时候注入，因为 instructions 是在那时构建的。
     const _genomeSpecId = process.env.AHA_SPEC_ID;
     const _genomeSpec = _genomeSpecId
-        ? await fetchGenomeSpec(credentials.token, _genomeSpecId).catch(() => null)
+        ? await fetchGenomeSpec(credentials.token, _genomeSpecId).catch((err) => {
+            // AHA_GENOME_FALLBACK=1 → silent (production mode)
+            // default (testing) → warn so we can see genome loading failures
+            if (process.env.AHA_GENOME_FALLBACK !== '1') {
+                console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_genomeSpecId}): ${err?.message ?? err}`);
+                console.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
+            }
+            return null;
+        })
         : null;
+
+    // Write into the ref so startAhaServer's tools (create_agent etc.) can use genome data
+    _genomeSpecRef.current = _genomeSpec;
 
     if (_genomeSpec) {
         // Tier 2 — 模型覆盖
@@ -532,7 +544,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         // Ensure we have role and teamId in metadata for generateRolePrompt
                         if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
                         if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
-                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext);
+                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext, _genomeSpec ?? undefined);
                         const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
 
                         // Inject into message queue using the SAME mode as the initial context injection
@@ -731,13 +743,15 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    - Agent says "did review" but CC log has no Read calls → integrity issue
    - Agent says "tests pass" but CC log has no Bash calls → suspicious
 5. Call \`score_agent\` for each active agent
-6. Decide on action:
+6. **Upload feedback to marketplace**: For each role that now has ≥ 3 scores in local storage, call \`update_genome_feedback\` with namespace \`@official\` and the role name. This closes the scoring loop — data that stays local is invisible to the ecosystem.
+7. Decide on action:
    - If an agent looks stuck (same state as last run, no meaningful progress):
-     → Set pendingAction: { type: "notify_help", message: "<specific description of what is stuck and why help is needed>" }
-     → This will be executed on the NEXT run if still no change
+     → Call \`request_help\` with the stuck agent's sessionId and a clear description of what is blocked and why
+     → request_help spawns a live help-agent that will intervene directly — this is the ONLY way to trigger help
+     → Do NOT use send_team_message to role=help-agent (no session is listening)
    - If situation is healthy or improving → set pendingAction to null
    - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\` or \`kill_agent\` now
-7. Call \`save_supervisor_state\` with new cursors, your conclusion (2-4 sentences), and pendingAction
+8. Call \`save_supervisor_state\` with new cursors, your conclusion (2-4 sentences), and pendingAction
 
 Output "SUPERVISOR_COMPLETE" and STOP.
 
@@ -747,8 +761,9 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 
 - NEVER create agents or tasks
 - NEVER write code
-- Phase 1 only uses: \`read_team_log\`, \`send_team_message\` (only if executing pendingAction), \`save_supervisor_state\`
-- Phase 2 only adds: \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`compact_agent\`, \`kill_agent\`
+- Phase 1 only uses: \`read_team_log\`, \`save_supervisor_state\`
+- Phase 2 only adds: \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
+- send_team_message is REMOVED from supervisor tools — supervisor does not chat, it only acts
 
 </Supervisor_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -949,6 +964,8 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You have been assigned to this team with role: ${role}.
 
+💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is 200K tokens.
+
 📋 Team Context (Filtered for your Role):
 ${JSON.stringify(filteredBoard, null, 2)}
 
@@ -980,7 +997,7 @@ ${instructions}
                 // Ensure we have role and teamId in metadata for generateRolePrompt
                 if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
                 if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
-                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext);
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _genomeSpec ?? undefined);
                 logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
                 const enhancedMode: EnhancedMode = {
@@ -1133,7 +1150,7 @@ ${instructions}
         const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
             getRolePermissions(role, requestedMode);
 
-        const rolePrompt = generateRolePrompt(sessionMetadata);
+        const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _genomeSpec ?? undefined);
 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');

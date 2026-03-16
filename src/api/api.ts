@@ -1467,6 +1467,10 @@ export class ApiClient {
   /**
    * Register or update a genome (reusable agent specification).
    * Called by the create_genome MCP tool.
+   *
+   * Routes to genome-hub (GENOME_HUB_URL, default localhost:3006) —
+   * the M3 standalone marketplace server. Falls back to happy-server
+   * legacy endpoint if genome-hub is unreachable.
    */
   async createGenome(genome: {
     id?: string;
@@ -1480,26 +1484,64 @@ export class ApiClient {
     tags?: string;
     category?: string;
   }): Promise<{ genome: any }> {
+    // Primary: genome-hub (M3 marketplace, port 3006)
+    const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+
+    // genome-hub body format (no parentSessionId / teamId — those are happy-server concepts)
+    const hubBody = {
+      namespace: genome.namespace ?? '@public',
+      name: genome.name,
+      version: 1,
+      description: genome.description,
+      spec: genome.spec,
+      tags: genome.tags,
+      category: genome.category,
+      isPublic: genome.isPublic ?? false,
+    };
+
     try {
       const response = await axios.post(
-        `${configuration.serverUrl}/v1/genomes`,
-        {
-          ...genome,
-          isPublic: genome.isPublic ?? false,
-        },
+        `${hubUrl}/genomes`,
+        hubBody,
         {
           headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
             'Content-Type': 'application/json',
+            ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
           },
           timeout: 10000,
         }
       );
-      logger.debug(`[API] Created/updated genome ${response.data?.genome?.id}`);
+      logger.debug(`[API] Created genome in genome-hub: ${response.data?.genome?.id}`);
       return response.data;
-    } catch (error) {
-      logger.debug(`[API] [ERROR] Failed to create genome:`, error);
-      throw new Error(`Failed to create genome: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } catch (hubError: any) {
+      // Surface meaningful error if genome-hub is reachable but returned an error
+      if (hubError?.response) {
+        const status = hubError.response.status;
+        const body = JSON.stringify(hubError.response.data ?? {});
+        throw new Error(`genome-hub returned ${status}: ${body}`);
+      }
+
+      // genome-hub unreachable — fall back to happy-server legacy endpoint
+      logger.debug(`[API] genome-hub unreachable (${hubError?.message}), falling back to happy-server`);
+      try {
+        const fallback = await axios.post(
+          `${configuration.serverUrl}/v1/genomes`,
+          { ...genome, isPublic: genome.isPublic ?? false },
+          {
+            headers: {
+              'Authorization': `Bearer ${this.credential.token}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 10000,
+          }
+        );
+        logger.debug(`[API] Created genome via happy-server fallback: ${fallback.data?.genome?.id}`);
+        return fallback.data;
+      } catch (fallbackError) {
+        logger.debug(`[API] [ERROR] Both genome-hub and happy-server failed`, fallbackError);
+        throw new Error(`Failed to create genome: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}`);
+      }
     }
   }
 }

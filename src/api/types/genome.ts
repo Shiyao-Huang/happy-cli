@@ -171,6 +171,72 @@ export interface GenomeSpec {
     capabilities?: string[];
 
     // =========================================================================
+    // Tier 7 — 消息行为（个体的通信 DNA，行为跟着基因走，不由军团覆盖）
+    // =========================================================================
+    /**
+     * 消息社交图：定义这个 agent 天生与谁通信。
+     *
+     * 行为是个体属性，不由军团（CorpsSpec）覆盖。
+     * 想要不同行为的 agent 应发布为独立 genome variant，
+     * 例：'@official/passive-builder' vs '@official/active-builder'
+     */
+    messaging?: {
+        /**
+         * 接受哪些角色发来的消息并响应。
+         * - string[]  只响应列表内的角色（如 ['master', 'orchestrator', 'user']）
+         * - '*'       接收所有角色的消息
+         * 不设置时回退到 ROLE_COLLABORATION_MAP 的 hardcode 默认值。
+         */
+        listenFrom?: string[] | '*';
+        /**
+         * 是否是用户消息的入口。
+         * true  = 用户消息直接发给我（如 master）
+         * false = 用户消息不经过我
+         * 不设置时回退到 isCoordinatorRole() 的判断。
+         */
+        receiveUserMessages?: boolean;
+        /**
+         * 响应模式（agent 的天生性格）：
+         * - 'proactive'   主动型：有任务就自取，会主动发起沟通
+         * - 'responsive'  响应型：有呼必应，被动等待分配（默认）
+         * - 'passive'     静默型：只做任务不参与聊天
+         */
+        replyMode?: 'proactive' | 'responsive' | 'passive';
+    };
+
+    /**
+     * 行为协议：定义这个 agent 天生的行为模式。
+     * 与 messaging 一起构成 agent 的"社交 DNA"。
+     */
+    behavior?: {
+        /**
+         * 空闲（无任务）时的行为：
+         * - 'wait'        等待 master 分配（默认）
+         * - 'self-assign' 主动从 available tasks 自取任务
+         * - 'ask'         主动向 master 询问下一步
+         */
+        onIdle?: 'wait' | 'self-assign' | 'ask';
+        /**
+         * 遇到阻塞时的行为：
+         * - 'report'    向 master 上报 blocker（默认）
+         * - 'escalate'  直接升级给更高层协调者
+         * - 'retry'     自行重试后再上报
+         */
+        onBlocked?: 'report' | 'escalate' | 'retry';
+        /**
+         * 是否可以召唤新的 agent（调用 create_agent）。
+         * 不设置时回退到 canSpawnAgents(role) 的 hardcode 判断。
+         */
+        canSpawnAgents?: boolean;
+        /**
+         * 是否必须等待显式分配才能开始工作。
+         * true  = 等待 master 分配或 kanban 任务（默认 worker 行为）
+         * false = 可自取 available tasks（proactive 变种）
+         */
+        requireExplicitAssignment?: boolean;
+    };
+
+    // =========================================================================
     // 逃生口 — 任意扩展
     // =========================================================================
     /**
@@ -201,4 +267,54 @@ export interface Genome {
 /** 解析 Genome.spec 字段为 GenomeSpec 对象 */
 export function parseGenomeSpec(genome: Genome): GenomeSpec {
     return JSON.parse(genome.spec) as GenomeSpec;
+}
+
+/**
+ * CorpsSpec — 军团配置 schema。
+ *
+ * 军团 = 多个 genome 的组合 + 共享启动上下文。
+ * 军团不定义行为规则（行为由每个 genome 自身携带），
+ * 只提供成员名单和启动时注入给每个成员的共享信息。
+ *
+ * 类比：
+ *   CorpsSpec    = docker-compose.yml（组合多个镜像）
+ *   GenomeSpec   = Dockerfile（定义单个镜像的完整行为）
+ */
+export interface CorpsSpec {
+    // ─── 基础标识 ──────────────────────────────────────────────────
+    namespace: string;        // '@official', '@myorg'
+    name: string;             // 'fullstack-sprint', 'research-team'
+    version: number;
+    description: string;
+    tags?: string[];
+    category?: string;        // 'engineering' | 'research' | 'product' | string
+
+    // ─── 成员名单 ──────────────────────────────────────────────────
+    /**
+     * 军团成员列表：启动时召唤哪些 genome。
+     * 每个 genome 携带自己完整的行为 DNA，军团不覆盖任何行为。
+     */
+    members: {
+        /** genome 引用，格式：'@namespace/name@version' 或 '@namespace/name'（latest） */
+        genome: string;
+        /** 在此军团内的角色别名（用于 UI 展示），不覆盖 genome 内部的 baseRoleId */
+        roleAlias?: string;
+        /** 启动几个实例，默认 1 */
+        count?: number;
+        /** false = 按需召唤，true = 军团启动时立即召唤（默认 true） */
+        required?: boolean;
+    }[];
+
+    // ─── 共享启动上下文 ─────────────────────────────────────────────
+    /**
+     * 启动时注入给每个成员的共享上下文。
+     * 这是军团唯一可以"干预"成员的地方：告知成员"你在哪个军团、军团目标是什么"。
+     * 不干预成员的行为规则（listenFrom、replyMode 等由各自 genome 决定）。
+     */
+    bootContext?: {
+        /** 军团级别的背景说明，注入给每个成员的 systemPromptSuffix */
+        teamDescription?: string;
+        /** org-manager 启动时的初始目标 */
+        initialObjective?: string;
+    };
 }

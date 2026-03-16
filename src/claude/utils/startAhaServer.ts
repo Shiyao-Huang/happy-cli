@@ -20,8 +20,10 @@ import {
     canSpawnAgents
 } from '@/claude/team/roles';
 import { writeScore } from '@/claude/utils/scoreStorage';
+import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
+import type { AggregatedFeedback } from '@/claude/utils/feedbackPrivacy';
 
-export async function startAhaServer(api: any, client: ApiSessionClient) {
+export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
     // Handler that sends title updates via the client
     const handler = async (title: string) => {
         logger.debug('[ahaMCP] Changing title to:', title);
@@ -1290,6 +1292,79 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // ========== Agent Spawning Tools ==========
 
+    // List Available Agents — browse genome marketplace before create_agent
+    mcp.registerTool('list_available_agents', {
+        description: [
+            'Browse the genome marketplace to find available agent types before spawning.',
+            'Returns agents with their IDs, descriptions, ratings, spawn counts, and tags.',
+            'Use this BEFORE create_agent to pick the best fit or decide to fork one.',
+            'Org-manager and coordinator roles only.',
+        ].join(' '),
+        title: 'List Available Agents',
+        inputSchema: {
+            query: z.string().optional().describe('Search query — filter by name, description, or tags'),
+            category: z.string().optional().describe("Filter by category: 'coordination' | 'implementation' | 'quality' | 'research' | 'support'"),
+            namespace: z.string().optional().describe("Filter by namespace, e.g. '@official'. Omit to search all public agents."),
+            limit: z.number().default(10).describe('Max results to return'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (!canSpawnAgents(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only org-manager and coordinator roles can browse the agent marketplace.' }], isError: true };
+        }
+
+        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+        try {
+            const qs = new URLSearchParams();
+            if (args.query) qs.set('q', args.query);
+            if (args.category) qs.set('category', args.category);
+            if (args.namespace) qs.set('namespace', args.namespace);
+            qs.set('limit', String(args.limit ?? 10));
+
+            const res = await fetch(`${hubUrl}/genomes?${qs}`, { signal: AbortSignal.timeout(5_000) });
+            if (!res.ok) throw new Error(`hub returned ${res.status}`);
+            const data = await res.json() as { genomes: Array<{
+                id: string; namespace: string | null; name: string; version: number;
+                description: string | null; tags: string | null; category: string | null;
+                spawnCount: number; feedbackData: string | null;
+            }> };
+
+            const results = (data.genomes ?? [])
+                .filter(g => g.category !== 'corps')
+                .slice(0, args.limit ?? 10)
+                .map(g => {
+                    let fb: { avgScore?: number; evaluationCount?: number; latestAction?: string } = {};
+                    try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
+                    const tags = g.tags ? (() => { try { return JSON.parse(g.tags!); } catch { return []; } })() : [];
+                    return {
+                        id: g.id,
+                        ref: `${g.namespace ?? '@public'}/${g.name}@v${g.version}`,
+                        description: g.description ?? '(no description)',
+                        category: g.category ?? 'unknown',
+                        tags,
+                        spawnCount: g.spawnCount,
+                        avgScore: fb.avgScore ?? null,
+                        evaluationCount: fb.evaluationCount ?? 0,
+                        latestAction: fb.latestAction ?? null,
+                    };
+                });
+
+            const text = results.length === 0
+                ? 'No agents found matching the query.'
+                : results.map(r => [
+                    `• ${r.ref} [id: ${r.id}]`,
+                    `  ${r.description}`,
+                    `  category: ${r.category} | tags: ${r.tags.join(', ')}`,
+                    `  spawned: ${r.spawnCount}x | rating: ${r.avgScore !== null ? `${r.avgScore}/100 (${r.evaluationCount} evals)` : 'not yet rated'}`,
+                    r.latestAction ? `  last supervisor action: ${r.latestAction}` : '',
+                ].filter(Boolean).join('\n')).join('\n\n');
+
+            return { content: [{ type: 'text', text: text }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error querying genome hub: ${String(error)}` }], isError: true };
+        }
+    });
+
     // Create Agent - Spawns a new agent session via the daemon
     mcp.registerTool('create_agent', {
         description: `Spawn a new AI agent and register it to the team. The agent starts immediately and can communicate with the team.
@@ -1348,7 +1423,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const metadata = client.getMetadata();
             const role = metadata?.role;
 
-            if (!canSpawnAgents(role)) {
+            // Genome spec is authoritative: behavior.canSpawnAgents overrides hardcode.
+            const genomeAllows = genomeSpecRef?.current?.behavior?.canSpawnAgents;
+            const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role);
+            if (!allowed) {
                 return {
                     content: [{
                         type: 'text',
@@ -1384,13 +1462,36 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 agent: args.agent || 'claude',
                 parentSessionId,
                 executionPlane: args.executionPlane || 'mainline',
-                ...(args.specId !== undefined && { specId: args.specId }),
                 env: {
                     AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
                     ...(args.prompt ? { AHA_AGENT_PROMPT: args.prompt } : {}),
                     ...(args.model ? { AHA_AGENT_MODEL: args.model } : {}),
                 },
-            };
+            } as Record<string, any>;
+
+            // Auto-resolve specId from genome-hub: explicit arg > @official/{role} > none
+            let resolvedSpecId = args.specId;
+            if (!resolvedSpecId) {
+                try {
+                    const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                    const res = await fetch(
+                        `${hubUrl}/genomes/%40official/${encodeURIComponent(args.role)}`,
+                        { signal: AbortSignal.timeout(3_000) }
+                    );
+                    if (res.ok) {
+                        const data = await res.json() as { genome?: { id: string } };
+                        resolvedSpecId = data.genome?.id;
+                        if (resolvedSpecId) {
+                            logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role}`);
+                        }
+                    }
+                } catch {
+                    // genome-hub unreachable — proceed without specId
+                }
+            }
+            if (resolvedSpecId) {
+                spawnBody.specId = resolvedSpecId;
+            }
 
             const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
                 method: 'POST',
@@ -1568,6 +1669,150 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    // ─── get_context_status ───────────────────────────────────────────────────
+    // Agent calls this to know its own context window usage — same data source as ccusage.
+    // Reads the CC log JSONL, extracts the LAST message's usage:
+    //   current_context_K = (input_tokens + cache_creation_input_tokens + cache_read_input_tokens) / 1000
+    mcp.registerTool('get_context_status', {
+        description: [
+            'Check your own current context window usage and remaining capacity.',
+            'Returns real token counts from your CC log (same data ccusage reads).',
+            'Call this when starting a large task, or when you suspect you may be approaching the limit.',
+            'If context > 150K, consider outputting /compact to preserve performance.',
+        ].join(' '),
+        title: 'Get Context Status',
+        inputSchema: {
+            sessionId: z.string().optional().describe('Session ID to check. Omit to check yourself (uses list_team_cc_logs to find your log).'),
+        },
+    }, async (args) => {
+        try {
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const homeDir = process.env.HOME || '/tmp';
+            const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+
+            // Resolve which session to check
+            let targetSessionId = args.sessionId;
+            let logFilePath: string | null = null;
+
+            if (!targetSessionId) {
+                // Find our own log: query daemon for current team's CC logs, match our ahaSessionId
+                try {
+                    const daemonState = await readDaemonState();
+                    if (daemonState?.httpPort) {
+                        const teamId = client.getMetadata()?.teamId;
+                        if (teamId) {
+                            const res = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list-team-logs?teamId=${teamId}`, {
+                                signal: AbortSignal.timeout(3_000)
+                            });
+                            if (res.ok) {
+                                const data = await res.json() as Array<{ ahaSessionId: string; logFilePath?: string }>;
+                                const myEntry = data.find(e => e.ahaSessionId === client.sessionId);
+                                if (myEntry?.logFilePath) logFilePath = myEntry.logFilePath;
+                            }
+                        }
+                    }
+                } catch { /* fall through to scan */ }
+
+                // Fallback: most recently modified JSONL in last 5 minutes that belongs to cwd
+                if (!logFilePath && fs.existsSync(claudeProjectsDir)) {
+                    const now = Date.now();
+                    let newest = 0;
+                    for (const dir of fs.readdirSync(claudeProjectsDir)) {
+                        const dirPath = path.join(claudeProjectsDir, dir);
+                        try {
+                            for (const file of fs.readdirSync(dirPath)) {
+                                if (!file.endsWith('.jsonl')) continue;
+                                const fp = path.join(dirPath, file);
+                                const mtime = fs.statSync(fp).mtimeMs;
+                                if (mtime > newest && (now - mtime) < 5 * 60 * 1000) {
+                                    newest = mtime;
+                                    logFilePath = fp;
+                                }
+                            }
+                        } catch { /* skip */ }
+                    }
+                }
+            } else {
+                // Find by sessionId
+                for (const dir of fs.readdirSync(claudeProjectsDir)) {
+                    const candidate = path.join(claudeProjectsDir, dir, `${targetSessionId}.jsonl`);
+                    if (fs.existsSync(candidate)) { logFilePath = candidate; break; }
+                }
+            }
+
+            if (!logFilePath || !fs.existsSync(logFilePath)) {
+                return { content: [{ type: 'text', text: 'CC log not found. Cannot determine context status.' }], isError: false };
+            }
+
+            // Read log and extract usage (same algorithm as ccusage)
+            const lines = fs.readFileSync(logFilePath, 'utf-8').split('\n').filter(Boolean);
+            let lastUsage: Record<string, number> | null = null;
+            let totalInputK = 0;
+            let totalOutputK = 0;
+            let turns = 0;
+
+            for (const line of lines) {
+                try {
+                    const entry = JSON.parse(line);
+                    if (entry.type === 'assistant') {
+                        const usage = entry.message?.usage;
+                        if (usage) {
+                            lastUsage = usage;
+                            totalInputK += ((usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)) / 1000;
+                            totalOutputK += (usage.output_tokens || 0) / 1000;
+                            turns++;
+                        }
+                    }
+                } catch { /* skip */ }
+            }
+
+            if (!lastUsage) {
+                return { content: [{ type: 'text', text: 'No usage data found in CC log yet.' }], isError: false };
+            }
+
+            // Current context = last message's total input (= what was fed into this turn)
+            const currentContextK = Math.round(
+                ((lastUsage.input_tokens || 0) +
+                 (lastUsage.cache_creation_input_tokens || 0) +
+                 (lastUsage.cache_read_input_tokens || 0)) / 1000
+            );
+            const contextLimitK = 200; // claude-opus-4 / claude-sonnet-4
+            const remainingK = contextLimitK - currentContextK;
+            const pct = Math.round((currentContextK / contextLimitK) * 100);
+
+            const status = pct >= 85 ? '🔴 CRITICAL — compact now' :
+                           pct >= 70 ? '🟡 HIGH — consider /compact soon' :
+                           pct >= 50 ? '🟢 MODERATE — plenty remaining' :
+                                       '🟢 LOW — context is fresh';
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        currentContextK,
+                        remainingK,
+                        usedPercent: pct,
+                        status,
+                        turns,
+                        cumulativeCost: {
+                            inputK: Math.round(totalInputK),
+                            outputK: Math.round(totalOutputK),
+                        },
+                        recommendation: pct >= 85
+                            ? 'Output /compact immediately to avoid context overflow'
+                            : pct >= 70
+                            ? 'Plan to /compact after finishing current subtask'
+                            : 'Context healthy — no action needed',
+                    }, null, 2)
+                }],
+                isError: false
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('read_cc_log', {
         description: 'Read Claude Code session log (the iron proof). Shows actual tool calls since last supervisor run (cursor-based). Supervisor/help-agent only.',
         title: 'Read CC Log',
@@ -1619,16 +1864,44 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         try {
                             const entry = JSON.parse(line);
                             if (entry.type === 'assistant' && entry.message?.content) {
-                                const tools = Array.isArray(entry.message.content)
-                                    ? entry.message.content.filter((c: any) => c.type === 'tool_use').map((c: any) => c.name)
-                                    : [];
-                                return tools.length > 0 ? `[tool_use] ${tools.join(', ')}` : null;
+                                const parts = Array.isArray(entry.message.content) ? entry.message.content : [];
+                                const out: string[] = [];
+                                for (const c of parts) {
+                                    if (c.type === 'text' && c.text?.trim()) {
+                                        out.push(`[text] ${c.text.trim().slice(0, 300)}`);
+                                    } else if (c.type === 'tool_use') {
+                                        // Extract meaningful snippet of the input
+                                        let inputSnippet = '';
+                                        if (c.input) {
+                                            if (typeof c.input.command === 'string') {
+                                                inputSnippet = c.input.command.slice(0, 200);
+                                            } else if (typeof c.input.file_path === 'string') {
+                                                inputSnippet = c.input.file_path;
+                                            } else if (typeof c.input.path === 'string') {
+                                                inputSnippet = c.input.path;
+                                            } else if (typeof c.input.query === 'string') {
+                                                inputSnippet = c.input.query.slice(0, 200);
+                                            } else {
+                                                inputSnippet = JSON.stringify(c.input).slice(0, 200);
+                                            }
+                                        }
+                                        out.push(`[tool_use] ${c.name}${inputSnippet ? `: ${inputSnippet}` : ''}`);
+                                    }
+                                }
+                                return out.length > 0 ? out.join('\n') : null;
                             }
                             if (entry.type === 'user' && entry.message?.content) {
-                                const results = Array.isArray(entry.message.content)
-                                    ? entry.message.content.filter((c: any) => c.type === 'tool_result')
-                                    : [];
-                                return results.length > 0 ? `[tool_result] ${results.length} results` : null;
+                                const parts = Array.isArray(entry.message.content) ? entry.message.content : [];
+                                const out: string[] = [];
+                                for (const c of parts) {
+                                    if (c.type === 'tool_result') {
+                                        const resultText = Array.isArray(c.content)
+                                            ? c.content.filter((r: any) => r.type === 'text').map((r: any) => r.text).join('').slice(0, 400)
+                                            : typeof c.content === 'string' ? c.content.slice(0, 400) : '';
+                                        out.push(`[tool_result]${c.is_error ? ' ERROR' : ''} ${resultText || '(empty)'}`);
+                                    }
+                                }
+                                return out.length > 0 ? out.join('\n') : null;
                             }
                             return null;
                         } catch { return null; }
@@ -1663,6 +1936,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             sessionId: z.string(),
             teamId: z.string(),
             role: z.string(),
+            specId: z.string().optional().describe('Genome ID of the agent being scored. Get from list_team_agents. Used as primary key for feedback aggregation — more important than role name.'),
             delivery: z.number().min(0).max(100),
             integrity: z.number().min(0).max(100),
             efficiency: z.number().min(0).max(100),
@@ -1677,11 +1951,30 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         if (role !== 'supervisor') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor can score agents.' }], isError: true };
         }
+
+        // Try to resolve specId namespace/name from genome-hub for cleaner grouping
+        let specNamespace: string | undefined;
+        let specName: string | undefined;
+        if (args.specId) {
+            try {
+                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const res = await fetch(`${hubUrl}/genomes/${encodeURIComponent(args.specId)}`, { signal: AbortSignal.timeout(3_000) });
+                if (res.ok) {
+                    const data = await res.json() as { genome?: { namespace?: string; name?: string } };
+                    specNamespace = data.genome?.namespace ?? undefined;
+                    specName = data.genome?.name ?? undefined;
+                }
+            } catch { /* proceed without */ }
+        }
+
         const overall = Math.round((args.delivery + args.integrity + args.efficiency + args.collaboration + args.reliability) / 5);
         writeScore({
             sessionId: args.sessionId,
             teamId: args.teamId,
             role: args.role,
+            specId: args.specId,
+            specNamespace,
+            specName,
             timestamp: Date.now(),
             scorer: client.sessionId,
             dimensions: { delivery: args.delivery, integrity: args.integrity, efficiency: args.efficiency, collaboration: args.collaboration, reliability: args.reliability },
@@ -1690,7 +1983,90 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             recommendations: args.recommendations || [],
             action: args.action,
         });
-        return { content: [{ type: 'text', text: `Scored ${args.role} (${args.sessionId}): overall=${overall}, action=${args.action}` }], isError: false };
+        return { content: [{ type: 'text', text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall}, action=${args.action}` }], isError: false };
+    });
+
+    mcp.registerTool('update_genome_feedback', {
+        description: [
+            'Push aggregate performance feedback for a genome role to the public marketplace.',
+            'Reads local scores for the specified role, computes aggregate statistics,',
+            'strips all private data (session IDs, team IDs, file paths, evidence),',
+            'and uploads only anonymized behavioral patterns and aggregate scores.',
+            'Supervisor only. Run after scoring at least 3 sessions of the same role.',
+        ].join(' '),
+        title: 'Update Genome Feedback',
+        inputSchema: {
+            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'"),
+            genomeName: z.string().describe("Genome name, e.g. 'implementer'"),
+            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, scores are filtered by specId first, falling back to role name match.'),
+            role: z.string().describe('Role name used as fallback filter when specId not recorded on older scores'),
+            dryRun: z.boolean().optional().describe('If true, show what would be sent without uploading'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can update genome feedback.' }], isError: true };
+        }
+
+        // Read local scores — prefer specId match, fall back to role name
+        const { readScores } = await import('@/claude/utils/scoreStorage');
+        const { scores } = readScores();
+        const roleScores = args.genomeId
+            ? scores.filter(s => s.specId === args.genomeId || (s.specName === args.genomeName && s.specNamespace === args.genomeNamespace) || s.role === args.role)
+            : scores.filter(s => s.role === args.role);
+
+        if (roleScores.length === 0) {
+            return { content: [{ type: 'text', text: `No scores found for role '${args.role}'. Score agents first with score_agent tool.` }], isError: false };
+        }
+
+        if (roleScores.length < 3) {
+            return { content: [{ type: 'text', text: `Only ${roleScores.length} score(s) for role '${args.role}'. Recommend at least 3 evaluations before publishing feedback.` }], isError: false };
+        }
+
+        // Aggregate and sanitize (no PII leaves the device)
+        const feedback = aggregateScores(roleScores);
+        if (!feedback) {
+            return { content: [{ type: 'text', text: 'Failed to aggregate scores.' }], isError: true };
+        }
+
+        const summary = [
+            `Aggregated ${feedback.evaluationCount} evaluations for ${args.role}`,
+            `Overall avg: ${feedback.avgScore}/100`,
+            `Dimensions: delivery=${feedback.dimensions.delivery} integrity=${feedback.dimensions.integrity} efficiency=${feedback.dimensions.efficiency} collaboration=${feedback.dimensions.collaboration} reliability=${feedback.dimensions.reliability}`,
+            `Distribution: excellent=${feedback.distribution.excellent} good=${feedback.distribution.good} fair=${feedback.distribution.fair} poor=${feedback.distribution.poor}`,
+            `Latest action: ${feedback.latestAction}`,
+            `Suggestions (${feedback.suggestions.length}): ${feedback.suggestions.slice(0, 3).join(' | ')}`,
+        ].join('\n');
+
+        if (args.dryRun) {
+            return { content: [{ type: 'text', text: `DRY RUN — would send:\n${summary}\n\nPrivacy: session IDs, team IDs, file paths, and raw evidence are stripped before upload.` }], isError: false };
+        }
+
+        // Send to genome-hub
+        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+        const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+        const encodedNs = encodeURIComponent(args.genomeNamespace);
+
+        try {
+            const res = await fetch(`${hubUrl}/genomes/${encodedNs}/${args.genomeName}/feedback`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
+                },
+                body: JSON.stringify(feedback),
+                signal: AbortSignal.timeout(15_000),
+            });
+
+            if (!res.ok) {
+                const err = await res.text();
+                return { content: [{ type: 'text', text: `Failed to update genome hub: ${res.status} ${err}` }], isError: true };
+            }
+
+            return { content: [{ type: 'text', text: `Feedback uploaded to marketplace:\n${summary}` }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error: ${String(error)}` }], isError: true };
+        }
     });
 
     mcp.registerTool('compact_agent', {
@@ -2056,6 +2432,7 @@ Namespace conventions:
         toolNames: [
             'change_title',
             'send_team_message',
+            'get_context_status',
             'get_team_info',
             'create_task',
             'update_task',
@@ -2069,6 +2446,7 @@ Namespace conventions:
             'report_blocker',
             'resolve_blocker',
             // Agent spawning tools
+            'list_available_agents',
             'create_agent',
             'list_team_agents',
             'request_help',
@@ -2079,6 +2457,7 @@ Namespace conventions:
             'read_cc_log',
             'list_team_cc_logs',
             'score_agent',
+            'update_genome_feedback',
             'compact_agent',
             'kill_agent',
             'save_supervisor_state'

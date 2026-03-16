@@ -543,8 +543,22 @@ export async function startDaemon(): Promise<void> {
     // Create API client
     const api = await ApiClient.create(credentials);
 
-    /** Resolve the specId of a @official genome by name. Returns null on failure (caller falls back to hardcoded role). */
+    /** Resolve the specId of a @official genome by name.
+     *  Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).
+     *  Returns null on failure — caller falls back to hardcoded role. */
     const resolveSystemGenomeId = async (name: string): Promise<string | null> => {
+      // Primary: genome-hub (M3 marketplace)
+      const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+      try {
+        const res = await axios.get(
+          `${hubUrl}/genomes/%40official/${name}`,
+          { timeout: 5000 }
+        );
+        const id = res.data?.genome?.id ?? null;
+        if (id) return id;
+      } catch { /* fall through */ }
+
+      // Fallback: happy-server (M2 legacy)
       try {
         const res = await axios.get(
           `${configuration.serverUrl}/v1/genomes/%40official/${name}/latest`,
@@ -665,9 +679,20 @@ export async function startDaemon(): Promise<void> {
           }
 
           try {
-            // Resolve @official/supervisor genome specId; fall back to hardcoded role if unavailable
+            // Resolve @official/supervisor genome specId from genome-hub.
+            // In testing phase: log a visible warning when genome DNA is missing so we can fix it.
             const supervisorSpecId = await resolveSystemGenomeId('supervisor');
-            logger.debug(`[DAEMON RUN] Supervisor genome specId: ${supervisorSpecId ?? 'not found, using hardcode role'}`);
+            if (!supervisorSpecId) {
+                if (process.env.AHA_GENOME_FALLBACK !== '1') {
+                    console.warn(
+                        `[GENOME] ⚠️  supervisor genome not found in genome-hub — spawning without DNA.\n` +
+                        `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? 'http://localhost:3006'})\n` +
+                        `         and @official/supervisor is seeded. (Set AHA_GENOME_FALLBACK=1 to silence.)`
+                    );
+                }
+            } else {
+                logger.debug(`[DAEMON RUN] Supervisor genome specId: ${supervisorSpecId}`);
+            }
 
             const supervisorResult = await spawnSession({
               directory: process.cwd(),
