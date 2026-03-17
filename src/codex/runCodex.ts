@@ -360,6 +360,7 @@ export async function runCodex(opts: {
         ahaLibDir: projectPath(),
         ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
+        processStartedAt: Date.now(),
         hostPid: process.pid,
         startedBy: opts.startedBy || 'terminal',
         // Initialize lifecycle state

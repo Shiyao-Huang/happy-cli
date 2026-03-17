@@ -497,7 +497,7 @@ function buildPhase1WorkerSection(): string {
     return `## Phase 1 - Task Execution (When assigned)
 
 ### Pre-Execution Checklist:
-1. Mark task \`in_progress\` via 'update_task' BEFORE starting
+1. Call 'start_task' to acknowledge and begin the task BEFORE starting implementation
 2. Understand the full scope from task description
 3. Ask clarifying questions if requirements unclear
 
@@ -575,7 +575,7 @@ ${isCoordinator ? `
 1. **CHECK** [MY TASKS] for assigned work
 2. **ANNOUNCE** yourself if no tasks (send_team_message)
 3. **WAIT** for Master to assign task
-4. **EXECUTE** assigned task (update_task → in_progress)
+4. **EXECUTE** assigned task (start_task → in-progress)
 5. **COMPLETE** and report (update_task → done)
 `}
 
@@ -614,7 +614,7 @@ function buildConstraintsSection(roleKey: string): string {
 | "I noticed X in the files..." | Inventing work | Wait for explicit assignment |
 | "Let me check the codebase for work..." | Self-assigned task | Ask @master what to do |
 | "Based on the docs, I should..." | Inferring tasks | Tasks come from Kanban only |
-| Starting without in_progress | No visibility | Always update_task first |
+| Starting without start_task | No visibility / no ack | Always call start_task first |
 
 </Constraints>`;
 }
@@ -819,7 +819,7 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
 
 **Action**:
 1. Select highest priority task
-2. Call update_task to set status 'in_progress'
+2. Call start_task to acknowledge and begin it
 3. Execute the task
 4. Call update_task to set status 'done'
 `;
@@ -827,7 +827,7 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
         } else if (hasAvailableTasks) {
             section += `📋 **CLAIM**: No assigned tasks, but ${kanbanContext!.availableTasks.length} available.
 
-**Action**: Claim a task from [AVAILABLE TASKS] via 'update_task'.
+**Action**: Claim and begin a task from [AVAILABLE TASKS] via 'start_task'.
 `;
         } else {
             section += `⏳ **WAIT MODE**: No tasks available.

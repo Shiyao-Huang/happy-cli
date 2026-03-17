@@ -11,7 +11,7 @@
  *
  *   Public genome-hub marketplace (PATCH /genomes/.../feedback)
  *     Aggregate statistics only — no individual session data:
- *     avgScore, dimensions, distribution, anonymized behavioral suggestions
+ *     avgScore, sessionScore, dimensions, distribution, anonymized behavioral suggestions
  *
  * ── What gets anonymized in suggestions before upload ──────────────────────
  *   File paths   → [path]      (project structure is private)

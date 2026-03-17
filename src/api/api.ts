@@ -879,6 +879,12 @@ export class ApiClient {
       return response.data;
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to start task:`, error);
+      if (axios.isAxiosError(error)) {
+        const serverMessage = typeof error.response?.data?.error === 'string'
+          ? error.response.data.error
+          : error.message;
+        throw new Error(`Failed to start task: ${serverMessage}`);
+      }
       throw new Error(`Failed to start task: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -1487,12 +1493,13 @@ export class ApiClient {
     // Primary: genome-hub (M3 marketplace, port 3006)
     const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const namespace = genome.namespace ?? '@public';
+    const encodedNs = encodeURIComponent(namespace);
+    const encodedName = encodeURIComponent(genome.name);
 
-    // genome-hub body format (no parentSessionId / teamId — those are happy-server concepts)
+    // genome-hub promote body format (no parentSessionId / teamId — those are happy-server concepts)
+    // Server creates v1 for brand-new genomes and vN+1 for validated promotions.
     const hubBody = {
-      namespace: genome.namespace ?? '@public',
-      name: genome.name,
-      version: 1,
       description: genome.description,
       spec: genome.spec,
       tags: genome.tags,
@@ -1502,7 +1509,7 @@ export class ApiClient {
 
     try {
       const response = await axios.post(
-        `${hubUrl}/genomes`,
+        `${hubUrl}/genomes/${encodedNs}/${encodedName}/promote`,
         hubBody,
         {
           headers: {

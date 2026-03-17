@@ -423,6 +423,7 @@ export type Metadata = {
   ahaLibDir: string,
   ahaToolsDir: string,
   startedFromDaemon?: boolean,
+  processStartedAt?: number,
   hostPid?: number,
   startedBy?: 'daemon' | 'terminal',
   // Lifecycle state management

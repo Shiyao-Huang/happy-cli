@@ -738,12 +738,13 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 
 ## 🔍 PHASE 2 — FULL ANALYSIS (only when there is new content)
 
-2. Call \`list_team_cc_logs\` with the teamId
-3. Call \`read_cc_log\` for each agent using their byte cursor from: ${ccLogCursors}
-4. Cross-validate: compare team log claims vs CC log evidence
+2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
+3. Call \`list_team_cc_logs\` with the teamId
+4. Call \`read_cc_log\` for each agent using their byte cursor from: ${ccLogCursors}
+5. Cross-validate: compare team log claims vs CC log evidence
    - Agent says "did review" but CC log has no Read calls → integrity issue
    - Agent says "tests pass" but CC log has no Bash calls → suspicious
-5. Call \`score_agent\` for each active agent — **hard-first protocol**:
+6. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
    **a. Collect hardMetrics** (layer 1, required) from data already gathered:
       - \`tasksAssigned\` / \`tasksCompleted\` / \`tasksBlocked\` → from list_tasks output
       - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from read_cc_log totals
@@ -755,17 +756,21 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
       - \`boardComplianceRate\` = protocol-correct board updates / total board updates
       - \`claimEvidenceDelta\` = 0 if claims match CC log; approach 1 if agent over-claims
       - \`bugRate\` = confirmed regressions introduced per task completed
-   **c. Set overall**: defaults to \`hardMetricsScore\` (auto-computed). Override allowed only within ±20. Gap > 20 is rejected.
-   **d. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
-6. **Upload feedback to marketplace**: For each role that now has ≥ 3 scores in local storage, call \`update_genome_feedback\` with namespace \`@official\` and the role name. This closes the scoring loop — data that stays local is invisible to the ecosystem.
-7. Decide on action:
+   **c. Explicitly set sessionScore on 3 business axes** for each session:
+      - \`taskCompletion\` = how fully the session closed assigned work
+      - \`codeQuality\` = how trustworthy / review-ready the produced work looks from evidence
+      - \`collaboration\` = how well the session followed board + messaging protocol
+   **d. Set overall**: defaults to \`sessionScore.overall\`. The guardrail still compares it to \`hardMetricsScore\`; gap > 20 is rejected.
+   **e. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
+7. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. This writes aggregated session scoring back to the genome, not just local disk.
+8. Decide on action:
    - If an agent looks stuck (same state as last run, no meaningful progress):
      → Call \`request_help\` with the stuck agent's sessionId and a clear description of what is blocked and why
      → request_help spawns a live help-agent that will intervene directly — this is the ONLY way to trigger help
      → Do NOT use send_team_message to role=help-agent (no session is listening)
    - If situation is healthy or improving → set pendingAction to null
    - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\` or \`kill_agent\` now
-8. Call \`save_supervisor_state\` with new cursors, your conclusion (2-4 sentences), and pendingAction
+9. Call \`save_supervisor_state\` with new cursors, your conclusion (2-4 sentences), and pendingAction
 
 Output "SUPERVISOR_COMPLETE" and STOP.
 
@@ -776,7 +781,7 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 - NEVER create agents or tasks
 - NEVER write code
 - Phase 1 only uses: \`read_team_log\`, \`save_supervisor_state\`
-- Phase 2 only adds: \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
+- Phase 2 only adds: \`list_team_agents\`, \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
 - send_team_message is REMOVED from supervisor tools — supervisor does not chat, it only acts
 
 </Supervisor_Instructions>`;
