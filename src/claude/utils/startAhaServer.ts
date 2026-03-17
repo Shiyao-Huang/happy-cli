@@ -458,9 +458,9 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
                 };
             });
 
-            // Fallback for unknown roles
+            // Fallback for unknown roles — use role ID as title so agents see 'implementer' not 'Unassigned'
             if (!roleDefinitions[myRole || '']) {
-                roleDefinitions[myRole || ''] = { title: 'Unassigned', responsibilities: [], boundaries: [] };
+                roleDefinitions[myRole || ''] = { title: myRole || 'Unassigned', responsibilities: [], boundaries: [] };
             }
 
             // Collaboration protocols
@@ -1446,6 +1446,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
 
+            // Generate unique identifiers for this agent
+            const memberId = randomUUID();
+            const sessionTag = `team:${args.teamId}:member:${memberId}`;
+
             // Security constraint: agents cannot create bypass sessions
             if (args.executionPlane === 'bypass') {
                 return {
@@ -1466,6 +1470,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
             const spawnBody = {
                 directory: args.directory,
+                sessionTag,
                 sessionName: args.sessionName || `${args.role}-agent`,
                 role: args.role,
                 teamId: args.teamId,
@@ -1474,6 +1479,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 executionPlane: args.executionPlane || 'mainline',
                 env: {
                     AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
+                    AHA_TEAM_MEMBER_ID: memberId,
                     ...(args.prompt ? { AHA_AGENT_PROMPT: args.prompt } : {}),
                     ...(args.model ? { AHA_AGENT_MODEL: args.model } : {}),
                 },
@@ -1529,7 +1535,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         args.role,
                         args.sessionName || `${args.role}-agent`,
                         {
-                            specId: args.specId,
+                            memberId,
+                            sessionTag,
+                            specId: resolvedSpecId,
                             parentSessionId,
                             executionPlane: args.executionPlane || 'mainline',
                             runtimeType: args.agent || 'claude',
@@ -1543,7 +1551,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
 
             return {
-                content: [{ type: 'text', text: JSON.stringify({ sessionId: spawnedSessionId, role: args.role, teamId: args.teamId, status: 'spawned_and_registered' }) }],
+                content: [{ type: 'text', text: JSON.stringify({ sessionId: spawnedSessionId, memberId, sessionTag, role: args.role, teamId: args.teamId, status: 'spawned_and_registered' }) }],
                 isError: false,
             };
         } catch (error) {
