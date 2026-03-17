@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * GenomeSpec — agent 的完整配置 schema。
  *
@@ -237,6 +239,57 @@ export interface GenomeSpec {
     };
 
     // =========================================================================
+    // Layer 3 — Memory & Learning
+    // =========================================================================
+    memory?: {
+        type?: 'session' | 'persistent' | 'shared';
+        learnings?: string[];
+        iterationGuide?: {
+            recentChanges?: string[];
+            discoveries?: string[];
+            improvements?: string[];
+        };
+        knowledgeBase?: string[];
+    };
+
+    // =========================================================================
+    // Layer 4 — Capability & Governance
+    // =========================================================================
+    scopeOfResponsibility?: {
+        ownedPaths?: string[];
+        forbiddenPaths?: string[];
+        outOfScope?: string[];
+    };
+    modelScores?: Record<string, number>;
+    preferredModel?: string;
+
+    // =========================================================================
+    // Layer 5 — Agent Resume
+    // =========================================================================
+    resume?: {
+        specialties?: string[];
+        workHistory?: Array<{
+            project?: string;
+            domain?: string;
+            tasksCompleted?: number;
+            avgScore?: number;
+            period?: string;
+        }>;
+        performanceRating?: number;
+        totalSessions?: number;
+        reviews?: string[];
+    };
+
+    // =========================================================================
+    // Layer 6 — Operational Knowledge
+    // =========================================================================
+    operations?: {
+        commonPatterns?: string[];
+        recentChanges?: string[];
+        runtimeConfig?: string;
+    };
+
+    // =========================================================================
     // Tier 8 — Hooks（Claude Code 自动化钩子）
     // =========================================================================
     /**
@@ -262,6 +315,72 @@ export interface GenomeSpec {
     skills?: string[];
 
     // =========================================================================
+    // Tier 10 — Marketplace & Lifecycle（市场发布 / 生命周期元数据）
+    // =========================================================================
+
+    /**
+     * Agent 运行时类型。
+     * 用于市场检索过滤、spawning 路由到正确的 runtime。
+     * 'claude' = Anthropic Claude Code, 'codex' = OpenAI Codex CLI,
+     * 'open-code' = OpenCode (open-source Claude Code alternative)
+     */
+    runtimeType?: 'claude' | 'codex' | 'open-code';
+
+    /**
+     * 激活触发条件。
+     * 描述此 genome 应在什么情境下被激活/召唤。
+     * - mention: 被 @mention 时激活
+     * - task-assign: 有任务分配给它时激活
+     * - scheduled: 按计划定期激活
+     * - event: 由特定事件触发激活
+     */
+    trigger?: {
+        mode: 'mention' | 'task-assign' | 'scheduled' | 'event';
+        /** 触发条件列表，如 ['PR opened', 'build failed'] */
+        conditions?: string[];
+    };
+
+    /**
+     * 版本溯源信息。
+     * 记录此 genome 的来源、是否从市场 fork、经历了哪些 mutation。
+     */
+    provenance?: {
+        /** 父 genome ID（fork 自某个市场 genome 时记录） */
+        parentId?: string;
+        /** 本次 mutation 说明（forked/mutated 时记录修改内容摘要） */
+        mutationNote?: string;
+        /** 来源类型 */
+        origin?: 'original' | 'forked' | 'mutated';
+    };
+
+    /**
+     * 评估标准。
+     * 描述评估此 agent 表现好坏的具体指标列表。
+     * 用于自动评分、市场评价展示。
+     * 示例: ['按时完成任务', '代码无 TypeScript 错误', '测试覆盖率 ≥ 80%']
+     */
+    evalCriteria?: string[];
+
+    /**
+     * 资源消耗画像。
+     * 帮助用户在市场中评估此 genome 的运行成本。
+     */
+    costProfile?: {
+        /** 典型任务的 token 消耗量（用于成本估算） */
+        typicalTokens?: number;
+        /** 所需的上下文窗口大小（tokens），超过此值会降低效果 */
+        contextWindowReq?: number;
+    };
+
+    /**
+     * 生命周期状态。
+     * - experimental: 实验性，可能不稳定
+     * - active: 稳定运行中
+     * - deprecated: 已废弃，建议迁移到更新版本
+     */
+    lifecycle?: 'experimental' | 'active' | 'deprecated';
+
+    // =========================================================================
     // 逃生口 — 任意扩展
     // =========================================================================
     /**
@@ -271,6 +390,11 @@ export interface GenomeSpec {
      */
     meta?: Record<string, unknown>;
 }
+
+export const GenomeRuntimeTypeSchema = z.enum(['claude', 'codex', 'open-code']);
+export const GenomeTriggerModeSchema = z.enum(['mention', 'task-assign', 'scheduled', 'event']);
+export const GenomeProvenanceOriginSchema = z.enum(['original', 'forked', 'mutated']);
+export const GenomeLifecycleSchema = z.enum(['experimental', 'active', 'deprecated']);
 
 /** 服务端返回的完整 Genome 记录 */
 export interface Genome {
