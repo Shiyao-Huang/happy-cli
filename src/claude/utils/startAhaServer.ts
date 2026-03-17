@@ -1661,6 +1661,50 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 const newLines = lines.slice(cursor, cursor + args.limit);
                 const newCursor = cursor + newLines.length;
                 const hasNew = newLines.length > 0;
+
+                // ── Rotation fallback ────────────────────────────────────────────
+                // When cursor >= totalLines AND file is at/near MAX_RECENT_MESSAGES (500),
+                // the file was rotated (oldest lines dropped, cursor still at old end).
+                // Fall back to server API to detect truly new messages.
+                if (!hasNew && lines.length >= 490) {
+                    try {
+                        // Use timestamp of the most recent local message as anchor
+                        const lastLocalMsg = lines.length > 0
+                            ? (() => { try { return JSON.parse(lines[lines.length - 1]); } catch { return null; } })()
+                            : null;
+                        const afterTs = lastLocalMsg?.timestamp ?? 0;
+
+                        const serverResult = await api.getTeamMessages(args.teamId, { limit: args.limit });
+                        const serverMessages = (serverResult?.messages ?? []) as Array<{ timestamp?: number; id?: string }>;
+                        const newServerMessages = afterTs > 0
+                            ? serverMessages.filter(m => (m.timestamp ?? 0) > afterTs)
+                            : serverMessages;
+
+                        if (newServerMessages.length > 0) {
+                            // Append new messages to local file so cursor advances normally next time
+                            for (const msg of newServerMessages) {
+                                await fs.promises.appendFile(localPath, JSON.stringify(msg) + '\n', 'utf-8');
+                            }
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        fromCursor: cursor,
+                                        nextCursor: cursor + newServerMessages.length,
+                                        totalLines: lines.length + newServerMessages.length,
+                                        hasNewContent: true,
+                                        rotationFallback: true,
+                                        messages: newServerMessages,
+                                    }, null, 2)
+                                }],
+                                isError: false
+                            };
+                        }
+                    } catch (fallbackErr) {
+                        // Non-fatal: return the original hasNew=false result below
+                    }
+                }
+
                 return {
                     content: [{
                         type: 'text',
@@ -1675,7 +1719,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     isError: false
                 };
             }
-            const messages = await api.getTeamMessages(args.teamId, args.limit);
+            const messages = await api.getTeamMessages(args.teamId, { limit: args.limit });
             return { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error reading team log: ${String(error)}` }], isError: true };
@@ -2053,8 +2097,8 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         // Gap guard: overall must be within ±maxScoreGap of hardMetricsScore
         const maxScoreGap = args.maxScoreGap ?? 20;
         if (hardMetricsScore !== undefined) {
-            const gapWarning = validateScoreGap(hardMetricsScore, overall);
-            if (gapWarning && Math.abs(hardMetricsScore - overall) > maxScoreGap) {
+            const gapWarning = validateScoreGap(hardMetricsScore, overall, maxScoreGap);
+            if (gapWarning) {
                 return { content: [{ type: 'text', text: `Error: ${gapWarning}` }], isError: true };
             }
         }
