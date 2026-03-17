@@ -22,6 +22,7 @@ interface DoAuthOptions {
 }
 
 interface AuthSetupOptions extends DoAuthOptions {
+    forceAuth?: boolean;
 }
 
 export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials | null> {
@@ -240,7 +241,20 @@ export async function authAndSetupMachineIfNeeded(options: AuthSetupOptions = {}
         const authResult = await doAuth({
             method: options.method,
             webNextPath: options.webNextPath,
-            machineId
+            machineId,
+            webMode: options.webMode
+        });
+        if (!authResult) {
+            throw new Error('Authentication failed or was cancelled');
+        }
+        credentials = authResult;
+    } else if (options.forceAuth) {
+        logger.debug('[AUTH] Force authentication requested, starting authentication flow...');
+        const authResult = await doAuth({
+            method: options.method,
+            webNextPath: options.webNextPath,
+            machineId,
+            webMode: options.webMode
         });
         if (!authResult) {
             throw new Error('Authentication failed or was cancelled');

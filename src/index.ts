@@ -49,8 +49,10 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
   ${chalk.yellow('auth')} [login|logout]      Authentication management
-  ${chalk.yellow('connect')} [list|add]      AI vendor API key management
-  ${chalk.yellow('teams')} [list|archive|delete] Team management
+  ${chalk.yellow('connect')} [list|remove|<vendor>] AI vendor API key management
+  ${chalk.yellow('tasks')} [list|create|update|delete|start|complete] Task management
+  ${chalk.yellow('teams')} [list|show|create|members|archive|delete] Team management
+  ${chalk.yellow('agents')} [list|show|update|archive|delete] Agent session management
   ${chalk.yellow('roles')} [pool|review|team-score] Role pool and public review
   ${chalk.yellow('codex')}                   Start team collaboration mode
   ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
@@ -77,6 +79,10 @@ ${chalk.bold('Examples:')}
 
   ${chalk.gray('# Team collaboration')}
   ${chalk.green('aha codex')}
+
+  ${chalk.gray('# Team CRUD')}
+  ${chalk.green('aha team create --name \"Sprint Crew\"')}
+  ${chalk.green('aha agents list --active')}
 
   ${chalk.gray('# Notifications')}
   ${chalk.green('aha notify -p "Build complete!"')}
@@ -144,11 +150,36 @@ For command-specific help, run:
       process.exit(1)
     }
     return;
-  } else if (subcommand === 'teams') {
+  } else if (subcommand === 'tasks') {
+    // Handle task management commands
+    try {
+      const { handleTasksCommand } = await import('./commands/tasks');
+      await handleTasksCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'teams' || subcommand === 'team') {
     // Handle teams management commands
     try {
       const { handleTeamsCommand } = await import('./commands/teams');
       await handleTeamsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'agents' || subcommand === 'agent') {
+    try {
+      const { handleAgentsCommand } = await import('./commands/agents');
+      await handleAgentsCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -408,6 +439,7 @@ ${chalk.bold('Usage:')}
   aha auth              Manage authentication
   aha codex             Start Codex mode
   aha connect           Connect AI vendor API keys
+  aha tasks             Manage team tasks from the CLI
   aha notify            Send push notification
   aha daemon            Manage background service that allows
                             to spawn new sessions away from your computer

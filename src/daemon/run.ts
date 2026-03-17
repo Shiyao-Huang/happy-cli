@@ -669,15 +669,23 @@ export async function startDaemon(): Promise<void> {
       }
 
       // Prune stale sessions
+      const deadSessionIds: string[] = [];
       for (const [pid, _] of pidToTrackedSession.entries()) {
         try {
           // Check if process is still alive (signal 0 doesn't kill, just checks)
           process.kill(pid, 0);
         } catch (error) {
           // Process is dead, remove from tracking
+          const tracked = pidToTrackedSession.get(pid);
           logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           pidToTrackedSession.delete(pid);
+          if (tracked?.ahaSessionId) {
+            deadSessionIds.push(tracked.ahaSessionId);
+          }
         }
+      }
+      if (deadSessionIds.length > 0) {
+        apiMachine.reportDeadSessions(deadSessionIds);
       }
 
       // Supervisor check: every N heartbeats, spawn a supervisor agent if there are active team sessions
@@ -765,6 +773,8 @@ export async function startDaemon(): Promise<void> {
                 // Pass state so supervisor reads only new content
                 AHA_SUPERVISOR_TEAM_LOG_CURSOR: String(supervisorState.teamLogCursor),
                 AHA_SUPERVISOR_CC_LOG_CURSORS: JSON.stringify(supervisorState.ccLogCursors),
+                AHA_SUPERVISOR_CODEX_HISTORY_CURSOR: String(supervisorState.codexHistoryCursor),
+                AHA_SUPERVISOR_CODEX_SESSION_CURSORS: JSON.stringify(supervisorState.codexSessionCursors),
                 AHA_SUPERVISOR_LAST_CONCLUSION: supervisorState.lastConclusion,
                 AHA_SUPERVISOR_LAST_SESSION_ID: supervisorState.lastSessionId || '',
                 AHA_SUPERVISOR_PENDING_ACTION: supervisorState.pendingAction

@@ -116,6 +116,7 @@ export function startDaemonControlServer({
             sessions: z.array(z.object({
               ahaSessionId: z.string(),
               claudeLocalSessionId: z.string().optional(),
+              runtimeType: z.string().optional(),
               role: z.string().optional(),
               pid: z.number(),
             }))
@@ -134,6 +135,7 @@ export function startDaemonControlServer({
         .map(child => ({
           ahaSessionId: child.ahaSessionId!,
           claudeLocalSessionId: child.claudeLocalSessionId,
+          runtimeType: child.ahaSessionMetadataFromLocalWebhook?.flavor,
           role: child.ahaSessionMetadataFromLocalWebhook?.role,
           pid: child.pid,
         }));

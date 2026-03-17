@@ -33,9 +33,12 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
 import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
-import { COORDINATION_ROLES } from '@/claude/team/roles';
+import { COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
+import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
+import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
+import type { GenomeSpec } from '@/api/types/genome';
 
 // Helper functions for role metadata
 function getRoleTitle(roleId: string): string {
@@ -878,6 +881,27 @@ export async function runCodex(opts: {
     }
 
     // ============================================================
+    // Genome Spec — fetch and build injection text
+    // ============================================================
+    let genomeInjectionBlock: string | null = null;
+    let genomeSpec: GenomeSpec | null = null;
+    const genomeSpecId = process.env.AHA_SPEC_ID;
+    if (genomeSpecId) {
+        try {
+            genomeSpec = await fetchGenomeSpec(opts.credentials.token, genomeSpecId);
+            const injection = buildGenomeInjection(genomeSpec);
+            if (injection) {
+                genomeInjectionBlock = injection;
+                logger.debug(`[Codex] Genome injection built for spec ${genomeSpecId}`);
+            }
+        } catch (error) {
+            if (process.env.AHA_GENOME_FALLBACK !== '1') {
+                logger.debug(`[Codex] Failed to load genome spec (specId=${genomeSpecId}): ${error}`);
+            }
+        }
+    }
+
+    // ============================================================
     // Team Collaboration Initialization
     // ============================================================
     const teamId = metadata.teamId || metadata.roomId;
@@ -993,51 +1017,34 @@ Awaiting task assignment from @master or @orchestrator.`;
             }
 
             // Get kanban context
-            let kanbanContextText = '';
+            let joinKanbanContext: Awaited<ReturnType<TaskStateManager['getFilteredContext']>> | undefined;
             try {
-                const kanbanContext = await taskStateManager.getFilteredContext();
-                const myTasks = kanbanContext.myTasks || [];
-                const availableTasks = kanbanContext.availableTasks || [];
-                const stats = kanbanContext.teamStats;
-
-                kanbanContextText = `
-## Current Kanban State
-- TODO: ${stats.todo} | In Progress: ${stats.inProgress} | Review: ${stats.review} | Done: ${stats.done}
-${myTasks.length > 0 ? `\n### My Assigned Tasks:\n${myTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')}` : ''}
-${availableTasks.length > 0 ? `\n### Available Tasks:\n${availableTasks.map(t => `- [${t.priority || 'medium'}] ${t.title}`).join('\n')}` : ''}
-${isCoordinator && kanbanContext.pendingApprovals?.length ? `\n### Pending Approvals:\n${kanbanContext.pendingApprovals.map(t => `- ${t.title}`).join('\n')}` : ''}`;
+                joinKanbanContext = await taskStateManager.getFilteredContext();
             } catch (e) {
                 logger.debug('[Codex] Failed to get kanban context:', e);
             }
 
-            // Build team context block for injection into prompt
-            teamContextBlock = trimIdent(`
-# Team Context for ${roleTitle}
+            const sessionMetadataForPrompt = {
+                ...(session.getMetadata() || {}),
+                teamId,
+                role,
+            } as Metadata;
 
-## Your Role
-You are **${roleTitle}** in team "${teamName}".
-${roleResponsibilities.length > 0 ? `\n**Responsibilities:**\n${roleResponsibilities.map(r => `- ${r}`).join('\n')}` : ''}
+            const sharedRolePrompt = generateRolePrompt(
+                sessionMetadataForPrompt,
+                joinKanbanContext,
+                genomeSpec ?? undefined
+            );
 
-${kanbanContextText}
+            const recentTeamActivityBlock = trimIdent(`
+## Team Name
+${teamName}
 
 ## Recent Team Activity
 ${historyText}
-
-## Required Actions on Startup
-${isCoordinator ? `
-1. Call \`get_team_info\` to see full team roster and their status
-2. Call \`list_tasks\` to review current kanban state
-3. Send a MASTER STATUS REPORT to the team with current situation
-4. If there are pending tasks, begin assigning or working on them
-5. If no tasks, ask the user what they want the team to work on
-` : `
-1. Call \`get_team_info\` to understand your team and role
-2. Call \`list_tasks\` to see your assigned tasks and available work
-3. Report your status: "🟢 [${role.toUpperCase()}] Online and ready"
-4. If you have assigned tasks, begin working on them
-5. If no tasks, wait for assignment from Master
-`}
 `);
+
+            teamContextBlock = [sharedRolePrompt, recentTeamActivityBlock].join('\n\n');
 
             teamInitialized = true;
             logger.debug('[Codex] Team initialization complete');
@@ -1158,6 +1165,11 @@ ${isCoordinator ? `
                         instructionBlocks.push(
                             `You are a ${metadata.role} in a collaborative team. Coordinate with other agents via the shared Kanban board and keep task statuses accurate.`
                         );
+                    }
+
+                    // Inject genome memory (learnings, patterns, scope, etc.)
+                    if (genomeInjectionBlock && !teamInitialized) {
+                        instructionBlocks.push(genomeInjectionBlock);
                     }
 
                     if (desktopKanbanInstructionBlock) {

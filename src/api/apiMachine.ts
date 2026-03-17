@@ -88,6 +88,11 @@ interface DaemonToServerEvents {
         daemonState: string
     }) => void) => void;
 
+    'report-dead-sessions': (data: {
+        machineId: string;
+        sessionIds: string[];
+    }) => void;
+
     'rpc-register': (data: { method: string }) => void;
     'rpc-unregister': (data: { method: string }) => void;
     'rpc-call': (data: { method: string, params: any }, callback: (response: {
@@ -373,6 +378,19 @@ export class ApiMachineClient {
             this.keepAliveInterval = null;
             logger.debug('[API MACHINE] Keep-alive stopped');
         }
+    }
+
+    /**
+     * Report dead sessions to the server so it can immediately mark them inactive.
+     * Called by the daemon when it detects child processes have died.
+     */
+    reportDeadSessions(sessionIds: string[]) {
+        if (sessionIds.length === 0) return;
+        logger.debug(`[API MACHINE] Reporting ${sessionIds.length} dead session(s): ${sessionIds.join(', ')}`);
+        this.socket.emit('report-dead-sessions', {
+            machineId: this.machine.id,
+            sessionIds
+        });
     }
 
     shutdown() {

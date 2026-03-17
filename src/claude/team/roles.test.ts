@@ -87,5 +87,27 @@ describe('Role Permissions System', () => {
             expect(prompt).toContain('You must use the actual live system state');
             expect(prompt).toContain('marketplace as a memory warehouse');
         });
+
+        it('should inject shared help and challenge rules for workers', () => {
+            const prompt = generateRolePrompt({
+                teamId: 'team-123',
+                role: 'builder',
+            } as any);
+
+            expect(prompt).toContain('Always Injected Team Operating Rules');
+            expect(prompt).toContain('request_help');
+            expect(prompt).toContain('type: "challenge"');
+            expect(prompt).toContain('type: "vote"');
+        });
+
+        it('should inject replace_agent guidance for coordinators', () => {
+            const prompt = generateRolePrompt({
+                teamId: 'team-123',
+                role: 'master',
+            } as any);
+
+            expect(prompt).toContain('replace_agent');
+            expect(prompt).toContain('switch runtime between `claude` and `codex`');
+        });
     });
 });

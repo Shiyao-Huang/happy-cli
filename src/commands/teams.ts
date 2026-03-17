@@ -1,341 +1,723 @@
 /**
  * Team management commands for Aha CLI
- * Provides commands for archiving, deleting, and managing teams
  */
 
 import chalk from 'chalk';
+import { randomUUID } from 'node:crypto';
+import { DEFAULT_KANBAN_BOARD } from '@aha/shared-team-config';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
-import { stopDaemonTeamSessions } from '@/daemon/controlClient';
-import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
+import { stopDaemonTeamSessions, checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
 
 interface TeamCommandOptions {
-    force?: boolean;
-    verbose?: boolean;
+  force?: boolean;
+  verbose?: boolean;
+  asJson?: boolean;
 }
 
-/**
- * Stop all daemon-managed sessions for a team
- */
-async function stopTeamSessionsInDaemon(teamId: string): Promise<void> {
-    try {
-        const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
-        if (!isRunning) {
-            logger.debug('[Teams] Daemon not running, no local sessions to stop');
-            return;
-        }
+function getOption(args: string[], name: string): string | undefined {
+  const flag = `--${name}`;
+  const index = args.indexOf(flag);
+  if (index === -1) {
+    return undefined;
+  }
+  return args[index + 1];
+}
 
-        console.log(chalk.gray(`Stopping local daemon sessions for team ${teamId}...`));
-        const result = await stopDaemonTeamSessions(teamId);
+function hasFlag(args: string[], ...flags: string[]): boolean {
+  return flags.some(flag => args.includes(flag));
+}
 
-        if (result.stopped > 0) {
-            console.log(chalk.gray(`Stopped ${result.stopped} local session(s)`));
-        }
-        if (result.errors.length > 0) {
-            logger.debug('[Teams] Errors stopping sessions:', result.errors);
-        }
-    } catch (error) {
-        // Non-fatal: daemon may not be running
-        logger.debug('[Teams] Failed to stop daemon sessions (non-fatal):', error);
+function getPositionalArgs(args: string[]): string[] {
+  const positional: string[] = [];
+  const booleanFlags = new Set(['--force', '-f', '--verbose', '-v', '--json', '--help', '-h']);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value.startsWith('-')) {
+      if (!booleanFlags.has(value) && index + 1 < args.length && !args[index + 1].startsWith('-')) {
+        index += 1;
+      }
+      continue;
     }
+    positional.push(value);
+  }
+
+  return positional;
 }
 
-/**
- * Show help for teams command
- */
+function parseCsvOption(args: string[], name: string): string[] | undefined {
+  const raw = getOption(args, name);
+  if (!raw) {
+    return undefined;
+  }
+
+  const values = raw
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  return values.length > 0 ? values : undefined;
+}
+
+async function confirm(prompt: string): Promise<boolean> {
+  const { default: readline } = await import('node:readline/promises');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(chalk.cyan(prompt));
+    return answer.trim().toLowerCase() === 'y';
+  } finally {
+    rl.close();
+  }
+}
+
+async function createApiClient(): Promise<ApiClient> {
+  const credentials = await readCredentials();
+  if (!credentials) {
+    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    process.exit(1);
+  }
+
+  const { credentials: authCredentials } = await authAndSetupMachineIfNeeded();
+  return ApiClient.create(authCredentials);
+}
+
+async function stopTeamSessionsInDaemon(teamId: string, silent = false): Promise<void> {
+  try {
+    const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
+    if (!isRunning) {
+      logger.debug('[Teams] Daemon not running, no local sessions to stop');
+      return;
+    }
+
+    if (!silent) {
+      console.log(chalk.gray(`Stopping local daemon sessions for team ${teamId}...`));
+    }
+    const result = await stopDaemonTeamSessions(teamId);
+
+    if (!silent && result.stopped > 0) {
+      console.log(chalk.gray(`Stopped ${result.stopped} local session(s)`));
+    }
+    if (result.errors.length > 0) {
+      logger.debug('[Teams] Errors stopping sessions:', result.errors);
+    }
+  } catch (error) {
+    logger.debug('[Teams] Failed to stop daemon sessions (non-fatal):', error);
+  }
+}
+
+function printMember(member: any): void {
+  const label = member.displayName || member.sessionId || member.memberId || 'unknown';
+  const role = member.roleId || member.role || 'member';
+  const executionPlane = member.executionPlane ? ` / ${member.executionPlane}` : '';
+  console.log(chalk.gray(`  - ${label} (${role}${executionPlane})`));
+}
+
+function printTeam(team: any, verbose = false): void {
+  console.log(chalk.bold.white(`Team: ${team.name || team.id}`));
+  console.log(chalk.gray(`ID: ${team.id}`));
+  console.log(chalk.gray(`Created: ${new Date(team.createdAt).toLocaleString()}`));
+  console.log(chalk.gray(`Updated: ${new Date(team.updatedAt).toLocaleString()}`));
+  console.log(chalk.gray(`Members: ${team.memberCount ?? team.members?.length ?? 0}`));
+  console.log(chalk.gray(`Tasks: ${team.taskCount ?? 0}`));
+
+  if (verbose && Array.isArray(team.members) && team.members.length > 0) {
+    console.log(chalk.gray('Member roster:'));
+    for (const member of team.members) {
+      printMember(member);
+    }
+  }
+}
+
+function collectTeamIds(args: string[], positional: string[]): string[] {
+  const idsFromFlag = parseCsvOption(args, 'ids');
+  if (idsFromFlag && idsFromFlag.length > 0) {
+    return idsFromFlag;
+  }
+  return positional.slice(1).map(value => value.trim()).filter(Boolean);
+}
+
+function buildCreateTeamPayload(args: string[], positional: string[]): { teamId: string; name: string; goal?: string; sessionIds: string[] } {
+  const positionalName = positional.slice(1).join(' ').trim();
+  const name = getOption(args, 'name') || positionalName;
+  if (!name) {
+    throw new Error('Usage: aha teams create --name "Team Name" [--id teamId] [--goal "..."] [--sessions a,b]');
+  }
+
+  return {
+    teamId: getOption(args, 'id') || randomUUID(),
+    name,
+    goal: getOption(args, 'goal'),
+    sessionIds: parseCsvOption(args, 'sessions') || [],
+  };
+}
+
+async function resolveTeamSessionIds(api: ApiClient, teamId: string): Promise<string[]> {
+  const sessionIds = new Set<string>();
+
+  const team = await api.getTeam(teamId).catch(() => null);
+  if (team?.team?.members) {
+    for (const member of team.team.members) {
+      if (typeof member?.sessionId === 'string' && member.sessionId.length > 0) {
+        sessionIds.add(member.sessionId);
+      }
+    }
+  }
+
+  if (sessionIds.size === 0) {
+    try {
+      const artifact = await api.getArtifact(teamId);
+      const headerSessions = Array.isArray((artifact.header as any)?.sessions) ? (artifact.header as any).sessions : [];
+      for (const sessionId of headerSessions) {
+        if (typeof sessionId === 'string' && sessionId.length > 0) {
+          sessionIds.add(sessionId);
+        }
+      }
+
+      const bodyMembers = Array.isArray((artifact.body as any)?.team?.members) ? (artifact.body as any).team.members : [];
+      for (const member of bodyMembers) {
+        if (typeof member?.sessionId === 'string' && member.sessionId.length > 0) {
+          sessionIds.add(member.sessionId);
+        }
+      }
+    } catch (error) {
+      logger.debug(`[Teams] Failed to resolve team session IDs for ${teamId}:`, error);
+    }
+  }
+
+  return [...sessionIds];
+}
+
+async function syncSessionMetadataToTeam(api: ApiClient, teamId: string, sessionId: string, roleId: string, displayName?: string): Promise<void> {
+  try {
+    const session = await api.getSession(sessionId);
+    if (!session?.isDecrypted || !session.metadata) {
+      console.error(chalk.yellow(`Warning: added member ${sessionId} to team, but session metadata could not be decrypted for metadata sync.`));
+      return;
+    }
+
+    const nextMetadata = {
+      ...session.metadata,
+      teamId,
+      role: roleId,
+      ...(displayName ? { name: displayName } : {}),
+    };
+
+    await api.updateSessionMetadata(sessionId, nextMetadata, session.metadataVersion);
+  } catch (error) {
+    console.error(chalk.yellow(`Warning: team member added but failed to sync session metadata for ${sessionId}: ${error instanceof Error ? error.message : 'Unknown error'}`));
+  }
+}
+
+async function clearSessionMetadataTeam(api: ApiClient, teamId: string, sessionId: string): Promise<void> {
+  try {
+    const session = await api.getSession(sessionId);
+    if (!session?.isDecrypted || !session.metadata) {
+      console.error(chalk.yellow(`Warning: removed member ${sessionId}, but session metadata could not be decrypted for cleanup.`));
+      return;
+    }
+
+    if (session.metadata.teamId !== teamId) {
+      return;
+    }
+
+    const nextMetadata = { ...session.metadata };
+    delete nextMetadata.teamId;
+    delete nextMetadata.roomId;
+    delete nextMetadata.roomName;
+
+    await api.updateSessionMetadata(sessionId, nextMetadata, session.metadataVersion);
+  } catch (error) {
+    console.error(chalk.yellow(`Warning: member removed but failed to clean session metadata for ${sessionId}: ${error instanceof Error ? error.message : 'Unknown error'}`));
+  }
+}
+
 export function showTeamsHelp() {
-    console.log(`
+  console.log(`
 ${chalk.bold.cyan('Aha Teams')} - Team management commands
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha teams')} <command> [options]
 
-${chalk.bold('Available Commands:')}
-  ${chalk.yellow('list')}                      List all teams
-  ${chalk.yellow('archive')} <teamId>          Archive a team (preserves data)
-  ${chalk.yellow('delete')} <teamId>           Delete a team permanently
-  ${chalk.yellow('rename')} <teamId> <name>    Rename a team
+${chalk.bold('Commands:')}
+  ${chalk.yellow('list')}                          List all teams
+  ${chalk.yellow('show')} <teamId>                 Show one team and its roster
+  ${chalk.yellow('create')}                        Create a team artifact
+  ${chalk.yellow('members')} <teamId>              List team members
+  ${chalk.yellow('add-member')} <teamId>           Add a member to a team
+  ${chalk.yellow('remove-member')} <teamId>        Remove a member from a team
+  ${chalk.yellow('rename')} <teamId> <name>        Rename a team
+  ${chalk.yellow('archive')} <teamId>              Archive a team and its sessions
+  ${chalk.yellow('delete')} <teamId>               Delete a team and its sessions
+  ${chalk.yellow('batch-archive')} <id...>         Archive multiple teams
+  ${chalk.yellow('batch-delete')} <id...>          Delete multiple teams
 
-${chalk.bold('Options:')}
-  ${chalk.cyan('--force, -f')}                Skip confirmation prompts
-  ${chalk.cyan('--verbose, -v')}              Show detailed output
-  ${chalk.cyan('--help, -h')}                 Show this help message
+${chalk.bold('Common options:')}
+  ${chalk.cyan('--json')}                         Print raw JSON output
+  ${chalk.cyan('--verbose, -v')}                  Show detailed member output
+  ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
+
+${chalk.bold('Create options:')}
+  ${chalk.cyan('--name "Team Name"')}            Team name (or pass as positional text)
+  ${chalk.cyan('--id <teamId>')}                  Optional explicit team ID (default: random UUID)
+  ${chalk.cyan('--goal <text>')}                  Seed a goal task in the board
+  ${chalk.cyan('--sessions a,b,c')}               Seed members from existing session IDs
+
+${chalk.bold('Member options:')}
+  ${chalk.cyan('--session <sessionId>')}          Session ID for add-member/remove-member
+  ${chalk.cyan('--role <roleId>')}                Role ID for add-member (default: member)
+  ${chalk.cyan('--name <displayName>')}           Display name for add-member
+  ${chalk.cyan('--member-id <id>')}               Optional stable member ID
+  ${chalk.cyan('--session-tag <tag>')}            Optional session tag
+  ${chalk.cyan('--spec-id <genomeId>')}           Optional genome spec ID
+  ${chalk.cyan('--parent-session <id>')}          Optional parent session ID
+  ${chalk.cyan('--execution-plane <mode>')}       Optional execution plane (mainline|bypass)
+  ${chalk.cyan('--runtime-type <runtime>')}       Optional runtime type (claude|codex)
+
+${chalk.bold('Batch options:')}
+  ${chalk.cyan('--ids a,b,c')}                    Alternative to positional IDs for batch ops
 
 ${chalk.bold('Examples:')}
-  ${chalk.gray('# List all teams')}
-  ${chalk.green('aha teams list')}
-
-  ${chalk.gray('# Archive a team (with confirmation)')}
-  ${chalk.green('aha teams archive team_abc123')}
-
-  ${chalk.gray('# Delete a team (skip confirmation)')}
-  ${chalk.green('aha teams delete team_abc123 --force')}
-
-  ${chalk.gray('# Rename a team')}
-  ${chalk.green('aha teams rename team_abc123 "New Team Name"')}
-
-${chalk.bold('Notes:')}
-  - Archive preserves all data but deactivates sessions
-  - Delete permanently removes the team and all sessions
-  - Use ${chalk.cyan('--force')} flag to skip confirmation prompts
+  ${chalk.green('aha teams list --verbose')}
+  ${chalk.green('aha teams create --name "Sprint Crew" --goal "Ship CLI CRUD"')}
+  ${chalk.green('aha teams show team_123')}
+  ${chalk.green('aha teams add-member team_123 --session sess_1 --role builder --name "Builder 2"')}
+  ${chalk.green('aha teams archive team_123 --force')}
 `);
 }
 
-/**
- * Handle teams command routing
- */
 export async function handleTeamsCommand(args: string[]) {
-    const subcommand = args[0];
+  const subcommand = args[0];
 
-    if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
-        showTeamsHelp();
-        return;
-    }
+  if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+    showTeamsHelp();
+    return;
+  }
 
-    // Parse options
-    const options: TeamCommandOptions = {
-        force: args.includes('--force') || args.includes('-f'),
-        verbose: args.includes('--verbose') || args.includes('-v')
-    };
+  const options: TeamCommandOptions = {
+    force: hasFlag(args, '--force', '-f'),
+    verbose: hasFlag(args, '--verbose', '-v'),
+    asJson: hasFlag(args, '--json'),
+  };
 
-    // Remove flags from args
-    const cleanArgs = args.filter(arg => !arg.startsWith('-'));
+  const api = await createApiClient();
+  const positional = getPositionalArgs(args);
 
-    // Authenticate first
-    const credentials = readCredentials();
-    if (!credentials) {
-        console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
-        process.exit(1);
-    }
-
-    const { credentials: authCredentials } = await authAndSetupMachineIfNeeded();
-    const api = await ApiClient.create(authCredentials);
-
-    try {
-        switch (subcommand) {
-            case 'list':
-                await listTeams(api, options);
-                break;
-
-            case 'archive':
-                if (cleanArgs.length < 2) {
-                    console.log(chalk.red('Error: Team ID required'));
-                    console.log(chalk.yellow('Usage:'), chalk.green('aha teams archive <teamId>'));
-                    process.exit(1);
-                }
-                await archiveTeam(api, cleanArgs[1], options);
-                break;
-
-            case 'delete':
-                if (cleanArgs.length < 2) {
-                    console.log(chalk.red('Error: Team ID required'));
-                    console.log(chalk.yellow('Usage:'), chalk.green('aha teams delete <teamId>'));
-                    process.exit(1);
-                }
-                await deleteTeam(api, cleanArgs[1], options);
-                break;
-
-            case 'rename':
-                if (cleanArgs.length < 3) {
-                    console.log(chalk.red('Error: Team ID and new name required'));
-                    console.log(chalk.yellow('Usage:'), chalk.green('aha teams rename <teamId> <name>'));
-                    process.exit(1);
-                }
-                await renameTeam(api, cleanArgs[1], cleanArgs.slice(2).join(' '), options);
-                break;
-
-            default:
-                console.log(chalk.red(`Unknown command: ${subcommand}`));
-                console.log(chalk.yellow('Run'), chalk.green('aha teams --help'), chalk.yellow('for usage'));
-                process.exit(1);
+  try {
+    switch (subcommand) {
+      case 'list':
+        await listTeams(api, options);
+        break;
+      case 'show':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams show <teamId>');
         }
-    } catch (error) {
-        logger.debug('[TeamsCommand] Error:', error);
-        console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-        process.exit(1);
+        await showTeam(api, positional[1], options);
+        break;
+      case 'create':
+        await createTeam(api, buildCreateTeamPayload(args, positional), options);
+        break;
+      case 'members':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams members <teamId>');
+        }
+        await listMembers(api, positional[1], options);
+        break;
+      case 'add-member':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams add-member <teamId> --session <sessionId> [--role builder]');
+        }
+        await addMember(api, positional[1], args, options);
+        break;
+      case 'remove-member':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams remove-member <teamId> --session <sessionId>');
+        }
+        await removeMember(api, positional[1], args, options);
+        break;
+      case 'archive':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams archive <teamId> [--force]');
+        }
+        await archiveTeam(api, positional[1], options);
+        break;
+      case 'delete':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams delete <teamId> [--force]');
+        }
+        await deleteTeam(api, positional[1], options);
+        break;
+      case 'rename':
+        if (positional.length < 3) {
+          throw new Error('Usage: aha teams rename <teamId> <name>');
+        }
+        await renameTeam(api, positional[1], positional.slice(2).join(' '), options);
+        break;
+      case 'batch-archive': {
+        const teamIds = collectTeamIds(args, positional);
+        if (teamIds.length === 0) {
+          throw new Error('Usage: aha teams batch-archive <teamId...> [--ids a,b,c]');
+        }
+        await batchArchiveTeams(api, teamIds, options);
+        break;
+      }
+      case 'batch-delete': {
+        const teamIds = collectTeamIds(args, positional);
+        if (teamIds.length === 0) {
+          throw new Error('Usage: aha teams batch-delete <teamId...> [--ids a,b,c]');
+        }
+        await batchDeleteTeams(api, teamIds, options);
+        break;
+      }
+      default:
+        throw new Error(`Unknown teams command: ${subcommand}`);
     }
+  } catch (error) {
+    logger.debug('[TeamsCommand] Error:', error);
+    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    process.exit(1);
+  }
 }
 
-/**
- * List all teams
- * Note: Implements direct API call since ApiClient doesn't have listArtifacts yet
- */
-async function listTeams(api: any, options: TeamCommandOptions) {
-    try {
-        console.log(chalk.cyan('Fetching teams...'));
+async function listTeams(api: ApiClient, options: TeamCommandOptions): Promise<void> {
+  if (!options.asJson) {
+    console.log(chalk.cyan('Fetching teams...'));
+  }
+  const result = await api.listTeams();
+  const teams = result.teams || [];
 
-        // Direct API call to GET /v1/artifacts since ApiClient doesn't expose this yet
-        // TODO: Add listArtifacts() method to ApiClient
-        const axios = (await import('axios')).default;
-        const configuration = (await import('@/configuration')).configuration;
-        const { credentials: authCredentials } = await authAndSetupMachineIfNeeded();
-
-        const response = await axios.get(
-            `${configuration.serverUrl}/v1/artifacts`,
-            {
-                headers: {
-                    'Authorization': `Bearer ${authCredentials.token}`
-                },
-                timeout: 10000
-            }
-        );
-
-        const artifacts = response.data.artifacts || [];
-        const teams = artifacts.filter((a: any) => a.type === 'team');
-
-        if (teams.length === 0) {
-            console.log(chalk.yellow('No teams found'));
-            return;
-        }
-
-        console.log(chalk.bold(`\nFound ${teams.length} team(s):\n`));
-
-        for (const team of teams) {
-            console.log(chalk.green('━'.repeat(60)));
-            console.log(chalk.bold.white(`Team: ${team.header?.name || team.id}`));
-            console.log(chalk.gray(`ID: ${team.id}`));
-            console.log(chalk.gray(`Created: ${new Date(team.createdAt).toLocaleString()}`));
-            console.log(chalk.gray(`Updated: ${new Date(team.updatedAt).toLocaleString()}`));
-
-            if (options.verbose && team.body) {
-                try {
-                    // Try to get more details via getArtifact if needed
-                    const fullTeam = await api.getArtifact(team.id);
-                    const body = fullTeam.body;
-
-                    if (body && typeof body === 'object') {
-                        const teamData = (body as any).team || {};
-                        const memberCount = teamData.members?.length || 0;
-                        const taskCount = (body as any).tasks?.length || 0;
-                        console.log(chalk.gray(`Members: ${memberCount}`));
-                        console.log(chalk.gray(`Tasks: ${taskCount}`));
-                    }
-                } catch {
-                    // Ignore errors in verbose mode
-                }
-            }
-        }
-
-        console.log(chalk.green('━'.repeat(60)));
-        console.log();
-
-    } catch (error) {
-        throw new Error(`Failed to list teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  if (options.asJson) {
+    if (!options.verbose) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
     }
+
+    const expanded = await Promise.all(teams.map(async (team: any) => (await api.getTeam(team.id))?.team || team));
+    console.log(JSON.stringify({ teams: expanded }, null, 2));
+    return;
+  }
+
+  if (teams.length === 0) {
+    console.log(chalk.yellow('No teams found'));
+    return;
+  }
+
+  console.log(chalk.bold(`\nFound ${teams.length} team(s):\n`));
+
+  for (const team of teams) {
+    console.log(chalk.green('━'.repeat(60)));
+    const expandedTeam = options.verbose ? (await api.getTeam(team.id))?.team || team : team;
+    printTeam(expandedTeam, !!options.verbose);
+  }
+
+  console.log(chalk.green('━'.repeat(60)));
+  console.log();
 }
 
-/**
- * Archive a team
- */
-async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandOptions) {
-    try {
-        // Confirm unless --force is used
-        if (!options.force) {
-            console.log(chalk.yellow(`\nAre you sure you want to archive team ${teamId}?`));
-            console.log(chalk.gray('This will deactivate all sessions but preserve data.'));
-            console.log(chalk.gray('Use --force to skip this confirmation.\n'));
+async function showTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  const result = await api.getTeam(teamId);
+  if (!result?.team) {
+    throw new Error(`Team ${teamId} not found`);
+  }
 
-            // Simple confirmation - in production you'd use a proper prompt library
-            const { default: readline } = await import('node:readline/promises');
-            const rl = readline.createInterface({
-                input: process.stdin,
-                output: process.stdout
-            });
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
 
-            const answer = await rl.question(chalk.cyan('Continue? (y/N): '));
-            rl.close();
-
-            if (answer.toLowerCase() !== 'y') {
-                console.log(chalk.yellow('Operation cancelled'));
-                return;
-            }
-        }
-
-        console.log(chalk.cyan(`Archiving team ${teamId}...`));
-
-        // Stop daemon-managed sessions for this team first
-        await stopTeamSessionsInDaemon(teamId);
-
-        const result = await api.archiveTeam(teamId);
-
-        if (result.success) {
-            console.log(chalk.green('✓ Team archived successfully'));
-            console.log(chalk.gray(`Archived ${result.archivedSessions} session(s)`));
-        } else {
-            throw new Error('Archive operation failed');
-        }
-
-    } catch (error) {
-        throw new Error(`Failed to archive team: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+  console.log(chalk.bold(`\nTeam ${teamId}\n`));
+  printTeam(result.team, true);
+  console.log();
 }
 
-/**
- * Delete a team
- */
-async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOptions) {
-    try {
-        // Confirm unless --force is used
-        if (!options.force) {
-            console.log(chalk.red.bold(`\n⚠️  WARNING: This will permanently delete team ${teamId}`));
-            console.log(chalk.gray('This action cannot be undone. All sessions and data will be lost.'));
-            console.log(chalk.gray('Use --force to skip this confirmation.\n'));
+async function createTeam(
+  api: ApiClient,
+  payload: { teamId: string; name: string; goal?: string; sessionIds: string[] },
+  options: TeamCommandOptions,
+): Promise<void> {
+  const board = JSON.parse(JSON.stringify(DEFAULT_KANBAN_BOARD));
+  board.name = payload.name;
+  if (!board.team) {
+    board.team = { members: [] };
+  }
+  board.team.name = payload.name;
+  board.team.members = payload.sessionIds.map((sessionId) => ({
+    sessionId,
+    roleId: 'member',
+    displayName: sessionId,
+    joinedAt: Date.now(),
+  }));
 
-            const { default: readline } = await import('node:readline/promises');
-            const rl = readline.createInterface({
-                input: process.stdin,
-                output: process.stdout
-            });
+  if (payload.goal) {
+    board.tasks.push({
+      id: 'team-goal',
+      title: `🎯 Team Goal: ${payload.goal}`,
+      description: 'This is the primary objective for this team.',
+      status: 'todo',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
 
-            const answer = await rl.question(chalk.cyan('Type "DELETE" to confirm: '));
-            rl.close();
+  const artifact = await api.createArtifact(
+    payload.teamId,
+    {
+      type: 'team',
+      title: payload.name,
+      name: payload.name,
+      sessions: payload.sessionIds,
+      draft: false,
+      createdAt: Date.now(),
+    },
+    board,
+  );
 
-            if (answer !== 'DELETE') {
-                console.log(chalk.yellow('Operation cancelled'));
-                return;
-            }
-        }
+  const team = (await api.getTeam(payload.teamId))?.team || {
+    id: artifact.id,
+    name: payload.name,
+    memberCount: board.team.members.length,
+    taskCount: Array.isArray(board.tasks) ? board.tasks.length : 0,
+    members: board.team.members,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
 
-        console.log(chalk.cyan(`Deleting team ${teamId}...`));
+  for (const sessionId of payload.sessionIds) {
+    await syncSessionMetadataToTeam(api, payload.teamId, sessionId, 'member');
+  }
 
-        // Stop daemon-managed sessions for this team first
-        await stopTeamSessionsInDaemon(teamId);
+  if (options.asJson) {
+    console.log(JSON.stringify({ success: true, team }, null, 2));
+    return;
+  }
 
-        const result = await api.deleteTeam(teamId);
-
-        if (result.success) {
-            console.log(chalk.green('✓ Team deleted successfully'));
-            console.log(chalk.gray(`Deleted ${result.deletedSessions} session(s)`));
-        } else {
-            throw new Error('Delete operation failed');
-        }
-
-    } catch (error) {
-        throw new Error(`Failed to delete team: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+  console.log(chalk.green(`✓ Team ${payload.teamId} created successfully`));
+  printTeam(team, true);
+  console.log();
 }
 
-/**
- * Rename a team
- */
-async function renameTeam(api: ApiClient, teamId: string, newName: string, options: TeamCommandOptions) {
-    try {
-        console.log(chalk.cyan(`Renaming team ${teamId} to "${newName}"...`));
+async function listMembers(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  const result = await api.getTeam(teamId);
+  if (!result?.team) {
+    throw new Error(`Team ${teamId} not found`);
+  }
 
-        const result = await api.renameTeam(teamId, newName);
+  const members = Array.isArray(result.team.members) ? result.team.members : [];
 
-        if (result.success) {
-            console.log(chalk.green('✓ Team renamed successfully'));
-            if (options.verbose) {
-                console.log(chalk.gray(`New name: ${newName}`));
-            }
-        } else {
-            throw new Error('Rename operation failed');
-        }
+  if (options.asJson) {
+    console.log(JSON.stringify({ teamId, members }, null, 2));
+    return;
+  }
 
-    } catch (error) {
-        throw new Error(`Failed to rename team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  if (members.length === 0) {
+    console.log(chalk.yellow(`Team ${teamId} has no members.`));
+    return;
+  }
+
+  console.log(chalk.bold(`\nMembers for ${teamId}\n`));
+  for (const member of members) {
+    printMember(member);
+  }
+  console.log();
+}
+
+async function addMember(api: ApiClient, teamId: string, args: string[], options: TeamCommandOptions): Promise<void> {
+  const sessionId = getOption(args, 'session');
+  if (!sessionId) {
+    throw new Error('Adding a team member requires --session <sessionId>.');
+  }
+
+  const roleId = getOption(args, 'role') || 'member';
+  const displayName = getOption(args, 'name');
+
+  const result = await api.addTeamMember(
+    teamId,
+    sessionId,
+    roleId,
+    displayName,
+    {
+      memberId: getOption(args, 'member-id'),
+      sessionTag: getOption(args, 'session-tag'),
+      specId: getOption(args, 'spec-id'),
+      parentSessionId: getOption(args, 'parent-session'),
+      executionPlane: getOption(args, 'execution-plane'),
+      runtimeType: getOption(args, 'runtime-type'),
+    },
+  );
+
+  await syncSessionMetadataToTeam(api, teamId, sessionId, roleId, displayName);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Added ${sessionId} to team ${teamId}`));
+  printMember(result.member);
+  console.log();
+}
+
+async function removeMember(api: ApiClient, teamId: string, args: string[], options: TeamCommandOptions): Promise<void> {
+  const sessionId = getOption(args, 'session');
+  if (!sessionId) {
+    throw new Error('Removing a team member requires --session <sessionId>.');
+  }
+
+  const result = await api.removeTeamMember(teamId, sessionId);
+  await clearSessionMetadataTeam(api, teamId, sessionId);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Removed ${sessionId} from team ${teamId}`));
+  console.log();
+}
+
+async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (!options.force) {
+    const confirmed = await confirm(`Archive team ${teamId}? (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
     }
+  }
+
+  const sessionIds = await resolveTeamSessionIds(api, teamId);
+  await stopTeamSessionsInDaemon(teamId, !!options.asJson);
+  const result = await api.archiveTeam(teamId, sessionIds);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green('✓ Team archived successfully'));
+  console.log(chalk.gray(`Archived ${result.archivedSessions} session(s)`));
+  console.log();
+}
+
+async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (!options.force) {
+    const confirmed = await confirm(`Delete team ${teamId}? This cannot be undone. (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const sessionIds = await resolveTeamSessionIds(api, teamId);
+  await stopTeamSessionsInDaemon(teamId, !!options.asJson);
+  const result = await api.deleteTeam(teamId, sessionIds);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green('✓ Team deleted successfully'));
+  console.log(chalk.gray(`Deleted ${result.deletedSessions} session(s)`));
+  console.log();
+}
+
+async function renameTeam(api: ApiClient, teamId: string, newName: string, options: TeamCommandOptions): Promise<void> {
+  const result = await api.renameTeam(teamId, newName);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green('✓ Team renamed successfully'));
+  console.log(chalk.gray(`New name: ${newName}`));
+  console.log();
+}
+
+async function batchArchiveTeams(api: ApiClient, teamIds: string[], options: TeamCommandOptions): Promise<void> {
+  if (!options.force) {
+    const confirmed = await confirm(`Archive ${teamIds.length} team(s)? (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const results: Array<{ teamId: string; success: boolean; archivedSessions?: number; error?: string }> = [];
+
+  for (const teamId of teamIds) {
+    try {
+      const sessionIds = await resolveTeamSessionIds(api, teamId);
+      await stopTeamSessionsInDaemon(teamId, !!options.asJson);
+      const result = await api.archiveTeam(teamId, sessionIds);
+      results.push({ teamId, ...result });
+    } catch (error) {
+      results.push({ teamId, success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  const summary = {
+    success: true,
+    archived: results.filter(result => result.success).length,
+    results,
+  };
+
+  if (options.asJson) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Archived ${summary.archived} team(s)`));
+  for (const entry of results) {
+    const color = entry.success ? chalk.green : chalk.red;
+    console.log(color(`  - ${entry.teamId}: ${entry.success ? `archived ${entry.archivedSessions ?? 0} sessions` : entry.error || 'failed'}`));
+  }
+  console.log();
+}
+
+async function batchDeleteTeams(api: ApiClient, teamIds: string[], options: TeamCommandOptions): Promise<void> {
+  if (!options.force) {
+    const confirmed = await confirm(`Delete ${teamIds.length} team(s)? This cannot be undone. (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const results: Array<{ teamId: string; success: boolean; deletedSessions?: number; error?: string }> = [];
+
+  for (const teamId of teamIds) {
+    try {
+      const sessionIds = await resolveTeamSessionIds(api, teamId);
+      await stopTeamSessionsInDaemon(teamId, !!options.asJson);
+      const result = await api.deleteTeam(teamId, sessionIds);
+      results.push({ teamId, ...result });
+    } catch (error) {
+      results.push({ teamId, success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  }
+
+  const summary = {
+    success: true,
+    deleted: results.filter(result => result.success).length,
+    results,
+  };
+
+  if (options.asJson) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Deleted ${summary.deleted} team(s)`));
+  for (const entry of results) {
+    const color = entry.success ? chalk.green : chalk.red;
+    console.log(color(`  - ${entry.teamId}: ${entry.success ? `deleted ${entry.deletedSessions ?? 0} sessions` : entry.error || 'failed'}`));
+  }
+  console.log();
 }

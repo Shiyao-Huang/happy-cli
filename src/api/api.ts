@@ -279,6 +279,196 @@ export class ApiClient {
     return this.pushClient;
   }
 
+  private getDefaultEncryptionContext(): { encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' } {
+    if (this.credential.encryption.type === 'contentSecretKey') {
+      return {
+        encryptionKey: this.credential.encryption.contentSecretKey,
+        encryptionVariant: 'dataKey',
+      };
+    }
+    if (this.credential.encryption.type === 'dataKey') {
+      return {
+        encryptionKey: this.credential.encryption.machineKey,
+        encryptionVariant: 'dataKey',
+      };
+    }
+    return {
+      encryptionKey: this.credential.encryption.secret,
+      encryptionVariant: 'legacy',
+    };
+  }
+
+  private resolveSessionEncryptionContext(dataEncryptionKey?: string | null): { encryptionKey: Uint8Array; encryptionVariant: 'legacy' | 'dataKey' } | null {
+    if (!dataEncryptionKey) {
+      return this.getDefaultEncryptionContext();
+    }
+
+    const decryptedKey = this.unwrapDataEncryptionKey(dataEncryptionKey);
+    if (!decryptedKey) {
+      return null;
+    }
+
+    return {
+      encryptionKey: decryptedKey,
+      encryptionVariant: 'dataKey',
+    };
+  }
+
+  private decodeStoredSession(raw: any): any {
+    const baseSession = {
+      id: raw.id,
+      seq: raw.seq,
+      createdAt: raw.createdAt,
+      updatedAt: raw.updatedAt,
+      active: !!raw.active,
+      activeAt: raw.activeAt,
+      persistedMessageCount: raw.persistedMessageCount ?? 0,
+      metadata: null,
+      metadataVersion: raw.metadataVersion ?? 0,
+      agentState: null,
+      agentStateVersion: raw.agentStateVersion ?? 0,
+      isDecrypted: false,
+    };
+
+    const encryptionContext = this.resolveSessionEncryptionContext(raw.dataEncryptionKey);
+    if (!encryptionContext) {
+      logger.debug(`[API] Failed to resolve session encryption key for ${raw.id}`);
+      return baseSession;
+    }
+
+    try {
+      return {
+        ...baseSession,
+        encryptionKey: encryptionContext.encryptionKey,
+        encryptionVariant: encryptionContext.encryptionVariant,
+        metadata: raw.metadata ? decrypt(encryptionContext.encryptionKey, encryptionContext.encryptionVariant, decodeBase64(raw.metadata)) : null,
+        agentState: raw.agentState ? decrypt(encryptionContext.encryptionKey, encryptionContext.encryptionVariant, decodeBase64(raw.agentState)) : null,
+        isDecrypted: true,
+      };
+    } catch (error) {
+      logger.debug(`[API] Failed to decode stored session ${raw.id}:`, error);
+      return baseSession;
+    }
+  }
+
+  async listSessions(): Promise<{ sessions: any[] }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/sessions`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+
+      const sessions = Array.isArray(response.data?.sessions)
+        ? response.data.sessions.map((raw: any) => this.decodeStoredSession(raw))
+        : [];
+
+      logger.debug(`[API] Listed ${sessions.length} sessions`);
+      return { sessions };
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list sessions:`, error);
+      throw new Error(`Failed to list sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async getSession(sessionId: string): Promise<any | null> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/sessions/${sessionId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000,
+          validateStatus: (status) => status === 200 || status === 404
+        }
+      );
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      return this.decodeStoredSession(response.data.session);
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get session ${sessionId}:`, error);
+      throw new Error(`Failed to get session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateSessionMetadata(sessionId: string, metadata: Metadata, expectedVersion?: number): Promise<{ success: boolean; session: any }> {
+    const existing = await this.getSession(sessionId);
+
+    if (!existing) {
+      throw new Error('Session not found');
+    }
+
+    if (!existing.isDecrypted || !existing.encryptionKey || !existing.encryptionVariant) {
+      throw new Error('Session metadata could not be decrypted; refusing to overwrite opaque data.');
+    }
+
+    try {
+      const encodedMetadata = encodeBase64(encrypt(existing.encryptionKey, existing.encryptionVariant, metadata));
+
+      await axios.post(
+        `${configuration.serverUrl}/v1/sessions/${sessionId}/metadata`,
+        {
+          metadata: encodedMetadata,
+          expectedVersion: expectedVersion ?? existing.metadataVersion
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      logger.debug(`[API] Updated metadata for session ${sessionId}`);
+      return {
+        success: true,
+        session: {
+          ...existing,
+          metadata,
+          metadataVersion: (expectedVersion ?? existing.metadataVersion) + 1,
+          updatedAt: Date.now(),
+        }
+      };
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to update metadata for session ${sessionId}:`, error);
+      throw new Error(`Failed to update session metadata: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async deleteSession(sessionId: string): Promise<{ success: boolean }> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/sessions/${sessionId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 30000,
+          validateStatus: (status) => status === 200 || status === 404
+        }
+      );
+
+      if (response.status === 404) {
+        throw new Error('Session not found');
+      }
+
+      logger.debug(`[API] Deleted session ${sessionId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to delete session ${sessionId}:`, error);
+      throw new Error(`Failed to delete session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   /**
    * Register a vendor API token with the server
    * The token is sent as a JSON string - server handles encryption
@@ -309,6 +499,56 @@ export class ApiClient {
       throw new Error(`Failed to register vendor token: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
+
+  /**
+   * Remove a stored vendor API token from the server.
+   */
+  async removeVendorToken(vendor: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/connect/${vendor}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 5000
+        }
+      );
+
+      if (response.status !== 200) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+
+      logger.debug(`[API] Vendor token for ${vendor} removed successfully`);
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to remove vendor token:`, error);
+      throw new Error(`Failed to remove vendor token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List stored vendor API tokens for the current user.
+   */
+  async listVendorTokens(): Promise<{ tokens: Array<{ vendor: string; token: string }> }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/connect/tokens`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 5000
+        }
+      );
+
+      logger.debug(`[API] Listed ${response.data?.tokens?.length ?? 0} vendor tokens`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list vendor tokens:`, error);
+      throw new Error(`Failed to list vendor tokens: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async getArtifact(artifactId: string): Promise<Artifact> {
     try {
       const response = await axios.get(
@@ -525,7 +765,12 @@ export class ApiClient {
         return null;
       }
 
-      return response.data;
+      // Server returns base64-encoded values — decode to plain string
+      const raw = response.data;
+      return {
+        ...raw,
+        value: new TextDecoder().decode(decodeBase64(raw.value)),
+      };
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to get KV ${key}:`, error);
       throw new Error(`Failed to get KV: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -543,7 +788,15 @@ export class ApiClient {
           }
         }
       );
-      return response.data;
+      // Server returns base64-encoded values — decode each item to plain string
+      const raw = response.data;
+      return {
+        ...raw,
+        items: (raw.items ?? []).map((item: any) => ({
+          ...item,
+          value: new TextDecoder().decode(decodeBase64(item.value)),
+        })),
+      };
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to list KV:`, error);
       throw new Error(`Failed to list KV: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -552,9 +805,15 @@ export class ApiClient {
 
   async kvMutate(mutations: Array<{ key: string, value: string | null, version: number }>): Promise<{ success: boolean, results?: any[], errors?: any[] }> {
     try {
+      // Base64-encode values to match server convention (see apiSession kv-batch-update handler)
+      const encodedMutations = mutations.map(m => ({
+        ...m,
+        value: m.value !== null ? encodeBase64(new TextEncoder().encode(m.value)) : null,
+      }));
+
       const response = await axios.post(
         `${configuration.serverUrl}/v1/kv`,
-        { mutations },
+        { mutations: encodedMutations },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1076,13 +1335,185 @@ export class ApiClient {
   }
 
   /**
+   * List raw artifacts for the current user and decrypt their headers client-side.
+   * Used as a compatibility fallback when dedicated team list endpoints are unavailable.
+   */
+  async listArtifacts(): Promise<Array<{
+    id: string;
+    title: string | null;
+    type?: string;
+    sessions?: string[];
+    draft?: boolean;
+    headerVersion: number;
+    seq: number;
+    createdAt: number;
+    updatedAt: number;
+    isDecrypted: boolean;
+  }>> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/artifacts`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+
+      const artifacts = Array.isArray(response.data)
+        ? response.data
+        : response.data?.artifacts ?? [];
+
+      const decryptedArtifacts = artifacts.map((raw: any) => {
+        let encryptionKey: Uint8Array;
+        let encryptionVariant: 'legacy' | 'dataKey';
+
+        if (raw.dataEncryptionKey) {
+          const decryptedKey = this.unwrapDataEncryptionKey(raw.dataEncryptionKey);
+          if (decryptedKey) {
+            encryptionKey = decryptedKey;
+            encryptionVariant = 'dataKey';
+          } else if (this.credential.encryption.type === 'contentSecretKey') {
+            encryptionKey = this.credential.encryption.contentSecretKey;
+            encryptionVariant = 'dataKey';
+          } else if (this.credential.encryption.type === 'dataKey') {
+            encryptionKey = this.credential.encryption.machineKey;
+            encryptionVariant = 'dataKey';
+          } else {
+            encryptionKey = this.credential.encryption.secret;
+            encryptionVariant = 'legacy';
+          }
+        } else if (this.credential.encryption.type === 'contentSecretKey') {
+          encryptionKey = this.credential.encryption.contentSecretKey;
+          encryptionVariant = 'dataKey';
+        } else if (this.credential.encryption.type === 'dataKey') {
+          encryptionKey = this.credential.encryption.machineKey;
+          encryptionVariant = 'dataKey';
+        } else {
+          encryptionKey = this.credential.encryption.secret;
+          encryptionVariant = 'legacy';
+        }
+
+        let header: any = null;
+        try {
+          header = raw.header
+            ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.header))
+            : null;
+        } catch (error) {
+          logger.debug(`[API] Failed to decrypt artifact header for list item ${raw.id}:`, error);
+        }
+
+        return {
+          id: raw.id,
+          title: header?.title || null,
+          type: header?.type,
+          sessions: header?.sessions,
+          draft: header?.draft,
+          headerVersion: raw.headerVersion,
+          seq: raw.seq,
+          createdAt: raw.createdAt,
+          updatedAt: raw.updatedAt,
+          isDecrypted: !!header,
+        };
+      });
+
+      logger.debug(`[API] Listed ${decryptedArtifacts.length} artifacts`);
+      return decryptedArtifacts;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to list artifacts:`, error);
+      throw new Error(`Failed to list artifacts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List teams accessible to the current user.
+   */
+  async listTeams(): Promise<{ teams: Array<{ id: string; name: string; memberCount: number; taskCount: number; createdAt: number; updatedAt: number }> }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Listed ${response.data?.teams?.length ?? 0} teams`);
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        logger.debug('[API] /v1/teams unavailable, falling back to decrypted artifact list');
+        const artifacts = await this.listArtifacts();
+        const teamArtifacts = artifacts.filter(
+          artifact => artifact.type === 'team' || (!!artifact.sessions && artifact.sessions.length > 0)
+        );
+
+        const teams = await Promise.all(teamArtifacts.map(async (artifact) => {
+          let memberCount = artifact.sessions?.length || 0;
+          let taskCount = 0;
+
+          try {
+            const fullArtifact = await this.getArtifact(artifact.id);
+            const body = fullArtifact?.body as any;
+            const members = Array.isArray(body?.team?.members) ? body.team.members : [];
+            const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
+            if (members.length > 0) {
+              memberCount = members.length;
+            }
+            taskCount = tasks.length;
+          } catch (nestedError) {
+            logger.debug(`[API] Fallback team summary fetch failed for ${artifact.id}:`, nestedError);
+          }
+
+          return {
+            id: artifact.id,
+            name: artifact.title || artifact.id,
+            memberCount,
+            taskCount,
+            createdAt: artifact.createdAt,
+            updatedAt: artifact.updatedAt,
+          };
+        }));
+        return { teams };
+      }
+      logger.debug(`[API] [ERROR] Failed to list teams:`, error);
+      throw new Error(`Failed to list teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get a single team summary, including members.
+   */
+  async getTeam(teamId: string): Promise<{ team: { id: string; name: string; memberCount: number; taskCount: number; members: any[]; createdAt: number; updatedAt: number } } | null> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/teams/${teamId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`
+          },
+          timeout: 10000,
+          validateStatus: (status) => status === 200 || status === 404
+        }
+      );
+      if (response.status === 404) return null;
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get team ${teamId}:`, error);
+      throw new Error(`Failed to get team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Archive a team and all its sessions
    */
-  async archiveTeam(teamId: string): Promise<{ success: boolean; archivedSessions: number }> {
+  async archiveTeam(teamId: string, sessionIds: string[] = []): Promise<{ success: boolean; archivedSessions: number }> {
     try {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/archive`,
-        {},
+        { sessionIds },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1102,13 +1533,15 @@ export class ApiClient {
   /**
    * Delete a team and all its sessions
    */
-  async deleteTeam(teamId: string): Promise<{ success: boolean; deletedSessions: number }> {
+  async deleteTeam(teamId: string, sessionIds: string[] = []): Promise<{ success: boolean; deletedSessions: number }> {
     try {
       const response = await axios.delete(
         `${configuration.serverUrl}/v1/teams/${teamId}`,
         {
+          data: { sessionIds },
           headers: {
-            'Authorization': `Bearer ${this.credential.token}`
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
           },
           timeout: 30000
         }

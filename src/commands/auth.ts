@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { stopDaemon, checkIfDaemonRunningAndCleanupStaleState, ensureDaemonRunning } from '@/daemon/controlClient';
 import { logger } from '@/ui/logger';
 import os from 'node:os';
+import { reconnectWithStoredCredentials } from '@/auth/reconnect';
 
 export async function handleAuthCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
@@ -50,7 +51,7 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
-  --restore,-r Clear credentials, machine ID, stop daemon, and restore an existing account
+  --restore,-r Stop daemon and reconnect to an existing account using the local key when available
   --mobile    Use the old mobile QR/manual flow instead of default web login
 `);
 }
@@ -60,6 +61,8 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   const restoreAccount = args.includes('--restore') || args.includes('-r');
   const forceAuth = createNewAccount || restoreAccount;
   const useMobileAuth = args.includes('--mobile');
+  const existingCreds = await readCredentials();
+  const settings = await readSettings();
 
   if (createNewAccount && restoreAccount) {
     console.error(chalk.red('Choose either --new/--force or --restore, not both.'));
@@ -67,13 +70,19 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   }
 
   if (forceAuth) {
-    const authIntent = restoreAccount ? 'Restore authentication requested.' : 'Force authentication requested.';
+    const authIntent = restoreAccount ? 'Reconnect requested.' : 'Force authentication requested.';
     console.log(chalk.yellow(authIntent));
     console.log(chalk.gray('This will:'));
-    console.log(chalk.gray('  • Clear existing credentials'));
-    console.log(chalk.gray('  • Clear machine ID'));
     console.log(chalk.gray('  • Stop daemon if running'));
-    console.log(chalk.gray(`  • ${restoreAccount ? 'Restore an existing account' : 'Create a new account'} and register machine\n`));
+    if (restoreAccount) {
+      console.log(chalk.gray('  • Reconnect to your existing account'));
+      console.log(chalk.gray('  • Preserve machine ID when possible'));
+      console.log(chalk.gray('  • Fall back to browser restore if no local reconnect key exists\n'));
+    } else {
+      console.log(chalk.gray('  • Clear existing credentials'));
+      console.log(chalk.gray('  • Clear machine ID'));
+      console.log(chalk.gray('  • Create a new account and register machine\n'));
+    }
 
     // Stop daemon if running
     try {
@@ -84,22 +93,35 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       logger.debug('Daemon was not running or failed to stop:', error);
     }
 
-    // Clear credentials
-    await clearCredentials();
-    console.log(chalk.gray('✓ Cleared credentials'));
+    if (restoreAccount && existingCreds) {
+      try {
+        await reconnectWithStoredCredentials(existingCreds);
+        const daemonResult = await ensureDaemonRunning();
+        console.log(chalk.gray('✓ Refreshed local credentials'));
+        console.log(chalk.green('\n✓ Reconnected successfully'));
+        if (settings?.machineId) {
+          console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
+        }
+        console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+        return;
+      } catch (error) {
+        console.log(chalk.yellow(`⚠️  Local reconnect failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+        console.log(chalk.gray('  Falling back to browser restore flow...\n'));
+      }
+    } else if (!restoreAccount) {
+      await clearCredentials();
+      console.log(chalk.gray('✓ Cleared credentials'));
 
-    // Clear machine ID
-    await clearMachineId();
-    console.log(chalk.gray('✓ Cleared machine ID'));
-
-    console.log('');
+      await clearMachineId();
+      console.log(chalk.gray('✓ Cleared machine ID'));
+      console.log('');
+    } else {
+      console.log(chalk.gray('No local reconnect key found. Opening browser restore flow...\n'));
+    }
   }
 
   // Check if already authenticated (if not forcing)
   if (!forceAuth) {
-    const existingCreds = await readCredentials();
-    const settings = await readSettings();
-
     if (existingCreds && settings?.machineId) {
       console.log(chalk.green('✓ Already authenticated'));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
@@ -121,7 +143,8 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     const result = await authAndSetupMachineIfNeeded({
       method: useMobileAuth ? 'mobile' : 'web',
       webNextPath: useMobileAuth ? undefined : '/teams/new',
-      webMode: restoreAccount ? 'reconnect' : (createNewAccount ? 'create' : 'auto')
+      webMode: restoreAccount ? 'reconnect' : (createNewAccount ? 'create' : 'auto'),
+      forceAuth: restoreAccount
     });
     const daemonResult = await ensureDaemonRunning();
     console.log(chalk.green('\n✓ Authentication successful'));

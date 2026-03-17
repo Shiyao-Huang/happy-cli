@@ -1,5 +1,8 @@
 import { Metadata } from '@/api/types';
+import type { GenomeSpec } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
+import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
+import { buildSharedOperatingRulesSection } from './alwaysInjectedPolicies';
 import { DEFAULT_ROLES } from './roles.config';
 
 // === Kanban Context Types ===
@@ -227,8 +230,8 @@ export function isBootstrapRole(role: string | undefined): boolean {
         return false;
     }
 
-    // Bypass roles (supervisor, help-agent) are also "bootstrap-like" — they act immediately and auto-retire
-    if (isBypassRole(role)) {
+    // org-manager and bypass roles always act immediately and auto-retire
+    if (role === 'org-manager' || isBypassRole(role)) {
         return true;
     }
 
@@ -661,6 +664,8 @@ Just respond to substance.
 
 ### When Blocked
 - Report blocker via 'send_team_message' with @master mention
+- If the blocker is environment, team-state, connection, or ownership related, call 'request_help' instead of waiting silently
+- If the blocker persists for roughly 30 minutes, escalate through 'request_help' with evidence
 - Be specific: what's blocked, what's needed to unblock
 - Don't guess solutions - ask for guidance
 
@@ -1006,7 +1011,7 @@ The master agent takes over. You are done. Any message you receive after this po
 export function generateRolePrompt(
     metadata: Metadata,
     kanbanContext?: KanbanContext,
-    genomeSpec?: import('../../api/types/genome').GenomeSpec
+    genomeSpec?: GenomeSpec
 ): string {
     let teamId = metadata.teamId;
     let role = metadata.role;
@@ -1029,15 +1034,17 @@ export function generateRolePrompt(
     }
 
     const roleKey = role;
+    const isOrgManager = roleKey === 'org-manager';
     const roleDef = DEFAULT_ROLES[roleKey];
 
-    if (!roleDef) {
+    // org-manager is a special bootstrap role handled outside DEFAULT_ROLES
+    if (!roleDef && !isOrgManager) {
         logger.warn(`[Roles] Unknown role: ${roleKey}`);
         return '';
     }
 
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
-    const isOrgManager = roleKey === 'org-manager';
+    const isBypass = BYPASS_ROLES.includes(roleKey);
     const taskPrompt = process.env.AHA_TASK_PROMPT || '';
 
     // Build prompt sections
@@ -1066,9 +1073,17 @@ export function generateRolePrompt(
         sections.push('');
         sections.push(buildTaskManagementSection(roleKey));
         sections.push('');
+        sections.push(buildSharedOperatingRulesSection({ roleKey, isCoordinator, isBypass }));
+        sections.push('');
         sections.push(buildConstraintsSection(roleKey));
         sections.push('');
         sections.push(buildToneAndStyleSection(genomeSpec));
+        sections.push('');
+    }
+
+    const genomeInjection = buildGenomeInjection(genomeSpec);
+    if (genomeInjection) {
+        sections.push(genomeInjection);
         sections.push('');
     }
 

@@ -24,6 +24,7 @@ import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import type { AggregatedFeedback } from '@/claude/utils/feedbackPrivacy';
 import { createTeamMemberIdentity } from './teamMemberIdentity';
 import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembership';
+import { readRuntimeLog, resolveTeamRuntimeLogs } from './runtimeLogReader';
 
 export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
     // Handler that sends title updates via the client
@@ -1932,103 +1933,78 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read CC logs.' }], isError: true };
         }
         try {
-            const fs = await import('node:fs');
-            const path = await import('node:path');
-            const homeDir = process.env.HOME || '/tmp';
-            const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
-            if (!fs.existsSync(claudeProjectsDir)) {
-                return { content: [{ type: 'text', text: 'No Claude Code logs directory found.' }], isError: false };
-            }
+            const result = readRuntimeLog({
+                homeDir: process.env.HOME || '/tmp',
+                runtimeType: 'claude',
+                sessionId: args.sessionId,
+                logKind: 'session',
+                fromCursor: args.fromByteOffset,
+                limit: args.limit,
+                ccLogCursorsEnv: process.env.AHA_SUPERVISOR_CC_LOG_CURSORS,
+            });
 
-            // Resolve cursor
-            let byteOffset = args.fromByteOffset >= 0 ? args.fromByteOffset : 0;
-            if (args.fromByteOffset < 0) {
+            const summary = result.entries.map((entry) => {
                 try {
-                    const cursors = JSON.parse(process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}') as Record<string, number>;
-                    byteOffset = cursors[args.sessionId] ?? 0;
-                } catch { byteOffset = 0; }
-            }
-
-            const projectDirs = fs.readdirSync(claudeProjectsDir);
-            for (const dir of projectDirs) {
-                const sessionFile = path.join(claudeProjectsDir, dir, `${args.sessionId}.jsonl`);
-                if (fs.existsSync(sessionFile)) {
-                    const stat = fs.statSync(sessionFile);
-                    const fileSize = stat.size;
-                    const readFrom = Math.min(byteOffset, fileSize);
-                    const buf = Buffer.alloc(fileSize - readFrom);
-                    const fd = fs.openSync(sessionFile, 'r');
-                    fs.readSync(fd, buf, 0, buf.length, readFrom);
-                    fs.closeSync(fd);
-
-                    const lines = buf.toString('utf-8').split('\n').filter(Boolean).slice(0, args.limit);
-                    const nextOffset = fileSize;
-                    const hasNew = lines.length > 0;
-
-                    const summary = lines.map(line => {
-                        try {
-                            const entry = JSON.parse(line);
-                            if (entry.type === 'assistant' && entry.message?.content) {
-                                const parts = Array.isArray(entry.message.content) ? entry.message.content : [];
-                                const out: string[] = [];
-                                for (const c of parts) {
-                                    if (c.type === 'text' && c.text?.trim()) {
-                                        out.push(`[text] ${c.text.trim().slice(0, 300)}`);
-                                    } else if (c.type === 'tool_use') {
-                                        // Extract meaningful snippet of the input
-                                        let inputSnippet = '';
-                                        if (c.input) {
-                                            if (typeof c.input.command === 'string') {
-                                                inputSnippet = c.input.command.slice(0, 200);
-                                            } else if (typeof c.input.file_path === 'string') {
-                                                inputSnippet = c.input.file_path;
-                                            } else if (typeof c.input.path === 'string') {
-                                                inputSnippet = c.input.path;
-                                            } else if (typeof c.input.query === 'string') {
-                                                inputSnippet = c.input.query.slice(0, 200);
-                                            } else {
-                                                inputSnippet = JSON.stringify(c.input).slice(0, 200);
-                                            }
-                                        }
-                                        out.push(`[tool_use] ${c.name}${inputSnippet ? `: ${inputSnippet}` : ''}`);
+                    const parsed = entry as any;
+                    if (parsed.type === 'assistant' && parsed.message?.content) {
+                        const parts = Array.isArray(parsed.message.content) ? parsed.message.content : [];
+                        const out: string[] = [];
+                        for (const c of parts) {
+                            if (c.type === 'text' && c.text?.trim()) {
+                                out.push(`[text] ${c.text.trim().slice(0, 300)}`);
+                            } else if (c.type === 'tool_use') {
+                                let inputSnippet = '';
+                                if (c.input) {
+                                    if (typeof c.input.command === 'string') {
+                                        inputSnippet = c.input.command.slice(0, 200);
+                                    } else if (typeof c.input.file_path === 'string') {
+                                        inputSnippet = c.input.file_path;
+                                    } else if (typeof c.input.path === 'string') {
+                                        inputSnippet = c.input.path;
+                                    } else if (typeof c.input.query === 'string') {
+                                        inputSnippet = c.input.query.slice(0, 200);
+                                    } else {
+                                        inputSnippet = JSON.stringify(c.input).slice(0, 200);
                                     }
                                 }
-                                return out.length > 0 ? out.join('\n') : null;
+                                out.push(`[tool_use] ${c.name}${inputSnippet ? `: ${inputSnippet}` : ''}`);
                             }
-                            if (entry.type === 'user' && entry.message?.content) {
-                                const parts = Array.isArray(entry.message.content) ? entry.message.content : [];
-                                const out: string[] = [];
-                                for (const c of parts) {
-                                    if (c.type === 'tool_result') {
-                                        const resultText = Array.isArray(c.content)
-                                            ? c.content.filter((r: any) => r.type === 'text').map((r: any) => r.text).join('').slice(0, 400)
-                                            : typeof c.content === 'string' ? c.content.slice(0, 400) : '';
-                                        out.push(`[tool_result]${c.is_error ? ' ERROR' : ''} ${resultText || '(empty)'}`);
-                                    }
-                                }
-                                return out.length > 0 ? out.join('\n') : null;
+                        }
+                        return out.length > 0 ? out.join('\n') : null;
+                    }
+                    if (parsed.type === 'user' && parsed.message?.content) {
+                        const parts = Array.isArray(parsed.message.content) ? parsed.message.content : [];
+                        const out: string[] = [];
+                        for (const c of parts) {
+                            if (c.type === 'tool_result') {
+                                const resultText = Array.isArray(c.content)
+                                    ? c.content.filter((r: any) => r.type === 'text').map((r: any) => r.text).join('').slice(0, 400)
+                                    : typeof c.content === 'string' ? c.content.slice(0, 400) : '';
+                                out.push(`[tool_result]${c.is_error ? ' ERROR' : ''} ${resultText || '(empty)'}`);
                             }
-                            return null;
-                        } catch { return null; }
-                    }).filter(Boolean);
-
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                sessionId: args.sessionId,
-                                fromByteOffset: readFrom,
-                                nextByteOffset: nextOffset,
-                                fileSize,
-                                hasNewContent: hasNew,
-                                entries: summary,
-                            }, null, 2)
-                        }],
-                        isError: false
-                    };
+                        }
+                        return out.length > 0 ? out.join('\n') : null;
+                    }
+                    return null;
+                } catch {
+                    return null;
                 }
-            }
-            return { content: [{ type: 'text', text: `No CC log found for session ${args.sessionId}` }], isError: false };
+            }).filter(Boolean);
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        sessionId: args.sessionId,
+                        fromByteOffset: result.fromCursor,
+                        nextByteOffset: result.nextCursor,
+                        fileSize: result.totalCount,
+                        hasNewContent: result.hasNewContent,
+                        entries: summary,
+                    }, null, 2)
+                }],
+                isError: false
+            };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error reading CC log: ${String(error)}` }], isError: true };
         }
@@ -2335,6 +2311,91 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    // ========== Runtime-Aware Supervisor Log Tools ==========
+
+    mcp.registerTool('list_team_runtime_logs', {
+        description: 'List runtime log files for team agents across Claude and Codex. Returns ahaSessionId → runtimeType + log paths. Supervisor/help-agent only.',
+        title: 'List Team Runtime Logs',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to list runtime logs for'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can use this tool.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running or port unknown.' }], isError: true };
+            }
+
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list-team-sessions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ teamId: args.teamId }),
+                signal: AbortSignal.timeout(5_000),
+            });
+
+            const result = await response.json() as {
+                sessions: Array<{
+                    ahaSessionId: string;
+                    claudeLocalSessionId?: string;
+                    runtimeType?: string;
+                    role?: string;
+                    pid: number;
+                }>;
+            };
+
+            const homeDir = process.env.HOME || '/tmp';
+            const enriched = resolveTeamRuntimeLogs(result.sessions, homeDir);
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('read_runtime_log', {
+        description: 'Read runtime-aware supervisor evidence logs with cursor support. Supports Claude session logs, Codex history, and Codex session transcripts. Supervisor/help-agent only.',
+        title: 'Read Runtime Log',
+        inputSchema: {
+            runtimeType: z.enum(['claude', 'codex', 'open-code']).describe('Runtime to read logs for'),
+            sessionId: z.string().optional().describe('Claude local session id or Codex transcript session id. Required for session logs.'),
+            logKind: z.enum(['session', 'history']).default('session').describe('Log kind. Use "history" for ~/.codex/history.jsonl.'),
+            limit: z.number().default(100).describe('Max log entries to return'),
+            fromCursor: z.number().default(-1).describe('Cursor to read from. Byte offset for session logs, line cursor for codex history. -1 = use supervisor env cursor.'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read runtime logs.' }], isError: true };
+        }
+        try {
+            const result = readRuntimeLog({
+                homeDir: process.env.HOME || '/tmp',
+                runtimeType: args.runtimeType,
+                sessionId: args.sessionId,
+                logKind: args.logKind,
+                fromCursor: args.fromCursor,
+                limit: args.limit,
+                ccLogCursorsEnv: process.env.AHA_SUPERVISOR_CC_LOG_CURSORS,
+                codexHistoryCursorEnv: process.env.AHA_SUPERVISOR_CODEX_HISTORY_CURSOR,
+                codexSessionCursorsEnv: process.env.AHA_SUPERVISOR_CODEX_SESSION_CURSORS,
+            });
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error reading runtime log: ${String(error)}` }], isError: true };
+        }
+    });
+
     // ========== List Team CC Logs (supervisor only) ==========
 
     mcp.registerTool('list_team_cc_logs', {
@@ -2393,15 +2454,37 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
     // ========== Save Supervisor State Tool (supervisor only) ==========
     mcp.registerTool('save_supervisor_state', {
-        description: 'Persist supervisor state (log cursors + conclusion) so the next supervisor run reads only new content. Call this after scoring agents, before SUPERVISOR_COMPLETE. Supervisor only.',
+        description: 'Persist supervisor state (team / Claude / Codex log cursors + conclusion + pending action + predictions) so the next supervisor run reads only new content and can verify predictions. Call this after scoring agents, before SUPERVISOR_COMPLETE. Supervisor only.',
         title: 'Save Supervisor State',
         inputSchema: {
             teamId: z.string().describe('Team ID being supervised'),
             teamLogCursor: z.number().describe('nextCursor value returned by read_team_log'),
             ccLogCursors: z.record(z.string(), z.number()).describe('Map of sessionId → nextByteOffset from read_cc_log results'),
+            codexHistoryCursor: z.number().optional().describe('Line cursor into ~/.codex/history.jsonl after the last inspected entry'),
+            codexSessionCursors: z.record(z.string(), z.number()).optional().describe('Map of Codex session id → next byte offset in ~/.codex/sessions/... transcript files'),
             conclusion: z.string().describe('2-4 sentence plain-text summary of this supervisor cycle findings'),
             sessionId: z.string().optional().describe('This supervisor session ID (for potential --resume on next run)'),
             teamTerminated: z.boolean().default(false).describe('Set true if the team appears fully done and no further supervision is needed'),
+            pendingAction: z.union([
+                z.object({
+                    type: z.literal('notify_help'),
+                    message: z.string().describe('Help/intervention message to carry into the next cycle'),
+                }),
+                z.object({
+                    type: z.literal('conditional_escalation'),
+                    condition: z.string().describe('Human-readable condition to re-check next cycle'),
+                    action: z.string().describe('Action to take if the condition still holds'),
+                    deadline: z.number().describe('Unix ms deadline after which the escalation should trigger'),
+                }),
+                z.null(),
+            ]).optional().describe('Deferred action to execute next cycle if the situation still has not changed'),
+            predictions: z.array(z.object({
+                agentSessionId: z.string().describe('Session ID of the agent this prediction is about'),
+                type: z.enum(['score_direction', 'will_block', 'will_complete', 'needs_intervention']).describe('Prediction category'),
+                description: z.string().describe('Human-readable prediction'),
+                predictedValue: z.number().optional().describe('Predicted numeric value (for score_direction)'),
+                confidence: z.number().min(0).max(100).describe('Confidence level 0-100'),
+            })).optional().describe('Predictions about agent states for next-run Phase 0 verification (v2 self-reflexivity)'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -2409,24 +2492,128 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor can save supervisor state.' }], isError: true };
         }
         try {
-            const { updateSupervisorRun, readSupervisorState, writeSupervisorState } = await import('@/daemon/supervisorState');
+            const { readSupervisorState, writeSupervisorState } = await import('@/daemon/supervisorState');
             const existing = readSupervisorState(args.teamId);
+
+            // Build predictions with timestamp
+            const predictions = args.predictions?.map(p => ({
+                ...p,
+                predictedAt: Date.now(),
+            }));
+
             writeSupervisorState({
                 ...existing,
                 lastRunAt: Date.now(),
                 teamLogCursor: args.teamLogCursor,
                 ccLogCursors: args.ccLogCursors,
+                codexHistoryCursor: args.codexHistoryCursor ?? existing.codexHistoryCursor,
+                codexSessionCursors: args.codexSessionCursors ?? existing.codexSessionCursors,
                 lastConclusion: args.conclusion,
                 lastSessionId: args.sessionId ?? existing.lastSessionId,
                 terminated: args.teamTerminated,
                 idleRuns: 0, // reset idle counter when supervisor actually ran
+                pendingAction: args.pendingAction !== undefined ? args.pendingAction : existing.pendingAction,
+                predictions,
             });
+            const predCount = predictions?.length ?? 0;
             return {
-                content: [{ type: 'text', text: `Supervisor state saved. Next run will start team log at cursor ${args.teamLogCursor}. Terminated=${args.teamTerminated}` }],
+                content: [{
+                    type: 'text',
+                    text: `Supervisor state saved. Next run starts at team=${args.teamLogCursor}, codexHistory=${args.codexHistoryCursor ?? existing.codexHistoryCursor}. Terminated=${args.teamTerminated}. Predictions=${predCount}`
+                }],
                 isError: false,
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error saving supervisor state: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== Score Supervisor Self (v2 self-reflexivity) ==========
+
+    mcp.registerTool('score_supervisor_self', {
+        description: `Record prediction outcomes and update supervisor calibration. Call this in Phase 0 after verifying predictions from the previous run. Supervisor only.
+
+The calibration score tracks how accurate the supervisor's predictions are over time:
+- calibrationScore = correctPredictions / totalPredictions * 100
+- rollingAccuracy = exponential moving average over last 5 cycles
+- scoreBiasTrend = average (predictedValue - actualValue), positive = overestimates
+
+If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predictions by 15 points.`,
+        title: 'Score Supervisor Self',
+        inputSchema: {
+            teamId: z.string().describe('Team ID being supervised'),
+            predictionOutcomes: z.array(z.object({
+                agentSessionId: z.string().describe('Agent session ID the prediction was about'),
+                predictionType: z.string().describe('Original prediction type (score_direction, will_block, etc.)'),
+                predicted: z.string().describe('What was predicted (brief)'),
+                actual: z.string().describe('What actually happened (brief)'),
+                correct: z.boolean().describe('Whether the prediction was correct'),
+                predictedValue: z.number().optional().describe('Original predicted numeric value'),
+                actualValue: z.number().optional().describe('Actual observed numeric value'),
+            })).describe('Outcomes for each prediction from the previous run'),
+            selfAssessment: z.string().optional().describe('Brief self-assessment of prediction quality this cycle'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can score itself.' }], isError: true };
+        }
+        try {
+            const { readSupervisorState, writeSupervisorState, updateCalibration } = await import('@/daemon/supervisorState');
+            const state = readSupervisorState(args.teamId);
+
+            // Build PredictionOutcome objects
+            const outcomes = args.predictionOutcomes.map(o => {
+                const matchingPrediction = state.predictions?.find(
+                    p => p.agentSessionId === o.agentSessionId && p.type === o.predictionType
+                );
+                return {
+                    prediction: matchingPrediction ?? {
+                        agentSessionId: o.agentSessionId,
+                        type: o.predictionType as 'score_direction' | 'will_block' | 'will_complete' | 'needs_intervention',
+                        description: o.predicted,
+                        predictedValue: o.predictedValue,
+                        predictedAt: state.lastRunAt,
+                        confidence: 50,
+                    },
+                    actualOutcome: o.actual,
+                    actualValue: o.actualValue,
+                    correct: o.correct,
+                    calibrationError: Math.abs(
+                        ((matchingPrediction?.confidence ?? 50) / 100) - (o.correct ? 1 : 0)
+                    ),
+                };
+            });
+
+            const calibration = updateCalibration(state.calibration, outcomes);
+
+            // Write updated calibration (predictions are cleared — they've been verified)
+            writeSupervisorState({
+                ...state,
+                calibration,
+                predictions: undefined, // Clear verified predictions
+            });
+
+            const lines = [
+                `Calibration updated: ${calibration.calibrationScore}% accuracy (${calibration.correctPredictions}/${calibration.totalPredictions} correct)`,
+                `Rolling accuracy (last 5): ${calibration.rollingAccuracy}%`,
+                `Score bias trend: ${calibration.scoreBiasTrend > 0 ? '+' : ''}${calibration.scoreBiasTrend}`,
+            ];
+
+            if (calibration.calibrationScore < 60 && calibration.totalPredictions >= 5) {
+                lines.push('⚠️ Low calibration accuracy — reduce confidence on new predictions by 15 points.');
+            }
+
+            if (args.selfAssessment) {
+                lines.push(`Self-assessment: ${args.selfAssessment}`);
+            }
+
+            return {
+                content: [{ type: 'text', text: lines.join('\n') }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error scoring supervisor self: ${String(error)}` }], isError: true };
         }
     });
 
@@ -2669,6 +2856,7 @@ Namespace conventions:
             'read_cc_log',
             'list_team_cc_logs',
             'score_agent',
+            'score_supervisor_self',
             'update_genome_feedback',
             'compact_agent',
             'kill_agent',

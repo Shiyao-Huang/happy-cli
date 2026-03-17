@@ -39,6 +39,7 @@ import { resolveModel, setModelRouteRules } from './utils/modelRouter';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchGenomeSpec } from './utils/fetchGenome';
+import { buildGenomeInjection } from './utils/buildGenomeInjection';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 
 export interface StartOptions {
@@ -349,13 +350,22 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
 
         // Tier 3 — 工具访问控制
+        const ignoreGenomeToolConstraints = isBypassRole(role) && role === 'supervisor';
         if (_genomeSpec.allowedTools?.length) {
-            currentAllowedTools = _genomeSpec.allowedTools;
-            logger.debug(`[genome] Allowed tools set from genome: ${currentAllowedTools.join(', ')}`);
+            if (ignoreGenomeToolConstraints) {
+                logger.debug('[genome] Ignoring genome allowedTools for supervisor so it can inspect raw logs directly');
+            } else {
+                currentAllowedTools = _genomeSpec.allowedTools;
+                logger.debug(`[genome] Allowed tools set from genome: ${currentAllowedTools.join(', ')}`);
+            }
         }
         if (_genomeSpec.disallowedTools?.length) {
-            currentDisallowedTools = _genomeSpec.disallowedTools;
-            logger.debug(`[genome] Disallowed tools set from genome: ${currentDisallowedTools.join(', ')}`);
+            if (ignoreGenomeToolConstraints) {
+                logger.debug('[genome] Ignoring genome disallowedTools for supervisor so it can inspect raw logs directly');
+            } else {
+                currentDisallowedTools = _genomeSpec.disallowedTools;
+                logger.debug(`[genome] Disallowed tools set from genome: ${currentDisallowedTools.join(', ')}`);
+            }
         }
 
         // Tier 4 — 权限模式（优先级低于 CLI 参数）
@@ -717,17 +727,25 @@ Awaiting task assignment from @master or @orchestrator.`;
                     logger.debug(`[genome] Using genome systemPrompt (specId=${_genomeSpecId})`);
                 } else if (isBypassRole(role) && role === 'supervisor') {
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
+                    const lastSessionId = process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
                     const ccLogCursors = process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}';
+                    const codexHistoryCursor = process.env.AHA_SUPERVISOR_CODEX_HISTORY_CURSOR || '0';
+                    const codexSessionCursors = process.env.AHA_SUPERVISOR_CODEX_SESSION_CURSORS || '{}';
                     const pendingActionRaw = process.env.AHA_SUPERVISOR_PENDING_ACTION || '';
-                    const pendingAction = pendingActionRaw ? JSON.parse(pendingActionRaw) as { type: 'notify_help'; message: string } : null;
+                    const pendingAction = pendingActionRaw
+                        ? JSON.parse(pendingActionRaw) as
+                            | { type: 'notify_help'; message: string }
+                            | { type: 'conditional_escalation'; condition: string; action: string; deadline: number }
+                        : null;
+                    const supervisorTeamId = teamId || process.env.AHA_ROOM_ID || '(unknown-team)';
 
                     instructions = `
 <Supervisor_Instructions>
 
 ## Your Role: SUPERVISOR AGENT
 
-You observe, score, and intervene. You run every 20 minutes. Be efficient — most runs should be short.
+You observe, correlate raw evidence, score agents, and intervene when needed. You run periodically. Be efficient, but do not trust tool-processed summaries as your final evidence.
 
 ---
 
@@ -740,8 +758,21 @@ Pending action (execute if no new content):
 ${pendingAction ? JSON.stringify(pendingAction) : '(none)'}
 
 Cursors:
-- Team log cursor: ${teamLogCursor}
-- CC log offsets: ${ccLogCursors}
+- Team log cursor (line index): ${teamLogCursor}
+- Claude/CC log offsets (byte offsets by aha session): ${ccLogCursors}
+- Codex history cursor (line index in ~/.codex/history.jsonl): ${codexHistoryCursor}
+- Codex session offsets (byte offsets by Codex session id): ${codexSessionCursors}
+
+Last supervisor session id:
+${lastSessionId || '(none)'}
+
+Raw evidence locations you should inspect yourself when something matters:
+- Team log JSONL: \`.aha/teams/${supervisorTeamId}/messages.jsonl\`
+- Claude Code raw logs: \`~/.claude/projects/**/<claudeLocalSessionId>.jsonl\`
+- Codex global history: \`~/.codex/history.jsonl\`
+- Codex raw session transcripts: \`~/.codex/sessions/YYYY/MM/DD/rollout-*-<codexSessionId>.jsonl\`
+
+Treat helper-tool output as an index to find deltas. When judging quality, trust the raw files above.
 
 ---
 
@@ -751,10 +782,10 @@ Cursors:
 
 **If \`hasNewContent\` is FALSE:**
 ${pendingAction ? `→ There IS a pending action. Execute it now:
-   - Call \`send_team_message\` with role "help-agent" and this message: "${pendingAction.message}"
-   - Call \`save_supervisor_state\` with \`pendingAction: null\` (clear it) and the same cursors
+   - Execute the intervention you already decided on
+   - Call \`save_supervisor_state\` with \`pendingAction: null\` (clear it) and the same team / Claude / Codex cursors
    - Output "SUPERVISOR_COMPLETE" and STOP` : `→ No pending action. Nothing to do.
-   - Call \`save_supervisor_state\` with unchanged cursors, add "(idle — no change)" to conclusion
+   - Call \`save_supervisor_state\` with unchanged team / Claude / Codex cursors, \`pendingAction: null\`, and add "(idle — no change)" to conclusion
    - Output "SUPERVISOR_COMPLETE" and STOP`}
 
 **If \`hasNewContent\` is TRUE → proceed to Phase 2.**
@@ -764,15 +795,25 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 ## 🔍 PHASE 2 — FULL ANALYSIS (only when there is new content)
 
 2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
-3. Call \`list_team_cc_logs\` with the teamId
-4. Call \`read_cc_log\` for each agent using their byte cursor from: ${ccLogCursors}
-5. Cross-validate: compare team log claims vs CC log evidence
-   - Agent says "did review" but CC log has no Read calls → integrity issue
-   - Agent says "tests pass" but CC log has no Bash calls → suspicious
-6. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
+3. Call \`list_team_runtime_logs\` with the teamId
+4. Use tool output only to locate files and offsets. Then inspect the raw log tails yourself:
+   - Team log tail from \`.aha/teams/${supervisorTeamId}/messages.jsonl\` starting at line ${teamLogCursor}
+   - Claude raw log tails via \`read_cc_log\` or \`read_runtime_log\` with \`runtimeType: "claude"\`
+   - Codex history tail via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "history"\`
+   - Relevant Codex raw session transcript tails via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "session"\`
+5. Correlate the sources instead of trusting any one feed in isolation:
+   - Match by timestamp window, cwd (\`/Users/swmt/happy0313\`), session id, role, task id, and claimed action
+   - Use Codex history to find which user requests and Codex sessions are relevant, then open those transcript tails
+   - Use Claude raw logs to verify actual reads / edits / bash runs, not just narrated claims
+   - Distinguish external uncertainty from internal invariant failures; do not let a soft fallback hide a real mistake
+6. Cross-validate: compare team-log claims vs raw Claude / Codex evidence
+   - Agent says "did review" but raw logs show no relevant reads → integrity issue
+   - Agent says "tests pass" but raw logs show no test command → suspicious
+   - Agent handled ambiguity well, kept scope tight, or unblocked others efficiently → record that as a strength
+7. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
    **a. Collect hardMetrics** (layer 1, required) from data already gathered:
       - \`tasksAssigned\` / \`tasksCompleted\` / \`tasksBlocked\` → from list_tasks output
-      - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from read_cc_log totals
+      - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from raw Claude / Codex evidence you just inspected
       - \`messagesSent\` / \`protocolMessages\` → from read_team_log (count task-update + notification types)
    **b. Derive businessMetrics** (layer 2, recommended) from cross-validation in step 4:
       - \`taskCompletionRate\` = tasksCompleted / tasksAssigned
@@ -787,15 +828,24 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
       - \`collaboration\` = how well the session followed board + messaging protocol
    **d. Set overall**: defaults to \`sessionScore.overall\`. The guardrail still compares it to \`hardMetricsScore\`; gap > 20 is rejected.
    **e. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
-7. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. This writes aggregated session scoring back to the genome, not just local disk.
-8. Decide on action:
+   **f. In \`recommendations\`, include BOTH strengths and weaknesses as short public-safe statements. These become the marketplace crowd-review snippets, so avoid paths, secrets, UUIDs, or raw internal IDs.**
+8. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
+9. Decide on action:
    - If an agent looks stuck (same state as last run, no meaningful progress):
      → Call \`request_help\` with the stuck agent's sessionId and a clear description of what is blocked and why
      → request_help spawns a live help-agent that will intervene directly — this is the ONLY way to trigger help
-     → Do NOT use send_team_message to role=help-agent (no session is listening)
    - If situation is healthy or improving → set pendingAction to null
    - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\` or \`kill_agent\` now
-9. Call \`save_supervisor_state\` with new cursors, your conclusion (2-4 sentences), and pendingAction
+10. Call \`save_supervisor_state\` with:
+   - updated \`teamLogCursor\`
+   - updated \`ccLogCursors\`
+   - updated \`codexHistoryCursor\`
+   - updated \`codexSessionCursors\`
+   - your conclusion (2-4 sentences)
+   - \`pendingAction\`
+   - \`sessionId\`
+
+Advance cursors only to what you actually inspected. Keep the cursor maps compact: persist active or recently relevant sessions only so state does not grow forever.
 
 Output "SUPERVISOR_COMPLETE" and STOP.
 
@@ -805,9 +855,10 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 
 - NEVER create agents or tasks
 - NEVER write code
-- Phase 1 only uses: \`read_team_log\`, \`save_supervisor_state\`
-- Phase 2 only adds: \`list_team_agents\`, \`list_team_cc_logs\`, \`read_cc_log\`, \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
-- send_team_message is REMOVED from supervisor tools — supervisor does not chat, it only acts
+- NEVER treat processed tool summaries as the only source of truth when raw files are available
+- NEVER rewind cursors unless a file rotated or truncated; if that happens, mention it explicitly in the conclusion
+- Phase 1 is diff-only and cheap
+- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
 
 </Supervisor_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
