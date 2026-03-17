@@ -69,6 +69,9 @@ import { existsSync } from 'node:fs';
 export function spawnAhaCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
   const projectRoot = projectPath();
   const entrypoint = join(projectRoot, 'dist', 'index.mjs');
+  const sourceEntrypoint = join(projectRoot, 'src', 'index.ts');
+  const tsxEntrypoint = join(projectRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const allowSourceFallback = process.env.AHA_ALLOW_SOURCE_FALLBACK === '1';
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -84,17 +87,27 @@ export function spawnAhaCLI(args: string[], options: SpawnOptions = {}): ChildPr
   const fullCommand = `aha ${args.join(' ')}`;
   logger.debug(`[SPAWN AHA CLI] Spawning: ${fullCommand} in ${directory}`);
 
-  // Use the same Node.js flags that the wrapper script uses
-  const nodeArgs = [
-    '--no-warnings',
-    '--no-deprecation',
-    entrypoint,
-    ...args
-  ];
-
-  // Sanity check of the entrypoint path exists
-  if (!existsSync(entrypoint)) {
-    const errorMessage = `Entrypoint ${entrypoint} does not exist`;
+  let nodeArgs: string[];
+  if (existsSync(entrypoint)) {
+    nodeArgs = [
+      '--no-warnings',
+      '--no-deprecation',
+      entrypoint,
+      ...args
+    ];
+  } else if (allowSourceFallback && existsSync(tsxEntrypoint) && existsSync(sourceEntrypoint)) {
+    logger.debug(`[SPAWN AHA CLI] Explicit dev fallback enabled; running source via tsx: ${sourceEntrypoint}`);
+    nodeArgs = [
+      '--no-warnings',
+      '--no-deprecation',
+      tsxEntrypoint,
+      sourceEntrypoint,
+      ...args
+    ];
+  } else {
+    const errorMessage = allowSourceFallback
+      ? `Entrypoint ${entrypoint} does not exist`
+      : `Entrypoint ${entrypoint} does not exist. This is a build invariant failure. Run 'cd ${projectRoot} && yarn build'. To intentionally use source fallback in dev, set AHA_ALLOW_SOURCE_FALLBACK=1.`;
     logger.debug(`[SPAWN AHA CLI] ${errorMessage}`);
     throw new Error(errorMessage);
   }

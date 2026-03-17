@@ -94,7 +94,7 @@ export class StatusReporter {
                 message: statusMessage
             });
 
-            this.logActivity(`Started: ${taskId}`);
+            this.logActivity(`Started ${await this.getTaskLabel(taskId)}`);
             return { success: true };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report task started:', error);
@@ -118,7 +118,7 @@ export class StatusReporter {
                 progress
             });
 
-            this.logActivity(`Progress on ${taskId}: ${message}`);
+            this.logActivity(`Updated ${await this.getTaskLabel(taskId)}: ${message}`);
             return { success: true };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report progress:', error);
@@ -161,7 +161,7 @@ export class StatusReporter {
                 await this.sendHelpRequest(taskId, blocker);
             }
 
-            this.logActivity(`BLOCKED: ${taskId} - ${blocker.description}`);
+            this.logActivity(`Blocked ${await this.getTaskLabel(taskId)}: ${blocker.description}`);
             return { success: true, blockerId: result.blockerId };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report blocker:', error);
@@ -189,7 +189,7 @@ export class StatusReporter {
                 details: { blockerId }
             });
 
-            this.logActivity(`Unblocked: ${taskId}`);
+            this.logActivity(`Unblocked ${await this.getTaskLabel(taskId)}`);
             return { success: true };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report unblocked:', error);
@@ -221,7 +221,7 @@ export class StatusReporter {
                 details: { propagatedTasks: result.propagatedTasks }
             });
 
-            this.logActivity(`✅ Completed: ${taskId}`);
+            this.logActivity(`Completed ${await this.getTaskLabel(taskId)}`);
             return { success: true, propagatedTasks: result.propagatedTasks };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report completion:', error);
@@ -243,7 +243,7 @@ export class StatusReporter {
                 message: reason
             });
 
-            this.logActivity(`Paused: ${taskId} - ${reason}`);
+            this.logActivity(`Paused ${await this.getTaskLabel(taskId)}: ${reason}`);
             return { success: true };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report paused:', error);
@@ -266,7 +266,7 @@ export class StatusReporter {
                 message: statusMessage
             });
 
-            this.logActivity(`Resumed: ${taskId}`);
+            this.logActivity(`Resumed ${await this.getTaskLabel(taskId)}`);
             return { success: true };
         } catch (error) {
             logger.debug('[StatusReporter] Failed to report resumed:', error);
@@ -330,7 +330,8 @@ export class StatusReporter {
      * Send a status update message
      */
     private async sendStatusUpdate(update: StatusUpdate): Promise<void> {
-        const content = this.formatStatusUpdate(update);
+        const taskLabel = await this.getTaskLabel(update.taskId);
+        const content = this.formatStatusUpdate(update, taskLabel);
 
         await this.api.sendTeamMessage(this.teamId, {
             id: randomUUID(),
@@ -342,6 +343,7 @@ export class StatusReporter {
             timestamp: Date.now(),
             metadata: {
                 taskId: update.taskId,
+                taskLabel,
                 action: update.action,
                 progress: update.progress,
                 ...update.details
@@ -354,19 +356,19 @@ export class StatusReporter {
      */
     private async sendHelpRequest(taskId: string, blocker: BlockerReport): Promise<void> {
         const helpers = blocker.suggestedHelpers || ['master', 'orchestrator'];
-        const mentions = helpers.map(h => `@${h}`).join(' ');
+        const mentions = await this.getRoleMentions(helpers);
+        const taskLabel = await this.getTaskLabel(taskId);
 
         const content = `
 🆘 **Help Needed**
 
-**Task ID:** ${taskId}
-**Blocker Type:** ${blocker.type}
-**From:** ${this.roleId}
+Task: ${taskLabel}
+Blocker: ${blocker.type}
 
-**Problem:**
+Problem:
 ${blocker.description}
 
-${mentions} Please help resolve this blocker.
+Please help resolve this blocker.
 `.trim();
 
         await this.api.sendTeamMessage(this.teamId, {
@@ -374,11 +376,13 @@ ${mentions} Please help resolve this blocker.
             teamId: this.teamId,
             type: 'help-needed',
             content,
+            mentions: mentions.length > 0 ? mentions : undefined,
             fromSessionId: this.sessionId,
             fromRole: this.roleId,
             timestamp: Date.now(),
             metadata: {
                 taskId,
+                taskLabel,
                 blockerType: blocker.type,
                 priority: 'high'
             }
@@ -388,7 +392,7 @@ ${mentions} Please help resolve this blocker.
     /**
      * Format a status update message
      */
-    private formatStatusUpdate(update: StatusUpdate): string {
+    private formatStatusUpdate(update: StatusUpdate, taskLabel: string): string {
         const actionEmoji: Record<StatusAction, string> = {
             started: '▶️',
             progress: '📊',
@@ -400,12 +404,12 @@ ${mentions} Please help resolve this blocker.
         };
 
         const emoji = actionEmoji[update.action];
-        let content = `${emoji} **${update.action.toUpperCase()}** [${this.roleId}]\n`;
-        content += `**Task:** ${update.taskId}\n`;
-        content += `**Status:** ${update.message}`;
+        let content = `${emoji} **${this.getActionLabel(update.action)}**\n`;
+        content += `Task: ${taskLabel}\n`;
+        content += `${update.message}`;
 
         if (update.progress !== undefined) {
-            content += `\n**Progress:** ${update.progress}%`;
+            content += `\nProgress: ${update.progress}%`;
         }
 
         return content;
@@ -419,15 +423,15 @@ ${mentions} Please help resolve this blocker.
         myTasks: Array<{ id: string; title: string; status: string }>
     ): string {
         let content = `
-📋 **Status Summary** [${this.roleId}]
+📋 **Status Summary**
 
-**In Progress:** ${summary.tasksInProgress}
-**Completed Today:** ${summary.tasksCompleted}
-**Blocked:** ${summary.blockedTasks}
+In Progress: ${summary.tasksInProgress}
+Completed: ${summary.tasksCompleted}
+Blocked: ${summary.blockedTasks}
 `.trim();
 
         if (myTasks.length > 0) {
-            content += '\n\n**Current Tasks:**';
+            content += '\n\nCurrent Tasks:';
             myTasks.slice(0, 5).forEach(task => {
                 const statusEmoji = task.status === 'in-progress' ? '🔄' :
                     task.status === 'blocked' ? '🚫' :
@@ -440,13 +444,59 @@ ${mentions} Please help resolve this blocker.
         }
 
         if (summary.recentActivity.length > 0) {
-            content += '\n\n**Recent Activity:**';
+            content += '\n\nRecent Activity:';
             summary.recentActivity.forEach(activity => {
                 content += `\n- ${activity}`;
             });
         }
 
         return content;
+    }
+
+    private getActionLabel(action: StatusAction): string {
+        switch (action) {
+            case 'started':
+                return 'Started';
+            case 'progress':
+                return 'Progress Update';
+            case 'blocked':
+                return 'Blocked';
+            case 'unblocked':
+                return 'Unblocked';
+            case 'completed':
+                return 'Completed';
+            case 'paused':
+                return 'Paused';
+            case 'resumed':
+                return 'Resumed';
+            default:
+                return action;
+        }
+    }
+
+    private async getTaskLabel(taskId: string): Promise<string> {
+        try {
+            const task = await this.taskManager.getTask(taskId);
+            return task?.title || taskId;
+        } catch {
+            return taskId;
+        }
+    }
+
+    private async getRoleMentions(roleIds: string[]): Promise<string[]> {
+        try {
+            const artifact = await this.api.getArtifact(this.teamId);
+            const board = artifact.body && typeof artifact.body === 'object' ? artifact.body as Record<string, any> : {};
+            const team = board.team && typeof board.team === 'object' ? board.team as Record<string, any> : {};
+            const members = Array.isArray(team.members) ? team.members : [];
+
+            return members
+                .filter((member: any) => roleIds.includes(member.roleId))
+                .map((member: any) => member.sessionId)
+                .filter((sessionId: any): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0);
+        } catch {
+            return [];
+        }
     }
 
     /**

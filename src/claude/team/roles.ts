@@ -1,7 +1,6 @@
 import { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { DEFAULT_ROLES } from './roles.config';
-import { getRolesByCategory } from './permissions';
 
 // === Kanban Context Types ===
 // Used for injecting task context into role prompts
@@ -42,33 +41,18 @@ export interface KanbanContext {
 }
 
 // === Role Category Constants ===
-// These cover all 23 roles defined in kanban/sources/team-config/skills/
+// Canonical role-to-category mapping.
+// Derived from ROLE_DEFINITIONS.yaml categories; kept here as the single
+// source of truth so we never depend on runtime YAML file resolution.
 
 // Coordination: Task management, team coordination, planning
-const FALLBACK_COORDINATION_ROLES = [
+export const COORDINATION_ROLES = [
     'master',
     'orchestrator',
     'org-manager',
     'project-manager',
     'product-owner'
 ];
-
-function getRoleIdsByCategory(category: string, fallback: string[]): string[] {
-    try {
-        const roleIds = getRolesByCategory(category).map((role) => role.id);
-        return roleIds.length > 0 ? roleIds : fallback;
-    } catch (error) {
-        // AHA_GENOME_FALLBACK=1 → silent (production)
-        // default (testing) → warn so we notice role config is broken
-        if (process.env.AHA_GENOME_FALLBACK !== '1') {
-            console.warn(`[GENOME] ⚠️  Failed to load roles for category "${category}" — using hardcode fallback.`);
-        }
-        logger.debug(`[Roles] Failed to load roles for category ${category}, using fallback`, error);
-        return fallback;
-    }
-}
-
-export const COORDINATION_ROLES = getRoleIdsByCategory('coordination', FALLBACK_COORDINATION_ROLES);
 
 // Implementation: Code writing, building, architecture
 export const IMPLEMENTATION_ROLES = [
@@ -918,10 +902,28 @@ Read the <Task_Prompt> above. Determine:
 - How many agents are needed? (minimum viable team — do NOT over-staff)
 - What roles map to the work? Start with the standard list: master, implementer, architect, qa-engineer, researcher, reviewer
 
-### Step 2: Browse the Marketplace
+### Step 2: Inspect Live Team State First
+
+Before you assemble anything, inspect the current environment:
+
+\`\`\`
+get_team_info()
+list_tasks()
+\`\`\`
+
+Use this live state to answer:
+- Which agents are already present?
+- Which required roles are still missing?
+- Are there existing tasks that already cover the work?
+- Is this team still in seed-only mode (just org-manager / helpers / supervisor)?
+
+You must use the actual live system state, not assumptions.
+
+### Step 3: Consult the Marketplace (Optional Memory Aid)
 
 Call \`list_available_agents\` to see what genomes are available and their ratings.
-This lets you reuse battle-tested agents instead of starting from scratch.
+Treat the marketplace as a memory warehouse, not a gatekeeper.
+It helps you reuse proven agents when helpful, but it must NEVER block team assembly.
 
 \`\`\`
 list_available_agents({ query: "<role or skill>", limit: 5 })
@@ -930,9 +932,10 @@ list_available_agents({ query: "<role or skill>", limit: 5 })
 Look at the results:
 - Pick agents with high ratings and relevant descriptions
 - Note their \`id\` — pass it as \`specId\` to \`create_agent\`
-- If nothing fits, omit specId and the system will auto-resolve from @official
+- If nothing fits, you MUST still continue assembling the team
+- Marketplace has no veto power over spawning
 
-### Step 3: Spawn Team Members
+### Step 4: Spawn Team Members
 
 Use the \`create_agent\` tool to spawn each team member:
 
@@ -948,6 +951,7 @@ create_agent({
 \`\`\`
 
 **Rules:**
+- You are a SEED AGENT. Team assembly must continue even when the marketplace is empty or incomplete
 - Always spawn a \`master\` first — it coordinates the team after you leave
 - If the task prompt says Claude Code only or Codex only, set the \`agent\` field on every \`create_agent\` call to match
 - If the task prompt says mixed, choose \`agent: "claude"\` or \`agent: "codex"\` deliberately per role
@@ -956,15 +960,18 @@ create_agent({
 - Spawn \`researcher\` only if external research is clearly needed
 - Do NOT spawn more than 5 agents total
 - Do NOT spawn yourself (org-manager)
+- If you found a strong genome in the marketplace, use its \`specId\`
+- If you did NOT find one, spawn the role anyway without \`specId\`
+- If the standard roles are not enough, create the nearest useful team you can right now — do not stop with only org-manager
 
-### Step 3: Create Initial Tasks
+### Step 5: Create Initial Tasks
 
 After spawning agents, use \`create_task\` to create tasks on the Kanban board:
 - Create 1 task per major work item
 - Assign each task to the appropriate role
 - Set priority: high for core work, medium for supporting work
 
-### Step 4: Hand Off and Retire (CRITICAL)
+### Step 6: Hand Off and Retire (CRITICAL)
 
 Send ONE team message via \`send_team_message\` summarizing:
 - What team you assembled and why
@@ -988,6 +995,7 @@ The master agent takes over. You are done. Any message you receive after this po
 - You MUST call create_agent at least once
 - You MUST NOT do any implementation work yourself
 - You MUST NOT write code
+- The marketplace is optional memory, not a blocking dependency
 - You MUST output ORG_MANAGER_COMPLETE after the hand-off message — this terminates your session
 - You MUST NOT respond to ANY message received after ORG_MANAGER_COMPLETE
 - You MUST NOT monitor progress, read files, or coordinate after retiring

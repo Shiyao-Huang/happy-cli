@@ -77,10 +77,12 @@ export async function resumeClaudeAgent(
         const result = await spawnSession({
             directory: metadata?.path || process.cwd(),
             agent: 'claude',
+            sessionTag: metadata?.sessionTag,
             teamId: metadata?.teamId || metadata?.roomId,
             role: metadata?.role,
             sessionName: metadata?.name,
             env: {
+                ...(metadata?.memberId ? { AHA_TEAM_MEMBER_ID: metadata.memberId } : {}),
                 AHA_RESUME_SESSION_ID: sessionId,
             },
         });
@@ -124,10 +126,12 @@ export async function resumeCodexAgent(
         const result = await spawnSession({
             directory: metadata?.path || process.cwd(),
             agent: 'codex',
+            sessionTag: metadata?.sessionTag,
             teamId: metadata?.teamId || metadata?.roomId,
             role: metadata?.role,
             sessionName: metadata?.name,
             env: {
+                ...(metadata?.memberId ? { AHA_TEAM_MEMBER_ID: metadata.memberId } : {}),
                 ...(contextSummary ? { AHA_AGENT_PROMPT: contextSummary } : {}),
             },
         });

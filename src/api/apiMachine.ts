@@ -100,6 +100,13 @@ interface DaemonToServerEvents {
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => boolean;
+    requestHelp: (params: {
+        teamId: string;
+        sessionId?: string;
+        type: string;
+        description: string;
+        severity: string;
+    }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
     requestShutdown: () => void;
 }
 
@@ -126,6 +133,7 @@ export class ApiMachineClient {
     setRPCHandlers({
         spawnSession,
         stopSession,
+        requestHelp,
         requestShutdown
     }: MachineRpcHandlers) {
         const handleSpawnSession = async (params: any) => {
@@ -155,6 +163,16 @@ export class ApiMachineClient {
         // Keep the legacy alias while standardizing on spawn-aha-session.
         this.rpcHandlerManager.registerHandler('spawn-aha-session', handleSpawnSession);
         this.rpcHandlerManager.registerHandler('spawn-happy-session', handleSpawnSession);
+
+        this.rpcHandlerManager.registerHandler('request-help', async (params: any) => {
+            const { teamId, sessionId, type, description, severity } = params || {};
+
+            if (!teamId || !type || !description || !severity) {
+                throw new Error('teamId, type, description and severity are required');
+            }
+
+            return requestHelp({ teamId, sessionId, type, description, severity });
+        });
 
         // Register stop session handler  
         this.rpcHandlerManager.registerHandler('stop-session', (params: any) => {

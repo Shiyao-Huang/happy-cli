@@ -289,6 +289,10 @@ export async function startDaemon(): Promise<void> {
           extraEnv.AHA_EXECUTION_PLANE = options.executionPlane;
           logger.debug(`[DAEMON RUN] Setting AHA_EXECUTION_PLANE=${options.executionPlane}`);
         }
+        if (options.sessionId) {
+          extraEnv.AHA_RECOVER_SESSION_ID = options.sessionId;
+          logger.debug(`[DAEMON RUN] Setting AHA_RECOVER_SESSION_ID=${options.sessionId}`);
+        }
 
         // Merge custom env variables (e.g., AHA_AGENT_LANGUAGE)
         if (options.env) {
@@ -489,6 +493,60 @@ export async function startDaemon(): Promise<void> {
       return { stopped, errors };
     };
 
+    const requestHelp = async (params: {
+      teamId: string;
+      sessionId?: string;
+      type: string;
+      description: string;
+      severity: string;
+    }): Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }> => {
+      const { teamId, type, description, severity } = params;
+
+      let targetSessionId = params.sessionId;
+      if (!targetSessionId) {
+        for (const session of pidToTrackedSession.values()) {
+          const metadata = session.ahaSessionMetadataFromLocalWebhook;
+          const sessionTeamId = metadata?.teamId || metadata?.roomId;
+          const role = metadata?.role;
+          if (sessionTeamId !== teamId) continue;
+          if (role === 'supervisor' || role === 'help-agent') continue;
+          if (session.ahaSessionId) {
+            targetSessionId = session.ahaSessionId;
+            break;
+          }
+        }
+      }
+
+      if (!targetSessionId) {
+        return { success: false, error: `No recoverable team session found for team ${teamId}` };
+      }
+
+      try {
+        const result = await spawnSession({
+          directory: process.cwd(),
+          agent: 'claude',
+          teamId,
+          role: 'help-agent',
+          sessionName: 'Help Agent',
+          executionPlane: 'bypass',
+          env: {
+            AHA_HELP_TARGET_SESSION: targetSessionId,
+            AHA_HELP_TYPE: type,
+            AHA_HELP_DESCRIPTION: description,
+            AHA_HELP_SEVERITY: severity,
+          },
+        });
+
+        if (result.type === 'success') {
+          return { success: true, helpAgentSessionId: result.sessionId };
+        }
+
+        return { success: false, error: result.type === 'error' ? result.errorMessage : 'Failed to spawn help-agent' };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    };
+
     // Handle child process exit
     const onChildExited = (pid: number) => {
       logger.debug(`[DAEMON RUN] Removing exited process PID ${pid} from tracking`);
@@ -585,6 +643,7 @@ export async function startDaemon(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
+      requestHelp,
       requestShutdown: () => requestShutdown('aha-app')
     });
 

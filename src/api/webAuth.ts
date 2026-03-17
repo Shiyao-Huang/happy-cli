@@ -4,6 +4,7 @@ import { configuration } from '@/configuration';
 interface WebAuthUrlOptions {
     nextPath?: string;
     machineId?: string;
+    mode?: 'auto' | 'create' | 'reconnect';
 }
 
 /**
@@ -24,6 +25,10 @@ export function generateWebAuthUrl(publicKey: Uint8Array, options: WebAuthUrlOpt
 
     if (options.machineId) {
         hashParams.set('machineId', options.machineId);
+    }
+
+    if (options.mode && options.mode !== 'auto') {
+        hashParams.set('mode', options.mode);
     }
 
     url.hash = hashParams.toString();

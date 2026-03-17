@@ -275,17 +275,17 @@ export class ApprovalWorkflow {
             'resource-request': 'Resource Request'
         };
 
+        const mentions = await this.getRoleMentions(['master', 'orchestrator']);
         const content = `
 📋 **Approval Required** ${priorityEmoji[request.priority]}
 
-**Type:** ${typeLabel[request.approvalType]}
-**Task:** ${request.taskTitle}
-**Requested by:** ${request.requestedByRole || 'Unknown'} (${request.requestedBy.substring(0, 8)})
-**Priority:** ${request.priority.toUpperCase()}
+Type: ${typeLabel[request.approvalType]}
+Task: ${request.taskTitle}
+Priority: ${request.priority.toUpperCase()}
 
-${request.context ? `**Context:** ${request.context}` : ''}
+${request.context ? `Context: ${request.context}` : ''}
 
-@master @orchestrator Please review and approve/reject this request.
+Please review and approve or reject this request.
 `.trim();
 
         await this.api.sendTeamMessage(this.teamId, {
@@ -293,6 +293,7 @@ ${request.context ? `**Context:** ${request.context}` : ''}
             teamId: this.teamId,
             type: 'notification',
             content,
+            mentions: mentions.length > 0 ? mentions : undefined,
             fromSessionId: this.sessionId,
             fromRole: this.roleId,
             timestamp: Date.now(),
@@ -319,17 +320,16 @@ ${request.context ? `**Context:** ${request.context}` : ''}
         let content = `
 ${emoji} **${action}**
 
-**Task ID:** ${decision.taskId}
-**Decided by:** ${decision.decidedByRole} (${decision.decidedBy.substring(0, 8)})
+Task: ${request?.taskTitle || decision.taskId}
 `.trim();
 
         if (decision.reason) {
-            content += `\n**Reason:** ${decision.reason}`;
+            content += `\nReason: ${decision.reason}`;
         }
 
         if (decision.conditions && decision.conditions.length > 0) {
             const label = isApproved ? 'Conditions' : 'Suggested Changes';
-            content += `\n**${label}:**\n${decision.conditions.map(c => `- ${c}`).join('\n')}`;
+            content += `\n${label}:\n${decision.conditions.map(c => `- ${c}`).join('\n')}`;
         }
 
         // Notify the original requester
@@ -357,17 +357,16 @@ ${emoji} **${action}**
      */
     private async escalateRequest(request: ApprovalRequest): Promise<void> {
         const ageMinutes = Math.floor((Date.now() - request.requestedAt) / 60000);
+        const mentions = await this.getRoleMentions(['master', 'orchestrator']);
 
         const content = `
 ⚠️ **ESCALATION: Stale Approval Request**
 
-**Task:** ${request.taskTitle}
-**Waiting:** ${ageMinutes} minutes
-**Original Priority:** ${request.priority.toUpperCase()}
+Task: ${request.taskTitle}
+Waiting: ${ageMinutes} minutes
+Original Priority: ${request.priority.toUpperCase()}
 
 This approval request has been waiting too long. Please review immediately.
-
-@master @orchestrator
 `.trim();
 
         await this.api.sendTeamMessage(this.teamId, {
@@ -375,6 +374,7 @@ This approval request has been waiting too long. Please review immediately.
             teamId: this.teamId,
             type: 'notification',
             content,
+            mentions: mentions.length > 0 ? mentions : undefined,
             fromSessionId: this.sessionId,
             fromRole: this.roleId,
             timestamp: Date.now(),
@@ -386,6 +386,22 @@ This approval request has been waiting too long. Please review immediately.
         });
 
         logger.debug(`[ApprovalWorkflow] Escalated stale request for task ${request.taskId}`);
+    }
+
+    private async getRoleMentions(roleIds: string[]): Promise<string[]> {
+        try {
+            const artifact = await this.api.getArtifact(this.teamId);
+            const board = artifact.body && typeof artifact.body === 'object' ? artifact.body as Record<string, any> : {};
+            const team = board.team && typeof board.team === 'object' ? board.team as Record<string, any> : {};
+            const members = Array.isArray(team.members) ? team.members : [];
+
+            return members
+                .filter((member: any) => roleIds.includes(member.roleId))
+                .map((member: any) => member.sessionId)
+                .filter((sessionId: any): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0);
+        } catch {
+            return [];
+        }
     }
 }
 

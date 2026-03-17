@@ -22,6 +22,8 @@ import {
 import { writeScore } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import type { AggregatedFeedback } from '@/claude/utils/feedbackPrivacy';
+import { createTeamMemberIdentity } from './teamMemberIdentity';
+import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembership';
 
 export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
     // Handler that sends title updates via the client
@@ -442,6 +444,37 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
                 logger.debug(`[ahaMCP] get_team_info: Found ${teamMembers.length} members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
             } catch (e) {
                 logger.debug('[ahaMCP] Failed to fetch team artifact:', e);
+            }
+
+            const selfAlreadyPresent = teamMembers.some((member: any) => {
+                if (metadata?.memberId && member?.memberId) {
+                    return member.memberId === metadata.memberId
+                }
+                return member?.sessionId === mySessionId
+            })
+
+            if (!selfAlreadyPresent) {
+                const membershipResult = await ensureCurrentSessionRegisteredToTeam({
+                    api,
+                    teamId,
+                    sessionId: mySessionId,
+                    role: myRole || 'member',
+                    metadata,
+                    taskStateManager: new TaskStateManager(api, teamId, mySessionId, myRole || 'member'),
+                })
+
+                logger.debug(
+                    `[ahaMCP] get_team_info self-heal membership: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
+                )
+
+                teamMembers.push({
+                    ...(metadata?.memberId ? { memberId: metadata.memberId } : {}),
+                    sessionId: mySessionId,
+                    ...(metadata?.sessionTag ? { sessionTag: metadata.sessionTag } : {}),
+                    roleId: myRole || 'member',
+                    displayName: metadata?.name || mySessionId,
+                    ...(metadata?.flavor ? { runtimeType: metadata.flavor } : {}),
+                })
             }
 
             // ... (existing imports)
@@ -1446,9 +1479,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
 
-            // Generate unique identifiers for this agent
-            const memberId = randomUUID();
-            const sessionTag = `team:${args.teamId}:member:${memberId}`;
+            // Generate and carry member identity as a pair so create_agent
+            // cannot regress into a partial refactor where sessionTag is used
+            // before it exists.
+            const { memberId, sessionTag } = createTeamMemberIdentity(args.teamId);
 
             // Security constraint: agents cannot create bypass sessions
             if (args.executionPlane === 'bypass') {
@@ -1507,6 +1541,12 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
             if (resolvedSpecId) {
                 spawnBody.specId = resolvedSpecId;
+                // Fire-and-forget: increment spawn count in genome-hub
+                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}/spawn`, {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(3_000),
+                }).catch(() => { /* non-critical */ });
             }
 
             const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {

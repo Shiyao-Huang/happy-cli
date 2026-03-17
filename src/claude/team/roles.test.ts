@@ -3,6 +3,7 @@ import {
     canCreateTeamTasks,
     canManageExistingTasks,
     canSpawnAgents,
+    generateRolePrompt,
     getRolePermissions,
     isBootstrapRole,
     isCoordinatorRole
@@ -73,6 +74,18 @@ describe('Role Permissions System', () => {
             expect(canSpawnAgents('org-manager')).toBe(true);
             expect(canCreateTeamTasks('org-manager')).toBe(true);
             expect(canManageExistingTasks('org-manager')).toBe(true);
+        });
+
+        it('should inject live system state steps into the org-manager prompt', () => {
+            const prompt = generateRolePrompt({
+                teamId: 'team-123',
+                role: 'org-manager',
+            } as any);
+
+            expect(prompt).toContain('get_team_info()');
+            expect(prompt).toContain('list_tasks()');
+            expect(prompt).toContain('You must use the actual live system state');
+            expect(prompt).toContain('marketplace as a memory warehouse');
         });
     });
 });

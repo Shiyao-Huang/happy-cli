@@ -39,6 +39,7 @@ import { resolveModel, setModelRouteRules } from './utils/modelRouter';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchGenomeSpec } from './utils/fetchGenome';
+import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 
 export interface StartOptions {
     model?: string
@@ -141,6 +142,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Create a new session
     let state: AgentState = {};
+    const recoverAhaSessionId = process.env.AHA_RECOVER_SESSION_ID?.trim() || undefined;
 
     // Get machine ID from settings (should already be set up)
     const settings = await readSettings();
@@ -174,8 +176,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'claude'
+        flavor: 'claude',
+        sessionTag,
     };
+    if (process.env.AHA_TEAM_MEMBER_ID) {
+        metadata.memberId = process.env.AHA_TEAM_MEMBER_ID;
+    }
     if (process.env.AHA_AGENT_ROLE) {
         metadata.role = process.env.AHA_AGENT_ROLE;
         logger.debug(`[runClaude] Setting metadata.role from env: ${process.env.AHA_AGENT_ROLE}`);
@@ -195,9 +201,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     if (metadata.name) {
         logger.debug(`[runClaude] Setting metadata.name: ${metadata.name}`);
     }
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+    const response = await api.getOrCreateSession({ sessionId: recoverAhaSessionId, tag: sessionTag, metadata, state });
     logger.debug(`Session created: ${response.id}`);
     logger.debug(`[runClaude] Response metadata from server:`, { role: response.metadata?.role, teamId: response.metadata?.teamId });
+
+    const storedClaudeSessionId = response.metadata?.claudeSessionId;
+    const hasExplicitResume = !!options.claudeArgs?.includes('--resume');
+    if (storedClaudeSessionId && !hasExplicitResume) {
+        options.claudeArgs = ['--resume', storedClaudeSessionId, ...(options.claudeArgs || [])];
+        logger.debug(`[runClaude] Reusing stored Claude session for resume: ${storedClaudeSessionId}`);
+    }
 
     // Create realtime session
     const session = api.sessionSyncClient(response);
@@ -441,6 +454,18 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Initialize StatusReporter for automatic status updates
             statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
             logger.debug(`[runClaude] StatusReporter initialized for role ${role}`);
+
+            const membershipResult = await ensureCurrentSessionRegisteredToTeam({
+                api,
+                teamId,
+                sessionId: response.id,
+                role,
+                metadata: session.getMetadata() || metadata,
+                taskStateManager,
+            });
+            logger.debug(
+                `[runClaude] Team membership sync result: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
+            );
 
             // Initialize ApprovalWorkflow for coordination roles (master, orchestrator, team-lead)
             if (isCoordinatorRole(role)) {

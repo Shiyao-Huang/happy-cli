@@ -237,6 +237,31 @@ export interface GenomeSpec {
     };
 
     // =========================================================================
+    // Tier 8 — Hooks（Claude Code 自动化钩子）
+    // =========================================================================
+    /**
+     * Per-agent Claude Code hooks，在工具调用生命周期中自动执行。
+     * 与全局 ~/.claude/settings.json hooks 互补，但作用域限定到本 genome。
+     */
+    hooks?: {
+        /** 在工具调用前执行 */
+        preToolUse?: Array<{ matcher: string; command: string; description?: string }>;
+        /** 在工具调用后执行 */
+        postToolUse?: Array<{ matcher: string; command: string; description?: string }>;
+        /** 在会话结束时执行 */
+        stop?: Array<{ command: string; description?: string }>;
+    };
+
+    // =========================================================================
+    // Tier 9 — Skills（可调用的 slash-command 能力）
+    // =========================================================================
+    /**
+     * 此 agent 可调用的 skill 名称列表。
+     * Skill 从 agent 工作目录或全局注册表中解析。
+     */
+    skills?: string[];
+
+    // =========================================================================
     // 逃生口 — 任意扩展
     // =========================================================================
     /**

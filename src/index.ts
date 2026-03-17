@@ -177,16 +177,19 @@ For command-specific help, run:
 
       // Parse startedBy argument
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let sessionTag: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--session-tag') {
+          sessionTag = args[++i];
         }
       }
 
       const {
         credentials
       } = await authAndSetupMachineIfNeeded();
-      await runCodex({ credentials, startedBy });
+      await runCodex({ credentials, startedBy, sessionTag });
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

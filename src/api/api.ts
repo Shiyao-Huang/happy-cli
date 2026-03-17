@@ -78,6 +78,7 @@ export class ApiClient {
    * Create a new session or load existing one with the given tag
    */
   async getOrCreateSession(opts: {
+    sessionId?: string,
     tag: string,
     metadata: Metadata,
     state: AgentState | null
@@ -123,6 +124,7 @@ export class ApiClient {
       const response = await axios.post<CreateSessionResponse>(
         `${configuration.serverUrl}/v1/sessions`,
         {
+          sessionId: opts.sessionId,
           tag: opts.tag,
           metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
           agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
@@ -319,7 +321,7 @@ export class ApiClient {
         }
       );
 
-      const raw = response.data.artifact;
+      const raw = response.data.artifact ?? response.data;
 
       // Resolve encryption key
       let encryptionKey: Uint8Array;
@@ -358,7 +360,14 @@ export class ApiClient {
       }
 
       // Decrypt header and body
-      const header = raw.header ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.header)) : null;
+      let header = null;
+      if (raw.header) {
+        try {
+          header = decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.header));
+        } catch (error) {
+          logger.debug(`[API] Failed to decrypt artifact header for ${artifactId}, continuing with body-only access`, error);
+        }
+      }
 
       // Try to decrypt body, fallback to plaintext for team artifacts
       let body = null;
@@ -366,7 +375,39 @@ export class ApiClient {
         try {
           body = decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.body));
         } catch (decryptError) {
-          // If decryption fails, try to parse as plaintext (for team artifacts)
+          body = null;
+          // If decryption throws, try to parse as plaintext (for team artifacts)
+          try {
+            const decoded = decodeBase64(raw.body);
+            const textDecoder = new TextDecoder();
+            const plainText = textDecoder.decode(decoded);
+            const parsed = JSON.parse(plainText);
+            let bodyContent: any = parsed;
+            if (parsed && typeof parsed === 'object' && 'body' in parsed) {
+              bodyContent = (parsed as { body?: unknown }).body ?? null;
+            }
+            // bodyContent might be a JSON string (for team artifacts created by Kanban)
+            // that needs to be parsed again to get the actual object
+            if (typeof bodyContent === 'string') {
+              try {
+                bodyContent = JSON.parse(bodyContent);
+                logger.debug(`[API] Parsed nested JSON body for artifact ${artifactId}`);
+              } catch (nestedParseError) {
+                // Keep as string if not valid JSON
+                logger.debug(`[API] Body is string but not valid JSON, keeping as-is for artifact ${artifactId}`);
+              }
+            }
+            body = bodyContent;
+            logger.debug(`[API] Successfully read plaintext body for artifact ${artifactId}`);
+          } catch (plaintextError) {
+            logger.debug(`[API] Failed to decrypt or parse body for artifact ${artifactId}:`, plaintextError);
+            body = null;
+          }
+        }
+
+        if (body === null) {
+          // Decrypt may return null without throwing for plaintext team artifacts.
+          // In that case we must still attempt plaintext parsing.
           try {
             const decoded = decodeBase64(raw.body);
             const textDecoder = new TextDecoder();
@@ -546,7 +587,7 @@ export class ApiClient {
           timeout: 10000
         }
       );
-      const raw = response.data.artifact;
+      const raw = response.data.artifact ?? response.data;
 
       // 2. Resolve encryption key
       let encryptionKey: Uint8Array;
@@ -973,6 +1014,8 @@ export class ApiClient {
     roleId?: string,
     displayName?: string,
     opts?: {
+      memberId?: string;
+      sessionTag?: string;
       specId?: string;
       parentSessionId?: string;
       executionPlane?: string;
@@ -984,6 +1027,8 @@ export class ApiClient {
         sessionId,
         roleId: roleId || 'member',
         displayName,
+        ...(opts?.memberId !== undefined && { memberId: opts.memberId }),
+        ...(opts?.sessionTag !== undefined && { sessionTag: opts.sessionTag }),
         ...(opts?.specId !== undefined && { specId: opts.specId }),
         ...(opts?.parentSessionId !== undefined && { parentSessionId: opts.parentSessionId }),
         ...(opts?.executionPlane !== undefined && { executionPlane: opts.executionPlane }),

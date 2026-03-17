@@ -22,4 +22,20 @@ describe('generateWebAuthUrl', () => {
         expect(hashParams.get('next')).toBe('/teams/new');
         expect(hashParams.get('machineId')).toBe('machine-123');
     });
+
+    it('includes mode only when it is explicitly set', () => {
+        const createUrl = new URL(generateWebAuthUrl(new Uint8Array([1, 2, 3]), {
+            mode: 'create'
+        }));
+        const reconnectUrl = new URL(generateWebAuthUrl(new Uint8Array([1, 2, 3]), {
+            mode: 'reconnect'
+        }));
+        const autoUrl = new URL(generateWebAuthUrl(new Uint8Array([1, 2, 3]), {
+            mode: 'auto'
+        }));
+
+        expect(new URLSearchParams(createUrl.hash.slice(1)).get('mode')).toBe('create');
+        expect(new URLSearchParams(reconnectUrl.hash.slice(1)).get('mode')).toBe('reconnect');
+        expect(new URLSearchParams(autoUrl.hash.slice(1)).get('mode')).toBeNull();
+    });
 });

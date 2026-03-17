@@ -32,6 +32,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
+import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
 import { COORDINATION_ROLES } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
@@ -309,6 +310,7 @@ async function buildKanbanInstructionBlock(opts: {
 export async function runCodex(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
+    sessionTag?: string;
 }): Promise<void> {
     type PermissionMode = CodexPermissionMode;
     interface EnhancedMode {
@@ -320,7 +322,7 @@ export async function runCodex(opts: {
     // Define session
     //
 
-    const sessionTag = randomUUID();
+    const sessionTag = opts.sessionTag || randomUUID();
     const api = await ApiClient.create(opts.credentials);
 
     // Log startup options
@@ -366,19 +368,25 @@ export async function runCodex(opts: {
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'codex'
+        flavor: 'codex',
+        sessionTag,
     };
+    if (process.env.AHA_TEAM_MEMBER_ID) {
+        metadata.memberId = process.env.AHA_TEAM_MEMBER_ID;
+    }
     if (process.env.AHA_AGENT_ROLE) {
         metadata.role = process.env.AHA_AGENT_ROLE;
     }
     if (process.env.AHA_ROOM_ID) {
+        metadata.teamId = process.env.AHA_ROOM_ID;
         metadata.roomId = process.env.AHA_ROOM_ID;
     }
     if (process.env.AHA_ROOM_NAME) {
         metadata.roomName = process.env.AHA_ROOM_NAME;
         metadata.name = process.env.AHA_ROOM_NAME;
     }
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+    const recoverAhaSessionId = process.env.AHA_RECOVER_SESSION_ID?.trim() || undefined;
+    const response = await api.getOrCreateSession({ sessionId: recoverAhaSessionId, tag: sessionTag, metadata, state });
     const session = api.sessionSyncClient(response);
 
     const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
@@ -896,6 +904,18 @@ export async function runCodex(opts: {
             // Initialize StatusReporter for automatic status updates
             statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
             logger.debug(`[Codex] StatusReporter initialized for role ${role}`);
+
+            const membershipResult = await ensureCurrentSessionRegisteredToTeam({
+                api,
+                teamId,
+                sessionId: response.id,
+                role,
+                metadata,
+                taskStateManager,
+            });
+            logger.debug(
+                `[Codex] Team membership sync result: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
+            );
 
             // Initialize team message storage
             teamStorage = new TeamMessageStorage(process.cwd());

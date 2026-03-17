@@ -41,30 +41,39 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--force] [--mobile] Authenticate with Aha
+  aha auth login [--force|--new|-n|--restore|-r] [--mobile] Authenticate with Aha
   aha auth logout             Remove authentication and machine data
   aha auth status             Show authentication status
   aha auth show-backup        Display backup key for mobile/web clients
   aha auth help               Show this help message
 
 ${chalk.bold('Options:')}
-  --force     Clear credentials, machine ID, and stop daemon before re-auth
+  --force     Clear credentials, machine ID, stop daemon, and create a new account
+  --new,-n    Explicitly create a new account during web auth
+  --restore,-r Clear credentials, machine ID, stop daemon, and restore an existing account
   --mobile    Use the old mobile QR/manual flow instead of default web login
 `);
 }
 
 async function handleAuthLogin(args: string[]): Promise<void> {
-  const forceAuth = args.includes('--force') || args.includes('-f');
+  const createNewAccount = args.includes('--force') || args.includes('-f') || args.includes('--new') || args.includes('-n');
+  const restoreAccount = args.includes('--restore') || args.includes('-r');
+  const forceAuth = createNewAccount || restoreAccount;
   const useMobileAuth = args.includes('--mobile');
 
+  if (createNewAccount && restoreAccount) {
+    console.error(chalk.red('Choose either --new/--force or --restore, not both.'));
+    process.exit(1);
+  }
+
   if (forceAuth) {
-    // As per user's request: "--force-auth will clear credentials, clear machine ID, stop daemon"
-    console.log(chalk.yellow('Force authentication requested.'));
+    const authIntent = restoreAccount ? 'Restore authentication requested.' : 'Force authentication requested.';
+    console.log(chalk.yellow(authIntent));
     console.log(chalk.gray('This will:'));
     console.log(chalk.gray('  • Clear existing credentials'));
     console.log(chalk.gray('  • Clear machine ID'));
     console.log(chalk.gray('  • Stop daemon if running'));
-    console.log(chalk.gray('  • Re-authenticate and register machine\n'));
+    console.log(chalk.gray(`  • ${restoreAccount ? 'Restore an existing account' : 'Create a new account'} and register machine\n`));
 
     // Stop daemon if running
     try {
@@ -111,7 +120,8 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   try {
     const result = await authAndSetupMachineIfNeeded({
       method: useMobileAuth ? 'mobile' : 'web',
-      webNextPath: useMobileAuth ? undefined : '/teams/new'
+      webNextPath: useMobileAuth ? undefined : '/teams/new',
+      webMode: restoreAccount ? 'reconnect' : (createNewAccount ? 'create' : 'auto')
     });
     const daemonResult = await ensureDaemonRunning();
     console.log(chalk.green('\n✓ Authentication successful'));

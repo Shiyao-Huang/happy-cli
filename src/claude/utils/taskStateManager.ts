@@ -165,7 +165,7 @@ export class TaskStateManager {
      * Send a team message about the state change
      */
     private async sendStateChangeMessage(change: KanbanStateChange): Promise<void> {
-        const message = this.formatStateChangeMessage(change);
+        const message = await this.formatStateChangeMessage(change);
 
         await this.api.sendTeamMessage(this.teamId, {
             id: randomUUID(),
@@ -186,28 +186,59 @@ export class TaskStateManager {
     /**
      * Format a human-readable message for a state change
      */
-    private formatStateChangeMessage(change: KanbanStateChange): string {
-        const roleLabel = this.roleId ? `[${this.roleId}]` : '';
-
+    private async formatStateChangeMessage(change: KanbanStateChange): Promise<string> {
         switch (change.type) {
             case 'task-created':
-                return `${roleLabel} Created task: "${change.taskTitle}"`;
+                return `Created task "${change.taskTitle}"`;
             case 'task-status-changed':
-                return `${roleLabel} Task "${change.taskTitle}" → ${change.details.newStatus}`;
+                return `Updated "${change.taskTitle}" to ${this.formatStatusLabel(String(change.details.newStatus || 'updated'))}`;
             case 'task-assigned':
-                return `${roleLabel} Assigned "${change.taskTitle}" to ${change.details.assigneeId}`;
+                return `Assigned "${change.taskTitle}" to ${await this.getMemberLabel(change.details.assigneeId)}`;
             case 'subtask-created':
-                return `${roleLabel} Created subtask "${change.taskTitle}" under "${change.details.parentTitle}"`;
+                return `Created subtask "${change.taskTitle}" under "${change.details.parentTitle}"`;
             case 'blocker-reported':
-                return `${roleLabel} ⚠️ BLOCKED: "${change.taskTitle}" - ${change.details.description}`;
+                return `⚠️ Blocked "${change.taskTitle}": ${change.details.description}`;
             case 'blocker-resolved':
-                return `${roleLabel} ✅ Resolved blocker on "${change.taskTitle}"`;
+                return `✅ Resolved blocker on "${change.taskTitle}"`;
             case 'execution-started':
-                return `${roleLabel} Started working on "${change.taskTitle}"`;
+                return `Started working on "${change.taskTitle}"`;
             case 'execution-completed':
-                return `${roleLabel} ✅ Completed "${change.taskTitle}"`;
+                return `✅ Completed "${change.taskTitle}"`;
             default:
-                return `${roleLabel} Updated task: "${change.taskTitle}"`;
+                return `Updated "${change.taskTitle}"`;
+        }
+    }
+
+    private formatStatusLabel(status: string): string {
+        switch (status) {
+            case 'in-progress':
+                return 'In Progress';
+            case 'todo':
+                return 'To Do';
+            case 'done':
+                return 'Done';
+            case 'blocked':
+                return 'Blocked';
+            case 'review':
+                return 'Review';
+            default:
+                return status;
+        }
+    }
+
+    private async getMemberLabel(sessionId?: string): Promise<string> {
+        if (!sessionId) {
+            return 'someone';
+        }
+
+        try {
+            const artifact = await this.api.getArtifact(this.teamId);
+            const board = this.parseBoard(artifact);
+            const members = board.team?.members ?? [];
+            const member = members.find((entry: any) => entry.sessionId === sessionId);
+            return member?.displayName || member?.roleId || 'someone';
+        } catch {
+            return 'someone';
         }
     }
 
@@ -242,12 +273,34 @@ export class TaskStateManager {
     private async ensureArtifactExists(): Promise<void> {
         try {
             // Try to get artifact - if it exists, we're done
-            await this.api.getArtifact(this.teamId);
+            const artifact = await this.api.getArtifact(this.teamId);
             logger.debug('[TaskStateManager] Team artifact exists');
+            if (artifact.body == null) {
+                logger.debug('[TaskStateManager] Team artifact body missing, attempting initialization repair...');
+                await this.initializeTeamArtifact();
+            }
         } catch (error) {
-            // Artifact doesn't exist - perform lazy initialization
-            logger.debug('[TaskStateManager] Team artifact not found, performing lazy initialization...');
-            await this.initializeTeamArtifact();
+            const message = error instanceof Error ? error.message : String(error);
+            const isNotFound = message.includes('404') || message.includes('Artifact not found');
+            const isConflict = message.includes('409') || message.includes('already exists');
+
+            if (!isNotFound && !isConflict) {
+                throw error;
+            }
+
+            // Artifact doesn't exist (or was created concurrently) - perform lazy initialization / retry
+            logger.debug('[TaskStateManager] Team artifact unavailable, performing lazy initialization...');
+            try {
+                await this.initializeTeamArtifact();
+            } catch (createError) {
+                const createMessage = createError instanceof Error ? createError.message : String(createError);
+                if (createMessage.includes('409') || createMessage.includes('already exists')) {
+                    await this.api.getArtifact(this.teamId);
+                    logger.debug('[TaskStateManager] Team artifact appeared after conflict; continuing');
+                    return;
+                }
+                throw createError;
+            }
         }
     }
 
@@ -265,7 +318,9 @@ export class TaskStateManager {
             body: JSON.stringify({
                 tasks: [],
                 columns: DEFAULT_COLUMNS,
-                members: [],
+                team: {
+                    members: [],
+                },
                 createdAt: Date.now()
             })
         };

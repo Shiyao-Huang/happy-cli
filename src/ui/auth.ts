@@ -12,11 +12,13 @@ import { randomUUID } from 'node:crypto';
 import { logger } from './logger';
 
 export type AuthMethod = 'mobile' | 'web';
+export type WebAuthMode = 'auto' | 'create' | 'reconnect';
 
 interface DoAuthOptions {
     method?: AuthMethod;
     webNextPath?: string;
     machineId?: string;
+    webMode?: WebAuthMode;
 }
 
 interface AuthSetupOptions extends DoAuthOptions {
@@ -80,7 +82,8 @@ async function doWebAuth(keypair: tweetnacl.BoxKeyPair, options: DoAuthOptions):
 
     const webUrl = generateWebAuthUrl(keypair.publicKey, {
         nextPath: options.webNextPath,
-        machineId: options.machineId
+        machineId: options.machineId,
+        mode: options.webMode
     });
     console.log('Opening your browser...');
 

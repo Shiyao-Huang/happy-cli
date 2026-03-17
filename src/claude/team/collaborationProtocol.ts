@@ -82,7 +82,7 @@ export class CollaborationProtocol {
             const content = this.formatCollaborationRequest(fullRequest);
 
             // Get target session IDs (if available)
-            const mentions = this.getRoleMentions(request.targetRoles);
+            const mentions = await this.getRoleMentions(request.targetRoles);
 
             await this.api.sendTeamMessage(this.teamId, {
                 id: randomUUID(),
@@ -118,7 +118,7 @@ export class CollaborationProtocol {
 
             // Target coordinators by default, or specified roles
             const targetRoles = request.targetRoles || COORDINATION_ROLES;
-            const mentions = this.getRoleMentions(targetRoles);
+            const mentions = await this.getRoleMentions(targetRoles);
 
             await this.api.sendTeamMessage(this.teamId, {
                 id: randomUUID(),
@@ -157,7 +157,7 @@ export class CollaborationProtocol {
             const content = this.formatHandoffRequest(fullRequest);
 
             // Target the specific role
-            const mentions = this.getRoleMentions([request.toRole]);
+            const mentions = await this.getRoleMentions([request.toRole]);
 
             await this.api.sendTeamMessage(this.teamId, {
                 id: randomUUID(),
@@ -289,20 +289,16 @@ export class CollaborationProtocol {
             delegate: '➡️ Delegation'
         };
 
-        const targetRolesList = request.targetRoles.map(r => `@${r}`).join(' ');
-
         return `
 ${urgencyEmoji[request.urgency]} **${typeLabel[request.requestType]}** Request
 
-**Task ID:** ${request.taskId}
-**From:** ${request.requestingRole}
-**To:** ${targetRolesList}
-**Urgency:** ${request.urgency.toUpperCase()}
+Task: ${request.taskId}
+Urgency: ${request.urgency.toUpperCase()}
 
-**Context:**
+Context:
 ${request.context}
 
-${request.expectedOutcome ? `**Expected Outcome:** ${request.expectedOutcome}` : ''}
+${request.expectedOutcome ? `Expected Outcome: ${request.expectedOutcome}` : ''}
 `.trim();
     }
 
@@ -321,19 +317,16 @@ ${request.expectedOutcome ? `**Expected Outcome:** ${request.expectedOutcome}` :
         let content = `
 🆘 **Help Needed** ${blockerEmoji[request.blockerType]}
 
-**Task ID:** ${request.taskId}
-**Blocker Type:** ${request.blockerType}
-**From:** ${this.roleId}
+Task: ${request.taskId}
+Blocker Type: ${request.blockerType}
 
-**Problem:**
+Problem:
 ${request.description}
 `.trim();
 
         if (request.attemptedSolutions && request.attemptedSolutions.length > 0) {
-            content += `\n\n**Already Tried:**\n${request.attemptedSolutions.map(s => `- ${s}`).join('\n')}`;
+            content += `\n\nAlready Tried:\n${request.attemptedSolutions.map(s => `- ${s}`).join('\n')}`;
         }
-
-        content += `\n\n@master @orchestrator Please help resolve this blocker.`;
 
         return content;
     }
@@ -352,17 +345,15 @@ ${request.description}
         let content = `
 ${reasonEmoji[request.reason]} **Task Handoff**
 
-**Task ID:** ${request.taskId}
-**From:** @${request.fromRole}
-**To:** @${request.toRole}
-**Reason:** ${request.reason}
+Task: ${request.taskId}
+Reason: ${request.reason}
 
-**Summary:**
+Summary:
 ${request.summary}
 `.trim();
 
         if (request.nextSteps && request.nextSteps.length > 0) {
-            content += `\n\n**Suggested Next Steps:**\n${request.nextSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+            content += `\n\nSuggested Next Steps:\n${request.nextSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
         }
 
         return content;
@@ -372,10 +363,20 @@ ${request.summary}
      * Get role mention strings
      * In the future, this could resolve to actual session IDs
      */
-    private getRoleMentions(roles: string[]): string[] {
-        // For now, we use role names as mentions
-        // The message content includes @role patterns that the message handler can parse
-        return roles;
+    private async getRoleMentions(roles: string[]): Promise<string[]> {
+        try {
+            const artifact = await this.api.getArtifact(this.teamId);
+            const board = artifact.body && typeof artifact.body === 'object' ? artifact.body as Record<string, any> : {};
+            const team = board.team && typeof board.team === 'object' ? board.team as Record<string, any> : {};
+            const members = Array.isArray(team.members) ? team.members : [];
+
+            return members
+                .filter((member: any) => roles.includes(member.roleId))
+                .map((member: any) => member.sessionId)
+                .filter((sessionId: any): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0);
+        } catch {
+            return [];
+        }
     }
 }
 

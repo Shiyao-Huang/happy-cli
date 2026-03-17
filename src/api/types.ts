@@ -433,6 +433,8 @@ export type Metadata = {
   archiveReason?: string,
   flavor?: string,
   role?: string,
+  memberId?: string,
+  sessionTag?: string,
   teamId?: string,  // Team artifact ID if this session is part of a team
   roomId?: string,
   roomName?: string
