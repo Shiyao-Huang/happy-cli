@@ -2855,6 +2855,8 @@ Namespace conventions:
             'read_team_log',
             'read_cc_log',
             'list_team_cc_logs',
+            'list_team_runtime_logs',
+            'read_runtime_log',
             'score_agent',
             'score_supervisor_self',
             'update_genome_feedback',
