@@ -1,0 +1,323 @@
+[2026-03-18T18:35:02.545Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:35:02.592Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:35:03.067Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:35:03.068Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.068Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.069Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.085Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:35:03.087Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.087Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:35:03.088Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:35:03.098Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.099Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.100Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:03.113Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:04.269Z] [log] credentials null
+[2026-03-18T18:35:04.283Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:35:19.506Z] [log] 📱 App state changed to: background
+[2026-03-18T18:35:20.104Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:35:20.148Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:35:20.589Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:35:20.589Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.589Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.590Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.600Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:35:20.600Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.601Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:35:20.601Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:35:20.647Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.647Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.648Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:20.663Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:21.067Z] [log] credentials null
+[2026-03-18T18:35:21.077Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:35:24.338Z] [log] 📱 App state changed to: background
+[2026-03-18T18:35:24.711Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:35:24.727Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:35:25.282Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:35:25.282Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.282Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.282Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.283Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:35:25.283Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.283Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:35:25.284Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:35:25.284Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.285Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.285Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.288Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:35:25.302Z] [log] credentials null
+[2026-03-18T18:35:25.302Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:35:59.156Z] [log] 📱 App state changed to: background
+[2026-03-18T18:35:59.596Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:35:59.596Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:36:00.015Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:36:00.015Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.015Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.015Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.015Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:36:00.015Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.016Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:36:00.019Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:36:00.020Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.020Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.021Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.021Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:00.093Z] [log] credentials null
+[2026-03-18T18:36:00.093Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:36:04.499Z] [log] 📱 App state changed to: background
+[2026-03-18T18:36:04.871Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:36:04.885Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:36:05.506Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:36:05.509Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.509Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.510Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.510Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:36:05.551Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.552Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:36:05.552Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:36:05.552Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.553Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.553Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.553Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:05.603Z] [log] credentials null
+[2026-03-18T18:36:05.603Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:36:09.215Z] [log] 📱 App state changed to: background
+[2026-03-18T18:36:09.608Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:36:09.624Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:36:10.451Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:36:10.451Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.451Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.451Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.451Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:36:10.452Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.452Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:36:10.452Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:36:10.452Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.452Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.453Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.453Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:10.478Z] [log] credentials null
+[2026-03-18T18:36:10.478Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:36:28.204Z] [log] 📱 App state changed to: background
+[2026-03-18T18:36:28.850Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:36:28.870Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:36:29.327Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:36:29.328Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.328Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.328Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.328Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:36:29.329Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.330Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:36:29.331Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:36:29.332Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.332Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.333Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.333Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:29.391Z] [log] credentials null
+[2026-03-18T18:36:29.396Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:36:44.899Z] [log] 📱 App state changed to: background
+[2026-03-18T18:36:45.279Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:36:45.301Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:36:45.769Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:36:45.769Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.770Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.770Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.770Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:36:45.770Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.772Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:36:45.772Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:36:45.773Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.774Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.775Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.776Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:36:45.826Z] [log] credentials null
+[2026-03-18T18:36:45.826Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
+[2026-03-18T18:37:01.337Z] [log] 📱 App state changed to: background
+[2026-03-18T18:37:01.972Z] [info] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-03-18T18:37:01.991Z] [log] Running application "main" with appParams:
+ {rootTag: #root, hydrate: undefined} 
+Development-level warnings: ON.
+Performance optimizations: OFF.
+[2026-03-18T18:37:02.478Z] [warning] "shadow*" style props are deprecated. Use "boxShadow".
+[2026-03-18T18:37:02.478Z] [warning] Require cycle: sources/modal/index.ts -> sources/modal/ModalProvider.tsx -> sources/modal/components/CustomModal.tsx -> sources/components/CommandPalette/index.ts -> sources/components/CommandPalette/CommandPaletteProvider.tsx -> sources/modal/index.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.478Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiSocket.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.479Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/storage.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.479Z] [warning] [expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.
+[2026-03-18T18:37:02.479Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/sync/apiPush.ts -> sources/utils/handleResponse.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.479Z] [log] [loadAppConfig] Loaded from Constants.expoConfig: []
+[2026-03-18T18:37:02.479Z] [log] [loadAppConfig] Final merged config: {}
+[2026-03-18T18:37:02.479Z] [warning] Require cycle: sources/sync/sync.ts -> sources/sync/gitStatusSync.ts -> sources/sync/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.479Z] [warning] Require cycle: sources/sync/sync.ts -> sources/-zen/model/ops.ts -> sources/sync/sync.ts
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.479Z] [warning] Require cycle: sources/auth/AuthContext.tsx -> sources/sync/sync.ts -> sources/observability/commerceEvents.ts -> sources/auth/AuthContext.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.480Z] [warning] Require cycle: sources/components/tools/views/_all.tsx -> sources/components/tools/views/EditViewFull.tsx -> sources/components/tools/ToolFullView.tsx -> sources/components/tools/views/_all.tsx
+
+Require cycles are allowed, but can result in uninitialized values. Consider refactoring to remove the need for a cycle.
+[2026-03-18T18:37:02.489Z] [log] credentials null
+[2026-03-18T18:37:02.489Z] [warning] props.pointerEvents is deprecated. Use style.pointerEvents
