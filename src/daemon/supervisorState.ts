@@ -9,8 +9,11 @@
  * unread tail of ~/.codex history + session transcripts each cycle.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { constants } from 'node:fs';
+import { open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
+import { configuration } from '@/configuration';
 
 // ── Self-reflexivity types (v2) ────────────────────────────────────────────
 
@@ -113,7 +116,61 @@ export interface SupervisorState {
 }
 
 function getStatePath(teamId: string): string {
-    return join(process.cwd(), '.aha', 'supervisor', `state-${teamId}.json`);
+    return join(configuration.ahaHomeDir, 'supervisor', `state-${teamId}.json`);
+}
+
+async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>): Promise<T> {
+    const statePath = getStatePath(teamId);
+    const lockPath = `${statePath}.lock`;
+    const maxAttempts = 50;
+    const retryMs = 100;
+    const staleLockTimeoutMs = 10_000;
+    let handle: Awaited<ReturnType<typeof open>> | null = null;
+
+    mkdirSync(dirname(statePath), { recursive: true });
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+            handle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+            break;
+        } catch (error: any) {
+            if (error?.code !== 'EEXIST') {
+                throw error;
+            }
+
+            try {
+                const lockStats = await stat(lockPath);
+                if (Date.now() - lockStats.mtimeMs > staleLockTimeoutMs) {
+                    await unlink(lockPath).catch(() => { });
+                }
+            } catch {
+                // ignore races while inspecting/removing stale locks
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, retryMs));
+        }
+    }
+
+    if (!handle) {
+        throw new Error(`Failed to acquire supervisor state lock for ${teamId}`);
+    }
+
+    try {
+        return await fn();
+    } finally {
+        await handle.close();
+        await unlink(lockPath).catch(() => { });
+    }
+}
+
+async function readSupervisorStateUnlocked(teamId: string): Promise<SupervisorState> {
+    const statePath = getStatePath(teamId);
+    try {
+        const raw = JSON.parse(await readFile(statePath, 'utf-8'));
+        return { ...defaultState(teamId), ...raw } as SupervisorState;
+    } catch {
+        return defaultState(teamId);
+    }
 }
 
 const V2_DEFAULTS: Pick<SupervisorState, 'lastSupervisorPid' | 'pendingAction' | 'predictions' | 'calibration'> = {
@@ -156,7 +213,9 @@ export function readSupervisorState(teamId: string): SupervisorState {
 export function writeSupervisorState(state: SupervisorState): void {
     const statePath = getStatePath(state.teamId);
     mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
+    const tmpPath = `${statePath}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
+    renameSync(tmpPath, statePath);
 }
 
 export function markTeamTerminated(teamId: string): void {
@@ -167,12 +226,23 @@ export function markTeamTerminated(teamId: string): void {
 export function updateSupervisorRun(
     teamId: string,
     patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'predictions' | 'calibration'>>
-): void {
-    const state = readSupervisorState(teamId);
-    writeSupervisorState({
+): Promise<SupervisorState> {
+    return updateSupervisorState(teamId, (state) => ({
         ...state,
         ...patch,
         lastRunAt: Date.now(),
+    }));
+}
+
+export async function updateSupervisorState(
+    teamId: string,
+    updater: (state: SupervisorState) => SupervisorState | Promise<SupervisorState>,
+): Promise<SupervisorState> {
+    return withSupervisorStateLock(teamId, async () => {
+        const current = await readSupervisorStateUnlocked(teamId);
+        const next = await updater(current);
+        writeSupervisorState(next);
+        return next;
     });
 }
 

@@ -1,0 +1,524 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aha.engineering/schemas/agent-json-v1.schema.json",
+  "title": "Aha Agent JSON v1",
+  "description": "Minimal canonical agent card for local run, team coordination, and supervisor evaluation binding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "name",
+    "runtime"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "kind": {
+      "const": "aha.agent.v1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "baseRoleId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex",
+        "open-code"
+      ]
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "system": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suffix": {
+          "type": "string"
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "disallowed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "mcpServers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "permissionMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "read-only",
+            "safe-yolo",
+            "yolo"
+          ]
+        },
+        "accessLevel": {
+          "type": "string",
+          "enum": [
+            "read-only",
+            "full-access"
+          ]
+        },
+        "ceiling": {
+          "type": "string",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "read-only",
+            "safe-yolo",
+            "yolo"
+          ],
+          "description": "Maximum permission level this agent may ever reach, even under future model-driven negotiation."
+        },
+        "executionPlane": {
+          "type": "string",
+          "enum": [
+            "mainline",
+            "bypass"
+          ]
+        },
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "teamRole": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "messaging": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "listenFrom": {
+              "oneOf": [
+                {
+                  "const": "*"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "receiveUserMessages": {
+              "type": "boolean"
+            },
+            "replyMode": {
+              "type": "string",
+              "enum": [
+                "proactive",
+                "responsive",
+                "passive"
+              ]
+            }
+          }
+        },
+        "behavior": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "onIdle": {
+              "type": "string",
+              "enum": [
+                "wait",
+                "self-assign",
+                "ask"
+              ]
+            },
+            "onBlocked": {
+              "type": "string",
+              "enum": [
+                "report",
+                "escalate",
+                "retry"
+              ]
+            },
+            "canSpawnAgents": {
+              "type": "boolean"
+            },
+            "requireExplicitAssignment": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "optional": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "failover"
+          ]
+        },
+        "providerOrder": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "string"
+            },
+            "fast": {
+              "type": "string"
+            },
+            "balanced": {
+              "type": "string"
+            },
+            "deep": {
+              "type": "string"
+            },
+            "reasoning": {
+              "type": "string"
+            }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Hard limits for model-driven routing. Reserved for future use."
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultMode": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "isolated"
+          ],
+          "description": "Default workspace materialization mode for this agent package."
+        },
+        "allowedModes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "isolated"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Workspace modes this package may run under."
+        }
+      }
+    },
+    "evaluation": {
+      "description": "[Phase 2] Supervisor evaluation contract. Not part of Docker core — added after runtime materialization is stable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criteria"
+      ],
+      "properties": {
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "scoreSchemaVersion": {
+          "type": "string",
+          "default": "v1"
+        },
+        "logKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "evolution": {
+      "description": "[Phase 2] Self-evolution surface. Requires stable Docker runtime and supervisor scoring pipeline before activation.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "parentRef": {
+          "type": "string",
+          "pattern": "^@[^/]+/[^:]+:[1-9][0-9]*$"
+        },
+        "parentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "mutationNote": {
+          "type": "string"
+        },
+        "mutablePaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "scoreTargets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "market": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^@[^/]+$"
+        },
+        "category": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "experimental",
+            "active",
+            "deprecated"
+          ]
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Published package identity. Runtime-generated build/materialization artifacts do not belong here.",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^@[^/]+/[^:]+:[1-9][0-9]*$",
+          "description": "Stable package reference in @namespace/name:version form.",
+          "examples": [
+            "@official/supervisor:1"
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$",
+          "description": "Exact package fingerprint bound to one immutable config version.",
+          "examples": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          ]
+        }
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preToolUse": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["matcher", "command"],
+            "properties": {
+              "matcher": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Tool name glob pattern to match (e.g. 'Bash', 'Edit', '*')"
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Shell command to run before the tool call"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "postToolUse": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["matcher", "command"],
+            "properties": {
+              "matcher": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Tool name glob pattern to match (e.g. 'Bash', 'Edit', '*')"
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Shell command to run after the tool call"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command"],
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Shell command to run when the session ends"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "baseRoleId"
+      ]
+    },
+    {
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "required": [
+            "system"
+          ]
+        }
+      }
+    }
+  ]
+}

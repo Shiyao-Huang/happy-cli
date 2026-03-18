@@ -1,0 +1,50 @@
+{
+  "$schema": "../../schemas/agent-json-v1.schema.json",
+  "kind": "aha.agent.v1",
+  "name": "codex-worker",
+  "description": "Codex-runtime worker agent — runs OpenAI Codex for code generation tasks",
+  "baseRoleId": "builder",
+  "runtime": "codex",
+  "prompt": {
+    "suffix": "Execute code generation tasks. Use available MCP tools to communicate with the team."
+  },
+  "tools": {
+    "mcpServers": ["aha"],
+    "skills": []
+  },
+  "permissions": {
+    "permissionMode": "default",
+    "accessLevel": "full-access",
+    "executionPlane": "mainline",
+    "maxTurns": 50
+  },
+  "context": {
+    "teamRole": "builder",
+    "capabilities": ["implement_tasks", "write_code"],
+    "behavior": {
+      "onIdle": "self-assign",
+      "onBlocked": "report",
+      "canSpawnAgents": false,
+      "requireExplicitAssignment": true
+    }
+  },
+  "env": {
+    "required": ["OPENAI_API_KEY"],
+    "optional": ["AHA_ROOM_ID", "CODEX_MODEL"]
+  },
+  "workspace": {
+    "defaultMode": "shared",
+    "allowedModes": ["shared"]
+  },
+  "hooks": {},
+  "market": {
+    "namespace": "@official",
+    "category": "builder",
+    "tags": ["codex", "openai", "builder"],
+    "lifecycle": "active"
+  },
+  "package": {
+    "ref": "@official/codex-worker:1",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

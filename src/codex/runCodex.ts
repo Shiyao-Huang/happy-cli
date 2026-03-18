@@ -1,7 +1,7 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexMcpClient } from './codexMcpClient';
+import { CodexMcpClient, detectCodexCliVersion } from './codexMcpClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -29,6 +29,7 @@ import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
 import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
@@ -80,6 +81,273 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
 }
 
 type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
+
+export function unwrapCodexEvent(rawMessage: any): any {
+    if (
+        rawMessage &&
+        typeof rawMessage === 'object' &&
+        rawMessage.type === 'raw_response_item' &&
+        rawMessage.item &&
+        typeof rawMessage.item === 'object'
+    ) {
+        return rawMessage.item;
+    }
+    if (
+        rawMessage &&
+        typeof rawMessage === 'object' &&
+        (rawMessage.type === 'event_msg' || rawMessage.type === 'response_item') &&
+        rawMessage.payload &&
+        typeof rawMessage.payload === 'object'
+    ) {
+        return rawMessage.payload;
+    }
+    return rawMessage;
+}
+
+function parseStructuredCodexValue(value: unknown): unknown {
+    if (typeof value !== 'string') {
+        return value;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return value;
+    }
+
+    try {
+        return JSON.parse(trimmed);
+    } catch {
+        return value;
+    }
+}
+
+function decodeCodexDeltaChunk(value: unknown): string {
+    if (typeof value !== 'string' || value.length === 0) {
+        return '';
+    }
+
+    try {
+        return Buffer.from(value, 'base64').toString('utf-8');
+    } catch {
+        return value;
+    }
+}
+
+function isMcpFunctionName(name: unknown): name is string {
+    return typeof name === 'string' && name.startsWith('mcp__');
+}
+
+export function convertCodexFunctionEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'tool-call';
+        name: string;
+        callId: string;
+        input: unknown;
+        id: string;
+    }
+    | {
+        type: 'tool-call-result';
+        callId: string;
+        output: unknown;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'function_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.name,
+            callId: message.call_id,
+            input: parseStructuredCodexValue(message.arguments),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'function_call_output' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output: parseStructuredCodexValue(message.output),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'custom_tool_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.name,
+            callId: message.call_id,
+            input: parseStructuredCodexValue(message.input),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'custom_tool_call_output' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output: parseStructuredCodexValue(message.output),
+            id: randomUUID()
+        };
+    }
+
+    return null;
+}
+
+export function convertCodexMcpLifecycleEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'tool-call';
+        name: string;
+        callId: string;
+        input: unknown;
+        id: string;
+    }
+    | {
+        type: 'tool-call-result';
+        callId: string;
+        output: unknown;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'mcp_tool_call_begin' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.invocation?.tool || 'unknown',
+            callId: message.call_id,
+            input: message.invocation?.arguments,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'mcp_tool_call_end' && typeof message.call_id === 'string') {
+        const ok = message.result?.Ok;
+        const err = message.result?.Err;
+        const output = ok ?? err ?? message.result;
+
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output,
+            id: randomUUID(),
+        };
+    }
+
+    return null;
+}
+
+export function convertCodexAssistantEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'message';
+        message: string;
+        id: string;
+    }
+    | {
+        type: 'reasoning';
+        message: string;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'item_completed' && message.item?.type === 'AgentMessage' && Array.isArray(message.item.content)) {
+        const text = message.item.content
+            .filter((item: any) => (item?.type === 'Text' || item?.type === 'output_text') && typeof item.text === 'string')
+            .map((item: any) => item.text)
+            .join('');
+
+        if (!text.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'message',
+            message: text,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'item_completed' && message.item?.type === 'Reasoning') {
+        const summary = Array.isArray(message.item.summary_text)
+            ? message.item.summary_text
+                .map((item: any) => {
+                    if (typeof item === 'string') return item;
+                    if (item && typeof item.text === 'string') return item.text;
+                    if (item && typeof item.summary === 'string') return item.summary;
+                    return '';
+                })
+                .filter(Boolean)
+                .join('\n')
+            : '';
+
+        if (!summary.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'reasoning',
+            message: summary,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'message' && message.role === 'assistant' && Array.isArray(message.content)) {
+        const text = message.content
+            .filter((item: any) => item?.type === 'output_text' && typeof item.text === 'string')
+            .map((item: any) => item.text)
+            .join('');
+
+        if (!text.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'message',
+            message: text,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'reasoning') {
+        const summary = Array.isArray(message.summary)
+            ? message.summary
+                .map((item: any) => {
+                    if (typeof item === 'string') return item;
+                    if (item && typeof item.text === 'string') return item.text;
+                    if (item && typeof item.summary === 'string') return item.summary;
+                    return '';
+                })
+                .filter(Boolean)
+                .join('\n')
+            : '';
+
+        if (!summary.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'reasoning',
+            message: summary,
+            id: randomUUID(),
+        };
+    }
+
+    return null;
+}
 
 function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | undefined {
     if (!rawMode) {
@@ -309,6 +577,16 @@ async function buildKanbanInstructionBlock(opts: {
 
 /**
  * Main entry point for the codex command with ink UI
+ *
+ * Codex bridge compatibility target:
+ * - codex-cli 0.115.0
+ *
+ * The current bridge work is anchored to the event model observed from that version,
+ * especially these high-value families:
+ * - item_started / item_completed
+ * - raw_response_item
+ * - mcp_tool_call_begin / mcp_tool_call_end
+ * - exec_command_output_delta
  */
 export async function runCodex(opts: {
     credentials: Credentials;
@@ -326,10 +604,12 @@ export async function runCodex(opts: {
     //
 
     const sessionTag = opts.sessionTag || randomUUID();
+    const codexCliVersion = detectCodexCliVersion();
     const api = await ApiClient.create(opts.credentials);
 
     // Log startup options
     logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}`);
+    logger.debug(`[codex] Bridge compatibility target active for codex-cli ${codexCliVersion ?? 'unknown'}`);
 
     //
     // Machine
@@ -372,6 +652,7 @@ export async function runCodex(opts: {
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
         flavor: 'codex',
+        codexCliVersion: codexCliVersion ?? undefined,
         sessionTag,
     };
     if (process.env.AHA_TEAM_MEMBER_ID) {
@@ -383,6 +664,9 @@ export async function runCodex(opts: {
     if (process.env.AHA_ROOM_ID) {
         metadata.teamId = process.env.AHA_ROOM_ID;
         metadata.roomId = process.env.AHA_ROOM_ID;
+    }
+    if (process.env.AHA_EXECUTION_PLANE) {
+        metadata.executionPlane = process.env.AHA_EXECUTION_PLANE as 'bypass' | 'mainline';
     }
     if (process.env.AHA_ROOM_NAME) {
         metadata.roomName = process.env.AHA_ROOM_NAME;
@@ -419,9 +703,10 @@ export async function runCodex(opts: {
     });
 
     session.on('team-message', (message: any) => {
+        const activeTeamId = metadata.teamId || metadata.roomId;
         // CRITICAL: Filter by teamId to prevent cross-team message leakage
-        if (message.teamId !== teamId) {
-            logger.debug(`[Codex] Ignoring message from other team: ${message.teamId} !== ${teamId}`);
+        if (!activeTeamId || message.teamId !== activeTeamId) {
+            logger.debug(`[Codex] Ignoring message from other team: ${message.teamId} !== ${activeTeamId}`);
             return;
         }
         logger.debug('[Codex] Received team message, injecting as user message');
@@ -436,11 +721,40 @@ export async function runCodex(opts: {
 
     session.on('metadata-update', (newMetadata: Metadata) => {
         logger.debug('[Codex] Session metadata updated', newMetadata);
-        if (newMetadata.role && newMetadata.role !== metadata.role) {
-            logger.debug(`[Codex] Role changed to ${newMetadata.role}`);
-            const msg = `[System]: Your role has been updated to: ${newMetadata.role}. Please act accordingly.`;
-            messageQueue.push(msg, getCurrentEnhancedMode());
+        const previousRole = metadata.role;
+        const previousTeamId = metadata.teamId || metadata.roomId;
+
+        if (newMetadata.role) {
             metadata.role = newMetadata.role;
+        }
+        if (newMetadata.teamId) {
+            metadata.teamId = newMetadata.teamId;
+        }
+        if (newMetadata.roomId) {
+            metadata.roomId = newMetadata.roomId;
+        }
+        if (newMetadata.roomName) {
+            metadata.roomName = newMetadata.roomName;
+            metadata.name = newMetadata.roomName;
+        }
+
+        const nextRole = metadata.role;
+        const nextTeamId = metadata.teamId || metadata.roomId;
+        const roleChanged = !!nextRole && nextRole !== previousRole;
+        const teamChanged = !!nextTeamId && nextTeamId !== previousTeamId;
+
+        if (roleChanged || teamChanged) {
+            const updates: string[] = [];
+            if (teamChanged) {
+                updates.push(`You have joined team ${nextTeamId}.`);
+            }
+            if (roleChanged) {
+                updates.push(`Your role is now ${nextRole}.`);
+            }
+            updates.push('Call functions.aha__get_team_info immediately to load the latest team context, roster, and workflow rules.');
+            messageQueue.push(`[System]: ${updates.join(' ')}`, getCurrentEnhancedMode());
+            teamInitialized = false;
+            teamContextBlock = null;
         }
     });
 
@@ -702,12 +1016,76 @@ export async function runCodex(opts: {
         session.sendCodexMessage(message);
     });
     client.setPermissionHandler(permissionHandler);
-    client.setHandler((msg) => {
+
+    // Accumulator for agent_message_delta events.
+    // Newer Codex SDK versions stream text via agent_message_delta and only
+    // emit agent_message with a short summary (e.g. title update).  We
+    // accumulate the deltas so we can forward the full text to kanban.
+    let agentMessageDeltaBuffer = '';
+    const mcpLifecycleCallIds = new Set<string>();
+    const execOutputBuffers = new Map<string, { stdout: string; stderr: string }>();
+
+    client.setHandler((rawMsg) => {
+        const msg = unwrapCodexEvent(rawMsg);
         logger.debug(`[Codex] MCP message: ${JSON.stringify(msg)}`);
+
+        const assistantMessage = convertCodexAssistantEventToSessionMessage(msg);
+        if (assistantMessage) {
+            const fullText = assistantMessage.type === 'message'
+                ? (agentMessageDeltaBuffer || assistantMessage.message)
+                : assistantMessage.message;
+            agentMessageDeltaBuffer = '';
+
+            if (assistantMessage.type === 'message') {
+                messageBuffer.addMessage(fullText, 'assistant');
+            } else {
+                messageBuffer.addMessage(`[Thinking] ${fullText.substring(0, 100)}...`, 'system');
+            }
+
+            session.sendCodexMessage({
+                ...assistantMessage,
+                message: fullText,
+            });
+            return;
+        }
+
+        const mcpLifecycleMessage = convertCodexMcpLifecycleEventToSessionMessage(msg);
+        if (mcpLifecycleMessage) {
+            if (mcpLifecycleMessage.type === 'tool-call') {
+                mcpLifecycleCallIds.add(mcpLifecycleMessage.callId);
+                messageBuffer.addMessage(`Tool: ${mcpLifecycleMessage.name}`, 'tool');
+            }
+            session.sendCodexMessage(mcpLifecycleMessage);
+            return;
+        }
+
+        // Accumulate streaming text deltas
+        if (msg.type === 'agent_message_delta') {
+            agentMessageDeltaBuffer += msg.delta;
+            return; // Don't process further — wait for agent_message or task_complete
+        }
+        // agent_message_content_delta is a duplicate of agent_message_delta with extra metadata — skip
+        if (msg.type === 'agent_message_content_delta') {
+            return;
+        }
+        if (msg.type === 'exec_command_output_delta') {
+            const buffer = execOutputBuffers.get(msg.call_id) || { stdout: '', stderr: '' };
+            const decoded = decodeCodexDeltaChunk(msg.chunk);
+            if (msg.stream === 'stderr') {
+                buffer.stderr += decoded;
+            } else {
+                buffer.stdout += decoded;
+            }
+            execOutputBuffers.set(msg.call_id, buffer);
+            return;
+        }
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
-            messageBuffer.addMessage(msg.message, 'assistant');
+            // Use accumulated delta text when available (newer SDK); fall back to msg.message (older SDK)
+            const fullText = agentMessageDeltaBuffer || msg.message;
+            agentMessageDeltaBuffer = '';
+            messageBuffer.addMessage(fullText, 'assistant');
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning') {
@@ -744,6 +1122,15 @@ export async function runCodex(opts: {
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
             }
+            // Flush any remaining delta text that wasn't closed by agent_message
+            if (agentMessageDeltaBuffer) {
+                session.sendCodexMessage({
+                    type: 'message',
+                    message: agentMessageDeltaBuffer,
+                    id: randomUUID()
+                });
+                agentMessageDeltaBuffer = '';
+            }
             // Reset diff processor on task end or abort
             diffProcessor.reset();
         }
@@ -760,11 +1147,27 @@ export async function runCodex(opts: {
             reasoningProcessor.complete(msg.text);
         }
         if (msg.type === 'agent_message') {
+            // Use accumulated delta text when available; fall back to msg.message for older SDK
+            const fullText = agentMessageDeltaBuffer || msg.message;
+            agentMessageDeltaBuffer = '';
             session.sendCodexMessage({
                 type: 'message',
-                message: msg.message,
+                message: fullText,
                 id: randomUUID()
             });
+        }
+        const functionToolMessage = convertCodexFunctionEventToSessionMessage(msg);
+        if (functionToolMessage) {
+            if (functionToolMessage.type === 'tool-call' && isMcpFunctionName(functionToolMessage.name)) {
+                return;
+            }
+            if (functionToolMessage.type === 'tool-call-result' && mcpLifecycleCallIds.has(functionToolMessage.callId)) {
+                return;
+            }
+            if (functionToolMessage.type === 'tool-call') {
+                messageBuffer.addMessage(`Tool: ${functionToolMessage.name}`, 'tool');
+            }
+            session.sendCodexMessage(functionToolMessage);
         }
         if (msg.type === 'exec_command_begin' || msg.type === 'exec_approval_request') {
             let { call_id, type, ...inputs } = msg;
@@ -778,6 +1181,15 @@ export async function runCodex(opts: {
         }
         if (msg.type === 'exec_command_end') {
             let { call_id, type, ...output } = msg;
+            const buffered = execOutputBuffers.get(call_id);
+            if (buffered) {
+                output = {
+                    ...output,
+                    stdout: typeof output.stdout === 'string' && output.stdout.length > 0 ? output.stdout : buffered.stdout,
+                    stderr: typeof output.stderr === 'string' && output.stderr.length > 0 ? output.stderr : buffered.stderr,
+                };
+                execOutputBuffers.delete(call_id);
+            }
             session.sendCodexMessage({
                 type: 'tool-call-result',
                 callId: call_id,
@@ -850,18 +1262,24 @@ export async function runCodex(opts: {
     const ahaServer = await startAhaServer(api, session);
     logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
     const bridgeCommand = join(projectPath(), 'bin', 'aha-mcp.mjs');
-    const mcpServers: Record<string, { command: string; args: string[] }> = {
+    const allowedMaterializedMcpServerNames = process.env.AHA_AGENT_MCP_CONFIG_PATH
+        ? readMaterializedMcpServerNames(process.env.AHA_AGENT_MCP_CONFIG_PATH)
+        : [];
+    const availableMcpServers: Record<string, { type: string; command: string; args: string[] }> = {
         aha: {
+            type: 'stdio',
             command: bridgeCommand,
             args: ['--url', ahaServer.url]
         }
     };
     if (desktopMcpUrl) {
-        mcpServers['aha-desktop'] = {
+        availableMcpServers['aha-desktop'] = {
+            type: 'stdio',
             command: bridgeCommand,
             args: ['--url', desktopMcpUrl]
         };
     }
+    const mcpServers = filterMaterializedMcpServers(availableMcpServers, allowedMaterializedMcpServerNames);
     const ahaRoomIdEnv = process.env.AHA_ROOM_ID;
     const ahaRoleLabelEnv = process.env.AHA_ROLE_LABEL;
     const ahaMemberIdEnv = process.env.AHA_MEMBER_ID;
@@ -1149,7 +1567,7 @@ ${historyText}
 
                 if (!wasCreated) {
                     const startConfig: CodexSessionConfig = {
-                        prompt: first ? message.message + '\n\n' + trimIdent(`Based on this message, call functions.aha__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.`) : message.message,
+                        prompt: first ? message.message + '\n\n' + trimIdent(`If functions.aha__change_title is available in this session, call it to set a chat title that represents the current task. If the task changes dramatically later and the tool is available, call it again to update the title.`) : message.message,
                         sandbox,
                         'approval-policy': approvalPolicy,
                         config: { mcp_servers: mcpServers }

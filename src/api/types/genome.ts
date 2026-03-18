@@ -467,3 +467,134 @@ export interface CorpsSpec {
         initialObjective?: string;
     };
 }
+
+/**
+ * AgentPackageRef — 标准化的 agent/package 身份。
+ *
+ * 说明：
+ * - `specId` 仍保留作兼容指针，但它不是长期的可移植身份。
+ * - 新语义以 `ref + version + digest` 为准，供市场、引擎、评分回流共同绑定。
+ */
+export interface AgentPackageRef {
+    ref: string;
+    version: number;
+    digest?: string;
+    source?: 'hub' | 'server' | 'local-file';
+}
+
+/**
+ * RuntimeAdapterSpec — 某个 runtime 上的运行契约。
+ * Canonical card 可以为同一个 agent 同时携带多个 adapter。
+ */
+export interface RuntimeAdapterSpec {
+    runtime: 'claude' | 'codex' | 'open-code';
+    entry?: {
+        instructionFile?: string;
+        bootstrapPrompt?: string;
+        workingDirectoryMode?: 'inherit' | 'fixed';
+    };
+    model?: {
+        provider?: 'anthropic' | 'zhipu' | 'openai' | 'local';
+        primary?: string;
+        fallback?: string;
+        preferred?: string;
+    };
+    tools?: {
+        allowed?: string[];
+        disallowed?: string[];
+        mcpServers?: string[];
+        skills?: string[];
+        hooks?: {
+            preToolUse?: Array<{ matcher: string; command: string; description?: string }>;
+            postToolUse?: Array<{ matcher: string; command: string; description?: string }>;
+            stop?: Array<{ command: string; description?: string }>;
+        };
+    };
+    sandbox?: {
+        permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions';
+        accessLevel?: 'read-only' | 'full-access';
+        executionPlane?: 'mainline' | 'bypass';
+        maxTurns?: number;
+    };
+    env?: {
+        requiredEnv?: string[];
+        optionalEnv?: string[];
+        secretsPolicy?: string[];
+    };
+    io?: {
+        expects?: string[];
+        produces?: string[];
+        artifactFormats?: string[];
+    };
+    evidence?: {
+        logKinds?: string[];
+        scorecardSchemaVersion?: string;
+    };
+}
+
+/**
+ * CanonicalAgentCard — 内部标准对象。
+ *
+ * 作用：
+ * - 供 engine/runtime 使用
+ * - 供 supervisor 评分绑定 package identity
+ * - 供 org-manager 复用
+ * - 供市场投影生成 A2A / listing card
+ */
+export interface CanonicalAgentCard {
+    kind: 'aha.agent.v1';
+    identity: AgentPackageRef & {
+        namespace: string;
+        name: string;
+        displayName?: string;
+        description?: string;
+    };
+    genome: GenomeSpec;
+    adapters?: {
+        claude?: RuntimeAdapterSpec;
+        codex?: RuntimeAdapterSpec;
+        'open-code'?: RuntimeAdapterSpec;
+    };
+    market?: {
+        category?: string;
+        tags?: string[];
+        lifecycle?: 'experimental' | 'active' | 'deprecated';
+        tagline?: string;
+    };
+    lineage?: {
+        origin?: 'original' | 'forked' | 'mutated';
+        parentId?: string;
+        variantOf?: string;
+        mutationNote?: string;
+    };
+}
+
+/** AgentPackageManifest 当前与 CanonicalAgentCard 同义，保留独立命名给后续打包层使用。 */
+export type AgentPackageManifest = CanonicalAgentCard;
+
+/**
+ * A2AProjectionCard — 面向 A2A / 外部发现的投影对象。
+ * 这不是内部唯一真相源，只是从 canonical card 派生出的 outward card。
+ */
+export interface A2AProjectionCard {
+    protocolVersion: string;
+    name: string;
+    description: string;
+    url: string;
+    version?: string;
+    preferredTransport?: string;
+    defaultInputModes?: string[];
+    defaultOutputModes?: string[];
+    capabilities?: Record<string, unknown>;
+    securitySchemes?: Record<string, unknown>;
+    security?: Array<Record<string, unknown>>;
+    skills?: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        tags?: string[];
+        examples?: string[];
+        inputModes?: string[];
+        outputModes?: string[];
+    }>;
+}

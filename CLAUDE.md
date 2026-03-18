@@ -24,6 +24,11 @@ Aha CLI (`aha-cli`) is a command-line tool that wraps Claude Code to enable remo
 - Create stupid small functions / getters / setters
 - Excessive use of `if` statements - especially if you can avoid control flow changes with a better design
 - **NEVER import modules mid-code** - ALL imports must be at the top of the file
+- For Agent Docker work, **DO NOT** push agent-specific injection logic down into:
+  - `src/claude/sdk/*`
+  - `src/claude/session.ts`
+  - equivalent Codex base wrapper layers
+- Agent Docker belongs at the package parser / workspace materializer / runtime adapter layer.
 
 ### Error Handling
 - Graceful error handling with proper error messages
@@ -76,6 +81,125 @@ Core Claude Code integration layer.
 - Session persistence and resumption
 - Real-time message streaming
 - Permission intercepting via MCP [Permission checking not implemented yet]
+
+### Agent Docker v1 Boundary
+
+Agent Docker v1 is a flat `agent.json` package format with these runtime components:
+
+- `tools.mcpServers`
+- `tools.skills`
+- `hooks.*`
+- `env.*`
+- `routing.*`
+
+Important:
+
+- keep the JSON flat; concept groups live in docs, not artificial nested sections
+- do not solve hooks/skills/env by patching SDK internals
+- solve them by **workspace materialization**
+
+Preferred runtime model:
+
+- `shared` workspace mode for ordinary team execution
+- `isolated` workspace mode for agent-specific hooks or mutation experiments
+
+Runtime materialization should produce an agent-specific working view, e.g.:
+
+```text
+.aha/runtime/<agent-id>/
+  workspace/
+    .claude/
+      settings.json
+      commands/
+  logs/
+  cache/
+  tmp/
+```
+
+Shared read-only resources may be linked in.
+Mutable or secret-bearing resources must remain instance-isolated.
+
+### Agent Runtime Materializer v1
+
+The materializer is now the preferred integration point for Agent Docker runtime setup.
+
+It should:
+
+- read `agent.json`
+- read repo root and workspace mode
+- create `.aha/runtime/<agent-id>/`
+- materialize an agent-specific runtime workspace view
+
+It should not:
+
+- patch npm-installed SDK internals
+- push agent-specific logic into `src/claude/sdk/*`
+- push agent-specific logic into `src/claude/session.ts`
+
+v1 responsibilities:
+
+- hooks -> per-agent effective settings
+- skills -> per-agent visible command view
+- env -> per-agent validation/materialization
+- logs/cache/tmp -> per-agent directories
+
+Shared public resources may be linked in from runtime libraries.
+Mutable effective config must be per-agent.
+
+### Codex Bridge Compatibility
+
+- `aha-cli` does **not** embed Codex. It invokes the system-installed `codex` CLI.
+- Current bridge compatibility target: `codex-cli 0.115.0`
+- Treat Codex bridge issues as **event-model compatibility** problems first, not RPC problems first.
+- The current version-specific event families to watch are:
+  - `item_started`
+  - `item_completed`
+  - `raw_response_item`
+  - `mcp_tool_call_begin`
+  - `mcp_tool_call_end`
+  - `exec_command_output_delta`
+- If Codex is upgraded, verify the bridge again before assuming regressions come from Kanban or transport.
+
+## Team 交付隔离记录（2026-03-18）
+
+> The following changes were completed as one coordinated **team-delivered batch**. Because they span runtime setup, CLI commands, model control, Docker validation, and genome workspace behavior, keep them mentally grouped as an isolated change set when debugging regressions.
+
+### Included in this batch
+- Materializer v1 integration in `runClaude.ts`
+  - `buildAgentWorkspacePlanFromGenome()`
+  - `materializeAgentWorkspace()`
+  - `settingsPath` propagation
+  - `effectiveCwd` handoff
+- Shared runtime-lib support
+  - `runtime-lib/{skills,mcp,prompts,hooks,tools}`
+  - symlink/copy helpers
+  - `materializationPolicy` resolution
+- `.genome/` workspace overlay
+  - `.genome/spec.json`
+  - `.genome/lineage.json`
+  - `.genome/eval-criteria.md`
+  - `__genome_ref__` self-awareness injection
+- CLI additions
+  - `aha sessions list/show/archive/delete`
+  - `aha agents spawn <agent.json>`
+- Model control plane and agent self-awareness
+  - `aha agents update --model --fallback-model`
+  - `update_agent_model` MCP tool
+  - `MODEL_CONTEXT_WINDOWS`
+  - `resolvedModel` / `contextWindowTokens`
+- Docker / agent-json verification pyramid
+  - schema validation
+  - materializer artifact checks
+  - hook / skill mechanism tests
+  - Layer 3/4 CI-capable tests
+- Team display repair
+  - default `executionPlane` / `runtimeType` in `list_team_agents`
+  - `org-manager` is `mainline`, not `bypass`
+
+### Why this section is isolated
+- These changes are intentionally grouped because failures may appear unrelated while sharing the same rollout.
+- If you see regressions in session startup, settings loading, genome-backed sessions, Docker-spawned agents, team roster display, or model visibility, inspect this batch first.
+- Treat this as a broad infrastructure rollout, not as isolated one-off patches.
 
 ### 3. UI Module (`/src/ui/`)
 User interface components.

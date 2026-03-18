@@ -40,7 +40,11 @@ import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchGenomeSpec } from './utils/fetchGenome';
 import { buildGenomeInjection } from './utils/buildGenomeInjection';
+import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult } from '@/agentDocker/materializer';
+import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
+import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens } from '@/utils/modelContextWindows';
+import { resolveInitialModelOverrides } from './utils/modelOverrides';
 
 export interface StartOptions {
     model?: string
@@ -193,6 +197,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         metadata.roomId = roomIdFromEnv;
         logger.debug(`[runClaude] Setting metadata.teamId from env: ${roomIdFromEnv}`);
     }
+    const executionPlaneFromEnv = process.env.AHA_EXECUTION_PLANE as 'bypass' | 'mainline' | undefined;
+    if (executionPlaneFromEnv) {
+        metadata.executionPlane = executionPlaneFromEnv;
+        logger.debug(`[runClaude] Setting metadata.executionPlane from env: ${executionPlaneFromEnv}`);
+    }
     logger.debug(`[runClaude] Final metadata before session creation:`, { role: metadata.role, teamId: metadata.teamId });
     if (process.env.AHA_ROOM_NAME) {
         metadata.roomName = process.env.AHA_ROOM_NAME;
@@ -284,22 +293,23 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentPermissionMode = options.permissionMode;
 
     // Initialize model: priority = CLI args > session.modelOverride > role default > undefined
-    // Session modelOverride is set by Kanban when user selects a different model per session
-    const sessionModelOverride = (session.getMetadata() as any)?.modelOverride as string | undefined;
-    let currentModel = options.model || sessionModelOverride;
-    if (sessionModelOverride && !options.model) {
-        logger.debug(`[runClaude] Using model override from session metadata: ${sessionModelOverride}`);
+    // Session modelOverride is set by master/supervisor via update_agent_model MCP tool or aha agents update --model
+    const initialModelOverrides = resolveInitialModelOverrides(session.getMetadata());
+    let currentModel = options.model || initialModelOverrides.model;
+    if (initialModelOverrides.model && !options.model) {
+        logger.debug(`[runClaude] Using model override from session metadata: ${initialModelOverrides.model}`);
     } else if (options.model) {
         logger.debug(`[runClaude] Using model from CLI options: ${options.model}`);
     } else {
         logger.debug(`[runClaude] No model override, using Claude default`);
     }
 
-    let currentFallbackModel: string | undefined = undefined; // Track current fallback model
+    let currentFallbackModel: string | undefined = initialModelOverrides.fallbackModel;
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
 
     // Implant Context (Rules & Preferences)
     let currentAppendSystemPrompt: string | undefined = undefined;
+    let currentModelAwarenessPrompt: string | undefined = undefined;
     try {
         const rulesConfig = await api.kvGet('config.rules');
         const preferencesConfig = await api.kvGet('config.preferences');
@@ -317,6 +327,43 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
+
+    const syncModelAwareness = () => {
+        const contextWindowTokens = resolveContextWindowTokens(currentModel);
+        currentModelAwarenessPrompt = buildModelSelfAwarenessPrompt({
+            modelId: currentModel,
+            fallbackModelId: currentFallbackModel,
+            contextWindowTokens,
+        }) || undefined;
+
+        try {
+            session.updateMetadata((currentMetadata) => {
+                const nextMetadata = { ...((currentMetadata || {}) as any) };
+                if (typeof contextWindowTokens === 'number') {
+                    nextMetadata.contextWindowTokens = contextWindowTokens;
+                } else {
+                    delete nextMetadata.contextWindowTokens;
+                }
+                // Write resolvedModel so sessions show can surface it
+                if (currentModel) {
+                    nextMetadata.resolvedModel = currentModel;
+                } else {
+                    delete nextMetadata.resolvedModel;
+                }
+                return nextMetadata;
+            });
+        } catch (error) {
+            logger.debug('[runClaude] Failed to sync model awareness metadata:', error);
+        }
+    };
+
+    const composeAppendSystemPrompt = (basePrompt?: string, rolePrompt?: string): string | undefined => {
+        const blocks = [basePrompt, currentModelAwarenessPrompt, rolePrompt]
+            .map((block) => block?.trim())
+            .filter((block): block is string => Boolean(block));
+
+        return blocks.length > 0 ? blocks.join('\n\n') : undefined;
+    };
 
     // ── Genome 启动注入（Tier 2–4）────────────────────────────────────────────
     // 在 session 启动阶段就把 model / permissionMode / tools 从 genome spec 注入，
@@ -378,6 +425,63 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ── Genome Tier 8–9：Hooks + Skills + maxTurns + env 注入 ───────────────
+    // 将 genome/launch config 的 hooks/env 物化为 .aha/runtime/<agentId>/workspace/.claude/ 下的持久文件，
+    // skills 注入 appendSystemPrompt；settingsPath 传递给 launcher 的 --settings 标志。
+    const _agentId = process.env.AHA_TEAM_MEMBER_ID || response.id;
+    let _workspacePlan: MaterializeAgentWorkspaceResult | null = null;
+    let _maxTurns: number | undefined = _genomeSpec?.maxTurns;
+
+    if (_genomeSpec) {
+        // Materialize workspace (hooks → settings.json, env → env.json, skills → commands/)
+        try {
+            _workspacePlan = buildAgentWorkspacePlanFromGenome(_genomeSpec, {
+                agentId: _agentId,
+                repoRoot: workingDirectory,
+                launchOverrides: { env: options.claudeEnvVars },
+            });
+            logger.debug(`[genome] Workspace materialized: ${_workspacePlan.workspaceRoot}`);
+            logger.debug(`[genome] Settings path: ${_workspacePlan.settingsPath}`);
+            for (const w of _workspacePlan.warnings) {
+                logger.debug(`[genome] Workspace warning: ${w}`);
+            }
+        } catch (err) {
+            logger.error('[genome] Failed to materialize workspace:', err);
+            throw err;
+        }
+
+        // Skills → system prompt injection (agent awareness)
+        if (_genomeSpec.skills?.length) {
+            const skillsText = [
+                '## Available Agent Skills',
+                '',
+                ..._genomeSpec.skills.map((s: string) => `- /${s}`),
+                '',
+                'Use these skills when they match the current task.',
+            ].join('\n');
+            currentAppendSystemPrompt = (currentAppendSystemPrompt || '') + '\n\n' + skillsText;
+            logger.debug('[genome] Skills injection appended to system prompt');
+        }
+    }
+
+    if (_maxTurns) {
+        logger.debug(`[genome] maxTurns from genome: ${_maxTurns}`);
+    }
+
+    // Pre-materialized workspace: AHA_SETTINGS_PATH is set by `aha agents spawn`
+    // when materializing a local agent.json without uploading to genome-hub.
+    // Only applies when no genome spec was loaded (genome takes precedence).
+    const _prebuiltSettingsPath = (!_genomeSpec && process.env.AHA_SETTINGS_PATH)
+        ? process.env.AHA_SETTINGS_PATH
+        : undefined;
+    const _prebuiltMcpServerNames = (!_genomeSpec && process.env.AHA_AGENT_MCP_CONFIG_PATH)
+        ? readMaterializedMcpServerNames(process.env.AHA_AGENT_MCP_CONFIG_PATH)
+        : [];
+    if (_prebuiltSettingsPath) {
+        logger.debug(`[workspace] Using pre-materialized settings: ${_prebuiltSettingsPath}`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Model Router（Tier 2 扩展）────────────────────────────────────────────
     // 从 KV 加载自定义路由规则（如果有），然后用 resolveModel() 决定最终模型。
     // 优先级: genome.modelId > KV rules > built-in defaults
@@ -419,6 +523,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         }
     }
+    syncModelAwareness();
     // ─────────────────────────────────────────────────────────────────────────
 
     // Initialize role from environment variables first, fallback to session metadata
@@ -1100,7 +1205,7 @@ ${instructions}
                     model: currentModel,
                     fallbackModel: currentFallbackModel,
                     customSystemPrompt: currentCustomSystemPrompt,
-                    appendSystemPrompt: (currentAppendSystemPrompt || '') + rolePromptForContext,
+                    appendSystemPrompt: composeAppendSystemPrompt(currentAppendSystemPrompt, rolePromptForContext),
                     allowedTools: currentAllowedTools,
                     disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedTools]
                 };
@@ -1201,6 +1306,7 @@ ${instructions}
         } else {
             logger.debug(`[loop] User message received with no fallback model override, using current: ${currentFallbackModel || 'none'}`);
         }
+        syncModelAwareness();
 
         // Resolve append system prompt - use message.meta.appendSystemPrompt if provided, otherwise use current
         let messageAppendSystemPrompt = currentAppendSystemPrompt;
@@ -1254,7 +1360,7 @@ ${instructions}
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
-                appendSystemPrompt: (messageAppendSystemPrompt || '') + rolePrompt,
+                appendSystemPrompt: composeAppendSystemPrompt(messageAppendSystemPrompt, rolePrompt),
                 allowedTools: messageAllowedTools,
                 disallowedTools: [...(messageDisallowedTools || []), ...roleDisallowedTools]
             };
@@ -1276,7 +1382,7 @@ ${instructions}
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
-                appendSystemPrompt: (messageAppendSystemPrompt || '') + rolePrompt,
+                appendSystemPrompt: composeAppendSystemPrompt(messageAppendSystemPrompt, rolePrompt),
                 allowedTools: messageAllowedTools,
                 disallowedTools: [...(messageDisallowedTools || []), ...roleDisallowedTools]
             };
@@ -1297,7 +1403,7 @@ ${instructions}
             model: messageModel,
             fallbackModel: messageFallbackModel,
             customSystemPrompt: messageCustomSystemPrompt,
-            appendSystemPrompt: (messageAppendSystemPrompt || '') + rolePrompt,
+            appendSystemPrompt: composeAppendSystemPrompt(messageAppendSystemPrompt, rolePrompt),
             allowedTools: messageAllowedTools,
             disallowedTools: [...(messageDisallowedTools || []), ...roleDisallowedTools]
         };
@@ -1367,18 +1473,19 @@ ${instructions}
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
-    const mcpServers: Record<string, { type: string; url: string }> = {
+    const availableMcpServers: Record<string, { type: string; url: string }> = {
         aha: {
             type: 'http',
             url: ahaServer.url,
         },
     };
     if (desktopMcpUrl) {
-        mcpServers['aha-desktop'] = {
+        availableMcpServers['aha-desktop'] = {
             type: 'http',
             url: desktopMcpUrl,
         };
     }
+    const mcpServers = filterMaterializedMcpServers(availableMcpServers, _prebuiltMcpServerNames);
 
     // Initialize team handling after a delay to ensure loop is running
     // This allows handshake and context injection to work properly
@@ -1420,29 +1527,35 @@ ${instructions}
     }, 3000); // 3 second delay to ensure loop is fully started
 
     // Create claude loop
-    await loop({
-        path: workingDirectory,
-        model: currentModel, // Uses session.modelOverride if set, otherwise falls back to options.model
-        permissionMode: options.permissionMode,
-        startingMode: options.startingMode,
-        sessionTag: options.sessionTag,
-        messageQueue,
-        api,
-        onModeChange: (newMode) => {
-            session.sendSessionEvent({ type: 'switch', mode: newMode });
-            session.updateAgentState((currentState) => ({
-                ...currentState,
-                controlledByUser: newMode === 'local'
-            }));
-        },
-        onSessionReady: (_sessionInstance) => {
-            // Intentionally unused
-        },
-        mcpServers,
-        session,
-        claudeEnvVars: options.claudeEnvVars,
-        claudeArgs: options.claudeArgs
-    });
+    try {
+        await loop({
+            path: _workspacePlan?.effectiveCwd ?? workingDirectory,
+            model: currentModel, // Uses session.modelOverride if set, otherwise falls back to options.model
+            permissionMode: options.permissionMode,
+            startingMode: options.startingMode,
+            sessionTag: options.sessionTag,
+            messageQueue,
+            api,
+            onModeChange: (newMode) => {
+                session.sendSessionEvent({ type: 'switch', mode: newMode });
+                session.updateAgentState((currentState) => ({
+                    ...currentState,
+                    controlledByUser: newMode === 'local'
+                }));
+            },
+            onSessionReady: (_sessionInstance) => {
+                // Intentionally unused
+            },
+            mcpServers,
+            session,
+            claudeEnvVars: options.claudeEnvVars,
+            claudeArgs: options.claudeArgs,
+            settingsPath: _workspacePlan?.settingsPath ?? _prebuiltSettingsPath,
+            maxTurns: _maxTurns,
+        });
+    } finally {
+        // Workspace directories are permanent; no cleanup needed.
+    }
 
     // Send session death message
     session.sendSessionDeath();

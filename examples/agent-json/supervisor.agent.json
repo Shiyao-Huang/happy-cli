@@ -1,0 +1,81 @@
+{
+  "$schema": "../../schemas/agent-json-v1.schema.json",
+  "kind": "aha.agent.v1",
+  "name": "supervisor",
+  "description": "Team supervisor",
+  "baseRoleId": "supervisor",
+  "runtime": "claude",
+  "prompt": {
+    "suffix": "Review team progress and score agents."
+  },
+  "tools": {
+    "allowed": ["read_team_log", "score_agent", "send_team_message"],
+    "skills": ["ralph-loop-start", "ralph-loop-status"]
+  },
+  "permissions": {
+    "permissionMode": "bypassPermissions",
+    "accessLevel": "read-only",
+    "executionPlane": "bypass",
+    "maxTurns": 200
+  },
+  "context": {
+    "teamRole": "supervisor",
+    "capabilities": ["monitor_team", "score_agents"],
+    "behavior": {
+      "onIdle": "wait",
+      "onBlocked": "escalate",
+      "canSpawnAgents": false,
+      "requireExplicitAssignment": false
+    }
+  },
+  "env": {
+    "required": [],
+    "optional": ["AHA_ROOM_ID"]
+  },
+  "routing": {
+    "strategy": "fixed",
+    "models": {
+      "default": "claude-sonnet-4-20250514",
+      "reasoning": "claude-opus-4-20250514"
+    }
+  },
+  "workspace": {
+    "defaultMode": "shared",
+    "allowedModes": ["shared", "isolated"]
+  },
+  "evaluation": {
+    "criteria": ["delivery", "integrity", "efficiency", "collaboration", "reliability"],
+    "scoreSchemaVersion": "v1",
+    "logKinds": ["team-log", "runtime-log"]
+  },
+  "evolution": {
+    "enabled": true,
+    "mutablePaths": [
+      "prompt.suffix",
+      "tools.allowed",
+      "permissions.maxTurns",
+      "routing.models.default",
+      "routing.models.reasoning"
+    ],
+    "scoreTargets": ["delivery", "integrity", "efficiency", "collaboration", "reliability"]
+  },
+  "hooks": {
+    "postToolUse": [
+      {
+        "matcher": "score_agent",
+        "command": "echo \"[supervisor] Score submitted at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+        "description": "Log when supervisor submits a score"
+      }
+    ]
+  },
+  "market": {
+    "namespace": "@official",
+    "category": "coordination",
+    "tags": ["supervisor", "bypass", "monitoring"],
+    "lifecycle": "active"
+  },
+  "package": {
+    "ref": "@official/supervisor:1",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

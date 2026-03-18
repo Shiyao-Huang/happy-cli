@@ -19,7 +19,7 @@ import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquire
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
-import { readSupervisorState, writeSupervisorState, updateSupervisorRun } from './supervisorState';
+import { readSupervisorState, updateSupervisorRun, updateSupervisorState } from './supervisorState';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
@@ -730,7 +730,7 @@ export async function startDaemon(): Promise<void> {
           const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6'); // 6 × 5 min = 30 min
           if (supervisorState.idleRuns >= maxIdleRuns) {
             logger.debug(`[DAEMON RUN] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`);
-            writeSupervisorState({ ...supervisorState, terminated: true });
+            await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true }));
             continue;
           }
 
@@ -741,7 +741,7 @@ export async function startDaemon(): Promise<void> {
           const heartbeatMs = heartbeatIntervalMs * supervisorInterval;
           const stateIsStale = supervisorState.lastRunAt > 0 && (Date.now() - supervisorState.lastRunAt) > heartbeatMs * 1.5;
           if (stateIsStale) {
-            updateSupervisorRun(teamId, { idleRuns: supervisorState.idleRuns + 1 });
+            await updateSupervisorRun(teamId, { idleRuns: supervisorState.idleRuns + 1 });
             logger.debug(`[DAEMON RUN] Supervisor idle run detected for team ${teamId}, idleRuns now ${supervisorState.idleRuns + 1}`);
           }
 
@@ -762,7 +762,7 @@ export async function startDaemon(): Promise<void> {
             }
 
             const supervisorResult = await spawnSession({
-              directory: process.cwd(),
+              directory: configuration.ahaHomeDir,
               agent: 'claude',
               teamId,
               role: 'supervisor',
@@ -785,8 +785,13 @@ export async function startDaemon(): Promise<void> {
               // the singleton guard works even if the webhook times out or the
               // daemon restarts during the 15-second webhook wait window.
               onPidKnown: (pid) => {
-                updateSupervisorRun(teamId, { lastSupervisorPid: pid });
-                logger.debug(`[DAEMON RUN] Persisted supervisor PID ${pid} for team ${teamId} (pre-webhook)`);
+                void updateSupervisorRun(teamId, { lastSupervisorPid: pid })
+                  .then(() => {
+                    logger.debug(`[DAEMON RUN] Persisted supervisor PID ${pid} for team ${teamId} (pre-webhook)`);
+                  })
+                  .catch((error) => {
+                    logger.debug(`[DAEMON RUN] Failed to persist supervisor PID for team ${teamId}`, error);
+                  });
               },
             });
             if (supervisorResult.type === 'success') {

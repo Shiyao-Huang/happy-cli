@@ -3,6 +3,13 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { readDaemonState } from '@/persistence';
+import { materializeAgentWorkspace, type AgentDockerConfig } from '@/agentDocker/materializer';
+import { buildMaterializedSpawnEnv } from '@/agentDocker/runtimeConfig';
+import { isRecognizedModelId } from '@/utils/modelContextWindows';
+import { readFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
+import { randomUUID } from 'node:crypto';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -12,6 +19,8 @@ type AgentUpdateOptions = {
   sessionTag?: string;
   summary?: string;
   path?: string;
+  model?: string;
+  fallbackModel?: string;
 };
 
 function getOption(args: string[], name: string): string | undefined {
@@ -144,10 +153,12 @@ function buildUpdateOptions(args: string[]): AgentUpdateOptions {
     sessionTag: getOption(args, 'session-tag'),
     summary: getOption(args, 'summary'),
     path: getOption(args, 'path') || getOption(args, 'cwd'),
+    model: getOption(args, 'model'),
+    fallbackModel: getOption(args, 'fallback-model'),
   };
 }
 
-function applyMetadataUpdates(existingMetadata: any, updates: AgentUpdateOptions): any {
+export function applyMetadataUpdates(existingMetadata: any, updates: AgentUpdateOptions): any {
   const nextMetadata = { ...existingMetadata };
   let changed = false;
 
@@ -191,8 +202,28 @@ function applyMetadataUpdates(existingMetadata: any, updates: AgentUpdateOptions
     changed = true;
   }
 
+  if (updates.model !== undefined) {
+    if (!isRecognizedModelId(updates.model)) {
+      throw new Error(
+        `Unknown model ID: "${updates.model}". Must be a recognized Claude model (e.g. claude-opus-4-5, claude-sonnet-4-5).`
+      );
+    }
+    nextMetadata.modelOverride = updates.model;
+    changed = true;
+  }
+
+  if (updates.fallbackModel !== undefined) {
+    if (!isRecognizedModelId(updates.fallbackModel)) {
+      throw new Error(
+        `Unknown fallback model ID: "${updates.fallbackModel}". Must be a recognized Claude model.`
+      );
+    }
+    nextMetadata.fallbackModelOverride = updates.fallbackModel;
+    changed = true;
+  }
+
   if (!changed) {
-    throw new Error('No updates provided. Pass at least one of --name, --role, --team, --clear-team, --session-tag, --summary, or --path.');
+    throw new Error('No updates provided. Pass at least one of --name, --role, --team, --clear-team, --session-tag, --summary, --path, --model, or --fallback-model.');
   }
 
   return nextMetadata;
@@ -212,6 +243,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('rename')} <sessionId> <name>     Rename an agent (metadata.name)
   ${chalk.yellow('archive')} <id...>               Archive one or more agent sessions
   ${chalk.yellow('delete')} <id...>                Delete one or more agent sessions
+  ${chalk.yellow('spawn')} <agent.json>            Spawn agent from local agent JSON file
 
 ${chalk.bold('List options:')}
   ${chalk.cyan('--active')}                       Only show active sessions
@@ -228,10 +260,17 @@ ${chalk.bold('Update options:')}
   ${chalk.cyan('--session-tag <tag>')}            Set metadata.sessionTag
   ${chalk.cyan('--summary <text>')}               Set metadata.summary.text
   ${chalk.cyan('--path <cwd>')}                   Set metadata.path
+  ${chalk.cyan('--model <modelId>')}              Override the agent's model (e.g. claude-opus-4-5)
+  ${chalk.cyan('--fallback-model <modelId>')}     Override the agent's fallback model
 
 ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--ids a,b,c')}                    Alternative to positional IDs for archive/delete
   ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
+
+${chalk.bold('Spawn options:')}
+  ${chalk.cyan('--team <teamId>')}                Register spawned agent in this team
+  ${chalk.cyan('--role <roleId>')}                Role label for team registration (default: agent name)
+  ${chalk.cyan('--path <cwd>')}                   Working directory for the agent (default: current dir)
 
 ${chalk.bold('Examples:')}
   ${chalk.green('aha agents list --active --team team_123')}
@@ -239,6 +278,7 @@ ${chalk.bold('Examples:')}
   ${chalk.green('aha agents update session_123 --role builder --team team_123')}
   ${chalk.green('aha agents rename session_123 "Builder 2"')}
   ${chalk.green('aha agents archive session_123 session_456')}
+  ${chalk.green('aha agents spawn examples/agent-json/builder.agent.json --team team_123 --role builder')}
 `);
 }
 
@@ -301,6 +341,18 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
           throw new Error('Usage: aha agents delete <sessionId...> [--ids a,b,c]');
         }
         await deleteAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
+        break;
+      }
+      case 'spawn': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha agents spawn <agent.json> [--team <teamId>] [--role <role>] [--path <cwd>]');
+        }
+        await spawnAgent(api, positional[1], {
+          teamId: getOption(args, 'team'),
+          role: getOption(args, 'role'),
+          cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
+          asJson,
+        });
         break;
       }
       default:
@@ -453,5 +505,110 @@ async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean
       console.log(color(`  - ${entry.sessionId}: ${entry.success ? 'ok' : entry.error || 'failed'}`));
     }
   }
+  console.log();
+}
+
+async function spawnAgent(
+  api: ApiClient,
+  filePath: string,
+  opts: { teamId?: string; role?: string; cwd?: string; asJson: boolean },
+): Promise<void> {
+  const resolvedPath = resolve(filePath);
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`Agent JSON file not found: ${resolvedPath}`);
+  }
+
+  let config: AgentDockerConfig;
+  try {
+    const raw = JSON.parse(readFileSync(resolvedPath, 'utf-8'));
+    if (raw.kind !== 'aha.agent.v1') {
+      throw new Error(`Invalid agent JSON: expected kind "aha.agent.v1", got "${raw.kind}"`);
+    }
+    config = raw as AgentDockerConfig;
+  } catch (err) {
+    throw new Error(`Failed to parse agent JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const agentId = randomUUID();
+  const repoRoot = opts.cwd || process.cwd();
+
+  if (!opts.asJson) {
+    console.log(chalk.bold(`\nMaterializing workspace for agent: ${config.name}\n`));
+  }
+
+  const plan = materializeAgentWorkspace({
+    agentId,
+    repoRoot,
+    runtime: config.runtime,
+    config,
+    workspaceMode: config.workspace?.defaultMode,
+  });
+
+  if (!opts.asJson) {
+    console.log(chalk.gray(`  workspaceRoot: ${plan.workspaceRoot}`));
+    console.log(chalk.gray(`  settingsPath:  ${plan.settingsPath}`));
+    console.log(chalk.gray(`  effectiveCwd:  ${plan.effectiveCwd}`));
+    if (plan.warnings.length > 0) {
+      for (const w of plan.warnings) {
+        console.log(chalk.yellow(`  ⚠ ${w}`));
+      }
+    }
+    console.log();
+  }
+
+  const daemonState = await readDaemonState();
+  if (!daemonState?.httpPort) {
+    throw new Error('Daemon is not running. Start it with: aha');
+  }
+
+  const role = opts.role || config.name;
+  const materializedEnv = buildMaterializedSpawnEnv({
+    settingsPath: plan.settingsPath,
+    envFilePath: plan.envFilePath,
+    mcpConfigPath: plan.mcpConfigPath,
+  });
+  const spawnBody = {
+    directory: plan.effectiveCwd,
+    agent: config.runtime === 'codex' ? 'codex' : 'claude',
+    role,
+    sessionName: config.name,
+    teamId: opts.teamId,
+    env: materializedEnv,
+  };
+
+  const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spawnBody),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+
+  if (!response.ok || !result.success) {
+    throw new Error(`Daemon spawn failed: ${result.error || `HTTP ${response.status}`}`);
+  }
+
+  const sessionId = result.sessionId!;
+
+  if (opts.teamId && sessionId) {
+    try {
+      await api.addTeamMember(opts.teamId, sessionId, role, config.name, {
+        executionPlane: 'mainline',
+        runtimeType: config.runtime === 'codex' ? 'codex' : 'claude',
+      });
+    } catch (err) {
+      logger.debug('[agents spawn] Warning: failed to register in team roster:', err);
+    }
+  }
+
+  if (opts.asJson) {
+    console.log(JSON.stringify({ sessionId, agentId, settingsPath: plan.settingsPath, role, teamId: opts.teamId }, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Agent spawned: ${sessionId}`));
+  console.log(chalk.gray(`  role=${role} runtime=${config.runtime} teamId=${opts.teamId || '-'}`));
+  console.log(chalk.gray(`  settings=${plan.settingsPath}`));
   console.log();
 }

@@ -43,6 +43,17 @@ function getCodexMcpCommand(): string {
     }
 }
 
+export function detectCodexCliVersion(): string | null {
+    try {
+        const version = execSync('codex --version', { encoding: 'utf8' }).trim();
+        const match = version.match(/codex-cli\s+(\d+\.\d+\.\d+(?:-alpha\.\d+)?)/);
+        return match ? match[1] : null;
+    } catch (error) {
+        logger.debug('[CodexMCP] Error detecting codex version:', error);
+        return null;
+    }
+}
+
 export class CodexMcpClient {
     private client: Client;
     private transport: StdioClientTransport | null = null;

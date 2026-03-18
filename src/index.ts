@@ -52,7 +52,8 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('connect')} [list|remove|<vendor>] AI vendor API key management
   ${chalk.yellow('tasks')} [list|create|update|delete|start|complete] Task management
   ${chalk.yellow('teams')} [list|show|create|members|archive|delete] Team management
-  ${chalk.yellow('agents')} [list|show|update|archive|delete] Agent session management
+  ${chalk.yellow('agents')} [list|show|update|archive|delete|spawn] Agent session management
+  ${chalk.yellow('sessions')} [list|show|archive|delete] Direct session management
   ${chalk.yellow('roles')} [pool|review|team-score] Role pool and public review
   ${chalk.yellow('codex')}                   Start team collaboration mode
   ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
@@ -83,6 +84,7 @@ ${chalk.bold('Examples:')}
   ${chalk.gray('# Team CRUD')}
   ${chalk.green('aha team create --name \"Sprint Crew\"')}
   ${chalk.green('aha agents list --active')}
+  ${chalk.green('aha sessions list --active')}
 
   ${chalk.gray('# Notifications')}
   ${chalk.green('aha notify -p "Build complete!"')}
@@ -180,6 +182,18 @@ For command-specific help, run:
     try {
       const { handleAgentsCommand } = await import('./commands/agents');
       await handleAgentsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'sessions' || subcommand === 'session') {
+    try {
+      const { handleSessionsCommand } = await import('./commands/sessions');
+      await handleSessionsCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {

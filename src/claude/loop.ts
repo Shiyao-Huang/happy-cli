@@ -31,6 +31,8 @@ interface LoopOptions {
     claudeArgs?: string[]
     messageQueue: MessageQueue2<EnhancedMode>
     allowedTools?: string[]
+    maxTurns?: number
+    settingsPath?: string
     sessionTag?: string
     onSessionReady?: (session: Session) => void
 }
@@ -51,6 +53,8 @@ export async function loop(opts: LoopOptions) {
         logPath: logPath,
         messageQueue: opts.messageQueue,
         allowedTools: opts.allowedTools,
+        settingsPath: opts.settingsPath,
+        maxTurns: opts.maxTurns,
         onModeChange: opts.onModeChange
     });
 

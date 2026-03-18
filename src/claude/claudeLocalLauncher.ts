@@ -99,6 +99,8 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     abort: processAbortController.signal,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
+                    settingsPath: session.settingsPath,
+                    maxTurns: session.maxTurns,
                     mcpServers: session.mcpServers,
                     allowedTools: session.allowedTools,
                     sessionTag: session.sessionTag,

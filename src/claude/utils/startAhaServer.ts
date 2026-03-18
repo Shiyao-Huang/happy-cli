@@ -1654,6 +1654,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 roleDefinitions[role.id] = { title: role.title };
             });
 
+            const BYPASS_ROLE_IDS = ['supervisor', 'help-agent'];
             const agents = Array.from(allSessionIds).map((sessionId: string) => {
                 const member = memberMap.get(sessionId) as Record<string, any> | undefined;
                 const roleId = member?.roleId || member?.role || '';
@@ -1664,8 +1665,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     roleId,
                     displayName: member?.displayName || sessionId?.substring(0, 8),
                     specId: member?.specId || null,
-                    executionPlane: member?.executionPlane || null,
-                    runtimeType: member?.runtimeType || null,
+                    executionPlane: member?.executionPlane ||
+                        (BYPASS_ROLE_IDS.includes(roleId) ? 'bypass' : 'mainline'),
+                    runtimeType: member?.runtimeType || 'claude',
                 };
             });
 
@@ -1682,6 +1684,46 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     });
 
     // ========== Supervisor-Only Tools ==========
+
+    mcp.registerTool('update_agent_model', {
+        description: 'Override the model for a running agent session. Supervisor/master can use this to switch any agent\'s model. Takes effect the next time the agent session is started/restarted.',
+        title: 'Update Agent Model',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID of the agent to update'),
+            modelId: z.string().describe('New model to use (e.g. claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5)'),
+            fallbackModelId: z.string().optional().describe('Fallback model if primary is unavailable'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const role = metadata?.role;
+        if (role !== 'supervisor' && role !== 'master') {
+            return {
+                content: [{ type: 'text', text: `Error: Role '${role}' cannot update agent models. Only supervisor/master can use this tool.` }],
+                isError: true,
+            };
+        }
+        try {
+            const session = await api.getSession(args.sessionId);
+            if (!session) {
+                return { content: [{ type: 'text', text: `Error: Session ${args.sessionId} not found.` }], isError: true };
+            }
+            const nextMetadata = {
+                ...session.metadata,
+                modelOverride: args.modelId,
+                ...(args.fallbackModelId ? { fallbackModelOverride: args.fallbackModelId } : {}),
+            };
+            await api.updateSessionMetadata(args.sessionId, nextMetadata, session.metadataVersion);
+            const msg = args.fallbackModelId
+                ? `Model updated for ${args.sessionId}: ${args.modelId} (fallback: ${args.fallbackModelId})`
+                : `Model updated for ${args.sessionId}: ${args.modelId}`;
+            return { content: [{ type: 'text', text: msg }], isError: false };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error updating agent model: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
 
     mcp.registerTool('read_team_log', {
         description: 'Read the team message log. Returns messages since the last supervisor run (cursor-based, incremental). Pass fromCursor=0 to read all. Supervisor/help-agent only.',
@@ -2492,7 +2534,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor can save supervisor state.' }], isError: true };
         }
         try {
-            const { readSupervisorState, writeSupervisorState } = await import('@/daemon/supervisorState');
+            const { readSupervisorState, updateSupervisorState } = await import('@/daemon/supervisorState');
             const existing = readSupervisorState(args.teamId);
 
             // Build predictions with timestamp
@@ -2501,20 +2543,20 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 predictedAt: Date.now(),
             }));
 
-            writeSupervisorState({
-                ...existing,
+            await updateSupervisorState(args.teamId, (state) => ({
+                ...state,
                 lastRunAt: Date.now(),
                 teamLogCursor: args.teamLogCursor,
                 ccLogCursors: args.ccLogCursors,
-                codexHistoryCursor: args.codexHistoryCursor ?? existing.codexHistoryCursor,
-                codexSessionCursors: args.codexSessionCursors ?? existing.codexSessionCursors,
+                codexHistoryCursor: args.codexHistoryCursor ?? state.codexHistoryCursor,
+                codexSessionCursors: args.codexSessionCursors ?? state.codexSessionCursors,
                 lastConclusion: args.conclusion,
-                lastSessionId: args.sessionId ?? existing.lastSessionId,
+                lastSessionId: args.sessionId ?? state.lastSessionId,
                 terminated: args.teamTerminated,
-                idleRuns: 0, // reset idle counter when supervisor actually ran
-                pendingAction: args.pendingAction !== undefined ? args.pendingAction : existing.pendingAction,
+                idleRuns: 0,
+                pendingAction: args.pendingAction !== undefined ? args.pendingAction : state.pendingAction,
                 predictions,
-            });
+            }));
             const predCount = predictions?.length ?? 0;
             return {
                 content: [{
@@ -2559,7 +2601,7 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             return { content: [{ type: 'text', text: 'Error: Only supervisor can score itself.' }], isError: true };
         }
         try {
-            const { readSupervisorState, writeSupervisorState, updateCalibration } = await import('@/daemon/supervisorState');
+            const { readSupervisorState, updateSupervisorState, updateCalibration } = await import('@/daemon/supervisorState');
             const state = readSupervisorState(args.teamId);
 
             // Build PredictionOutcome objects
@@ -2588,11 +2630,11 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             const calibration = updateCalibration(state.calibration, outcomes);
 
             // Write updated calibration (predictions are cleared — they've been verified)
-            writeSupervisorState({
-                ...state,
+            await updateSupervisorState(args.teamId, (current) => ({
+                ...current,
                 calibration,
-                predictions: undefined, // Clear verified predictions
-            });
+                predictions: undefined,
+            }));
 
             const lines = [
                 `Calibration updated: ${calibration.calibrationScore}% accuracy (${calibration.correctPredictions}/${calibration.totalPredictions} correct)`,
@@ -2692,7 +2734,7 @@ The supervisor will see your request and may: send you guidance, compact your co
             // Write pendingAction so the daemon supervisor loop picks it up
             try {
                 const { updateSupervisorRun } = await import('@/daemon/supervisorState');
-                updateSupervisorRun(teamId, {
+                await updateSupervisorRun(teamId, {
                     pendingAction: {
                         type: 'notify_help',
                         message: `[${args.severity}] ${args.description}`,

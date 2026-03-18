@@ -152,6 +152,16 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
   } catch (error) {
     console.error(chalk.red('Authentication failed:'), error instanceof Error ? error.message : 'Unknown error');
+    // If we stopped the daemon for force auth but auth failed,
+    // try to restart the daemon so machine-scoped RPC (e.g. request-help) stays available.
+    if (forceAuth) {
+      try {
+        await ensureDaemonRunning();
+        console.log(chalk.gray('  Daemon restarted'));
+      } catch {
+        // Best effort — if no credentials remain, daemon can't start
+      }
+    }
     process.exit(1);
   }
 }

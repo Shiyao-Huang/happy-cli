@@ -76,6 +76,7 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
             {
                 memberId: metadata.memberId,
                 sessionTag: metadata.sessionTag,
+                executionPlane: metadata.executionPlane,
                 runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',
             }
         )

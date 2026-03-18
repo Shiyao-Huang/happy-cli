@@ -432,12 +432,17 @@ export type Metadata = {
   archivedBy?: string,
   archiveReason?: string,
   flavor?: string,
+  codexCliVersion?: string,
   role?: string,
   memberId?: string,
   sessionTag?: string,
+  executionPlane?: 'mainline' | 'bypass',
   teamId?: string,  // Team artifact ID if this session is part of a team
   roomId?: string,
-  roomName?: string
+  roomName?: string,
+  // Model override: set by master/supervisor to switch a running agent's model
+  modelOverride?: string,
+  fallbackModelOverride?: string,
 };
 
 export type AgentState = {

@@ -13,6 +13,8 @@ export class Session {
     claudeArgs?: string[];  // Made mutable to allow filtering
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
+    readonly settingsPath?: string;
+    readonly maxTurns?: number;
     readonly sessionTag?: string;
     readonly _onModeChange: (mode: 'local' | 'remote') => void;
 
@@ -33,6 +35,8 @@ export class Session {
         messageQueue: MessageQueue2<EnhancedMode>,
         onModeChange: (mode: 'local' | 'remote') => void,
         allowedTools?: string[],
+        settingsPath?: string,
+        maxTurns?: number,
     }) {
         this.path = opts.path;
         this.api = opts.api;
@@ -44,6 +48,8 @@ export class Session {
         this.claudeArgs = opts.claudeArgs;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
+        this.settingsPath = opts.settingsPath;
+        this.maxTurns = opts.maxTurns;
         this.sessionTag = opts.sessionTag;
         this._onModeChange = opts.onModeChange;
 

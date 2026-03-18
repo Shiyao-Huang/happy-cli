@@ -23,6 +23,8 @@ export async function claudeLocal(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
+    settingsPath?: string
+    maxTurns?: number
     sessionTag?: string
 }) {
 
@@ -96,6 +98,14 @@ export async function claudeLocal(opts: {
 
             if (opts.allowedTools && opts.allowedTools.length > 0) {
                 args.push('--allowedTools', opts.allowedTools.join(','));
+            }
+
+            if (opts.maxTurns) {
+                args.push('--max-turns', opts.maxTurns.toString());
+            }
+
+            if (opts.settingsPath) {
+                args.push('--settings', opts.settingsPath);
             }
 
             // Add custom Claude arguments

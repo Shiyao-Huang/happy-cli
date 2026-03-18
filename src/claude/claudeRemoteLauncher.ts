@@ -401,6 +401,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     onThinkingChange: session.onThinkingChange,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
+                    settingsPath: session.settingsPath,
+                    maxTurns: session.maxTurns,
                     onMessage,
                     onCompletionEvent: (message: string) => {
                         logger.debug(`[remote]: Completion event: ${message}`);

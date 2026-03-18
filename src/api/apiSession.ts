@@ -264,6 +264,7 @@ export class ApiSessionClient extends EventEmitter {
                 sentFrom: 'cli'
             }
         };
+        logger.debugLargeJson('[SOCKET] Sending codex message through socket:', content);
         const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
         this.socket.emit('message', {
             sid: this.sessionId,
