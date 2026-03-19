@@ -1461,6 +1461,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             agent: z.enum(['claude', 'codex']).default('claude').describe('Runtime: claude (default, recommended) or codex (only when user explicitly requests)'),
             executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane. Agents can only create mainline agents.'),
             specId: z.string().optional().describe('Optional spec/role-definition ID to pass to the spawned agent via AHA_SPEC_ID env var.'),
+            strategy: z.enum(['official', 'best-rated']).optional().describe('Spawn strategy: "official" (default) picks @official/{role}, "best-rated" picks highest-scored genome for this role.'),
         },
     }, async (args) => {
         try {
@@ -1520,24 +1521,56 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 },
             } as Record<string, any>;
 
-            // Auto-resolve specId from genome-hub: explicit arg > @official/{role} > none
+            // Auto-resolve specId from genome-hub: explicit arg > best-rated strategy > @official/{role} > none
             let resolvedSpecId = args.specId;
             if (!resolvedSpecId) {
-                try {
-                    const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                    const res = await fetch(
-                        `${hubUrl}/genomes/%40official/${encodeURIComponent(args.role)}`,
-                        { signal: AbortSignal.timeout(3_000) }
-                    );
-                    if (res.ok) {
-                        const data = await res.json() as { genome?: { id: string } };
-                        resolvedSpecId = data.genome?.id;
-                        if (resolvedSpecId) {
-                            logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role}`);
+                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const strategy = args.strategy || 'official';
+
+                // ── Phase 3-B Change 5: best-rated strategy ──
+                if (strategy === 'best-rated') {
+                    try {
+                        const searchUrl = `${hubUrl}/genomes?q=${encodeURIComponent(args.role)}&sortBy=score&limit=5`;
+                        const res = await fetch(searchUrl, { signal: AbortSignal.timeout(3_000) });
+                        if (res.ok) {
+                            const data = await res.json() as { genomes?: Array<{ id: string; feedbackData?: string }> };
+                            const candidates = (data.genomes ?? []).filter(g => {
+                                if (!g.feedbackData) return false;
+                                try {
+                                    const fb = JSON.parse(g.feedbackData);
+                                    return typeof fb.evaluationCount === 'number' && fb.evaluationCount >= 3;
+                                } catch { return false; }
+                            });
+                            if (candidates.length > 0) {
+                                resolvedSpecId = candidates[0].id;
+                                logger.debug(`[create_agent] best-rated strategy: selected specId=${resolvedSpecId} for role ${args.role}`);
+                            } else {
+                                logger.debug(`[create_agent] best-rated strategy: no qualified candidates (evaluationCount>=3), falling back to official`);
+                            }
                         }
+                    } catch {
+                        // best-rated lookup failed — fall through to official
                     }
-                } catch {
-                    // genome-hub unreachable — proceed without specId
+                }
+
+                // Fallback: @official/{role}
+                if (!resolvedSpecId) {
+                    try {
+                        const hubUrl2 = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                        const res = await fetch(
+                            `${hubUrl2}/genomes/%40official/${encodeURIComponent(args.role)}`,
+                            { signal: AbortSignal.timeout(3_000) }
+                        );
+                        if (res.ok) {
+                            const data = await res.json() as { genome?: { id: string } };
+                            resolvedSpecId = data.genome?.id;
+                            if (resolvedSpecId) {
+                                logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role}`);
+                            }
+                        }
+                    } catch {
+                        // genome-hub unreachable — proceed without specId
+                    }
                 }
             }
             if (resolvedSpecId) {
@@ -2112,13 +2145,40 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor can score agents.' }], isError: true };
         }
 
+        // Auto-resolve specId from team member record if not explicitly provided
+        let resolvedSpecId = args.specId;
+        if (!resolvedSpecId && args.teamId && args.sessionId) {
+            try {
+                const artifact = await api.getArtifact(args.teamId);
+                let board: any = null;
+                if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                    const bodyValue = (artifact.body as { body?: unknown }).body;
+                    if (typeof bodyValue === 'string') {
+                        try { board = JSON.parse(bodyValue); } catch { /* ignore */ }
+                    } else if (bodyValue && typeof bodyValue === 'object') {
+                        board = bodyValue;
+                    }
+                } else {
+                    board = artifact.body;
+                }
+                const members = (board?.team?.members ?? []) as Array<{ sessionId?: string; specId?: string }>;
+                const member = members.find(m => m.sessionId === args.sessionId);
+                if (member?.specId) {
+                    resolvedSpecId = member.specId;
+                    logger.debug(`[score_agent] Auto-resolved specId=${resolvedSpecId} from team member record for session ${args.sessionId}`);
+                }
+            } catch {
+                // team lookup failed — proceed without specId
+            }
+        }
+
         // Try to resolve specId namespace/name from genome-hub for cleaner grouping
         let specNamespace: string | undefined;
         let specName: string | undefined;
-        if (args.specId) {
+        if (resolvedSpecId) {
             try {
                 const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(args.specId)}`, { signal: AbortSignal.timeout(3_000) });
+                const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}`, { signal: AbortSignal.timeout(3_000) });
                 if (res.ok) {
                     const data = await res.json() as { genome?: { namespace?: string; name?: string } };
                     specNamespace = data.genome?.namespace ?? undefined;
@@ -2181,7 +2241,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             sessionId: args.sessionId,
             teamId: args.teamId,
             role: args.role,
-            specId: args.specId,
+            specId: resolvedSpecId,
             specNamespace,
             specName,
             timestamp: Date.now(),
@@ -2198,13 +2258,37 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             action: args.action,
         });
 
+        // ── Phase 3-B Change 3: Auto-trigger feedback upload when >= 3 scores ──
+        if (resolvedSpecId && specNamespace && specName) {
+            try {
+                const { readScores } = await import('@/claude/utils/scoreStorage');
+                const { scores: allScores } = readScores();
+                const genomeScores = allScores.filter(s => s.specId === resolvedSpecId);
+                if (genomeScores.length >= 3) {
+                    const { aggregateScores } = await import('@/claude/utils/feedbackPrivacy');
+                    const feedback = aggregateScores(genomeScores);
+                    const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                    fetch(`${hubUrl}/genomes/${encodeURIComponent(specNamespace)}/${encodeURIComponent(specName)}/feedback`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ feedback }),
+                        signal: AbortSignal.timeout(5_000),
+                    }).catch(() => { /* non-critical: feedback upload failed */ });
+                    logger.debug(`[score_agent] Auto-triggered feedback upload for ${specNamespace}/${specName} (${genomeScores.length} scores)`);
+                }
+            } catch {
+                // feedback auto-upload failed — non-critical
+            }
+        }
+
         const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
         const hardInfo = hardMetricsScore !== undefined ? ` hardMetricsScore=${hardMetricsScore}` : '';
         const sessionInfo = ` sessionScore(task_completion=${sessionScore.taskCompletion}, code_quality=${sessionScore.codeQuality}, collaboration=${sessionScore.collaboration}, overall=${sessionScore.overall})`;
+        const autoResolvedNote = !args.specId && resolvedSpecId ? ' (specId auto-resolved from team member)' : '';
         return {
             content: [{
                 type: 'text',
-                text: `Scored ${args.role}${args.specId ? ` (specId=${args.specId})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
+                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
             }],
             isError: false,
         };
