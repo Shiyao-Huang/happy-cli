@@ -10,6 +10,7 @@ import {
     unlinkSync,
     writeFileSync,
 } from 'fs';
+import { execFileSync } from 'node:child_process';
 import { basename, join } from 'path';
 
 import { configuration } from '@/configuration';
@@ -31,17 +32,10 @@ export interface AgentDockerConfig {
     kind: 'aha.agent.v1';
     name: string;
     runtime: AgentRuntime;
-    build?: {
-        materializationPolicy?: {
-            defaultMode?: MaterializationMode;
-            resources?: Partial<Record<RuntimeLibResourceType, MaterializationMode>>;
-            skills?: Record<string, MaterializationMode>;
-        };
-    };
-    tools?: {
-        mcpServers?: string[];
-        skills?: string[];
-    };
+
+    // ── Required: trigger file materialization ──
+    skills?: string[];
+    mcpServers?: string[];
     hooks?: {
         preToolUse?: AgentHookCommand[];
         postToolUse?: AgentHookCommand[];
@@ -54,6 +48,47 @@ export interface AgentDockerConfig {
     workspace?: {
         defaultMode?: WorkspaceMode;
         allowedModes?: WorkspaceMode[];
+    };
+    build?: {
+        materializationPolicy?: {
+            defaultMode?: MaterializationMode;
+            resources?: Partial<Record<RuntimeLibResourceType, MaterializationMode>>;
+            skills?: Record<string, MaterializationMode>;
+        };
+    };
+
+    // ── Optional: carried in .genome/spec.json, consumed by runtime ──
+    systemPrompt?: string;
+    systemPromptSuffix?: string;
+    responsibilities?: string[];
+    protocol?: string[];
+    messaging?: {
+        listenFrom?: string[] | '*';
+        receiveUserMessages?: boolean;
+        replyMode?: 'proactive' | 'responsive' | 'passive';
+    };
+    behavior?: {
+        onIdle?: 'wait' | 'self-assign' | 'ask';
+        onBlocked?: 'report' | 'escalate' | 'retry';
+        canSpawnAgents?: boolean;
+        requireExplicitAssignment?: boolean;
+    };
+    scopeOfResponsibility?: {
+        ownedPaths?: string[];
+        forbiddenPaths?: string[];
+        outOfScope?: string[];
+    };
+
+    // ── Extension: open-ended, forward-compatible ──
+    extensions?: Record<string, unknown>;
+
+    // ── Inline files: make the package self-contained and reproducible ──
+    files?: Record<string, string>;
+
+    // ── Backward compat ──
+    tools?: {
+        mcpServers?: string[];
+        skills?: string[];
     };
 }
 
@@ -121,6 +156,25 @@ export interface RuntimeLibLayout {
     hooksDir: string;
     toolsDir: string;
 }
+
+const FALLBACK_COPY_EXCLUDED_BASENAMES = new Set([
+    '.DS_Store',
+    '.git',
+    '.next',
+    '.nuxt',
+    '.turbo',
+    '.expo',
+    '.eas',
+    '.logs',
+    '.minio',
+    '.pgdata',
+    '.playwright-mcp',
+    'coverage',
+    'dist',
+    'build',
+    'out',
+    'node_modules',
+]);
 
 function resolveMaterializedEnvValues(opts: {
     required?: string[];
@@ -321,7 +375,7 @@ function resolveWorkspaceMode(input: MaterializeAgentWorkspaceInput): {
 }
 
 function selectEffectiveSkills(input: MaterializeAgentWorkspaceInput): string[] {
-    const declared = input.config.tools?.skills ?? [];
+    const declared = input.config.skills ?? input.config.tools?.skills ?? [];
     const override = input.launchOverrides?.allowedSkills;
     if (!override?.length) return declared;
 
@@ -503,6 +557,65 @@ export function linkSharedResource(sourcePath: string, targetPath: string): void
     }
 }
 
+function tryMaterializeGitWorktree(
+    repoRoot: string,
+    targetPath: string,
+    warnings: string[],
+): boolean {
+    try {
+        const topLevel = execFileSync(
+            'git',
+            ['-C', repoRoot, 'rev-parse', '--show-toplevel'],
+            {
+                encoding: 'utf-8',
+                stdio: ['ignore', 'pipe', 'ignore'],
+            },
+        ).trim();
+
+        if (!topLevel || topLevel !== repoRoot) {
+            warnings.push(
+                `Isolated workspace fallback: "${repoRoot}" is not a git repository root; using filtered directory copy instead of git worktree.`,
+            );
+            return false;
+        }
+
+        if (pathEntryExists(targetPath)) {
+            removePathEntry(targetPath);
+        }
+
+        execFileSync(
+            'git',
+            ['-C', repoRoot, 'worktree', 'add', '--detach', targetPath, 'HEAD'],
+            {
+                stdio: ['ignore', 'pipe', 'pipe'],
+            },
+        );
+        return true;
+    } catch (error: any) {
+        const detail = error?.stderr
+            ? String(error.stderr).trim()
+            : error instanceof Error
+                ? error.message
+                : String(error);
+        warnings.push(`Git worktree materialization failed; falling back to filtered directory copy. ${detail}`);
+        return false;
+    }
+}
+
+function shouldIncludeInFallbackCopy(sourcePath: string): boolean {
+    const name = basename(sourcePath);
+
+    if (FALLBACK_COPY_EXCLUDED_BASENAMES.has(name)) {
+        return false;
+    }
+
+    if (name.startsWith('.tmp-')) {
+        return false;
+    }
+
+    return true;
+}
+
 export function materializeAgentWorkspace(
     input: MaterializeAgentWorkspaceInput,
 ): MaterializeAgentWorkspaceResult {
@@ -526,7 +639,7 @@ export function materializeAgentWorkspace(
     writeFileSync(plan.envFilePath, JSON.stringify(envPayload, null, 2), 'utf-8');
 
     const mcpPayload = {
-        mcpServers: input.config.tools?.mcpServers ?? [],
+        mcpServers: input.config.mcpServers ?? input.config.tools?.mcpServers ?? [],
     };
     writeFileSync(plan.mcpConfigPath, JSON.stringify(mcpPayload, null, 2), 'utf-8');
 
@@ -541,11 +654,34 @@ export function materializeAgentWorkspace(
         writeFileSync(plan.genomeEvalCriteriaPath, buildEvalCriteriaMarkdown(input.genome.spec), 'utf-8');
     }
 
+    // Materialize inline files — makes the genome package self-contained
+    const inlineFiles = input.config.files ?? input.genome?.spec?.files;
+    if (inlineFiles) {
+        for (const [relativePath, content] of Object.entries(inlineFiles)) {
+            const targetPath = join(plan.workspaceRoot, relativePath);
+            const targetDir = join(targetPath, '..');
+            mkdirSync(targetDir, { recursive: true });
+            writeFileSync(targetPath, content, 'utf-8');
+        }
+    }
+
     if (plan.workspaceMode === 'isolated') {
         if (existsSync(plan.projectViewPath)) {
             rmSync(plan.projectViewPath, { recursive: true, force: true });
         }
-        cpSync(input.repoRoot, plan.projectViewPath, { recursive: true });
+
+        const materializedViaWorktree = tryMaterializeGitWorktree(
+            input.repoRoot,
+            plan.projectViewPath,
+            plan.warnings,
+        );
+
+        if (!materializedViaWorktree) {
+            cpSync(input.repoRoot, plan.projectViewPath, {
+                recursive: true,
+                filter: shouldIncludeInFallbackCopy,
+            });
+        }
     }
 
     for (const action of plan.actions) {
@@ -595,16 +731,15 @@ export function buildAgentWorkspacePlanFromGenome(
         kind: 'aha.agent.v1',
         name: resolveGenomeDisplayName(genomeSpec),
         runtime: (genomeSpec.runtimeType as AgentRuntime | undefined) ?? 'claude',
-        tools: {
-            mcpServers: genomeSpec.mcpServers,
-            skills: genomeSpec.skills,
-        },
+        skills: genomeSpec.skills,
+        mcpServers: genomeSpec.mcpServers,
         hooks,
         env: resolveGenomeEnv(genomeSpec),
         workspace: {
             defaultMode: context.workspaceMode ?? 'shared',
             allowedModes: ['shared', 'isolated'],
         },
+        files: genomeSpec.files,
     };
 
     return materializeAgentWorkspace({

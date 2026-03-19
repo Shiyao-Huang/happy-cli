@@ -3,13 +3,14 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
-import { readDaemonState } from '@/persistence';
 import { materializeAgentWorkspace, type AgentDockerConfig } from '@/agentDocker/materializer';
 import { buildMaterializedSpawnEnv } from '@/agentDocker/runtimeConfig';
 import { isRecognizedModelId } from '@/utils/modelContextWindows';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { randomUUID } from 'node:crypto';
+import { ensureDaemonRunning } from '@/daemon/controlClient';
+import { readDaemonState } from '@/persistence';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -556,6 +557,7 @@ async function spawnAgent(
     console.log();
   }
 
+  await ensureDaemonRunning();
   const daemonState = await readDaemonState();
   if (!daemonState?.httpPort) {
     throw new Error('Daemon is not running. Start it with: aha');

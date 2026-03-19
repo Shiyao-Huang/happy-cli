@@ -1338,32 +1338,26 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // List Available Agents — browse genome marketplace before create_agent
     mcp.registerTool('list_available_agents', {
-        description: [
-            'Browse the genome marketplace to find available agent types before spawning.',
-            'Returns agents with their IDs, descriptions, ratings, spawn counts, and tags.',
-            'Use this BEFORE create_agent to pick the best fit or decide to fork one.',
-            'Org-manager and coordinator roles only.',
-        ].join(' '),
+        description: `Browse the genome marketplace. Returns a compact directory of all available agents sorted by rating. Use like \`ls\` — scan the list, then use the id in create_agent to spawn one. Call without arguments to get the full catalog.`,
         title: 'List Available Agents',
         inputSchema: {
-            query: z.string().optional().describe('Search query — filter by name, description, or tags'),
-            category: z.string().optional().describe("Filter by category: 'coordination' | 'implementation' | 'quality' | 'research' | 'support'"),
-            namespace: z.string().optional().describe("Filter by namespace, e.g. '@official'. Omit to search all public agents."),
-            limit: z.number().default(10).describe('Max results to return'),
+            category: z.string().optional().describe("Optional filter: 'coordination' | 'implementation' | 'quality' | 'research' | 'support'"),
+            limit: z.number().default(100).describe('Max results (default 100)'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!canSpawnAgents(role)) {
-            return { content: [{ type: 'text', text: 'Error: Only org-manager and coordinator roles can browse the agent marketplace.' }], isError: true };
+        const genomeAllows = genomeSpecRef?.current?.behavior?.canSpawnAgents;
+        const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role);
+        if (!allowed) {
+            return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent marketplace.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
         try {
             const qs = new URLSearchParams();
-            if (args.query) qs.set('q', args.query);
             if (args.category) qs.set('category', args.category);
-            if (args.namespace) qs.set('namespace', args.namespace);
-            qs.set('limit', String(args.limit ?? 10));
+            qs.set('sortBy', 'score');
+            qs.set('limit', String(args.limit ?? 100));
 
             const res = await fetch(`${hubUrl}/genomes?${qs}`, { signal: AbortSignal.timeout(5_000) });
             if (!res.ok) throw new Error(`hub returned ${res.status}`);
@@ -1373,37 +1367,25 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 spawnCount: number; feedbackData: string | null;
             }> };
 
-            const results = (data.genomes ?? [])
-                .filter(g => g.category !== 'corps')
-                .slice(0, args.limit ?? 10)
-                .map(g => {
-                    let fb: { avgScore?: number; evaluationCount?: number; latestAction?: string } = {};
-                    try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
-                    const tags = g.tags ? (() => { try { return JSON.parse(g.tags!); } catch { return []; } })() : [];
-                    return {
-                        id: g.id,
-                        ref: `${g.namespace ?? '@public'}/${g.name}@v${g.version}`,
-                        description: g.description ?? '(no description)',
-                        category: g.category ?? 'unknown',
-                        tags,
-                        spawnCount: g.spawnCount,
-                        avgScore: fb.avgScore ?? null,
-                        evaluationCount: fb.evaluationCount ?? 0,
-                        latestAction: fb.latestAction ?? null,
-                    };
-                });
+            const agents = (data.genomes ?? []).filter(g => g.category !== 'corps');
 
-            const text = results.length === 0
-                ? 'No agents found matching the query.'
-                : results.map(r => [
-                    `• ${r.ref} [id: ${r.id}]`,
-                    `  ${r.description}`,
-                    `  category: ${r.category} | tags: ${r.tags.join(', ')}`,
-                    `  spawned: ${r.spawnCount}x | rating: ${r.avgScore !== null ? `${r.avgScore}/100 (${r.evaluationCount} evals)` : 'not yet rated'}`,
-                    r.latestAction ? `  last supervisor action: ${r.latestAction}` : '',
-                ].filter(Boolean).join('\n')).join('\n\n');
+            if (agents.length === 0) {
+                return { content: [{ type: 'text', text: 'Marketplace is empty.' }], isError: false };
+            }
 
-            return { content: [{ type: 'text', text: text }], isError: false };
+            // Compact directory: one line per genome, minimal tokens
+            const lines = agents.map(g => {
+                let fb: { avgScore?: number; evaluationCount?: number } = {};
+                try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
+                const tags = g.tags ? (() => { try { return JSON.parse(g.tags!).join(','); } catch { return ''; } })() : '';
+                const score = typeof fb.avgScore === 'number' ? `★${fb.avgScore}(${fb.evaluationCount})` : '';
+                const spawns = g.spawnCount > 0 ? `${g.spawnCount}x` : '';
+                const desc = (g.description ?? '').slice(0, 60);
+                return `${g.id} ${g.namespace ?? ''}/${g.name} ${score} ${spawns} [${tags}] ${desc}`.trim();
+            });
+
+            const header = `${agents.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.`;
+            return { content: [{ type: 'text', text: header + '\n' + lines.join('\n') }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error querying genome hub: ${String(error)}` }], isError: true };
         }
@@ -2271,7 +2253,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     fetch(`${hubUrl}/genomes/${encodeURIComponent(specNamespace)}/${encodeURIComponent(specName)}/feedback`, {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ feedback }),
+                        body: JSON.stringify(feedback),
                         signal: AbortSignal.timeout(5_000),
                     }).catch(() => { /* non-critical: feedback upload failed */ });
                     logger.debug(`[score_agent] Auto-triggered feedback upload for ${specNamespace}/${specName} (${genomeScores.length} scores)`);
@@ -2829,10 +2811,33 @@ The supervisor will see your request and may: send you guidance, compact your co
                 logger.debug('[request_help] Failed to save pendingAction (non-fatal)', e);
             }
 
+            // Directly spawn help-agent via daemon control server (don't wait for supervisor loop)
+            let helpSpawned = false;
+            try {
+                const { daemonPost } = await import('@/daemon/controlClient');
+                const helpResult = await daemonPost('/help-request', {
+                    teamId,
+                    sessionId,
+                    type: args.type,
+                    description: args.description,
+                    severity: args.severity,
+                });
+                if (helpResult && !helpResult.error) {
+                    helpSpawned = true;
+                    logger.debug(`[request_help] Help-agent spawned via daemon: ${JSON.stringify(helpResult)}`);
+                } else {
+                    logger.debug(`[request_help] Daemon help-request failed: ${helpResult?.error || 'unknown'}`);
+                }
+            } catch (e) {
+                logger.debug('[request_help] Failed to spawn help-agent via daemon (non-fatal)', e);
+            }
+
             return {
                 content: [{
                     type: 'text',
-                    text: `Help request logged (${args.type}, severity: ${args.severity}). The supervisor has been notified and may respond with guidance, restart your session, or spawn a helper agent.`,
+                    text: helpSpawned
+                        ? `Help request logged and help-agent spawned (${args.type}, severity: ${args.severity}). A help-agent is joining the team to assist you.`
+                        : `Help request logged (${args.type}, severity: ${args.severity}). The supervisor has been notified. If no help-agent appears within a few minutes, try again or ask @master for coordination.`,
                 }],
                 isError: false,
             };
@@ -2877,6 +2882,9 @@ Namespace conventions:
             namespace: z.string().optional().describe('Namespace scope: "@official", "@<org-name>", or omit for personal'),
             tags: z.string().optional().describe('JSON-serialized string array of discovery tags, e.g. \'["typescript","backend","testing"]\''),
             category: z.string().optional().describe('Genome category for browsing, e.g. "coding", "research", "devops", "writing"'),
+            parentId: z.string().optional().describe('ID of the parent genome this was forked/mutated from. Set when evolving an existing genome.'),
+            mutationNote: z.string().optional().describe('Brief description of what changed from the parent genome.'),
+            origin: z.enum(['original', 'forked', 'mutated']).optional().describe('Provenance origin type. Defaults to "original".'),
         },
     }, async (args) => {
         try {
@@ -2888,11 +2896,26 @@ Namespace conventions:
                 };
             }
 
+            // Inject provenance into spec if parentId is provided
+            let specStr = args.spec;
+            if (args.parentId) {
+                try {
+                    const specObj = JSON.parse(specStr);
+                    specObj.provenance = {
+                        ...(specObj.provenance || {}),
+                        origin: args.origin || 'forked',
+                        parentId: args.parentId,
+                        mutationNote: args.mutationNote || null,
+                    };
+                    specStr = JSON.stringify(specObj);
+                } catch { /* spec parse failed, continue without provenance */ }
+            }
+
             const result = await api.createGenome({
                 id: args.id,
                 name: args.name,
                 description: args.description,
-                spec: args.spec,
+                spec: specStr,
                 parentSessionId: sessionId,
                 teamId: args.teamId,
                 isPublic: args.isPublic,

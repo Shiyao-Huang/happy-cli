@@ -217,41 +217,50 @@ export function getRoleCollaborators(myRole: string, genomeListen?: string[] | '
     return ['master', 'orchestrator', 'user'];
 }
 
-export function isCoordinatorRole(role: string | undefined): boolean {
+// ── Genome-first role classification ─────────────────────────────────────────
+// GenomeSpec is the authority. These hardcoded lists are fallbacks for when
+// no genome is loaded (local dev, legacy agent.json, etc.)
+// When a genome is available, use executionPlane / behavior.canSpawnAgents /
+// messaging.receiveUserMessages / teamRole instead of these lists.
+
+export function isCoordinatorRole(role: string | undefined, genome?: { messaging?: { receiveUserMessages?: boolean }; teamRole?: string } | null): boolean {
+    if (genome?.messaging?.receiveUserMessages) return true;
     return !!role && COORDINATION_ROLES.includes(role);
 }
 
-export function isBypassRole(role: string | undefined): boolean {
+export function isBypassRole(role: string | undefined, genome?: { executionPlane?: string } | null): boolean {
+    if (genome?.executionPlane === 'bypass') return true;
     return !!role && BYPASS_ROLES.includes(role);
 }
 
-export function isBootstrapRole(role: string | undefined): boolean {
-    if (!role) {
-        return false;
+export function isBootstrapRole(role: string | undefined, genome?: { executionPlane?: string; behavior?: { canSpawnAgents?: boolean } } | null): boolean {
+    if (!role) return false;
+
+    // Genome authority: bootstrap = can spawn + bypass, or org-manager role
+    if (genome?.behavior?.canSpawnAgents && genome?.executionPlane !== 'bypass') {
+        // org-manager pattern: can spawn but runs mainline, auto-retires
+        if (role === 'org-manager') return true;
     }
 
-    // org-manager and bypass roles always act immediately and auto-retire
-    if (role === 'org-manager' || isBypassRole(role)) {
-        return true;
-    }
-
+    // Fallback: hardcoded
+    if (role === 'org-manager' || isBypassRole(role, genome)) return true;
     const roleDef = DEFAULT_ROLES[role];
-    if (!roleDef) {
-        return false;
-    }
-
+    if (!roleDef) return false;
     return roleDef.protocol.some((line) => /seed agent|assemble the team|create_agent/i.test(line));
 }
 
-export function canSpawnAgents(role: string | undefined): boolean {
+export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
+    if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
-export function canCreateTeamTasks(role: string | undefined): boolean {
+export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
+    if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
-export function canManageExistingTasks(role: string | undefined): boolean {
+export function canManageExistingTasks(role: string | undefined, genome?: { messaging?: { receiveUserMessages?: boolean } } | null): boolean {
+    if (genome?.messaging?.receiveUserMessages) return true;
     return isCoordinatorRole(role);
 }
 
@@ -924,21 +933,21 @@ Use this live state to answer:
 
 You must use the actual live system state, not assumptions.
 
-### Step 3: Consult the Marketplace (Optional Memory Aid)
+### Step 3: Search the Marketplace (REQUIRED before spawning)
 
-Call \`list_available_agents\` to see what genomes are available and their ratings.
-Treat the marketplace as a memory warehouse, not a gatekeeper.
-It helps you reuse proven agents when helpful, but it must NEVER block team assembly.
+Call \`list_available_agents\` for EACH role you plan to spawn. This is not optional.
 
 \`\`\`
 list_available_agents({ query: "<role or skill>", limit: 5 })
 \`\`\`
 
-Look at the results:
-- Pick agents with high ratings and relevant descriptions
-- Note their \`id\` — pass it as \`specId\` to \`create_agent\`
-- If nothing fits, you MUST still continue assembling the team
-- Marketplace has no veto power over spawning
+Evaluate the results:
+- If a genome has rating > 60 and evaluationCount >= 3, use its \`id\` as \`specId\` in \`create_agent\` with \`strategy: 'best-rated'\`
+- If multiple good matches exist, prefer the one with higher spawnCount (battle-tested)
+- If nothing fits or marketplace is unreachable, proceed without \`specId\` (defaults to \`@official/{role}\`)
+- Marketplace failure MUST NOT block team assembly — it is a best-effort lookup
+
+When forking a marketplace genome, pass the original genome's \`id\` as \`parentId\` in \`create_genome\` calls, along with a brief \`mutationNote\` describing your changes.
 
 ### Step 4: Spawn Team Members
 
@@ -1073,7 +1082,7 @@ export function generateRolePrompt(
         sections.push('');
         sections.push(buildTaskManagementSection(roleKey));
         sections.push('');
-        sections.push(buildSharedOperatingRulesSection({ roleKey, isCoordinator, isBypass }));
+        sections.push(buildSharedOperatingRulesSection({ roleKey, isCoordinator, isBypass, genomeSpec }));
         sections.push('');
         sections.push(buildConstraintsSection(roleKey));
         sections.push('');

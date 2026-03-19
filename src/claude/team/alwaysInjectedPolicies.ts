@@ -1,7 +1,10 @@
+import type { GenomeSpec } from '@/api/types/genome';
+
 type SharedOperatingRulesOptions = {
     roleKey: string;
     isCoordinator: boolean;
     isBypass: boolean;
+    genomeSpec?: GenomeSpec | null;
 };
 
 type SharedOperatingRule = {
@@ -14,6 +17,88 @@ function formatRule(rule: SharedOperatingRule): string {
         `### ${rule.title}`,
         ...rule.body.map((line) => `- ${line}`),
     ].join('\n');
+}
+
+/**
+ * Build behavioral DNA instructions from GenomeSpec Tier 7 fields.
+ * Translates messaging/behavior fields into natural language prompts
+ * so the agent's personality is driven by its genome, not hardcode.
+ */
+function buildBehaviorDnaRules(genomeSpec: GenomeSpec | null | undefined): SharedOperatingRule[] {
+    if (!genomeSpec) return [];
+    const rules: SharedOperatingRule[] = [];
+
+    // messaging.replyMode → agent personality
+    const replyMode = genomeSpec.messaging?.replyMode;
+    if (replyMode === 'proactive') {
+        rules.push({
+            title: 'Communication Style (Proactive)',
+            body: [
+                'You are proactive. When you see an opportunity to help or an unassigned task that matches your capabilities, take initiative.',
+                'Communicate progress and findings without waiting to be asked.',
+            ],
+        });
+    } else if (replyMode === 'passive') {
+        rules.push({
+            title: 'Communication Style (Silent Worker)',
+            body: [
+                'You work silently. Only send team messages when reporting a blocker or completing a task.',
+                'Do not participate in discussions unless directly mentioned.',
+            ],
+        });
+    }
+
+    // behavior.onIdle → what to do when no tasks
+    const onIdle = genomeSpec.behavior?.onIdle;
+    if (onIdle === 'self-assign') {
+        rules.push({
+            title: 'Idle Behavior',
+            body: [
+                'When you have no assigned tasks, call `list_tasks` and `start_task` on the highest priority unassigned task that matches your capabilities.',
+                'Do not wait for explicit assignment.',
+            ],
+        });
+    } else if (onIdle === 'ask') {
+        rules.push({
+            title: 'Idle Behavior',
+            body: [
+                'When you have no assigned tasks, proactively ask @master for your next assignment.',
+            ],
+        });
+    }
+
+    // behavior.onBlocked → escalation behavior
+    const onBlocked = genomeSpec.behavior?.onBlocked;
+    if (onBlocked === 'escalate') {
+        rules.push({
+            title: 'Blocked Behavior',
+            body: [
+                'When blocked, immediately call `request_help` to escalate. Do not wait for the master to notice.',
+            ],
+        });
+    } else if (onBlocked === 'retry') {
+        rules.push({
+            title: 'Blocked Behavior',
+            body: [
+                'When blocked, attempt at least one alternative approach before escalating. If the retry fails, call `request_help`.',
+            ],
+        });
+    }
+
+    // scopeOfResponsibility → file ownership from genome
+    const scope = (genomeSpec as any).scopeOfResponsibility;
+    if (scope?.ownedPaths?.length) {
+        rules.push({
+            title: 'File Ownership (from genome)',
+            body: [
+                `Your owned paths: ${scope.ownedPaths.join(', ')}`,
+                ...(scope.forbiddenPaths?.length ? [`Forbidden paths: ${scope.forbiddenPaths.join(', ')}`] : []),
+                'Broadcast intent before touching any file outside your owned paths.',
+            ],
+        });
+    }
+
+    return rules;
 }
 
 export function buildSharedOperatingRulesSection(
@@ -60,9 +145,22 @@ export function buildSharedOperatingRulesSection(
         },
     ];
 
+    // Inject behavior DNA from genome (Tier 7)
+    const behaviorRules = buildBehaviorDnaRules(options.genomeSpec);
+    rules.push(...behaviorRules);
+
+    // Inject genome-specific protocol rules (from GenomeSpec.protocol[])
+    const genomeProtocol = options.genomeSpec?.protocol;
+    if (genomeProtocol?.length) {
+        rules.push({
+            title: 'Genome Protocol',
+            body: genomeProtocol,
+        });
+    }
+
     return [
         '<Shared_Operating_Rules>',
-        '## Always Injected Team Operating Rules',
+        '## Team Operating Rules',
         '',
         ...rules.map(formatRule),
         '',

@@ -32,22 +32,35 @@ function diskCachePath(specId: string): string | null {
     return join(diskCacheDir(), safeNs, `${name}@v${ver}.json`);
 }
 
+function genomeHubBaseUrl(): string {
+    return (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+}
+
 /**
- * Resolve a specId to its API URL.
- * Format 1: UUID            → /v1/genomes/:id
- * Format 2: @ns/name        → /v1/genomes/:ns/:name/latest
- * Format 3: @ns/name:N      → /v1/genomes/:ns/:name/N
+ * Resolve a specId to candidate API URLs.
+ * Format 1: UUID            → genome-hub /genomes/id/:id, fallback /v1/genomes/:id
+ * Format 2: @ns/name        → genome-hub /genomes/:ns/:name, fallback /v1/genomes/:ns/:name/latest
+ * Format 3: @ns/name:N      → genome-hub /genomes/:ns/:name/:N, fallback /v1/genomes/:ns/:name/N
  */
-function resolveUrl(specId: string): string {
+function resolveUrls(specId: string): string[] {
     const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
     if (nsMatch) {
         const [, ns, name, ver] = nsMatch;
         const encodedNs = encodeURIComponent(ns);
         return ver
-            ? `${configuration.serverUrl}/v1/genomes/${encodedNs}/${name}/${ver}`
-            : `${configuration.serverUrl}/v1/genomes/${encodedNs}/${name}/latest`;
+            ? [
+                `${genomeHubBaseUrl()}/genomes/${encodedNs}/${name}/${ver}`,
+                `${configuration.serverUrl}/v1/genomes/${encodedNs}/${name}/${ver}`,
+            ]
+            : [
+                `${genomeHubBaseUrl()}/genomes/${encodedNs}/${name}`,
+                `${configuration.serverUrl}/v1/genomes/${encodedNs}/${name}/latest`,
+            ];
     }
-    return `${configuration.serverUrl}/v1/genomes/${specId}`;
+    return [
+        `${genomeHubBaseUrl()}/genomes/id/${encodeURIComponent(specId)}`,
+        `${configuration.serverUrl}/v1/genomes/${specId}`,
+    ];
 }
 
 /** 是否 versioned（可永久缓存）*/
@@ -78,41 +91,55 @@ export async function fetchGenomeSpec(
     }
 
     // 3. 网络请求
-    try {
-        const response = await axios.get<{ genome: Genome }>(
-            resolveUrl(specId),
-            { headers: { Authorization: `Bearer ${token}` } },
-        );
-        const spec = parseGenomeSpec(response.data.genome);
+    let lastError: unknown = null;
+    for (const url of resolveUrls(specId)) {
+        try {
+            const response = await axios.get<{ genome: Genome }>(
+                url,
+                {
+                    headers: { Authorization: `Bearer ${token}` },
+                    validateStatus: (status) => status === 200 || status === 404,
+                },
+            );
 
-        // 写磁盘缓存（versioned 永久）
-        if (diskPath) {
-            try {
-                mkdirSync(dirname(diskPath), { recursive: true });
-                writeFileSync(diskPath, JSON.stringify(spec, null, 2), 'utf-8');
-                logger.debug(`[genome] Cached to disk: ${diskPath}`);
-            } catch (e) {
-                logger.debug(`[genome] Failed to write disk cache: ${e}`);
+            if (response.status === 404) {
+                continue;
             }
+
+            const spec = parseGenomeSpec(response.data.genome);
+
+            // 写磁盘缓存（versioned 永久）
+            if (diskPath) {
+                try {
+                    mkdirSync(dirname(diskPath), { recursive: true });
+                    writeFileSync(diskPath, JSON.stringify(spec, null, 2), 'utf-8');
+                    logger.debug(`[genome] Cached to disk: ${diskPath}`);
+                } catch (e) {
+                    logger.debug(`[genome] Failed to write disk cache: ${e}`);
+                }
+            }
+
+            // 写内存缓存（latest/UUID 用 TTL）
+            const ttl = isVersioned(specId) ? Number.MAX_SAFE_INTEGER : Date.now() + LATEST_TTL_MS;
+            memCache.set(specId, { spec, expiresAt: ttl });
+
+            logger.debug(`[genome] Fetched ${specId}: ${response.data.genome.name} via ${url}`);
+            return spec;
+        } catch (error) {
+            lastError = error;
+            logger.debug(`[genome] Failed to fetch ${specId} via ${url}: ${error}`);
         }
-
-        // 写内存缓存（latest/UUID 用 TTL）
-        const ttl = isVersioned(specId) ? Number.MAX_SAFE_INTEGER : Date.now() + LATEST_TTL_MS;
-        memCache.set(specId, { spec, expiresAt: ttl });
-
-        logger.debug(`[genome] Fetched ${specId}: ${response.data.genome.name}`);
-        return spec;
-    } catch (error) {
-        logger.debug(`[genome] Failed to fetch ${specId}: ${error}`);
-
-        // 离线降级：尝试磁盘缓存（即使 TTL 过期）
-        if (diskPath && existsSync(diskPath)) {
-            try {
-                const spec = JSON.parse(readFileSync(diskPath, 'utf-8')) as GenomeSpec;
-                logger.debug(`[genome] Offline fallback from disk: ${specId}`);
-                return spec;
-            } catch { /* ignore */ }
-        }
-        return null;
     }
+
+    logger.debug(`[genome] Failed to fetch ${specId}: ${lastError}`);
+
+    // 离线降级：尝试磁盘缓存（即使 TTL 过期）
+    if (diskPath && existsSync(diskPath)) {
+        try {
+            const spec = JSON.parse(readFileSync(diskPath, 'utf-8')) as GenomeSpec;
+            logger.debug(`[genome] Offline fallback from disk: ${specId}`);
+            return spec;
+        } catch { /* ignore */ }
+    }
+    return null;
 }

@@ -384,6 +384,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Write into the ref so startAhaServer's tools (create_agent etc.) can use genome data
     _genomeSpecRef.current = _genomeSpec;
+    const startupRole = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
 
     if (_genomeSpec) {
         // Tier 2 — 模型覆盖
@@ -397,7 +398,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
 
         // Tier 3 — 工具访问控制
-        const ignoreGenomeToolConstraints = isBypassRole(role) && role === 'supervisor';
+        const ignoreGenomeToolConstraints = isBypassRole(startupRole, _genomeSpec) && startupRole === 'supervisor';
         if (_genomeSpec.allowedTools?.length) {
             if (ignoreGenomeToolConstraints) {
                 logger.debug('[genome] Ignoring genome allowedTools for supervisor so it can inspect raw logs directly');
@@ -577,14 +578,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 role,
                 metadata: session.getMetadata() || metadata,
                 taskStateManager,
+                specId: _genomeSpecId || undefined,
             });
             logger.debug(
                 `[runClaude] Team membership sync result: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
             );
 
             // Initialize ApprovalWorkflow for coordination roles (master, orchestrator, team-lead)
-            if (isCoordinatorRole(role)) {
-                approvalWorkflow = createApprovalWorkflow(api, taskStateManager, teamId, response.id, role);
+            if (isCoordinatorRole(role, _genomeSpec)) {
                 logger.debug(`[runClaude] ApprovalWorkflow initialized for coordinator role ${role}`);
             }
 
@@ -721,43 +722,54 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (isNewJoin) {
                 logger.debug(`[runClaude] Performing handshake and context injection for team ${teamId}`);
 
-                // 1. Send Handshake - Role-specific introduction
+                // 1. Send Handshake - Dynamic from GenomeSpec + role fallback + @help
                 try {
                     const roleDef = DEFAULT_ROLES[role!];
-                    const roleTitle = roleDef?.name || role;
-                    const roleResponsibilities = roleDef?.responsibilities?.slice(0, 3) || [];
+                    const roleTitle = _genomeSpec?.displayName || roleDef?.name || role;
+
+                    // Dynamic: pull responsibilities and capabilities from GenomeSpec (the DNA),
+                    // fall back to static role definitions only when no genome is loaded.
+                    const responsibilities: string[] = _genomeSpec?.responsibilities?.slice(0, 3)
+                        || roleDef?.responsibilities?.slice(0, 3)
+                        || [];
+                    const capabilities: string[] = (_genomeSpec as any)?.capabilities || [];
+                    const genomeDescription = _genomeSpec?.description;
+                    const genomeTeamRole = (_genomeSpec as any)?.teamRole;
+
+                    const HELP_LANE_NOTE = `\n**Need help?** If blocked ~30 min, call \`request_help\` with evidence. You can also @help in team chat.`;
 
                     let introContent: string = '';
 
-                    if (isBootstrapRole(role)) {
-                        // Bootstrap agents work SILENTLY — no handshake to team chat
-                        // They spawn agents, seed tasks, then auto-retire
+                    if (isBootstrapRole(role, _genomeSpec)) {
                         logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
                         console.log(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
-                    } else if (isCoordinatorRole(role)) {
-                        // Master/Orchestrator: Announce leadership and request status
+                    } else if (isCoordinatorRole(role, _genomeSpec)) {
                         introContent = `🎯 **${roleTitle}** reporting for duty!
 
-**My Role:** I will coordinate this team and manage task distribution.
+**My Role:** ${roleDesc}
 
 **Immediate Actions:**
-1. Review the project requirements
-2. Break down work into actionable tasks
-3. Assign tasks to team members
+1. Review project requirements (read SYSTEM.md + AGENTS.md first)
+2. Break down work into actionable tasks on the kanban board
+3. Assign tasks to team members with clear ownership
 
-📢 **Team Members:** Please report your status and availability. I will begin task assignment shortly.`;
+📢 **Team Members:** Please report your status. Before starting, confirm you have read SYSTEM.md and declare your task scope.${HELP_LANE_NOTE}`;
                     } else {
-                        // Other roles: Report availability and capabilities
-                        const responsibilitiesText = roleResponsibilities.length > 0
-                            ? roleResponsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
+                        // Other roles: dynamic from genome DNA
+                        const allCapabilities = [...responsibilities, ...capabilities];
+                        const capText = allCapabilities.length > 0
+                            ? allCapabilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
                             : 'Ready to assist the team';
+                        const roleDesc = genomeDescription
+                            ? `\n**Scope:** ${genomeDescription}`
+                            : '';
 
                         introContent = `✅ **${roleTitle}** online and ready!
 
 **My Capabilities:**
-${responsibilitiesText}
+${capText}${roleDesc}
 
-Awaiting task assignment from @master or @orchestrator.`;
+**Status:** I have read SYSTEM.md and AGENTS.md. Awaiting task assignment from @master or @orchestrator.${HELP_LANE_NOTE}`;
                     }
 
                     const handshakeMsg = {
@@ -770,7 +782,7 @@ Awaiting task assignment from @master or @orchestrator.`;
                         fromRole: role,
                         metadata: { type: 'handshake', roleTitle }
                     };
-                    if (!isBootstrapRole(role)) {
+                    if (!isBootstrapRole(role, _genomeSpec)) {
                         await api.sendTeamMessage(teamId, handshakeMsg);
                         logger.debug('[runClaude] Sent handshake message to team');
                         console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
@@ -806,7 +818,7 @@ Awaiting task assignment from @master or @orchestrator.`;
 
                 // Filter Kanban Board for Context Isolation (only if we have data)
                 let filteredBoard = teamData ? { ...teamData } : { message: 'Team data not yet available. Wait for tasks from Master.' };
-                if (teamData && !isCoordinatorRole(role) && !isBootstrapRole(role)) {
+                if (teamData && !isCoordinatorRole(role, _genomeSpec) && !isBootstrapRole(role, _genomeSpec)) {
                     // Workers only see:
                     // 1. Tasks assigned to them
                     // 2. Unassigned tasks (todo)
@@ -830,7 +842,7 @@ Awaiting task assignment from @master or @orchestrator.`;
                     instructions = _genomeSpec.systemPrompt
                         + (_genomeSpec.systemPromptSuffix ? '\n\n' + _genomeSpec.systemPromptSuffix : '');
                     logger.debug(`[genome] Using genome systemPrompt (specId=${_genomeSpecId})`);
-                } else if (isBypassRole(role) && role === 'supervisor') {
+                } else if (isBypassRole(role, _genomeSpec) && role === 'supervisor') {
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
                     const lastSessionId = process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
@@ -884,16 +896,19 @@ Treat helper-tool output as an index to find deltas. When judging quality, trust
 ## ⚡ PHASE 1 — DIFF CHECK (always do this first, cheap)
 
 1. Call \`read_team_log\` with \`fromCursor: ${teamLogCursor}\`
+2. Call \`list_team_agents\` to check if there are active agents
 
-**If \`hasNewContent\` is FALSE:**
+**If \`hasNewContent\` is FALSE AND no active agents exist:**
 ${pendingAction ? `→ There IS a pending action. Execute it now:
    - Execute the intervention you already decided on
    - Call \`save_supervisor_state\` with \`pendingAction: null\` (clear it) and the same team / Claude / Codex cursors
-   - Output "SUPERVISOR_COMPLETE" and STOP` : `→ No pending action. Nothing to do.
-   - Call \`save_supervisor_state\` with unchanged team / Claude / Codex cursors, \`pendingAction: null\`, and add "(idle — no change)" to conclusion
+   - Output "SUPERVISOR_COMPLETE" and STOP` : `→ No pending action and no active agents. Nothing to do.
+   - Call \`save_supervisor_state\` with unchanged team / Claude / Codex cursors, \`pendingAction: null\`, and add "(idle — no change, no active agents)" to conclusion
    - Output "SUPERVISOR_COMPLETE" and STOP`}
 
 **If \`hasNewContent\` is TRUE → proceed to Phase 2.**
+**If \`hasNewContent\` is FALSE BUT active agents exist → proceed to Phase 2.**
+(Agents may be working without producing team messages. Check their CC/Codex logs to verify they are alive and productive.)
 
 ---
 
@@ -969,7 +984,7 @@ Output "SUPERVISOR_COMPLETE" and STOP.
                     if (_genomeSpec?.systemPromptSuffix) {
                         instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
                     }
-                } else if (isBypassRole(role) && role === 'help-agent') {
+                } else if (isBypassRole(role, _genomeSpec) && role === 'help-agent') {
                     instructions = `
 <HelpAgent_Instructions>
 
@@ -996,7 +1011,7 @@ You respond to a specific help request, fix it, then auto-retire.
                     if (_genomeSpec?.systemPromptSuffix) {
                         instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
                     }
-                } else if (isBootstrapRole(role)) {
+                } else if (isBootstrapRole(role, _genomeSpec)) {
                     instructions = `
 <Bootstrap_Instructions>
 
@@ -1039,8 +1054,7 @@ You assemble the team, then AUTO-RETIRE. You are invisible to the team.
                     if (_genomeSpec?.systemPromptSuffix) {
                         instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
                     }
-                } else if (isCoordinatorRole(role)) {
-                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
+                } else if (isCoordinatorRole(role, _genomeSpec)) {                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
 <Coordinator_Instructions>
 
