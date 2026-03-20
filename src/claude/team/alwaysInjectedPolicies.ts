@@ -113,6 +113,7 @@ export function buildSharedOperatingRulesSection(
             title: 'Help Lane',
             body: [
                 'If you are blocked for roughly 30 minutes, or you hit environment, team-state, routing, connection, or ownership problems, call `request_help` immediately with concrete evidence.',
+                'Use `@help` in team chat when you need live intervention; it is the same escalation lane as `request_help` and should include the blocker plus what you already tried.',
                 'Treat user `@help`, supervisor escalation, and teammate help requests as the same help lane: describe what is broken, what you already tried, and what outcome you need.',
             ],
         },

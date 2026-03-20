@@ -249,6 +249,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List all teams
   ${chalk.yellow('show')} <teamId>                 Show one team and its roster
   ${chalk.yellow('create')}                        Create a team artifact
+  ${chalk.yellow('spawn')}                         Create team + spawn agents from preset (P0)
   ${chalk.yellow('members')} <teamId>              List team members
   ${chalk.yellow('add-member')} <teamId>           Add a member to a team
   ${chalk.yellow('remove-member')} <teamId>        Remove a member from a team
@@ -269,6 +270,13 @@ ${chalk.bold('Create options:')}
   ${chalk.cyan('--goal <text>')}                  Seed a goal task in the board
   ${chalk.cyan('--sessions a,b,c')}               Seed members from existing session IDs
 
+${chalk.bold('Spawn options (P0 — one-command team bootstrap):')}
+  ${chalk.cyan('--preset <name>')}                Preset: deployment | dev | review | minimal
+  ${chalk.cyan('--name "Team Name"')}             Team name (default: preset name)
+  ${chalk.cyan('--team <teamId>')}                Add agents to existing team instead of creating new
+  ${chalk.cyan('--path <cwd>')}                   Working directory for spawned agents
+  ${chalk.cyan('--model claude|codex')}           Runtime model for all agents (default: claude)
+
 ${chalk.bold('Member options:')}
   ${chalk.cyan('--session <sessionId>')}          Session ID for add-member/remove-member
   ${chalk.cyan('--role <roleId>')}                Role ID for add-member (default: member)
@@ -286,6 +294,8 @@ ${chalk.bold('Batch options:')}
 ${chalk.bold('Examples:')}
   ${chalk.green('aha teams list --verbose')}
   ${chalk.green('aha teams create --name "Sprint Crew" --goal "Ship CLI CRUD"')}
+  ${chalk.green('aha teams spawn --preset deployment --name "Deploy Crew"')}
+  ${chalk.green('aha teams spawn --preset dev --team existing-team-id')}
   ${chalk.green('aha teams show team_123')}
   ${chalk.green('aha teams add-member team_123 --session sess_1 --role builder --name "Builder 2"')}
   ${chalk.green('aha teams archive team_123 --force')}
@@ -323,6 +333,20 @@ export async function handleTeamsCommand(args: string[]) {
       case 'create':
         await createTeam(api, buildCreateTeamPayload(args, positional), options);
         break;
+      case 'spawn': {
+        const preset = getOption(args, 'preset');
+        if (!preset) {
+          throw new Error('Usage: aha teams spawn --preset <deployment|dev|review|minimal> [--name "..."] [--team <id>] [--path <cwd>] [--model claude|codex]');
+        }
+        await spawnTeamWithPreset(api, preset, {
+          teamId: getOption(args, 'team'),
+          name: getOption(args, 'name'),
+          cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
+          model: (getOption(args, 'model') || 'claude') as 'claude' | 'codex',
+          asJson: options.asJson,
+        });
+        break;
+      }
       case 'members':
         if (positional.length < 2) {
           throw new Error('Usage: aha teams members <teamId>');
@@ -678,6 +702,178 @@ async function batchArchiveTeams(api: ApiClient, teamIds: string[], options: Tea
     const color = entry.success ? chalk.green : chalk.red;
     console.log(color(`  - ${entry.teamId}: ${entry.success ? `archived ${entry.archivedSessions ?? 0} sessions` : entry.error || 'failed'}`));
   }
+  console.log();
+}
+
+/** Predefined team presets for `aha teams spawn --preset <name>` */
+const TEAM_PRESETS: Record<string, { description: string; roles: Array<{ roleId: string; name: string }> }> = {
+  deployment: {
+    description: 'Deployment team: Master + DevOps Builder + QA',
+    roles: [
+      { roleId: 'master', name: 'Master 1' },
+      { roleId: 'devops-builder', name: 'DevOps Builder' },
+      { roleId: 'qa-engineer', name: 'QA Engineer' },
+    ],
+  },
+  dev: {
+    description: 'Development team: Master + Builder + Implementer + QA',
+    roles: [
+      { roleId: 'master', name: 'Master 1' },
+      { roleId: 'builder', name: 'Builder 1' },
+      { roleId: 'implementer', name: 'Implementer 1' },
+      { roleId: 'qa-engineer', name: 'QA Engineer' },
+    ],
+  },
+  review: {
+    description: 'Review team: Master + Researcher + QA',
+    roles: [
+      { roleId: 'master', name: 'Master 1' },
+      { roleId: 'researcher', name: 'Researcher 1' },
+      { roleId: 'qa-engineer', name: 'QA Engineer' },
+    ],
+  },
+  minimal: {
+    description: 'Minimal team: Master + Builder',
+    roles: [
+      { roleId: 'master', name: 'Master 1' },
+      { roleId: 'builder', name: 'Builder 1' },
+    ],
+  },
+};
+
+async function spawnTeamWithPreset(
+  api: ApiClient,
+  preset: string,
+  opts: { teamId?: string; name?: string; cwd?: string; model: 'claude' | 'codex'; asJson?: boolean },
+): Promise<void> {
+  const presetConfig = TEAM_PRESETS[preset];
+  if (!presetConfig) {
+    const available = Object.keys(TEAM_PRESETS).join(', ');
+    throw new Error(`Unknown preset "${preset}". Available: ${available}`);
+  }
+
+  const { ensureDaemonRunning } = await import('@/daemon/controlClient');
+  const { readDaemonState } = await import('@/persistence');
+  const { materializeAgentWorkspace } = await import('@/agentDocker/materializer');
+  const { buildMaterializedSpawnEnv } = await import('@/agentDocker/runtimeConfig');
+
+  const repoRoot = opts.cwd || process.cwd();
+
+  // Step 1: resolve or create team
+  let teamId = opts.teamId;
+  const teamName = opts.name || `${preset.charAt(0).toUpperCase() + preset.slice(1)} Team`;
+
+  if (!teamId) {
+    teamId = randomUUID();
+    if (!opts.asJson) {
+      console.log(chalk.bold(`\nCreating team: ${teamName}\n`));
+    }
+    await createTeam(api, { teamId, name: teamName, goal: presetConfig.description, sessionIds: [] }, { asJson: opts.asJson });
+  } else if (!opts.asJson) {
+    console.log(chalk.bold(`\nSpawning agents into existing team: ${teamId}\n`));
+  }
+
+  // Step 2: ensure daemon running
+  await ensureDaemonRunning();
+  const daemonState = await readDaemonState();
+  if (!daemonState?.httpPort) {
+    throw new Error('Daemon is not running. Start it with: aha');
+  }
+
+  if (!opts.asJson) {
+    console.log(chalk.cyan(`Preset: ${preset} — ${presetConfig.description}`));
+    console.log(chalk.gray(`Spawning ${presetConfig.roles.length} agent(s)...\n`));
+  }
+
+  // Step 3: spawn each agent
+  const spawnedAgents: Array<{ sessionId: string; roleId: string; name: string }> = [];
+
+  for (const { roleId, name } of presetConfig.roles) {
+    const agentId = randomUUID();
+    const teamContextSuffix = `\n\n## Team Context\n- Team ID: ${teamId}\n- Your role: ${roleId}\n- On startup: call get_team_info then list_tasks\n- Kanban protocol: start_task before work, complete_task after done\n- Report blockers via send_team_message @master`;
+
+    const config = {
+      kind: 'aha.agent.v1' as const,
+      name,
+      runtime: opts.model,
+      description: `${roleId} agent`,
+      systemPromptSuffix: teamContextSuffix,
+      tools: { mcpServers: ['aha'], skills: [] as string[] },
+      env: { required: ['ANTHROPIC_API_KEY'], optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'] },
+      workspace: { defaultMode: 'shared' as const, allowedModes: ['shared' as const, 'isolated' as const] },
+    };
+
+    try {
+      const plan = materializeAgentWorkspace({
+        agentId,
+        repoRoot,
+        runtime: config.runtime,
+        config,
+        workspaceMode: 'shared',
+      });
+
+      const materializedEnv = buildMaterializedSpawnEnv({
+        settingsPath: plan.settingsPath,
+        envFilePath: plan.envFilePath,
+        mcpConfigPath: plan.mcpConfigPath,
+      });
+
+      const spawnBody = {
+        directory: plan.effectiveCwd,
+        agent: opts.model === 'codex' ? 'codex' : 'claude',
+        role: roleId,
+        sessionName: name,
+        teamId,
+        env: materializedEnv,
+      };
+
+      const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spawnBody),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+
+      if (!response.ok || !result.success) {
+        throw new Error(`Spawn failed: ${result.error || `HTTP ${response.status}`}`);
+      }
+
+      const sessionId = result.sessionId!;
+      spawnedAgents.push({ sessionId, roleId, name });
+
+      try {
+        await api.addTeamMember(teamId, sessionId, roleId, name, {
+          executionPlane: 'mainline',
+          runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
+        });
+      } catch (err) {
+        logger.debug(`[teams spawn] Warning: failed to register ${roleId} in team:`, err);
+      }
+
+      if (!opts.asJson) {
+        console.log(chalk.green(`  ✓ ${name} (${roleId}) → ${sessionId}`));
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (opts.asJson) {
+        logger.debug(`[teams spawn] Failed to spawn ${roleId}:`, err);
+      } else {
+        console.log(chalk.red(`  ✗ ${name} (${roleId}): ${msg}`));
+      }
+    }
+  }
+
+  if (opts.asJson) {
+    console.log(JSON.stringify({ success: true, teamId, preset, agents: spawnedAgents }, null, 2));
+    return;
+  }
+
+  console.log();
+  console.log(chalk.bold(`Team spawned: ${teamId}`));
+  console.log(chalk.gray(`Agents ready: ${spawnedAgents.length}/${presetConfig.roles.length}`));
+  console.log(chalk.gray(`Use: aha teams show ${teamId}`));
   console.log();
 }
 

@@ -240,10 +240,12 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List agent sessions
   ${chalk.yellow('show')} <sessionId>              Show one agent session
+  ${chalk.yellow('create')}                        Create and spawn an agent by role
   ${chalk.yellow('update')} <sessionId>            Update decrypted session metadata
   ${chalk.yellow('rename')} <sessionId> <name>     Rename an agent (metadata.name)
   ${chalk.yellow('archive')} <id...>               Archive one or more agent sessions
   ${chalk.yellow('delete')} <id...>                Delete one or more agent sessions
+  ${chalk.yellow('kill')} <sessionId...>           Kill (archive) one or more agents
   ${chalk.yellow('spawn')} <agent.json>            Spawn agent from local agent JSON file
 
 ${chalk.bold('List options:')}
@@ -268,6 +270,13 @@ ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--ids a,b,c')}                    Alternative to positional IDs for archive/delete
   ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
 
+${chalk.bold('Create options (P0):')}
+  ${chalk.cyan('--role <roleId>')}                Role to create (builder|qa-engineer|master|implementer|researcher|...)
+  ${chalk.cyan('--team <teamId>')}                Register agent in this team (auto-injects teamId in prompt)
+  ${chalk.cyan('--name <displayName>')}           Display name for the agent (default: role name)
+  ${chalk.cyan('--model claude|codex')}           Runtime model (default: claude)
+  ${chalk.cyan('--path <cwd>')}                   Working directory (default: current dir)
+
 ${chalk.bold('Spawn options:')}
   ${chalk.cyan('--team <teamId>')}                Register spawned agent in this team
   ${chalk.cyan('--role <roleId>')}                Role label for team registration (default: agent name)
@@ -276,6 +285,9 @@ ${chalk.bold('Spawn options:')}
 ${chalk.bold('Examples:')}
   ${chalk.green('aha agents list --active --team team_123')}
   ${chalk.green('aha agents show session_123')}
+  ${chalk.green('aha agents create --role builder --team team_123')}
+  ${chalk.green('aha agents create --role qa-engineer --team team_123 --name "QA Bot"')}
+  ${chalk.green('aha agents kill session_123')}
   ${chalk.green('aha agents update session_123 --role builder --team team_123')}
   ${chalk.green('aha agents rename session_123 "Builder 2"')}
   ${chalk.green('aha agents archive session_123 session_456')}
@@ -307,6 +319,28 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
           role: getOption(args, 'role'),
         });
         break;
+      case 'create': {
+        const roleId = getOption(args, 'role');
+        if (!roleId) {
+          throw new Error('Usage: aha agents create --role <roleId> [--team <teamId>] [--name <name>] [--model claude|codex]');
+        }
+        await createAgent(api, roleId, {
+          teamId: getOption(args, 'team'),
+          name: getOption(args, 'name'),
+          model: (getOption(args, 'model') || 'claude') as 'claude' | 'codex',
+          cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
+          asJson,
+        });
+        break;
+      }
+      case 'kill': {
+        const sessionIds = collectSessionIds(args, positional);
+        if (sessionIds.length === 0) {
+          throw new Error('Usage: aha agents kill <sessionId...>');
+        }
+        await archiveAgents(api, sessionIds, true, asJson);
+        break;
+      }
       case 'show':
         if (positional.length < 2) {
           throw new Error('Usage: aha agents show <sessionId>');
@@ -506,6 +540,141 @@ async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean
       console.log(color(`  - ${entry.sessionId}: ${entry.success ? 'ok' : entry.error || 'failed'}`));
     }
   }
+  console.log();
+}
+
+/** Built-in role configs for `aha agent create --role <roleId>` */
+const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
+  builder: {
+    description: 'Code builder — implements tasks and drives them to completion',
+    systemPromptSuffix: 'Implement assigned tasks. Keep diffs small. Report blockers immediately.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+  },
+  'qa-engineer': {
+    description: 'Quality assurance engineer — tests features and validates functionality',
+    systemPromptSuffix: 'Run tests, verify acceptance criteria, report bugs with repro steps.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+  },
+  master: {
+    description: 'Master coordinator — shapes delivery plan and keeps Kanban accurate',
+    systemPromptSuffix: 'Translate goals into Kanban tasks. Sequence work, surface blockers, coordinate the team.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false },
+  },
+  implementer: {
+    description: 'Implementer — executes implementation tasks end-to-end',
+    systemPromptSuffix: 'Implement the assigned task fully. Signal when ready for review.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+  },
+  researcher: {
+    description: 'Researcher — explores codebase, gathers information, provides context',
+    systemPromptSuffix: 'Search and analyze code. Present findings with file citations. Read-only.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+  },
+  'devops-builder': {
+    description: 'DevOps builder — handles SSH deployment, CI/CD, infrastructure',
+    systemPromptSuffix: 'Handle server deployments, SSH operations, nginx config, PM2 management.',
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+  },
+};
+
+async function createAgent(
+  api: ApiClient,
+  roleId: string,
+  opts: { teamId?: string; name?: string; model: 'claude' | 'codex'; cwd?: string; asJson: boolean },
+): Promise<void> {
+  const agentId = randomUUID();
+  const repoRoot = opts.cwd || process.cwd();
+  const displayName = opts.name || roleId;
+  const roleConfig = BUILTIN_ROLE_CONFIGS[roleId] || {};
+
+  const teamContextSuffix = opts.teamId
+    ? `\n\n## Team Context\n- Team ID: ${opts.teamId}\n- Your role: ${roleId}\n- On startup: call get_team_info then list_tasks\n- Kanban protocol: start_task before work, complete_task after done\n- Report blockers via send_team_message @master`
+    : '';
+
+  const config: AgentDockerConfig = {
+    kind: 'aha.agent.v1',
+    name: displayName,
+    runtime: opts.model,
+    description: roleConfig.description || `${roleId} agent`,
+    systemPromptSuffix: (roleConfig.systemPromptSuffix || '') + teamContextSuffix,
+    behavior: roleConfig.behavior,
+    tools: { mcpServers: ['aha'], skills: [] },
+    env: { required: ['ANTHROPIC_API_KEY'], optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'] },
+    workspace: { defaultMode: 'shared', allowedModes: ['shared', 'isolated'] },
+  };
+
+  if (!opts.asJson) {
+    console.log(chalk.bold(`\nCreating agent: ${displayName} (${roleId})\n`));
+  }
+
+  const plan = materializeAgentWorkspace({
+    agentId,
+    repoRoot,
+    runtime: config.runtime,
+    config,
+    workspaceMode: 'shared',
+  });
+
+  if (!opts.asJson && plan.warnings.length > 0) {
+    for (const w of plan.warnings) {
+      console.log(chalk.yellow(`  ⚠ ${w}`));
+    }
+  }
+
+  await ensureDaemonRunning();
+  const daemonState = await readDaemonState();
+  if (!daemonState?.httpPort) {
+    throw new Error('Daemon is not running. Start it with: aha');
+  }
+
+  const materializedEnv = buildMaterializedSpawnEnv({
+    settingsPath: plan.settingsPath,
+    envFilePath: plan.envFilePath,
+    mcpConfigPath: plan.mcpConfigPath,
+  });
+
+  const spawnBody = {
+    directory: plan.effectiveCwd,
+    agent: opts.model === 'codex' ? 'codex' : 'claude',
+    role: roleId,
+    sessionName: displayName,
+    teamId: opts.teamId,
+    env: materializedEnv,
+  };
+
+  const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spawnBody),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+
+  if (!response.ok || !result.success) {
+    throw new Error(`Daemon spawn failed: ${result.error || `HTTP ${response.status}`}`);
+  }
+
+  const sessionId = result.sessionId!;
+
+  if (opts.teamId && sessionId) {
+    try {
+      await api.addTeamMember(opts.teamId, sessionId, roleId, displayName, {
+        executionPlane: 'mainline',
+        runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
+      });
+    } catch (err) {
+      logger.debug('[agents create] Warning: failed to register in team roster:', err);
+    }
+  }
+
+  if (opts.asJson) {
+    console.log(JSON.stringify({ sessionId, agentId, role: roleId, teamId: opts.teamId || null, name: displayName }, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Agent created: ${sessionId}`));
+  console.log(chalk.gray(`  role=${roleId} model=${opts.model} teamId=${opts.teamId || '-'} name=${displayName}`));
   console.log();
 }
 

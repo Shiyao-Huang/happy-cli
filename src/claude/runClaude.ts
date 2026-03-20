@@ -25,6 +25,7 @@ import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import {
+    buildAgentHandshakeContent,
     getRolePermissions,
     generateRolePrompt,
     isBootstrapRole,
@@ -45,6 +46,7 @@ import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
+import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
 export interface StartOptions {
     model?: string
@@ -84,6 +86,10 @@ ${isMentioned ? `⚠️  You were mentioned in this message.
 📌 Please respond to this message in the team chat.` : ''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `.trim();
+}
+
+function escapeInjectedContextForTransport(text: string): string {
+    return text.replace(/\\/g, '\\\\');
 }
 
 function resolveEnvPermissionMode(rawMode?: string): StartOptions['permissionMode'] | undefined {
@@ -324,6 +330,13 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
     } catch (e) {
         logger.debug('[runClaude] Failed to implant context:', e);
+    }
+    const mountedAgentPrompt = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT);
+    if (mountedAgentPrompt) {
+        currentAppendSystemPrompt = currentAppendSystemPrompt
+            ? `${currentAppendSystemPrompt}\n\n${mountedAgentPrompt}`
+            : mountedAgentPrompt;
+        logger.debug('[runClaude] Mounted launch-time agent context into system prompt');
     }
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
@@ -734,42 +747,31 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         || [];
                     const capabilities: string[] = (_genomeSpec as any)?.capabilities || [];
                     const genomeDescription = _genomeSpec?.description;
-                    const genomeTeamRole = (_genomeSpec as any)?.teamRole;
-
-                    const HELP_LANE_NOTE = `\n**Need help?** If blocked ~30 min, call \`request_help\` with evidence. You can also @help in team chat.`;
+                    const scope = (_genomeSpec as any)?.scopeOfResponsibility;
+                    const scopeSummary = scope?.ownedPaths?.length
+                        ? [
+                            `Owned paths: ${scope.ownedPaths.join(', ')}`,
+                            scope.forbiddenPaths?.length ? `forbidden: ${scope.forbiddenPaths.join(', ')}` : null,
+                        ].filter(Boolean).join('; ')
+                        : undefined;
 
                     let introContent: string = '';
 
                     if (isBootstrapRole(role, _genomeSpec)) {
                         logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
                         console.log(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
-                    } else if (isCoordinatorRole(role, _genomeSpec)) {
-                        introContent = `🎯 **${roleTitle}** reporting for duty!
-
-**My Role:** ${roleDesc}
-
-**Immediate Actions:**
-1. Review project requirements (read SYSTEM.md + AGENTS.md first)
-2. Break down work into actionable tasks on the kanban board
-3. Assign tasks to team members with clear ownership
-
-📢 **Team Members:** Please report your status. Before starting, confirm you have read SYSTEM.md and declare your task scope.${HELP_LANE_NOTE}`;
                     } else {
-                        // Other roles: dynamic from genome DNA
-                        const allCapabilities = [...responsibilities, ...capabilities];
-                        const capText = allCapabilities.length > 0
-                            ? allCapabilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
-                            : 'Ready to assist the team';
-                        const roleDesc = genomeDescription
-                            ? `\n**Scope:** ${genomeDescription}`
-                            : '';
-
-                        introContent = `✅ **${roleTitle}** online and ready!
-
-**My Capabilities:**
-${capText}${roleDesc}
-
-**Status:** I have read SYSTEM.md and AGENTS.md. Awaiting task assignment from @master or @orchestrator.${HELP_LANE_NOTE}`;
+                        const roleSummary = genomeDescription || roleDef?.name || roleTitle;
+                        introContent = buildAgentHandshakeContent({
+                            role: role!,
+                            roleTitle,
+                            isCoordinator: isCoordinatorRole(role, _genomeSpec),
+                            isBootstrap: isBootstrapRole(role, _genomeSpec),
+                            roleDescription: roleSummary,
+                            responsibilities,
+                            capabilities,
+                            scopeSummary,
+                        });
                     }
 
                     const handshakeMsg = {
@@ -830,6 +832,18 @@ ${capText}${roleDesc}
                             !t.assigneeId
                         );
                     }
+                }
+                if (teamData && filteredBoard.team && Array.isArray(filteredBoard.team.members)) {
+                    filteredBoard.team = {
+                        ...filteredBoard.team,
+                        members: filteredBoard.team.members.map((member: any) => {
+                            if (!member || typeof member !== 'object' || !('customPrompt' in member)) {
+                                return member;
+                            }
+                            const { customPrompt: _customPrompt, ...safeMember } = member;
+                            return safeMember;
+                        }),
+                    };
                 }
 
                 let instructions: string;
@@ -915,22 +929,23 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 ## 🔍 PHASE 2 — FULL ANALYSIS (only when there is new content)
 
 2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
-3. Call \`list_team_runtime_logs\` with the teamId
-4. Use tool output only to locate files and offsets. Then inspect the raw log tails yourself:
+3. Call \`list_team_cc_logs\` with the teamId so every Claude agent session is mapped to its raw CC transcript
+4. Call \`list_team_runtime_logs\` with the teamId
+5. Use tool output only to locate files and offsets. Then inspect the raw log tails yourself:
    - Team log tail from \`.aha/teams/${supervisorTeamId}/messages.jsonl\` starting at line ${teamLogCursor}
-   - Claude raw log tails via \`read_cc_log\` or \`read_runtime_log\` with \`runtimeType: "claude"\`
+   - Claude raw log tails via \`read_cc_log\` for each active Claude agent whenever a CC log mapping exists; fall back to \`read_runtime_log\` only when necessary
    - Codex history tail via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "history"\`
    - Relevant Codex raw session transcript tails via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "session"\`
-5. Correlate the sources instead of trusting any one feed in isolation:
+6. Correlate the sources instead of trusting any one feed in isolation:
    - Match by timestamp window, cwd (\`/Users/swmt/happy0313\`), session id, role, task id, and claimed action
    - Use Codex history to find which user requests and Codex sessions are relevant, then open those transcript tails
-   - Use Claude raw logs to verify actual reads / edits / bash runs, not just narrated claims
+   - Use Claude raw logs to verify actual reads / edits / bash runs, not just narrated claims. Do not score a Claude agent from team messages alone when a CC log exists.
    - Distinguish external uncertainty from internal invariant failures; do not let a soft fallback hide a real mistake
-6. Cross-validate: compare team-log claims vs raw Claude / Codex evidence
+7. Cross-validate: compare team-log claims vs raw Claude / Codex evidence
    - Agent says "did review" but raw logs show no relevant reads → integrity issue
    - Agent says "tests pass" but raw logs show no test command → suspicious
    - Agent handled ambiguity well, kept scope tight, or unblocked others efficiently → record that as a strength
-7. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
+8. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
    **a. Collect hardMetrics** (layer 1, required) from data already gathered:
       - \`tasksAssigned\` / \`tasksCompleted\` / \`tasksBlocked\` → from list_tasks output
       - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from raw Claude / Codex evidence you just inspected
@@ -949,14 +964,27 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    **d. Set overall**: defaults to \`sessionScore.overall\`. The guardrail still compares it to \`hardMetricsScore\`; gap > 20 is rejected.
    **e. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
    **f. In \`recommendations\`, include BOTH strengths and weaknesses as short public-safe statements. These become the marketplace crowd-review snippets, so avoid paths, secrets, UUIDs, or raw internal IDs.**
-8. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
-9. Decide on action:
+9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. If older team members are missing \`specId\`, still close the loop for canonical official roles by using the role fallback:
+   - \`master -> @official/master\`
+   - \`org-manager -> @official/org-manager\`
+   - \`researcher -> @official/researcher\`
+   - \`architect\` / \`solution-architect -> @official/architect\`
+   - \`implementer -> @official/implementer\`
+   - \`qa\` / \`qa-engineer -> @official/qa-engineer\`
+   Skip upload only when no canonical genome exists for that role. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
+9b. **Upload team feedback to server**: After you finish the whole-team judgment, call \`update_team_feedback\` once for the current team with:
+   - a 1-5 \`rating\` for overall team collaboration quality
+   - optional \`codeScore\` / \`qualityScore\`
+   - \`source: "system"\`
+   - a short public-safe \`comment\`
+   This writes the real team crowd-review data used by the team detail page. Do not include secrets, paths, UUIDs, or raw internal evidence.
+10. Decide on action:
    - If an agent looks stuck (same state as last run, no meaningful progress):
      → Call \`request_help\` with the stuck agent's sessionId and a clear description of what is blocked and why
      → request_help spawns a live help-agent that will intervene directly — this is the ONLY way to trigger help
    - If situation is healthy or improving → set pendingAction to null
    - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\` or \`kill_agent\` now
-10. Call \`save_supervisor_state\` with:
+11. Call \`save_supervisor_state\` with:
    - updated \`teamLogCursor\`
    - updated \`ccLogCursors\`
    - updated \`codexHistoryCursor\`
@@ -1172,6 +1200,19 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
                     }
                 }
 
+                const teamBootContext = (filteredBoard as any)?.team?.bootContext as
+                    | { teamDescription?: string; initialObjective?: string }
+                    | undefined;
+
+                const teamBootContextSection = teamBootContext
+                    ? `
+🏛️ Corps Boot Context (Shared Team Rules):
+${teamBootContext.teamDescription ? `Team Description:\n${teamBootContext.teamDescription}\n` : ''}${teamBootContext.initialObjective ? `Initial Objective:\n${teamBootContext.initialObjective}\n` : ''}
+Treat this as a shared team-level contract layered above individual agent behavior.
+If team-level rules conflict with ad-hoc chat, follow the team-level rules.
+`
+                    : '';
+
                 const contextMsg = `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📢 TEAM ASSIGNMENT: ${teamName}
@@ -1179,6 +1220,8 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 You have been assigned to this team with role: ${role}.
 
 💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is 200K tokens.
+
+${teamBootContextSection}
 
 📋 Team Context (Filtered for your Role):
 ${JSON.stringify(filteredBoard, null, 2)}
@@ -1232,12 +1275,12 @@ ${instructions}
                     finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
                     logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for org-manager');
                     // Use pushImmediate (non-isolated) so Claude treats this as actionable user message
-                    messageQueue.pushImmediate(finalContextMsg, enhancedMode);
+                    messageQueue.pushImmediate(escapeInjectedContextForTransport(finalContextMsg), enhancedMode);
                     logger.debug('[runClaude] Pushed org-manager context+task as immediate message');
                 } else {
                     // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
                     // This prevents context leakage from previous teams or sessions
-                    messageQueue.pushIsolateAndClear(finalContextMsg, enhancedMode);
+                    messageQueue.pushIsolateAndClear(escapeInjectedContextForTransport(finalContextMsg), enhancedMode);
                     logger.debug('[runClaude] Injected team context into queue (cleared previous context) with role prompt');
                 }
             }

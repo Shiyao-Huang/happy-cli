@@ -264,6 +264,80 @@ export function canManageExistingTasks(role: string | undefined, genome?: { mess
     return isCoordinatorRole(role);
 }
 
+export interface AgentHandshakeContentOptions {
+    role: string;
+    roleTitle?: string;
+    isCoordinator?: boolean;
+    isBootstrap?: boolean;
+    roleDescription?: string;
+    responsibilities?: string[];
+    capabilities?: string[];
+    scopeSummary?: string;
+}
+
+function normalizeHandshakeBullets(items: string[]): string[] {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+
+    for (const item of items) {
+        const trimmed = item.trim();
+        if (!trimmed) continue;
+        if (seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        normalized.push(trimmed);
+    }
+
+    return normalized;
+}
+
+export function buildAgentHandshakeContent(options: AgentHandshakeContentOptions): string {
+    if (options.isBootstrap) {
+        return '';
+    }
+
+    const roleDef = DEFAULT_ROLES[options.role];
+    const roleTitle = options.roleTitle || roleDef?.name || options.role;
+    const isCoordinator = options.isCoordinator ?? COORDINATION_ROLES.includes(options.role);
+    const capabilities = normalizeHandshakeBullets([
+        ...(options.responsibilities || []),
+        ...(options.capabilities || []),
+    ]);
+    const capabilityText = capabilities.length > 0
+        ? capabilities.map((item, index) => `${index + 1}. ${item}`).join('\n')
+        : '1. Ready to assist the team';
+    const roleSummary = options.roleDescription?.trim() || roleDef?.name || roleTitle;
+    const scopeLine = options.scopeSummary?.trim()
+        ? `\n**Boundary:** ${options.scopeSummary.trim()}`
+        : '';
+    const helpLaneLine = '**Help Lane:** If blocked, call `request_help` with evidence. `@help` in team chat triggers the same escalation path.';
+
+    if (isCoordinator) {
+        return `🎯 **${roleTitle}** reporting for duty!
+
+**My Role:** ${roleSummary}${scopeLine}
+
+**Readiness Check:** I have read SYSTEM.md and AGENTS.md, I know the help lane (\`request_help\` / \`@help\`), and I will coordinate within my assigned role boundary.
+
+**Immediate Actions:**
+1. Review project requirements and live team state
+2. Break down work into actionable tasks on the kanban board
+3. Assign tasks with clear ownership and escalation paths
+
+📢 **Team Members:** Before starting, confirm your scope and use the help lane if blocked.
+${helpLaneLine}`;
+    }
+
+    return `✅ **${roleTitle}** online and ready!
+
+**My Capabilities:**
+${capabilityText}${scopeLine}
+
+**Readiness Check:** I have read SYSTEM.md and AGENTS.md. I know to use \`request_help\` or \`@help\` when blocked, and I will stay within my assigned scope.
+
+**Status:** Awaiting task assignment from @master or @orchestrator.
+${helpLaneLine}`;
+}
+
 /**
  * Check if a role is deprecated and should not be used for new teams.
  */
@@ -915,6 +989,7 @@ Read the <Task_Prompt> above. Determine:
 - What kind of work is needed? (frontend, backend, testing, research, design, etc.)
 - How many agents are needed? (minimum viable team — do NOT over-staff)
 - What roles map to the work? Start with the standard list: master, implementer, architect, qa-engineer, researcher, reviewer
+- If the task is explicitly about creating, refining, mutating, or publishing agents/genomes, your FIRST specialist after master is agent-builder
 
 ### Step 2: Inspect Live Team State First
 
@@ -947,6 +1022,11 @@ Evaluate the results:
 - If nothing fits or marketplace is unreachable, proceed without \`specId\` (defaults to \`@official/{role}\`)
 - Marketplace failure MUST NOT block team assembly — it is a best-effort lookup
 
+Special rule for agent-authoring work:
+- Search for \`agent-builder\` whenever the user asks to create/refine/publish agents or genomes
+- Prefer \`@official/agent-builder\` for Claude runtime and \`@official/agent-builder-codex\` for Codex runtime
+- Spawn it with a prompt that says what kind of agent/genome work it should do
+
 When forking a marketplace genome, pass the original genome's \`id\` as \`parentId\` in \`create_genome\` calls, along with a brief \`mutationNote\` describing your changes.
 
 ### Step 4: Spawn Team Members
@@ -967,6 +1047,7 @@ create_agent({
 **Rules:**
 - You are a SEED AGENT. Team assembly must continue even when the marketplace is empty or incomplete
 - Always spawn a \`master\` first — it coordinates the team after you leave
+- For agent-authoring / genome-authoring requests, spawn \`agent-builder\` immediately after \`master\`, before any other optional specialists
 - If the task prompt says Claude Code only or Codex only, set the \`agent\` field on every \`create_agent\` call to match
 - If the task prompt says mixed, choose \`agent: "claude"\` or \`agent: "codex"\` deliberately per role
 - Spawn 1-3 implementation roles depending on task complexity

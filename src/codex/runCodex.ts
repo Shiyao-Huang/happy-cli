@@ -34,12 +34,13 @@ import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
 import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
-import { COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
+import { buildAgentHandshakeContent, COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
 import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
 import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
 import type { GenomeSpec } from '@/api/types/genome';
+import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
 // Helper functions for role metadata
 function getRoleTitle(roleId: string): string {
@@ -1318,6 +1319,7 @@ export async function runCodex(opts: {
             }
         }
     }
+    const mountedAgentPromptBlock = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
 
     // ============================================================
     // Team Collaboration Initialization
@@ -1368,28 +1370,13 @@ export async function runCodex(opts: {
             const isCoordinator = COORDINATION_ROLES.includes(role);
 
             // Send handshake message to announce presence
-            let introContent: string;
-            if (isCoordinator) {
-                introContent = `🎯 **${roleTitle}** online and ready to coordinate!
-
-As the team coordinator, I will:
-1. Analyze incoming requests and create execution plans
-2. Break down work into actionable tasks
-3. Assign tasks to team members
-
-📢 **Team Members:** Please report your status and availability. I will begin task assignment shortly.`;
-            } else {
-                const responsibilitiesText = roleResponsibilities.length > 0
-                    ? roleResponsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')
-                    : 'Ready to assist the team';
-
-                introContent = `✅ **${roleTitle}** online and ready!
-
-**My Capabilities:**
-${responsibilitiesText}
-
-Awaiting task assignment from @master or @orchestrator.`;
-            }
+            const introContent = buildAgentHandshakeContent({
+                role,
+                roleTitle,
+                isCoordinator,
+                roleDescription: isCoordinator ? `Coordinate the team as ${roleTitle}` : undefined,
+                responsibilities: roleResponsibilities,
+            });
 
             // Send handshake message
             const handshakeMsg = {
@@ -1574,6 +1561,10 @@ ${historyText}
                     };
 
                     const instructionBlocks: string[] = [];
+
+                    if (mountedAgentPromptBlock) {
+                        instructionBlocks.push(mountedAgentPromptBlock);
+                    }
 
                     // Inject team context if initialized (this includes role, responsibilities, kanban state, required actions)
                     if (teamInitialized && teamContextBlock) {

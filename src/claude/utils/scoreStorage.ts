@@ -17,6 +17,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
+import { configuration } from '@/configuration';
 
 /**
  * Objective event counts recorded during a session.
@@ -131,8 +132,46 @@ interface ScoreFile {
     scores: AgentScore[];
 }
 
-function getScorePath(): string {
+function getCanonicalScorePath(): string {
+    return join(configuration.ahaHomeDir, 'scores', 'agent_scores.json');
+}
+
+function getLegacyWorkingDirectoryScorePath(): string {
     return join(process.cwd(), '.aha', 'scores', 'agent_scores.json');
+}
+
+function getReadableScorePaths(): string[] {
+    const canonical = getCanonicalScorePath();
+    const legacy = getLegacyWorkingDirectoryScorePath();
+    return canonical === legacy ? [canonical] : [canonical, legacy];
+}
+
+function dedupeScores(scores: AgentScore[]): AgentScore[] {
+    const seen = new Set<string>();
+    const deduped: AgentScore[] = [];
+
+    for (const score of scores) {
+        const key = [
+            score.sessionId,
+            score.teamId,
+            score.role,
+            score.scorer,
+            score.timestamp,
+            score.specId ?? '',
+            score.specNamespace ?? '',
+            score.specName ?? '',
+            score.action,
+        ].join('::');
+
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        deduped.push(score);
+    }
+
+    deduped.sort((a, b) => a.timestamp - b.timestamp);
+    return deduped;
 }
 
 /**
@@ -140,22 +179,30 @@ function getScorePath(): string {
  * Returns an empty ScoreFile if the file does not exist or is malformed.
  */
 export function readScores(): ScoreFile {
-    const scorePath = getScorePath();
+    const allScores: AgentScore[] = [];
+    let version = '1.0';
 
-    if (!existsSync(scorePath)) {
-        return { version: '1.0', scores: [] };
+    for (const scorePath of getReadableScorePaths()) {
+        if (!existsSync(scorePath)) {
+            continue;
+        }
+
+        try {
+            const raw = readFileSync(scorePath, 'utf-8');
+            const parsed = JSON.parse(raw) as ScoreFile;
+            version = parsed.version || version;
+            if (Array.isArray(parsed.scores)) {
+                allScores.push(...parsed.scores);
+            }
+        } catch {
+            // Ignore malformed legacy score files and keep reading other sources.
+        }
     }
 
-    try {
-        const raw = readFileSync(scorePath, 'utf-8');
-        const parsed = JSON.parse(raw) as ScoreFile;
-        return {
-            version: parsed.version || '1.0',
-            scores: Array.isArray(parsed.scores) ? parsed.scores : [],
-        };
-    } catch {
-        return { version: '1.0', scores: [] };
-    }
+    return {
+        version,
+        scores: dedupeScores(allScores),
+    };
 }
 
 /**
@@ -163,7 +210,7 @@ export function readScores(): ScoreFile {
  * Creates the directory and file if they do not exist.
  */
 export function writeScore(score: AgentScore): void {
-    const scorePath = getScorePath();
+    const scorePath = getCanonicalScorePath();
     const dir = dirname(scorePath);
 
     mkdirSync(dir, { recursive: true });

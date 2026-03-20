@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    buildAgentHandshakeContent,
     canCreateTeamTasks,
     canManageExistingTasks,
     canSpawnAgents,
@@ -85,7 +86,7 @@ describe('Role Permissions System', () => {
             expect(prompt).toContain('get_team_info()');
             expect(prompt).toContain('list_tasks()');
             expect(prompt).toContain('You must use the actual live system state');
-            expect(prompt).toContain('marketplace as a memory warehouse');
+            expect(prompt).toContain('The marketplace is optional memory, not a blocking dependency');
         });
 
         it('should inject shared help and challenge rules for workers', () => {
@@ -94,8 +95,9 @@ describe('Role Permissions System', () => {
                 role: 'builder',
             } as any);
 
-            expect(prompt).toContain('Always Injected Team Operating Rules');
+            expect(prompt).toContain('<Shared_Operating_Rules>');
             expect(prompt).toContain('request_help');
+            expect(prompt).toContain('@help');
             expect(prompt).toContain('type: "challenge"');
             expect(prompt).toContain('type: "vote"');
         });
@@ -108,6 +110,31 @@ describe('Role Permissions System', () => {
 
             expect(prompt).toContain('replace_agent');
             expect(prompt).toContain('switch runtime between `claude` and `codex`');
+        });
+
+        it('should build a worker handshake with explicit help-lane awareness', () => {
+            const handshake = buildAgentHandshakeContent({
+                role: 'builder',
+                responsibilities: ['Implement the scoped work'],
+                scopeSummary: 'Owned paths: src/; forbidden: AGENTS.md, SYSTEM.md',
+            });
+
+            expect(handshake).toContain('SYSTEM.md and AGENTS.md');
+            expect(handshake).toContain('request_help');
+            expect(handshake).toContain('@help');
+            expect(handshake).toContain('Owned paths: src/');
+        });
+
+        it('should build a coordinator handshake with role-specific readiness language', () => {
+            const handshake = buildAgentHandshakeContent({
+                role: 'master',
+                isCoordinator: true,
+                roleDescription: 'Coordinate the team and assign work',
+            });
+
+            expect(handshake).toContain('reporting for duty');
+            expect(handshake).toContain('Coordinate the team and assign work');
+            expect(handshake).toContain('help lane');
         });
     });
 });

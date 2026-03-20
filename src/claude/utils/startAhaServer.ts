@@ -25,6 +25,10 @@ import type { AggregatedFeedback } from '@/claude/utils/feedbackPrivacy';
 import { createTeamMemberIdentity } from './teamMemberIdentity';
 import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembership';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from './runtimeLogReader';
+import {
+    resolveFeedbackUploadTarget,
+    scoreMatchesFeedbackTarget,
+} from './supervisorGenomeFeedback';
 
 export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
     // Handler that sends title updates via the client
@@ -71,6 +75,122 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
             return null;
         }
         return new TaskStateManager(api, teamId, client.sessionId, metadata?.role);
+    };
+
+    const HELP_MENTION_RE = /(^|\n)\s*@help\b/i;
+
+    const toHelpSeverity = (priority?: 'normal' | 'high' | 'urgent'): 'low' | 'medium' | 'high' | 'critical' => {
+        switch (priority) {
+            case 'urgent':
+                return 'critical';
+            case 'high':
+                return 'high';
+            default:
+                return 'medium';
+        }
+    };
+
+    const containsHelpMention = (content: string): boolean => HELP_MENTION_RE.test(content.trim());
+
+    const triggerHelpLane = async (params: {
+        teamId: string;
+        sessionId: string;
+        role?: string;
+        type: 'stuck' | 'context_overflow' | 'need_collaborator' | 'error' | 'custom';
+        description: string;
+        severity: 'low' | 'medium' | 'high' | 'critical';
+        taskId?: string;
+        sendNotification?: boolean;
+    }): Promise<{ helpSpawned: boolean; error?: string }> => {
+        const {
+            teamId,
+            sessionId,
+            role,
+            type,
+            description,
+            severity,
+            taskId,
+            sendNotification = true,
+        } = params;
+
+        try {
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const eventsDir = path.join(process.cwd(), '.aha', 'events');
+            fs.mkdirSync(eventsDir, { recursive: true });
+
+            const event = {
+                timestamp: new Date().toISOString(),
+                sessionId,
+                teamId,
+                role,
+                type,
+                description,
+                severity,
+                taskId,
+            };
+
+            const eventsFile = path.join(eventsDir, 'help_requests.jsonl');
+            fs.appendFileSync(eventsFile, JSON.stringify(event) + '\n');
+        } catch (error) {
+            logger.debug('[help-lane] Failed to persist help request event (non-fatal)', error);
+        }
+
+        if (sendNotification) {
+            try {
+                const severityEmoji = severity === 'critical' ? '🚨' : severity === 'high' ? '🆘' : '🙋';
+                const shortDesc = description.length > 150 ? description.substring(0, 150) + '...' : description;
+                await api.sendTeamMessage(teamId, {
+                    id: randomUUID(),
+                    teamId,
+                    content: `${severityEmoji} Help requested (${type}, ${severity}): ${description}`,
+                    shortContent: `${severityEmoji} Help: ${shortDesc}`,
+                    type: 'notification',
+                    timestamp: Date.now(),
+                    fromSessionId: sessionId,
+                    fromRole: role,
+                    metadata: { helpType: type, severity, taskId },
+                });
+            } catch (error) {
+                logger.debug('[help-lane] Failed to send help request notification (non-fatal)', error);
+            }
+        }
+
+        try {
+            const { updateSupervisorRun } = await import('@/daemon/supervisorState');
+            await updateSupervisorRun(teamId, {
+                pendingAction: {
+                    type: 'notify_help',
+                    message: `[${severity}] ${description}`,
+                },
+            });
+            logger.debug(`[help-lane] pendingAction saved for team ${teamId}`);
+        } catch (error) {
+            logger.debug('[help-lane] Failed to save pendingAction (non-fatal)', error);
+        }
+
+        try {
+            const { daemonPost } = await import('@/daemon/controlClient');
+            const helpResult = await daemonPost('/help-request', {
+                teamId,
+                sessionId,
+                type,
+                description,
+                severity,
+            });
+
+            if (helpResult && !helpResult.error) {
+                logger.debug(`[help-lane] Help-agent spawned via daemon: ${JSON.stringify(helpResult)}`);
+                return { helpSpawned: true };
+            }
+
+            const error = helpResult?.error || 'unknown error';
+            logger.debug(`[help-lane] Daemon help-request failed: ${error}`);
+            return { helpSpawned: false, error };
+        } catch (error) {
+            logger.debug('[help-lane] Failed to spawn help-agent via daemon (non-fatal)', error);
+            return { helpSpawned: false, error: String(error) };
+        }
     };
 
     //
@@ -355,10 +475,26 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
 
             await api.sendTeamMessage(teamId, message);
 
+            let helpSuffix = '';
+            if (role !== 'help-agent' && containsHelpMention(args.content)) {
+                const escalation = await triggerHelpLane({
+                    teamId,
+                    sessionId: client.sessionId,
+                    role,
+                    type: 'custom',
+                    description: args.content,
+                    severity: toHelpSeverity(args.priority),
+                    sendNotification: false,
+                });
+                helpSuffix = escalation.helpSpawned
+                    ? ' Auto-escalated to a help-agent via @help.'
+                    : ' Detected @help and logged/escalated it, but help-agent spawn was not confirmed.';
+            }
+
             return {
                 content: [{
                     type: 'text',
-                    text: `Successfully sent message to team ${teamId}${args.mentions ? ` (mentioned ${args.mentions.length} members)` : ''}`,
+                    text: `Successfully sent message to team ${teamId}${args.mentions ? ` (mentioned ${args.mentions.length} members)` : ''}.${helpSuffix}`,
                 }],
                 isError: false,
             };
@@ -1367,7 +1503,22 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 spawnCount: number; feedbackData: string | null;
             }> };
 
-            const agents = (data.genomes ?? []).filter(g => g.category !== 'corps');
+            const agents = (data.genomes ?? [])
+                .filter(g => g.category !== 'corps')
+                .sort((left, right) => {
+                    const leftTags = left.tags ? (() => { try { return JSON.parse(left.tags) as string[]; } catch { return []; } })() : [];
+                    const rightTags = right.tags ? (() => { try { return JSON.parse(right.tags) as string[]; } catch { return []; } })() : [];
+                    const leftSpecial = leftTags.some((tag) => {
+                        const normalized = String(tag).toLowerCase();
+                        return normalized.includes('special') || normalized.includes('agent-builder');
+                    }) || left.name.toLowerCase().includes('agent-builder');
+                    const rightSpecial = rightTags.some((tag) => {
+                        const normalized = String(tag).toLowerCase();
+                        return normalized.includes('special') || normalized.includes('agent-builder');
+                    }) || right.name.toLowerCase().includes('agent-builder');
+
+                    return Number(rightSpecial) - Number(leftSpecial);
+                });
 
             if (agents.length === 0) {
                 return { content: [{ type: 'text', text: 'Marketplace is empty.' }], isError: false };
@@ -1377,11 +1528,16 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const lines = agents.map(g => {
                 let fb: { avgScore?: number; evaluationCount?: number } = {};
                 try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
-                const tags = g.tags ? (() => { try { return JSON.parse(g.tags!).join(','); } catch { return ''; } })() : '';
+                const parsedTags = g.tags ? (() => { try { return JSON.parse(g.tags!) as string[]; } catch { return []; } })() : [];
+                const tags = parsedTags.join(',');
                 const score = typeof fb.avgScore === 'number' ? `★${fb.avgScore}(${fb.evaluationCount})` : '';
                 const spawns = g.spawnCount > 0 ? `${g.spawnCount}x` : '';
                 const desc = (g.description ?? '').slice(0, 60);
-                return `${g.id} ${g.namespace ?? ''}/${g.name} ${score} ${spawns} [${tags}] ${desc}`.trim();
+                const special = parsedTags.some(tag => {
+                    const normalized = tag.toLowerCase();
+                    return normalized.includes('special') || normalized.includes('agent-builder');
+                }) ? '[SPECIAL] ' : '';
+                return `${special}${g.id} ${g.namespace ?? ''}/${g.name} ${score} ${spawns} [${tags}] ${desc}`.trim();
             });
 
             const header = `${agents.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.`;
@@ -1413,6 +1569,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
    - qa-engineer: Tester. Spawn when quality assurance is explicitly needed.
    - researcher: Information gatherer. Spawn when external research or analysis is required.
    - reviewer: Code reviewer. Spawn for review-heavy workflows.
+   - agent-builder: Special genome architect. Spawn when the task is to create, refine, mutate, package, or publish agents/genomes. In those workflows, this is usually the first specialist after master.
 
 ## Agent Type Selection
 
@@ -1503,6 +1660,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 },
             } as Record<string, any>;
 
+            const runtimeAwareOfficialNames = args.role === 'agent-builder' && args.agent === 'codex'
+                ? ['agent-builder-codex', 'agent-builder']
+                : [args.role];
+
             // Auto-resolve specId from genome-hub: explicit arg > best-rated strategy > @official/{role} > none
             let resolvedSpecId = args.specId;
             if (!resolvedSpecId) {
@@ -1511,47 +1672,57 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
                 // ── Phase 3-B Change 5: best-rated strategy ──
                 if (strategy === 'best-rated') {
-                    try {
-                        const searchUrl = `${hubUrl}/genomes?q=${encodeURIComponent(args.role)}&sortBy=score&limit=5`;
-                        const res = await fetch(searchUrl, { signal: AbortSignal.timeout(3_000) });
-                        if (res.ok) {
-                            const data = await res.json() as { genomes?: Array<{ id: string; feedbackData?: string }> };
-                            const candidates = (data.genomes ?? []).filter(g => {
-                                if (!g.feedbackData) return false;
-                                try {
-                                    const fb = JSON.parse(g.feedbackData);
-                                    return typeof fb.evaluationCount === 'number' && fb.evaluationCount >= 3;
-                                } catch { return false; }
-                            });
-                            if (candidates.length > 0) {
-                                resolvedSpecId = candidates[0].id;
-                                logger.debug(`[create_agent] best-rated strategy: selected specId=${resolvedSpecId} for role ${args.role}`);
-                            } else {
-                                logger.debug(`[create_agent] best-rated strategy: no qualified candidates (evaluationCount>=3), falling back to official`);
+                    for (const queryName of runtimeAwareOfficialNames) {
+                        try {
+                            const searchUrl = `${hubUrl}/genomes?q=${encodeURIComponent(queryName)}&sortBy=score&limit=5`;
+                            const res = await fetch(searchUrl, { signal: AbortSignal.timeout(3_000) });
+                            if (res.ok) {
+                                const data = await res.json() as { genomes?: Array<{ id: string; name?: string; feedbackData?: string }> };
+                                const candidates = (data.genomes ?? []).filter(g => {
+                                    if (!g.feedbackData) return false;
+                                    if (g.name && queryName === 'agent-builder-codex' && g.name !== 'agent-builder-codex') return false;
+                                    try {
+                                        const fb = JSON.parse(g.feedbackData);
+                                        return typeof fb.evaluationCount === 'number' && fb.evaluationCount >= 3;
+                                    } catch { return false; }
+                                });
+                                if (candidates.length > 0) {
+                                    resolvedSpecId = candidates[0].id;
+                                    logger.debug(`[create_agent] best-rated strategy: selected specId=${resolvedSpecId} for role ${args.role}`);
+                                    break;
+                                } else {
+                                    logger.debug(`[create_agent] best-rated strategy: no qualified candidates (evaluationCount>=3) for ${queryName}`);
+                                }
                             }
+                        } catch {
+                            // best-rated lookup failed — fall through to next candidate / official
                         }
-                    } catch {
-                        // best-rated lookup failed — fall through to official
+                    }
+                    if (!resolvedSpecId) {
+                        logger.debug(`[create_agent] best-rated strategy: no runtime-aware candidates, falling back to official`);
                     }
                 }
 
                 // Fallback: @official/{role}
                 if (!resolvedSpecId) {
-                    try {
-                        const hubUrl2 = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                        const res = await fetch(
-                            `${hubUrl2}/genomes/%40official/${encodeURIComponent(args.role)}`,
-                            { signal: AbortSignal.timeout(3_000) }
-                        );
-                        if (res.ok) {
-                            const data = await res.json() as { genome?: { id: string } };
-                            resolvedSpecId = data.genome?.id;
-                            if (resolvedSpecId) {
-                                logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role}`);
+                    for (const officialName of runtimeAwareOfficialNames) {
+                        try {
+                            const hubUrl2 = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                            const res = await fetch(
+                                `${hubUrl2}/genomes/%40official/${encodeURIComponent(officialName)}`,
+                                { signal: AbortSignal.timeout(3_000) }
+                            );
+                            if (res.ok) {
+                                const data = await res.json() as { genome?: { id: string } };
+                                resolvedSpecId = data.genome?.id;
+                                if (resolvedSpecId) {
+                                    logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role} via ${officialName}`);
+                                    break;
+                                }
                             }
+                        } catch {
+                            // genome-hub unreachable — proceed without specId
                         }
-                    } catch {
-                        // genome-hub unreachable — proceed without specId
                     }
                 }
             }
@@ -2219,13 +2390,20 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
             : { ok: true, gap: 0, maxGap: maxScoreGap };
 
+        const feedbackTarget = resolveFeedbackUploadTarget({
+            role: args.role,
+            specId: resolvedSpecId,
+            specNamespace,
+            specName,
+        });
+
         writeScore({
             sessionId: args.sessionId,
             teamId: args.teamId,
             role: args.role,
             specId: resolvedSpecId,
-            specNamespace,
-            specName,
+            specNamespace: specNamespace ?? feedbackTarget?.namespace,
+            specName: specName ?? feedbackTarget?.name,
             timestamp: Date.now(),
             scorer: client.sessionId,
             hardMetrics: args.hardMetrics,
@@ -2241,25 +2419,44 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         });
 
         // ── Phase 3-B Change 3: Auto-trigger feedback upload when >= 3 scores ──
-        if (resolvedSpecId && specNamespace && specName) {
+        if (feedbackTarget) {
             try {
                 const { readScores } = await import('@/claude/utils/scoreStorage');
                 const { scores: allScores } = readScores();
-                const genomeScores = allScores.filter(s => s.specId === resolvedSpecId);
+                const genomeScores = allScores.filter((score) =>
+                    scoreMatchesFeedbackTarget(score, feedbackTarget, args.role)
+                );
                 if (genomeScores.length >= 3) {
                     const { aggregateScores } = await import('@/claude/utils/feedbackPrivacy');
                     const feedback = aggregateScores(genomeScores);
                     const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                    fetch(`${hubUrl}/genomes/${encodeURIComponent(specNamespace)}/${encodeURIComponent(specName)}/feedback`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(feedback),
-                        signal: AbortSignal.timeout(5_000),
-                    }).catch(() => { /* non-critical: feedback upload failed */ });
-                    logger.debug(`[score_agent] Auto-triggered feedback upload for ${specNamespace}/${specName} (${genomeScores.length} scores)`);
+                    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+                    const response = await fetch(
+                        `${hubUrl}/genomes/${encodeURIComponent(feedbackTarget.namespace)}/${encodeURIComponent(feedbackTarget.name)}/feedback`,
+                        {
+                            method: 'PATCH',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
+                            },
+                            body: JSON.stringify(feedback),
+                            signal: AbortSignal.timeout(5_000),
+                        },
+                    );
+
+                    if (!response.ok) {
+                        const errorText = await response.text().catch(() => '');
+                        logger.debug(
+                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name}: ${response.status} ${errorText}`,
+                        );
+                    } else {
+                        logger.debug(
+                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, source=${feedbackTarget.source})`,
+                        );
+                    }
                 }
-            } catch {
-                // feedback auto-upload failed — non-critical
+            } catch (error) {
+                logger.debug(`[score_agent] Auto-feedback upload error for role ${args.role}: ${String(error)}`);
             }
         }
 
@@ -2357,6 +2554,65 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: `Feedback uploaded to marketplace:\n${summary}` }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Network error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('update_team_feedback', {
+        description: [
+            'Submit a public review for the current team and persist a real team scorecard on the server.',
+            'Use this after a supervisor cycle when you have enough evidence to judge overall collaboration quality.',
+            'Supervisor only.',
+        ].join(' '),
+        title: 'Update Team Feedback',
+        inputSchema: {
+            teamId: z.string().describe('Team id to review'),
+            rating: z.number().min(1).max(5).describe('Overall team rating on a 1-5 scale'),
+            codeScore: z.number().min(0).max(100).optional().describe('Optional code execution score'),
+            qualityScore: z.number().min(0).max(100).optional().describe('Optional quality/collaboration score'),
+            source: z.enum(['user', 'master', 'system']).default('system').optional().describe('Review source bucket'),
+            sourceScores: z.object({
+                user: z.number().optional(),
+                master: z.number().optional(),
+                system: z.number().optional(),
+            }).optional().describe('Optional explicit source totals to add to the scorecard'),
+            roleIds: z.array(z.string()).optional().describe('Roles included in this team review'),
+            comment: z.string().optional().describe('Short public review note'),
+            dryRun: z.boolean().optional().describe('If true, do not persist; return the payload only'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can update team feedback.' }], isError: true };
+        }
+
+        const payload = {
+            rating: args.rating,
+            ...(args.codeScore !== undefined ? { codeScore: args.codeScore } : {}),
+            ...(args.qualityScore !== undefined ? { qualityScore: args.qualityScore } : {}),
+            ...(args.source ? { source: args.source } : {}),
+            ...(args.sourceScores ? { sourceScores: args.sourceScores } : {}),
+            ...(args.roleIds ? { roleIds: args.roleIds } : {}),
+            ...(args.comment ? { comment: args.comment } : {}),
+        };
+
+        if (args.dryRun) {
+            return {
+                content: [{ type: 'text', text: `DRY RUN — would submit team review:\n${JSON.stringify({ teamId: args.teamId, ...payload }, null, 2)}` }],
+                isError: false,
+            };
+        }
+
+        try {
+            const response = await api.reviewTeam(args.teamId, payload);
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Team feedback uploaded: rating=${response.scorecard.averageRating?.toFixed ? response.scorecard.averageRating.toFixed(2) : response.scorecard.averageRating} reviews=${response.scorecard.reviewCount} codeTotal=${response.scorecard.cumulativeCode} qualityTotal=${response.scorecard.cumulativeQuality}`,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error updating team feedback: ${String(error)}` }], isError: true };
         }
     });
 
@@ -2758,79 +3014,16 @@ The supervisor will see your request and may: send you guidance, compact your co
                 };
             }
 
-            // Write help request event to JSONL file
-            const fs = await import('node:fs');
-            const path = await import('node:path');
-            const eventsDir = path.join(process.cwd(), '.aha', 'events');
-            fs.mkdirSync(eventsDir, { recursive: true });
-
-            const event = {
-                timestamp: new Date().toISOString(),
-                sessionId,
+            const { helpSpawned } = await triggerHelpLane({
                 teamId,
+                sessionId,
                 role,
                 type: args.type,
                 description: args.description,
                 severity: args.severity,
                 taskId: args.taskId,
-            };
-
-            const eventsFile = path.join(eventsDir, 'help_requests.jsonl');
-            fs.appendFileSync(eventsFile, JSON.stringify(event) + '\n');
-
-            // Send a team message so supervisor can see it
-            try {
-                const severityEmoji = args.severity === 'critical' ? '🚨' : args.severity === 'high' ? '🆘' : '🙋';
-                const shortDesc = args.description.length > 150 ? args.description.substring(0, 150) + '...' : args.description;
-                await api.sendTeamMessage(teamId, {
-                    id: randomUUID(),
-                    teamId,
-                    content: `${severityEmoji} Help requested (${args.type}, ${args.severity}): ${args.description}`,
-                    shortContent: `${severityEmoji} Help: ${shortDesc}`,
-                    type: 'notification',
-                    timestamp: Date.now(),
-                    fromSessionId: sessionId,
-                    fromRole: role,
-                    metadata: { helpType: args.type, severity: args.severity, taskId: args.taskId },
-                });
-            } catch (e) {
-                logger.debug('Failed to send help request notification', e);
-            }
-
-            // Write pendingAction so the daemon supervisor loop picks it up
-            try {
-                const { updateSupervisorRun } = await import('@/daemon/supervisorState');
-                await updateSupervisorRun(teamId, {
-                    pendingAction: {
-                        type: 'notify_help',
-                        message: `[${args.severity}] ${args.description}`,
-                    },
-                });
-                logger.debug(`[request_help] pendingAction saved for team ${teamId}`);
-            } catch (e) {
-                logger.debug('[request_help] Failed to save pendingAction (non-fatal)', e);
-            }
-
-            // Directly spawn help-agent via daemon control server (don't wait for supervisor loop)
-            let helpSpawned = false;
-            try {
-                const { daemonPost } = await import('@/daemon/controlClient');
-                const helpResult = await daemonPost('/help-request', {
-                    teamId,
-                    sessionId,
-                    type: args.type,
-                    description: args.description,
-                    severity: args.severity,
-                });
-                if (helpResult && !helpResult.error) {
-                    helpSpawned = true;
-                    logger.debug(`[request_help] Help-agent spawned via daemon: ${JSON.stringify(helpResult)}`);
-                } else {
-                    logger.debug(`[request_help] Daemon help-request failed: ${helpResult?.error || 'unknown'}`);
-                }
-            } catch (e) {
-                logger.debug('[request_help] Failed to spawn help-agent via daemon (non-fatal)', e);
-            }
+                sendNotification: true,
+            });
 
             return {
                 content: [{
@@ -3009,6 +3202,7 @@ Namespace conventions:
             'score_agent',
             'score_supervisor_self',
             'update_genome_feedback',
+            'update_team_feedback',
             'compact_agent',
             'kill_agent',
             'save_supervisor_state'
