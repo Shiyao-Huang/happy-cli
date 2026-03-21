@@ -450,6 +450,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             maxScoreGap: z.number().min(0).max(100).default(20).optional().describe('Maximum allowed |hardMetricsScore - overall| before returning an error. Default 20.'),
             evidence: z.record(z.any()).optional(),
             recommendations: z.array(z.string()).optional(),
+            findings: z.array(z.object({
+                type: z.enum(['violation', 'missing', 'exceeded', 'good']).describe('What kind of observation'),
+                target: z.string().describe('Which genome spec field, e.g. "protocol[2]" or "responsibility[0]"'),
+                evidence: z.string().describe('CC log line or observed behavior proving this finding'),
+                severity: z.enum(['low', 'medium', 'high']).describe('Impact severity'),
+            })).optional().describe('Structured attribution: genome spec vs actual behavior comparison'),
             action: z.enum(['keep', 'keep_with_guardrails', 'mutate', 'discard']),
         },
     }, async (args) => {
@@ -604,8 +610,34 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             overall,
             evidence: args.evidence || {},
             recommendations: args.recommendations || [],
+            findings: args.findings || [],
             action: args.action,
         });
+
+        // ── Persist supervisor findings to run log ──────────────────
+        if (args.findings?.length) {
+            try {
+                const fs = await import('node:fs');
+                const path = await import('node:path');
+                const logDir = path.join(process.cwd(), '.aha', 'supervisor-logs');
+                fs.mkdirSync(logDir, { recursive: true });
+                const logEntry = {
+                    timestamp: new Date().toISOString(),
+                    teamId: args.teamId,
+                    sessionId: args.sessionId,
+                    role: args.role,
+                    specId: resolvedSpecId,
+                    overall,
+                    action: args.action,
+                    findings: args.findings,
+                    recommendations: args.recommendations || [],
+                };
+                fs.appendFileSync(
+                    path.join(logDir, `${args.teamId}.jsonl`),
+                    JSON.stringify(logEntry) + '\n'
+                );
+            } catch { /* logging must never break scoring */ }
+        }
 
         // ── Trace: score_completed ──────────────────────────────────
         let scoreCompletedEventId: string | null = null;

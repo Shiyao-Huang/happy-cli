@@ -456,6 +456,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         }
 
+        // Always block Claude Code's BUILT-IN team tools — our agents use Aha MCP team tools instead.
+        // Without this, agents confuse SendMessage (CC native) with send_team_message (Aha MCP),
+        // causing "Not in a team context" errors.
+        const CC_NATIVE_TEAM_TOOLS = ['SendMessage', 'TeamCreate', 'TeamDelete'];
+        currentDisallowedTools = [...(currentDisallowedTools || []), ...CC_NATIVE_TEAM_TOOLS];
+
         // Tier 4 — 权限模式（优先级低于 CLI 参数）
         if (_genomeSpec.permissionMode && !currentPermissionMode) {
             currentPermissionMode = _genomeSpec.permissionMode;
@@ -999,6 +1005,7 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 
 1b. Call \`get_team_pulse\` with your teamId FIRST — this tells you who is alive, suspect, or dead BEFORE reading any logs. Focus log analysis on agents that show 🟡 suspect or 🔴 dead.
 2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
+2b. **READ EACH AGENT'S GENOME SPEC** — For each agent with a specId, call \`list_available_agents\` with query=specId to retrieve the genome spec. Read its \`responsibilities\`, \`protocol\`, \`evalCriteria\`, \`capabilities\`, and \`scopeOfResponsibility\`. These define WHAT THE AGENT SHOULD DO. You cannot evaluate performance without knowing the job description. If no genome spec exists, note this and use the role name as a rough guide.
 3. Call \`list_team_runtime_logs\` with the teamId
 4. Treat \`list_team_runtime_logs\` as a helper, not a gate. If it works, use it to map runtime log IDs:
    - Claude → use \`readSessionId\` / \`claudeLocalSessionId\` with \`read_runtime_log(runtimeType:"claude", sessionId:<claudeLocalSessionId>)\`
@@ -1039,6 +1046,14 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    **d. Set overall**: defaults to \`sessionScore.overall\`. The guardrail still compares it to \`hardMetricsScore\`; gap > 20 is rejected.
    **e. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
    **f. In \`recommendations\`, include BOTH strengths and weaknesses as short public-safe statements. These become the marketplace crowd-review snippets, so avoid paths, secrets, UUIDs, or raw internal IDs.**
+   **f2. In \`findings\` (JSON array), produce STRUCTURED ATTRIBUTION for each observation:**
+      Each finding is: \`{ "type": "violation|missing|exceeded|good", "target": "<spec field, e.g. protocol[2] or responsibility[0]>", "evidence": "<CC log line or observed behavior>", "severity": "low|medium|high" }\`
+      Compare the genome spec fields (from step 2b) against the CC log evidence:
+      - \`violation\`: agent did something its protocol/scope forbids
+      - \`missing\`: agent didn't do something its responsibilities/protocol requires
+      - \`exceeded\`: agent went beyond its scopeOfResponsibility
+      - \`good\`: agent correctly followed a protocol rule or demonstrated a capability
+      This structured attribution is the supervisor's "inspection report" — it tells the evolution system EXACTLY what to fix.
    **g. Use a fixed score→action loop (do NOT improvise thresholds):**
       - \`overall < 40\` → \`action: "discard"\`
       - \`40 <= overall <= 60\` → \`action: "mutate"\`
@@ -1076,6 +1091,7 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    - your conclusion (2-4 sentences)
    - \`pendingAction\`
    - \`sessionId\`
+   - \`agentFindings\` — the structured findings array from step 8f2 for ALL agents you scored this run. This is the supervisor's persistent inspection report.
 
 Advance cursors only to what you actually inspected. Keep the cursor maps compact: persist active or recently relevant sessions only so state does not grow forever.
 
