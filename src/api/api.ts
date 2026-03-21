@@ -1800,8 +1800,11 @@ export class ApiClient {
         `${configuration.serverUrl}/v1/sessions/batch/unarchive`,
         { sessionIds },
         {
-          headers: { Authorization: `Bearer ${this.token}` },
-          signal: AbortSignal.timeout(30_000),
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
         }
       );
       logger.debug(`[API] Batch unarchived ${response.data.restored} sessions`);
@@ -1821,8 +1824,11 @@ export class ApiClient {
         `${configuration.serverUrl}/v1/teams/${teamId}/unarchive`,
         { sessionIds },
         {
-          headers: { Authorization: `Bearer ${this.token}` },
-          signal: AbortSignal.timeout(30_000),
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 60000
         }
       );
       logger.debug(`[API] Unarchived team ${teamId} with ${response.data.restoredSessions} sessions`);
