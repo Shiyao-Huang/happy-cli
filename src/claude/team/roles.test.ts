@@ -31,27 +31,28 @@ describe('Role Permissions System', () => {
             expect(result.permissionMode).toBe('bypassPermissions');
         });
 
-        it('should return disallowed tools for read-only roles', () => {
-            // Scout is a read-only role
+        it('should return empty disallowed tools when role not in DEFAULT_ROLES (genome-first)', () => {
+            // With genome-first architecture, DEFAULT_ROLES is empty.
+            // Roles like 'scout'/'builder' are defined in GenomeSpec, not hardcoded.
             const result = getRolePermissions('scout', undefined);
 
             expect(result.permissionMode).toBe('default');
-            expect(result.disallowedTools).toBeDefined();
-            expect(result.disallowedTools.length).toBeGreaterThan(0);
+            expect(result.disallowedTools).toEqual([]);
         });
 
-        it('should restrict spawn_session for builder role', () => {
+        it('should return empty disallowed tools for builder when not in DEFAULT_ROLES', () => {
             const result = getRolePermissions('builder', undefined);
 
             expect(result.permissionMode).toBe('default');
-            expect(result.disallowedTools.some((tool) => tool.startsWith('spawn_session'))).toBe(true);
+            // No hardcoded restrictions — permissions come from GenomeSpec at runtime
+            expect(result.disallowedTools).toEqual([]);
         });
 
-        it('should restrict spawn_session for framer role', () => {
+        it('should return empty disallowed tools for framer when not in DEFAULT_ROLES', () => {
             const result = getRolePermissions('framer', undefined);
 
             expect(result.permissionMode).toBe('default');
-            expect(result.disallowedTools.some((tool) => tool.startsWith('spawn_session'))).toBe(true);
+            expect(result.disallowedTools).toEqual([]);
         });
 
         it('should handle unknown roles gracefully', () => {
@@ -77,6 +78,19 @@ describe('Role Permissions System', () => {
             expect(canManageExistingTasks('org-manager')).toBe(true);
         });
 
+        it('should honor authority overlays for task creation and management', () => {
+            const genome = { authorities: ['task.create', 'task.update.any'] } as any;
+
+            expect(canCreateTeamTasks('scribe', genome)).toBe(true);
+            expect(canManageExistingTasks('scribe', genome)).toBe(true);
+        });
+
+        it('should honor authority overlays for agent spawning', () => {
+            const genome = { authorities: ['agent.spawn'] } as any;
+
+            expect(canSpawnAgents('scribe', genome)).toBe(true);
+        });
+
         it('should inject live system state steps into the org-manager prompt', () => {
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
@@ -89,27 +103,26 @@ describe('Role Permissions System', () => {
             expect(prompt).toContain('The marketplace is optional memory, not a blocking dependency');
         });
 
-        it('should inject shared help and challenge rules for workers', () => {
+        it('should return empty prompt for worker roles without genome (genome-first)', () => {
+            // In genome-first architecture, worker role prompts come from GenomeSpec.
+            // Without a genome, generateRolePrompt returns '' for non-coordinator roles.
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
                 role: 'builder',
             } as any);
 
-            expect(prompt).toContain('<Shared_Operating_Rules>');
-            expect(prompt).toContain('request_help');
-            expect(prompt).toContain('@help');
-            expect(prompt).toContain('type: "challenge"');
-            expect(prompt).toContain('type: "vote"');
+            expect(prompt).toBe('');
         });
 
-        it('should inject replace_agent guidance for coordinators', () => {
+        it('should return empty prompt for coordinators without genome (genome-first)', () => {
+            // 'master' is not in DEFAULT_ROLES, so generateRolePrompt returns ''
+            // In production, coordinator prompts are built from GenomeSpec
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
                 role: 'master',
             } as any);
 
-            expect(prompt).toContain('replace_agent');
-            expect(prompt).toContain('switch runtime between `claude` and `codex`');
+            expect(prompt).toBe('');
         });
 
         it('should build a worker handshake with explicit help-lane awareness', () => {

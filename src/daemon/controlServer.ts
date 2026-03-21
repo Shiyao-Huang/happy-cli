@@ -19,6 +19,8 @@ export function startDaemonControlServer({
   requestShutdown,
   onAhaSessionWebhook,
   onClaudeLocalSessionFound,
+  getTeamPulse,
+  onHeartbeatPing,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
@@ -27,6 +29,15 @@ export function startDaemonControlServer({
   requestShutdown: () => void;
   onAhaSessionWebhook: (sessionId: string, metadata: Metadata) => void;
   onClaudeLocalSessionFound?: (ahaSessionId: string, claudeLocalSessionId: string) => void;
+  getTeamPulse?: (teamId: string) => Array<{
+    sessionId: string;
+    role: string;
+    status: string;
+    lastSeenMs: number;
+    pid?: number;
+    runtimeType?: string;
+  }>;
+  onHeartbeatPing?: (sessionId: string, teamId: string, role: string) => void;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -203,6 +214,7 @@ export function startDaemonControlServer({
           sessionId: z.string().optional(),
           sessionTag: z.string().optional(),
           agent: z.enum(['claude', 'codex', 'ralph']).optional(),
+          token: z.string().optional(),
           parentSessionId: z.string().optional(),
           executionPlane: z.enum(['mainline', 'bypass']).optional(),
           specId: z.string().optional(),
@@ -230,10 +242,10 @@ export function startDaemonControlServer({
         }
       }
     }, async (request, reply) => {
-      const { directory, sessionId, sessionTag, agent, parentSessionId, executionPlane, specId, teamId, role, sessionName, env } = request.body;
+      const { directory, sessionId, sessionTag, agent, token, parentSessionId, executionPlane, specId, teamId, role, sessionName, env } = request.body;
 
       logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}`);
-      const result = await spawnSession({ directory, sessionId, sessionTag, agent, parentSessionId, executionPlane, specId, teamId, role, sessionName, env });
+      const result = await spawnSession({ directory, sessionId, sessionTag, agent, token, parentSessionId, executionPlane, specId, teamId, role, sessionName, env });
 
       switch (result.type) {
         case 'success':
@@ -288,6 +300,53 @@ export function startDaemonControlServer({
       }, 50);
 
       return { status: 'stopping' };
+    });
+
+    // Heartbeat ping from MCP tool calls — lightweight, fire-and-forget
+    typed.post('/heartbeat-ping', {
+      schema: {
+        body: z.object({
+          sessionId: z.string(),
+          teamId: z.string(),
+          role: z.string(),
+        }),
+      }
+    }, async (request) => {
+      const { sessionId, teamId, role } = request.body;
+      onHeartbeatPing?.(sessionId, teamId, role);
+      return { ok: true };
+    });
+
+    // Team pulse — returns liveness status of all agents in a team
+    typed.post('/team-pulse', {
+      schema: {
+        body: z.object({ teamId: z.string() }),
+        response: {
+          200: z.object({
+            teamId: z.string(),
+            members: z.array(z.object({
+              sessionId: z.string(),
+              role: z.string(),
+              status: z.string(),
+              lastSeenMs: z.number(),
+              pid: z.number().optional(),
+              runtimeType: z.string().optional(),
+            })),
+            summary: z.string(),
+          })
+        }
+      }
+    }, async (request) => {
+      const { teamId } = request.body;
+      const members = getTeamPulse?.(teamId) ?? [];
+      const alive = members.filter(m => m.status === 'alive').length;
+      const suspect = members.filter(m => m.status === 'suspect').length;
+      const dead = members.filter(m => m.status === 'dead').length;
+      const summary = members.length === 0
+        ? 'No agents tracked'
+        : `${alive} alive, ${suspect} suspect, ${dead} dead (${members.length} total)`;
+      logger.debug(`[CONTROL SERVER] team-pulse for ${teamId}: ${summary}`);
+      return { teamId, members, summary };
     });
 
     // Help request — spawn a help-agent for the requesting session

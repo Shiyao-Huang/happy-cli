@@ -3,9 +3,10 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
-import { materializeAgentWorkspace, type AgentDockerConfig } from '@/agentDocker/materializer';
+import { materializeAgentWorkspace, type AgentDockerConfig, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { buildMaterializedSpawnEnv } from '@/agentDocker/runtimeConfig';
 import { isRecognizedModelId } from '@/utils/modelContextWindows';
+import { publishTeamCorpsTemplate, resolvePreferredGenomeSpecId } from '@/utils/genomeMarketplace';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { randomUUID } from 'node:crypto';
@@ -236,6 +237,7 @@ ${chalk.bold.cyan('Aha Agents')} - Session-backed agent management commands
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha agents')} <command> [options]
+  ${chalk.green('aha agent')} <command> [options]
 
 ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List agent sessions
@@ -244,6 +246,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('update')} <sessionId>            Update decrypted session metadata
   ${chalk.yellow('rename')} <sessionId> <name>     Rename an agent (metadata.name)
   ${chalk.yellow('archive')} <id...>               Archive one or more agent sessions
+  ${chalk.yellow('unarchive')} <id...>             Restore one or more archived agent sessions
   ${chalk.yellow('delete')} <id...>                Delete one or more agent sessions
   ${chalk.yellow('kill')} <sessionId...>           Kill (archive) one or more agents
   ${chalk.yellow('spawn')} <agent.json>            Spawn agent from local agent JSON file
@@ -368,6 +371,14 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
           throw new Error('Usage: aha agents archive <sessionId...> [--ids a,b,c]');
         }
         await archiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
+        break;
+      }
+      case 'unarchive': {
+        const sessionIds = collectSessionIds(args, positional);
+        if (sessionIds.length === 0) {
+          throw new Error('Usage: aha agents unarchive <sessionId...> [--ids a,b,c]');
+        }
+        await unarchiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
         break;
       }
       case 'delete': {
@@ -506,6 +517,32 @@ async function archiveAgents(api: ApiClient, sessionIds: string[], force: boolea
   console.log();
 }
 
+async function unarchiveAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean): Promise<void> {
+  if (!force) {
+    const confirmed = await confirm(`Restore ${sessionIds.length} agent session(s)? (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const result = await api.batchUnarchiveSessions(sessionIds);
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Restored ${result.restored} agent session(s)`));
+  if (result.results.some((entry: any) => !entry.success)) {
+    for (const entry of result.results) {
+      const color = entry.success ? chalk.green : chalk.red;
+      console.log(color(`  - ${entry.sessionId}: ${entry.success ? 'ok' : entry.error || 'failed'}`));
+    }
+  }
+  console.log();
+}
+
 async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean): Promise<void> {
   if (!force) {
     const confirmed = await confirm(`Delete ${sessionIds.length} agent session(s)? (y/N): `);
@@ -598,7 +635,7 @@ async function createAgent(
     description: roleConfig.description || `${roleId} agent`,
     systemPromptSuffix: (roleConfig.systemPromptSuffix || '') + teamContextSuffix,
     behavior: roleConfig.behavior,
-    tools: { mcpServers: ['aha'], skills: [] },
+    tools: { mcpServers: ['aha'], skills: withDefaultAgentSkills() },
     env: { required: ['ANTHROPIC_API_KEY'], optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'] },
     workspace: { defaultMode: 'shared', allowedModes: ['shared', 'isolated'] },
   };
@@ -632,6 +669,11 @@ async function createAgent(
     envFilePath: plan.envFilePath,
     mcpConfigPath: plan.mcpConfigPath,
   });
+  const specResolution = await resolvePreferredGenomeSpecId({
+    role: roleId,
+    runtime: opts.model,
+    strategy: 'best-rated',
+  });
 
   const spawnBody = {
     directory: plan.effectiveCwd,
@@ -640,6 +682,7 @@ async function createAgent(
     sessionName: displayName,
     teamId: opts.teamId,
     env: materializedEnv,
+    ...(specResolution.specId ? { specId: specResolution.specId } : {}),
   };
 
   const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
@@ -657,11 +700,19 @@ async function createAgent(
 
   const sessionId = result.sessionId!;
 
+  let publishedCorpsTemplate: Awaited<ReturnType<typeof publishTeamCorpsTemplate>> | null = null;
   if (opts.teamId && sessionId) {
     try {
       await api.addTeamMember(opts.teamId, sessionId, roleId, displayName, {
+        specId: specResolution.specId ?? undefined,
         executionPlane: 'mainline',
         runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
+      });
+
+      publishedCorpsTemplate = await publishTeamCorpsTemplate({
+        api,
+        teamId: opts.teamId,
+        publisherId: sessionId,
       });
     } catch (err) {
       logger.debug('[agents create] Warning: failed to register in team roster:', err);
@@ -669,12 +720,32 @@ async function createAgent(
   }
 
   if (opts.asJson) {
-    console.log(JSON.stringify({ sessionId, agentId, role: roleId, teamId: opts.teamId || null, name: displayName }, null, 2));
+    console.log(JSON.stringify({
+      sessionId,
+      agentId,
+      role: roleId,
+      teamId: opts.teamId || null,
+      name: displayName,
+      specId: specResolution.specId,
+      specSource: specResolution.source,
+      corpsTemplate: publishedCorpsTemplate?.published
+        ? {
+            templateName: publishedCorpsTemplate.templateName,
+            templateId: publishedCorpsTemplate.templateId,
+          }
+        : null,
+    }, null, 2));
     return;
   }
 
   console.log(chalk.green(`✓ Agent created: ${sessionId}`));
   console.log(chalk.gray(`  role=${roleId} model=${opts.model} teamId=${opts.teamId || '-'} name=${displayName}`));
+  if (specResolution.specId) {
+    console.log(chalk.gray(`  specId=${specResolution.specId} (${specResolution.source})`));
+  }
+  if (publishedCorpsTemplate?.published) {
+    console.log(chalk.gray(`  corpsTemplate=${publishedCorpsTemplate.templateName}`));
+  }
   console.log();
 }
 

@@ -501,6 +501,53 @@ export class ApiClient {
   }
 
   /**
+   * Get a stored vendor token from the server.
+   * Returns parsed JSON when the token was stored as JSON, otherwise the raw value.
+   */
+  async getVendorToken(vendor: 'openai' | 'anthropic' | 'gemini'): Promise<any | null> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/connect/${vendor}/token`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 5000,
+          validateStatus: (status) => status === 200 || status === 404
+        }
+      );
+
+      if (response.status === 404 || response.data?.token == null) {
+        logger.debug(`[API] No vendor token found for ${vendor}`);
+        return null;
+      }
+
+      if (response.status !== 200) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+
+      const rawToken = response.data?.token;
+      if (typeof rawToken !== 'string') {
+        return rawToken ?? null;
+      }
+
+      try {
+        return JSON.parse(rawToken);
+      } catch {
+        return rawToken;
+      }
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        logger.debug(`[API] No vendor token found for ${vendor}`);
+        return null;
+      }
+      logger.debug(`[API] [ERROR] Failed to get vendor token for ${vendor}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Remove a stored vendor API token from the server.
    */
   async removeVendorToken(vendor: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
@@ -1163,10 +1210,18 @@ export class ApiClient {
    * Start working on a task
    */
   async startTask(teamId: string, taskId: string, sessionId: string, role: string = 'builder'): Promise<{ success: boolean; task: any }> {
+    return this.startTaskWithComment(teamId, taskId, sessionId, role);
+  }
+
+  async startTaskWithComment(teamId: string, taskId: string, sessionId: string, role: string = 'builder', comment?: {
+    displayName?: string;
+    content: string;
+    mentions?: string[];
+  }): Promise<{ success: boolean; task: any }> {
     try {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/start`,
-        { sessionId, role },
+        { sessionId, role, ...(comment ? { comment } : {}) },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1193,10 +1248,19 @@ export class ApiClient {
    * Complete a task
    */
   async completeTask(teamId: string, taskId: string, sessionId: string): Promise<{ success: boolean; task: any }> {
+    return this.completeTaskWithComment(teamId, taskId, sessionId);
+  }
+
+  async completeTaskWithComment(teamId: string, taskId: string, sessionId: string, comment?: {
+    role?: string;
+    displayName?: string;
+    content: string;
+    mentions?: string[];
+  }): Promise<{ success: boolean; task: any }> {
     try {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/complete`,
-        { sessionId },
+        { sessionId, ...(comment ? { comment } : {}) },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1217,10 +1281,19 @@ export class ApiClient {
    * Report a blocker on a task
    */
   async reportBlocker(teamId: string, taskId: string, sessionId: string, type: string, description: string): Promise<{ success: boolean; task: any }> {
+    return this.reportBlockerWithComment(teamId, taskId, sessionId, type, description);
+  }
+
+  async reportBlockerWithComment(teamId: string, taskId: string, sessionId: string, type: string, description: string, comment?: {
+    role?: string;
+    displayName?: string;
+    mentions?: string[];
+    content?: string;
+  }): Promise<{ success: boolean; task: any }> {
     try {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/blocker`,
-        { sessionId, type, description },
+        { sessionId, type, description, ...(comment ? { ...comment, comment: comment.content } : {}) },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1241,10 +1314,20 @@ export class ApiClient {
    * Resolve a blocker
    */
   async resolveBlocker(teamId: string, taskId: string, blockerId: string, sessionId: string, resolution: string): Promise<{ success: boolean; task: any }> {
+    return this.resolveBlockerWithComment(teamId, taskId, blockerId, sessionId, resolution);
+  }
+
+  async resolveBlockerWithComment(teamId: string, taskId: string, blockerId: string, sessionId: string, resolution: string, comment?: {
+    role?: string;
+    displayName?: string;
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision';
+    content: string;
+    mentions?: string[];
+  }): Promise<{ success: boolean; task: any }> {
     try {
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/blocker/${blockerId}/resolve`,
-        { sessionId, resolution },
+        { sessionId, resolution, ...(comment ? { comment } : {}) },
         {
           headers: {
             'Authorization': `Bearer ${this.credential.token}`,
@@ -1258,6 +1341,36 @@ export class ApiClient {
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to resolve blocker:`, error);
       throw new Error(`Failed to resolve blocker: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async addTaskComment(teamId: string, taskId: string, comment: {
+    sessionId: string;
+    role?: string;
+    displayName?: string;
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision';
+    content: string;
+    fromStatus?: string;
+    toStatus?: string;
+    mentions?: string[];
+  }): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/comments`,
+        comment,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Added comment to task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to add task comment:`, error);
+      throw new Error(`Failed to add task comment: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -1279,6 +1392,8 @@ export class ApiClient {
       parentSessionId?: string;
       executionPlane?: string;
       runtimeType?: string;
+      authorities?: string[];
+      teamOverlay?: Record<string, unknown>;
     }
   ): Promise<{ success: boolean; member: any }> {
     try {
@@ -1292,6 +1407,8 @@ export class ApiClient {
         ...(opts?.parentSessionId !== undefined && { parentSessionId: opts.parentSessionId }),
         ...(opts?.executionPlane !== undefined && { executionPlane: opts.executionPlane }),
         ...(opts?.runtimeType !== undefined && { runtimeType: opts.runtimeType }),
+        ...(opts?.authorities !== undefined && { authorities: opts.authorities }),
+        ...(opts?.teamOverlay !== undefined && { teamOverlay: opts.teamOverlay }),
       };
       const response = await axios.post(
         `${configuration.serverUrl}/v1/teams/${teamId}/members`,
@@ -1671,6 +1788,48 @@ export class ApiClient {
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to batch archive teams:`, error);
       throw new Error(`Failed to batch archive teams: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Batch unarchive (restore) multiple sessions
+   */
+  async batchUnarchiveSessions(sessionIds: string[]): Promise<{ success: boolean; restored: number; results: any[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/sessions/batch/unarchive`,
+        { sessionIds },
+        {
+          headers: { Authorization: `Bearer ${this.token}` },
+          signal: AbortSignal.timeout(30_000),
+        }
+      );
+      logger.debug(`[API] Batch unarchived ${response.data.restored} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to batch unarchive sessions:`, error);
+      throw new Error(`Failed to batch unarchive sessions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Unarchive (restore) a team and all its sessions
+   */
+  async unarchiveTeam(teamId: string, sessionIds: string[] = []): Promise<{ success: boolean; restoredSessions: number }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/unarchive`,
+        { sessionIds },
+        {
+          headers: { Authorization: `Bearer ${this.token}` },
+          signal: AbortSignal.timeout(30_000),
+        }
+      );
+      logger.debug(`[API] Unarchived team ${teamId} with ${response.data.restoredSessions} sessions`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to unarchive team:`, error);
+      throw new Error(`Failed to unarchive team: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

@@ -132,6 +132,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List sessions
   ${chalk.yellow('show')} <sessionId>              Show one session
   ${chalk.yellow('archive')} <sessionId>           Archive one session
+  ${chalk.yellow('unarchive')} <sessionId>         Restore one archived session
   ${chalk.yellow('delete')} <sessionId>            Delete one session
 
 ${chalk.bold('List options:')}
@@ -186,6 +187,12 @@ export async function handleSessionsCommand(args: string[]): Promise<void> {
           throw new Error('Usage: aha sessions archive <sessionId> [--force]');
         }
         await archiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson);
+        break;
+      case 'unarchive':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha sessions unarchive <sessionId> [--force]');
+        }
+        await unarchiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson);
         break;
       case 'delete':
         if (positional.length < 2) {
@@ -274,6 +281,31 @@ async function archiveSession(api: ApiClient, sessionId: string, force: boolean,
   }
 
   console.log(chalk.green(`✓ Archived session ${sessionId}`));
+  console.log();
+}
+
+async function unarchiveSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean): Promise<void> {
+  if (!force) {
+    const confirmed = await confirm(`Restore archived session ${sessionId}? (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const result = await api.batchUnarchiveSessions([sessionId]);
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const entry = Array.isArray(result.results) ? result.results[0] : null;
+  if (entry?.success === false) {
+    throw new Error(entry.error || `Failed to restore session ${sessionId}`);
+  }
+
+  console.log(chalk.green(`✓ Restored session ${sessionId}`));
   console.log();
 }
 
