@@ -60,6 +60,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
+            const senderDisplayName = metadata?.displayName || metadata?.name || role || 'unknown-agent';
 
             if (!teamId) {
                 return {
@@ -88,6 +89,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
                 timestamp: Date.now(),
                 fromSessionId: client.sessionId,
                 fromRole: role,
+                fromDisplayName: senderDisplayName,
                 mentions: args.mentions,
                 metadata: Object.keys(messageMetadata).length > 0 ? messageMetadata : undefined,
             };

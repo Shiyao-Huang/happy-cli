@@ -206,10 +206,16 @@ export async function startAhaServer(
     return {
         url: baseUrl.toString(),
         toolNames: [
+            // Context tools
+            'update_context',
+            'remember',
+            'recall',
             'change_title',
+            // Team tools
             'send_team_message',
-            'get_context_status',
             'get_team_info',
+            'get_team_pulse',
+            // Task tools
             'create_task',
             'update_task',
             'add_task_comment',
@@ -234,6 +240,8 @@ export async function startAhaServer(
             'create_genome',
             // Supervisor-only tools
             'read_team_log',
+            'get_context_status',
+            'get_self_view',
             'read_cc_log',
             'list_team_cc_logs',
             'list_team_runtime_logs',
@@ -245,6 +253,8 @@ export async function startAhaServer(
             'update_team_feedback',
             'compact_agent',
             'kill_agent',
+            'archive_session',
+            'recover_session',
             'save_supervisor_state',
         ],
         stop: () => {

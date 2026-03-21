@@ -76,7 +76,7 @@ function formatTeamMessage(
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📨 Team Message ${mentionTag} ${urgentTag}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-From: ${message.fromDisplayName || message.fromSessionId?.substring(0, 8) || 'Unknown'} (${message.fromRole || 'unknown'})
+From: ${message.fromDisplayName || message.fromRole || message.fromSessionId?.substring(0, 8) || 'Unknown'} [role: ${message.fromRole || 'unknown'}]
 Type: ${message.type || 'chat'}
 Time: ${new Date(message.timestamp).toLocaleString()}
 
