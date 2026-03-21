@@ -135,7 +135,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             const umessage = message as SDKAssistantMessage;
             const content = (umessage.message as any)?.content;
             const contentStr = typeof content === 'string' ? content : '';
-            const completionSignals = ['BOOTSTRAP_COMPLETE', 'ORG_MANAGER_COMPLETE', 'SUPERVISOR_COMPLETE', 'HELP_COMPLETE'];
+            const completionSignals = ['BOOTSTRAP_COMPLETE', 'SUPERVISOR_COMPLETE', 'HELP_COMPLETE'];
             const hasCompletion = completionSignals.some(signal =>
                 contentStr.includes(signal) ||
                 (Array.isArray(content) && content.some((b: any) => b.type === 'text' && typeof b.text === 'string' && b.text.includes(signal)))

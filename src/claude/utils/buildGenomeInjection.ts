@@ -119,24 +119,102 @@ function formatModelPreferences(spec: GenomeSpec): string {
     return `## Model Preferences\n${deterministicStringify(payload)}`;
 }
 
-/**
- * 将 GenomeSpec 的第 3-6 层编译为可直接注入到运行时提示词中的纯文本。
- * 必须满足幂等 / 确定性：同一个 spec 多次调用输出完全一致。
- */
-export function buildGenomeInjection(spec?: GenomeSpec | null): string {
-    if (!spec) return '';
+function formatFeedbackMirror(feedbackData?: string | null): string {
+    if (!feedbackData) return '';
+
+    let parsed: {
+        avgScore?: number;
+        evaluationCount?: number;
+        latestAction?: string;
+        dimensions?: Record<string, number>;
+        suggestions?: string[];
+        recentBehaviorPatterns?: string[];
+    };
+
+    try {
+        parsed = JSON.parse(feedbackData);
+    } catch {
+        return '';
+    }
+
+    if (!parsed.evaluationCount || parsed.evaluationCount < 1) return '';
+
+    const lines: string[] = ['## Genome Evaluation Mirror'];
+    lines.push(`- Evaluation Count: ${parsed.evaluationCount}`);
+    if (parsed.avgScore != null) lines.push(`- Average Score: ${Math.round(parsed.avgScore)}`);
+    if (parsed.latestAction) lines.push(`- Latest Action: ${parsed.latestAction}`);
+
+    if (parsed.dimensions) {
+        const dims = Object.entries(parsed.dimensions)
+            .filter(([, v]) => typeof v === 'number')
+            .map(([k, v]) => `${k}=${Math.round(v as number)}`)
+            .join(' ');
+        if (dims) lines.push(`- Dimension Profile: ${dims}`);
+    }
+
+    const observations = [
+        ...(parsed.recentBehaviorPatterns ?? []),
+        ...(parsed.suggestions ?? []),
+    ].slice(0, 3);
+
+    if (observations.length > 0) {
+        lines.push('- Recent Observations:');
+        for (const obs of observations) {
+            lines.push(`  - ${obs}`);
+        }
+    }
+
+    return lines.join('\n');
+}
+
+function formatMessagingBehavior(spec: GenomeSpec): string {
+    const messaging = spec.messaging;
+    const behavior = spec.behavior;
+    const authorities = (spec as any).authorities as string[] | undefined;
+
+    const hasMessaging = messaging && (messaging.listenFrom !== undefined || messaging.replyMode !== undefined || messaging.receiveUserMessages !== undefined);
+    const hasOnIdle = behavior?.onIdle !== undefined;
+    const hasAuthorities = Array.isArray(authorities) && authorities.length > 0;
+
+    if (!hasMessaging && !hasOnIdle && !hasAuthorities) return '';
+
+    const payload: Record<string, unknown> = {};
+    if (hasMessaging) {
+        payload.messaging = {
+            ...(messaging!.listenFrom !== undefined ? { listenFrom: messaging!.listenFrom } : {}),
+            ...(messaging!.replyMode !== undefined ? { replyMode: messaging!.replyMode } : {}),
+            ...(messaging!.receiveUserMessages !== undefined ? { receiveUserMessages: messaging!.receiveUserMessages } : {}),
+        };
+    }
+    if (hasOnIdle) {
+        payload.behavior = { onIdle: behavior!.onIdle };
+    }
+    if (hasAuthorities) {
+        payload.authorities = authorities;
+    }
+
+    return `## Agent Role Config\n${deterministicStringify(payload)}`;
+}
+
+
+export function buildGenomeInjection(spec?: GenomeSpec | null, feedbackData?: string | null): string {
+    if (!spec && !feedbackData) return '';
 
     const sections = [
-        formatBulletSection('Genome Learnings', spec.memory?.learnings),
-        formatIterationGuide(spec),
-        formatBulletSection('Genome Specialties', spec.resume?.specialties),
-        formatResume(spec),
-        formatBulletSection('Genome Common Patterns', spec.operations?.commonPatterns),
-        formatRuntimeConfig(spec),
-        formatRuntimeIdentity(spec),
-        formatActivationRules(spec),
-        formatScope(spec),
-        formatModelPreferences(spec),
+        ...(spec ? [
+            formatMessagingBehavior(spec),
+            formatBulletSection('Genome Learnings', spec.memory?.learnings),
+            formatIterationGuide(spec),
+            formatBulletSection('Genome Specialties', spec.resume?.specialties),
+            formatResume(spec),
+            formatBulletSection('Genome Common Patterns', spec.operations?.commonPatterns),
+            formatRuntimeConfig(spec),
+            formatRuntimeIdentity(spec),
+            formatActivationRules(spec),
+            formatScope(spec),
+            formatModelPreferences(spec),
+        ] : []),
+        formatFeedbackMirror(feedbackData),
     ].filter(Boolean);
 
     if (sections.length === 0) return '';

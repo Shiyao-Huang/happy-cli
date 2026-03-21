@@ -17,11 +17,11 @@ import { readDaemonState } from '@/persistence';
 import {
     canCreateTeamTasks,
     canManageExistingTasks,
-    canSpawnAgents
+    canSpawnAgents,
+    hasTeamAuthority,
 } from '@/claude/team/roles';
 import { writeScore } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
-import type { AggregatedFeedback } from '@/claude/utils/feedbackPrivacy';
 import { createTeamMemberIdentity } from './teamMemberIdentity';
 import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembership';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from './runtimeLogReader';
@@ -29,6 +29,15 @@ import {
     resolveFeedbackUploadTarget,
     scoreMatchesFeedbackTarget,
 } from './supervisorGenomeFeedback';
+import { syncGenomeFeedbackToMarketplace } from './genomeFeedbackSync';
+import {
+    publishTeamCorpsTemplate,
+    resolvePreferredGenomeSpecId,
+    searchMarketplaceGenomes,
+} from '@/utils/genomeMarketplace';
+import { getContextStatusReport } from './contextStatus';
+import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
+import { TraceEventKind } from '@/trace/traceTypes';
 
 export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
     // Handler that sends title updates via the client
@@ -77,7 +86,74 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
         return new TaskStateManager(api, teamId, client.sessionId, metadata?.role);
     };
 
-    const HELP_MENTION_RE = /(^|\n)\s*@help\b/i;
+    const parseBoardFromArtifact = (artifact: any): any => {
+        if (!artifact) return null;
+        if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+            const bodyValue = (artifact.body as { body?: unknown }).body;
+            if (typeof bodyValue === 'string') {
+                try {
+                    return JSON.parse(bodyValue);
+                } catch {
+                    return null;
+                }
+            }
+            if (bodyValue && typeof bodyValue === 'object') {
+                return bodyValue;
+            }
+        }
+        if (artifact.body && typeof artifact.body === 'object') {
+            return artifact.body;
+        }
+        return null;
+    };
+
+    const getCurrentTeamMemberContext = async (teamId: string): Promise<{
+        board: any | null;
+        member: any | null;
+        authorities: string[];
+        teamOverlay: any | null;
+        effectiveGenome: any;
+    }> => {
+        const metadata = client.getMetadata();
+        const taskManager = getTaskStateManager();
+
+        if (taskManager) {
+            await taskManager.getBoard().catch(() => null);
+        }
+
+        const artifact = await api.getArtifact(teamId).catch(() => null);
+        const board = parseBoardFromArtifact(artifact);
+        const members = Array.isArray(board?.team?.members) ? board.team.members : [];
+        const member = members.find((candidate: any) => {
+            if (!candidate || typeof candidate !== 'object') return false;
+            if (metadata?.memberId && candidate.memberId) {
+                return candidate.memberId === metadata.memberId;
+            }
+            return candidate.sessionId === client.sessionId;
+        }) ?? members.find((candidate: any) => candidate?.sessionId === client.sessionId) ?? null;
+
+        const teamOverlay = member?.teamOverlay ?? null;
+        const authoritySet = new Set<string>([
+            ...((genomeSpecRef?.current as any)?.authorities ?? []),
+            ...(Array.isArray(member?.authorities) ? member.authorities : []),
+            ...(Array.isArray(teamOverlay?.authorities) ? teamOverlay.authorities : []),
+        ]);
+
+        const effectiveGenome = {
+            ...(genomeSpecRef?.current ?? {}),
+            authorities: Array.from(authoritySet),
+        };
+
+        return {
+            board,
+            member,
+            authorities: Array.from(authoritySet),
+            teamOverlay,
+            effectiveGenome,
+        };
+    };
+
+    const HELP_MENTION_RE = /(^|[^a-zA-Z0-9_])@help\b/i;
 
     const toHelpSeverity = (priority?: 'normal' | 'high' | 'urgent'): 'low' | 'medium' | 'high' | 'critical' => {
         switch (priority) {
@@ -91,6 +167,193 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
     };
 
     const containsHelpMention = (content: string): boolean => HELP_MENTION_RE.test(content.trim());
+
+    const listDaemonTrackedSessions = async (): Promise<Array<{ ahaSessionId: string; pid: number }>> => {
+        const daemonState = await readDaemonState();
+        if (!daemonState?.httpPort) {
+            return [];
+        }
+
+        const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(5_000),
+        });
+
+        const result = await response.json() as {
+            children?: Array<{ ahaSessionId: string; pid: number }>;
+        };
+
+        return Array.isArray(result.children) ? result.children : [];
+    };
+
+    const getDaemonTrackedSessionIds = async (): Promise<Set<string>> => {
+        const trackedSessions = await listDaemonTrackedSessions();
+        return new Set(trackedSessions.map((session) => session.ahaSessionId));
+    };
+
+    type VoteDecision = 'keep' | 'replace' | 'unsure';
+
+    const parseVoteDecision = (content: string): VoteDecision | null => {
+        const match = content.toLowerCase().match(/\b(keep|replace|unsure)\b/);
+        if (!match) return null;
+        const decision = match[1];
+        if (decision === 'keep' || decision === 'replace' || decision === 'unsure') {
+            return decision;
+        }
+        return null;
+    };
+
+    const getTeamMemberRecord = async (teamId: string, sessionId: string): Promise<any | null> => {
+        const teamResult = await api.getTeam(teamId);
+        const members = Array.isArray(teamResult?.team?.members) ? teamResult.team.members : [];
+        return members.find((member: any) => member?.sessionId === sessionId) ?? null;
+    };
+
+    const evaluateReplacementVotes = async (params: {
+        teamId: string;
+        targetSessionId: string;
+        limit?: number;
+        minVotes?: number;
+    }): Promise<{
+        counts: Record<VoteDecision, number>;
+        votes: Array<{ fromSessionId: string; decision: VoteDecision; content: string; timestamp: number }>;
+        totalVotes: number;
+        quorumReached: boolean;
+        recommendation: VoteDecision | 'no-decision';
+    }> => {
+        const messagesResult = await api.getTeamMessages(params.teamId, { limit: params.limit ?? 200 });
+        const messages = Array.isArray(messagesResult?.messages) ? messagesResult.messages : [];
+        const latestVoteBySession = new Map<string, { fromSessionId: string; decision: VoteDecision; content: string; timestamp: number }>();
+
+        for (const message of messages) {
+            if (message?.type !== 'vote') continue;
+            const targetSessionId = message?.metadata?.targetSessionId;
+            if (targetSessionId !== params.targetSessionId) continue;
+            const decision = message?.metadata?.voteDecision || parseVoteDecision(String(message?.content || ''));
+            if (decision !== 'keep' && decision !== 'replace' && decision !== 'unsure') continue;
+            const fromSessionId = String(message?.fromSessionId || '');
+            if (!fromSessionId || fromSessionId === params.targetSessionId) continue;
+
+            const existing = latestVoteBySession.get(fromSessionId);
+            if (!existing || Number(message?.timestamp || 0) >= existing.timestamp) {
+                latestVoteBySession.set(fromSessionId, {
+                    fromSessionId,
+                    decision,
+                    content: String(message?.content || ''),
+                    timestamp: Number(message?.timestamp || 0),
+                });
+            }
+        }
+
+        const votes = Array.from(latestVoteBySession.values()).sort((left, right) => left.timestamp - right.timestamp);
+        const counts = votes.reduce<Record<VoteDecision, number>>((acc, vote) => {
+            acc[vote.decision] += 1;
+            return acc;
+        }, { keep: 0, replace: 0, unsure: 0 });
+
+        const totalVotes = votes.length;
+        const minVotes = params.minVotes ?? 2;
+        const quorumReached = totalVotes >= minVotes && counts.replace > counts.keep;
+        const recommendation: VoteDecision | 'no-decision' = quorumReached
+            ? 'replace'
+            : counts.keep >= minVotes && counts.keep > counts.replace
+                ? 'keep'
+                : 'no-decision';
+
+        return { counts, votes, totalVotes, quorumReached, recommendation };
+    };
+
+    const spawnReplacementSession = async (params: {
+        teamId: string;
+        targetSessionId: string;
+        roleId: string;
+        displayName: string;
+        directory: string;
+        runtimeType: 'claude' | 'codex';
+        executionPlane: 'mainline' | 'bypass';
+        memberId?: string;
+        specId?: string;
+        parentSessionId?: string;
+        modelId?: string;
+        fallbackModelId?: string;
+    }): Promise<{ sessionId: string; memberId: string; sessionTag: string; specId: string | null; specSource: string }> => {
+        const daemonState = await readDaemonState();
+        if (!daemonState?.httpPort) {
+            throw new Error('Daemon is not running. Cannot replace agents without a running daemon.');
+        }
+
+        const { memberId, sessionTag } = createTeamMemberIdentity(params.teamId, params.memberId);
+        const resolvedSpec = await resolvePreferredGenomeSpecId({
+            role: params.roleId,
+            runtime: params.runtimeType,
+            strategy: 'best-rated',
+            explicitSpecId: params.specId,
+        });
+
+        const spawnBody: Record<string, any> = {
+            directory: params.directory,
+            sessionTag,
+            sessionName: params.displayName,
+            role: params.roleId,
+            teamId: params.teamId,
+            agent: params.runtimeType,
+            parentSessionId: params.parentSessionId || params.targetSessionId,
+            executionPlane: params.executionPlane,
+            env: {
+                AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
+                AHA_TEAM_MEMBER_ID: memberId,
+                ...(params.modelId ? { AHA_AGENT_MODEL: params.modelId } : {}),
+                ...(params.fallbackModelId ? { AHA_FALLBACK_AGENT_MODEL: params.fallbackModelId } : {}),
+            },
+        };
+
+        if (params.runtimeType === 'codex') {
+            const openAiToken = await api.getVendorToken('openai');
+            if (openAiToken) {
+                spawnBody.token = typeof openAiToken === 'string' ? openAiToken : JSON.stringify(openAiToken);
+            }
+        }
+
+        if (resolvedSpec.specId) {
+            spawnBody.specId = resolvedSpec.specId;
+        }
+
+        const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(spawnBody),
+            signal: AbortSignal.timeout(15_000),
+        });
+
+        const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+        if (!response.ok || !result.success || !result.sessionId) {
+            throw new Error(result.error || `HTTP ${response.status}`);
+        }
+
+        await api.addTeamMember(
+            params.teamId,
+            result.sessionId,
+            params.roleId,
+            params.displayName,
+            {
+                memberId,
+                sessionTag,
+                specId: resolvedSpec.specId ?? undefined,
+                parentSessionId: params.parentSessionId || params.targetSessionId,
+                executionPlane: params.executionPlane,
+                runtimeType: params.runtimeType,
+            }
+        );
+
+        return {
+            sessionId: result.sessionId,
+            memberId,
+            sessionTag,
+            specId: resolvedSpec.specId,
+            specSource: resolvedSpec.source,
+        };
+    };
 
     const triggerHelpLane = async (params: {
         teamId: string;
@@ -112,6 +375,38 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
             taskId,
             sendNotification = true,
         } = params;
+
+        const listTeamSessionsViaDaemon = async (teamIdValue: string): Promise<Array<{
+            ahaSessionId: string;
+            claudeLocalSessionId?: string;
+            runtimeType?: string;
+            role?: string;
+            pid: number;
+        }>> => {
+            const { daemonPost } = await import('@/daemon/controlClient');
+            const result = await daemonPost('/list-team-sessions', { teamId: teamIdValue });
+            return Array.isArray(result?.sessions) ? result.sessions : [];
+        };
+
+        const waitForHelpAgentActivation = async (teamIdValue: string, expectedSessionId?: string): Promise<boolean> => {
+            if (!expectedSessionId) return false;
+            const deadline = Date.now() + 8_000;
+            while (Date.now() < deadline) {
+                try {
+                    const sessions = await listTeamSessionsViaDaemon(teamIdValue);
+                    const match = sessions.find((session) =>
+                        session.ahaSessionId === expectedSessionId && session.role === 'help-agent'
+                    );
+                    if (match) {
+                        return true;
+                    }
+                } catch (error) {
+                    logger.debug('[help-lane] Failed while verifying help-agent activation (non-fatal)', error);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 350));
+            }
+            return false;
+        };
 
         try {
             const fs = await import('node:fs');
@@ -162,35 +457,123 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
                 pendingAction: {
                     type: 'notify_help',
                     message: `[${severity}] ${description}`,
+                    requestType: type,
+                    severity,
+                    description,
+                    targetSessionId: sessionId,
                 },
+                pendingActionMeta: null,
             });
             logger.debug(`[help-lane] pendingAction saved for team ${teamId}`);
         } catch (error) {
             logger.debug('[help-lane] Failed to save pendingAction (non-fatal)', error);
         }
 
+        // Deduplication: skip spawn if there's already an active help-agent in the team
         try {
-            const { daemonPost } = await import('@/daemon/controlClient');
-            const helpResult = await daemonPost('/help-request', {
-                teamId,
-                sessionId,
-                type,
-                description,
-                severity,
-            });
+            const activeSessions = await listTeamSessionsViaDaemon(teamId);
+            const activeHelpAgent = activeSessions.find((s) => s.role === 'help-agent');
+            if (activeHelpAgent) {
+                logger.debug(`[help-lane] Active help-agent already present (${activeHelpAgent.ahaSessionId}) — skipping duplicate spawn for team ${teamId}`);
+                return { helpSpawned: false, error: 'help-agent already active' };
+            }
+        } catch (error) {
+            logger.debug('[help-lane] Failed to check for active help-agents (non-fatal)', error);
+        }
 
-            if (helpResult && !helpResult.error) {
-                logger.debug(`[help-lane] Help-agent spawned via daemon: ${JSON.stringify(helpResult)}`);
-                return { helpSpawned: true };
+        let lastError = 'unknown error';
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+            try {
+                const { daemonPost } = await import('@/daemon/controlClient');
+                const helpResult = await daemonPost('/help-request', {
+                    teamId,
+                    sessionId,
+                    type,
+                    description,
+                    severity,
+                });
+
+                if (helpResult && !helpResult.error) {
+                    const helpAgentSessionId = typeof helpResult.helpAgentSessionId === 'string'
+                        ? helpResult.helpAgentSessionId
+                        : undefined;
+                    const confirmed = await waitForHelpAgentActivation(teamId, helpAgentSessionId);
+
+                    if (confirmed) {
+                        try {
+                            const { updateSupervisorRun } = await import('@/daemon/supervisorState');
+                            await updateSupervisorRun(teamId, {
+                                pendingAction: null,
+                                pendingActionMeta: null,
+                            });
+                        } catch (error) {
+                            logger.debug('[help-lane] Failed to clear pendingAction after confirmed help spawn (non-fatal)', error);
+                        }
+                        if (sendNotification) {
+                            try {
+                                await api.sendTeamMessage(teamId, {
+                                    id: randomUUID(),
+                                    teamId,
+                                    content: `🛠️ Help-agent confirmed for ${sessionId}. Session ${helpAgentSessionId} is now active for ${type} (${severity}).`,
+                                    shortContent: `🛠️ Help-agent confirmed: ${type} (${severity})`,
+                                    type: 'notification',
+                                    timestamp: Date.now(),
+                                    fromSessionId: sessionId,
+                                    fromRole: role,
+                                    metadata: {
+                                        helpType: type,
+                                        severity,
+                                        taskId,
+                                        helpAgentSessionId,
+                                    },
+                                });
+                            } catch (error) {
+                                logger.debug('[help-lane] Failed to post help-agent confirmation notification (non-fatal)', error);
+                            }
+                        }
+                        logger.debug(`[help-lane] Help-agent spawned and confirmed via daemon on attempt ${attempt}: ${JSON.stringify(helpResult)}`);
+                        return { helpSpawned: true };
+                    }
+
+                    lastError = helpAgentSessionId
+                        ? `help-agent ${helpAgentSessionId} spawn returned success but was not observable in team runtime sessions`
+                        : 'help-agent spawn returned success without a session id';
+                    logger.debug(`[help-lane] Help-agent spawn was not confirmed on attempt ${attempt}: ${lastError}`);
+                    continue;
+                }
+
+                lastError = helpResult?.error || 'unknown error';
+                logger.debug(`[help-lane] Daemon help-request attempt ${attempt} failed: ${lastError}`);
+            } catch (error) {
+                lastError = String(error);
+                logger.debug(`[help-lane] Failed to spawn help-agent via daemon on attempt ${attempt} (non-fatal)`, error);
             }
 
-            const error = helpResult?.error || 'unknown error';
-            logger.debug(`[help-lane] Daemon help-request failed: ${error}`);
-            return { helpSpawned: false, error };
-        } catch (error) {
-            logger.debug('[help-lane] Failed to spawn help-agent via daemon (non-fatal)', error);
-            return { helpSpawned: false, error: String(error) };
+            if (attempt < 2) {
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
         }
+
+        try {
+            const { getPendingActionRetryDelayMs, updateSupervisorRun } = await import('@/daemon/supervisorState');
+            const retryBaseMs = Math.max(
+                parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '60000'),
+                parseInt(process.env.AHA_SUPERVISOR_PENDING_ACTION_RETRY_BASE_MS || '60000'),
+            );
+            await updateSupervisorRun(teamId, {
+                pendingActionMeta: {
+                    retryCount: 0,
+                    lastAttemptAt: Date.now(),
+                    nextRetryAt: Date.now() + getPendingActionRetryDelayMs(0, retryBaseMs),
+                    lastError,
+                },
+            });
+            logger.debug(`[help-lane] Scheduled pendingAction retry for team ${teamId}`);
+        } catch (error) {
+            logger.debug('[help-lane] Failed to persist pendingAction retry schedule (non-fatal)', error);
+        }
+
+        return { helpSpawned: false, error: lastError };
     };
 
     //
@@ -440,8 +823,10 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
             content: z.string().describe('The message content to send to the team'),
             shortContent: z.string().optional().describe('A short summary of the message (max 150 chars). Recommended for long messages.'),
             mentions: z.array(z.string()).optional().describe('List of session IDs to mention/notify (optional)'),
-            type: z.enum(['chat', 'task-update', 'notification']).optional().describe('Message type (default: chat)'),
+            type: z.enum(['chat', 'task-update', 'notification', 'vote', 'challenge', 'collaboration-request', 'help-needed', 'handoff']).optional().describe('Message type (default: chat)'),
             priority: z.enum(['normal', 'high', 'urgent']).optional().describe('Message priority (default: normal)'),
+            targetSessionId: z.string().optional().describe('Optional target session ID for vote/challenge messages'),
+            voteDecision: z.enum(['keep', 'replace', 'unsure']).optional().describe('Optional vote decision metadata for type="vote" messages'),
         },
     }, async (args) => {
         try {
@@ -460,6 +845,14 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
                 };
             }
 
+            const inferredVoteDecision = (args.type === 'vote' && !args.voteDecision)
+                ? parseVoteDecision(args.content)
+                : args.voteDecision;
+            const messageMetadata = {
+                ...(args.priority ? { priority: args.priority } : {}),
+                ...(args.targetSessionId ? { targetSessionId: args.targetSessionId } : {}),
+                ...(inferredVoteDecision ? { voteDecision: inferredVoteDecision } : {}),
+            };
             const message = {
                 id: randomUUID(),
                 teamId,
@@ -470,7 +863,7 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
                 fromSessionId: client.sessionId,
                 fromRole: role,
                 mentions: args.mentions,
-                metadata: args.priority ? { priority: args.priority } : undefined,
+                metadata: Object.keys(messageMetadata).length > 0 ? messageMetadata : undefined,
             };
 
             await api.sendTeamMessage(teamId, message);
@@ -750,7 +1143,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create tasks.' }], isError: true };
             }
 
-            if (!canCreateTeamTasks(role)) {
+            const { effectiveGenome } = await getCurrentTeamMemberContext(teamId);
+            if (!canCreateTeamTasks(role, effectiveGenome)) {
                 return {
                     content: [{
                         type: 'text',
@@ -775,6 +1169,21 @@ Use the \`send_team_message\` tool to communicate with your team members.
             if (!result.success || !result.task) {
                 return { content: [{ type: 'text', text: 'Error: Failed to create task via server API.' }], isError: true };
             }
+
+            // ── Trace: task_created ─────────────────────────────────────
+            try {
+                emitTraceEvent(
+                    TraceEventKind.task_created,
+                    'mcp',
+                    {
+                        team_id: teamId,
+                        task_id: result.task.id,
+                        session_id: client.sessionId,
+                    },
+                    `Task "${result.task.title}" created (priority=${result.task.priority}, assignee=${args.assigneeId || 'none'})`,
+                    { attrs: { title: result.task.title, assigneeId: args.assigneeId } },
+                );
+            } catch { /* trace must never break main flow */ }
 
             // Notify Team
             try {
@@ -805,7 +1214,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Update Task - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('update_task', {
-        description: 'Update an existing task\'s status, assignee, or details.',
+        description: 'Update an existing task\'s status, assignee, or details. If you are changing review state, handing work off, or making a decision another agent must inherit, include a comment so the task carries memory with it.',
         title: 'Update Task',
         inputSchema: {
             taskId: z.string().describe('The ID of the task to update'),
@@ -813,6 +1222,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             assigneeId: z.string().optional().describe('New assignee Session ID'),
             priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('New priority'),
             comment: z.string().optional().describe('Add a comment/note to the task'),
+            commentType: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'decision']).optional().describe('Optional structured comment type'),
         },
     }, async (args) => {
         try {
@@ -821,13 +1231,19 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
             const sessionId = client.sessionId;
-            const workerRoles = new Set(['builder', 'framer']);
-            const isWorker = workerRoles.has(role || '');
-            const isReviewer = role === 'reviewer';
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to update tasks.' }], isError: true };
             }
+
+            const { authorities } = await getCurrentTeamMemberContext(teamId);
+            const hasTeamWideTaskWrite =
+                hasTeamAuthority(authorities, 'task.update.any')
+                || hasTeamAuthority(authorities, 'task.assign')
+                || hasTeamAuthority(authorities, 'task.create')
+                || hasTeamAuthority(authorities, 'task.approve');
+            const isRestrictedWorker = !hasTeamWideTaskWrite;
+            const isReviewer = role === 'reviewer' && !hasTeamWideTaskWrite;
 
             if (isReviewer) {
                 return { content: [{ type: 'text', text: 'Error: REVIEWER role is read-only and cannot update tasks.' }], isError: true };
@@ -844,7 +1260,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             }
 
             // First fetch the task to check permissions for workers
-            if (isWorker) {
+            if (isRestrictedWorker) {
                 try {
                     const existingTask = await api.getTask(teamId, args.taskId);
                     if (existingTask) {
@@ -875,6 +1291,23 @@ Use the \`send_team_message\` tool to communicate with your team members.
             if (args.status) updates.status = args.status;
             if (args.assigneeId) updates.assigneeId = args.assigneeId;
             if (args.priority) updates.priority = args.priority;
+            if (args.comment) {
+                updates.comment = {
+                    sessionId,
+                    role,
+                    displayName: metadata?.displayName || metadata?.name,
+                    type: args.commentType || (
+                        args.assigneeId ? 'handoff'
+                            : args.status === 'review' ? 'review-feedback'
+                                : args.status ? 'status-change'
+                                    : 'note'
+                    ),
+                    content: args.comment,
+                    fromStatus: undefined,
+                    toStatus: args.status,
+                    mentions: args.assigneeId ? [args.assigneeId] : undefined,
+                };
+            }
 
             // Use REST API - server handles artifact update + WebSocket event emission
             const result = await api.updateTask(teamId, args.taskId, updates);
@@ -924,6 +1357,47 @@ Use the \`send_team_message\` tool to communicate with your team members.
         }
     });
 
+    mcp.registerTool('add_task_comment', {
+        description: 'Add persistent review/handoff memory to a task. Use this when feedback or rationale should stay attached to the task itself, not only in chat. Preferred for review notes, handoff rationale, blocker context, and decisions that the next agent must inherit.',
+        title: 'Add Task Comment',
+        inputSchema: {
+            taskId: z.string().describe('The ID of the task to comment on'),
+            content: z.string().describe('Comment text'),
+            type: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'blocker', 'decision']).default('note').describe('Structured comment type'),
+            mentions: z.array(z.string()).optional().describe('Optional session IDs to mention'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const role = metadata?.role;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team to add task comments.' }], isError: true };
+            }
+
+            const result = await api.addTaskComment(teamId, args.taskId, {
+                sessionId: client.sessionId,
+                role,
+                displayName: metadata?.displayName || metadata?.name,
+                type: args.type,
+                content: args.content,
+                mentions: args.mentions,
+            });
+
+            if (!result.success || !result.task) {
+                return { content: [{ type: 'text', text: 'Error: Failed to add task comment.' }], isError: true };
+            }
+
+            return {
+                content: [{ type: 'text', text: `Comment added to task ${args.taskId}.` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error adding task comment: ${String(error)}` }], isError: true };
+        }
+    });
+
     // Delete Task - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('delete_task', {
         description: 'Delete a task from the team board. Coordinator roles can delete tasks.',
@@ -942,7 +1416,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to delete tasks.' }], isError: true };
             }
 
-            if (!canManageExistingTasks(role)) {
+            const { effectiveGenome } = await getCurrentTeamMemberContext(teamId);
+            if (!canManageExistingTasks(role, effectiveGenome)) {
                 return {
                     content: [{
                         type: 'text',
@@ -1001,7 +1476,12 @@ Use the \`send_team_message\` tool to communicate with your team members.
             }
 
             const metadata = client.getMetadata();
-            const isCoordinator = ['master', 'orchestrator', 'team-lead'].includes(metadata?.role || '');
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const role = metadata?.role;
+            const { effectiveGenome } = teamId
+                ? await getCurrentTeamMemberContext(teamId)
+                : { effectiveGenome: genomeSpecRef?.current ?? null };
+            const isCoordinator = canManageExistingTasks(role, effectiveGenome);
 
             // Get role-filtered context via TaskStateManager
             const kanbanContext = await taskManager.getFilteredContext();
@@ -1069,7 +1549,8 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create subtasks.' }], isError: true };
             }
 
-            if (!canManageExistingTasks(role)) {
+            const { effectiveGenome } = await getCurrentTeamMemberContext(teamId);
+            if (!canManageExistingTasks(role, effectiveGenome)) {
                 return {
                     content: [{
                         type: 'text',
@@ -1279,10 +1760,11 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Start Task - Uses TaskStateManager for execution link management and state broadcasting
     mcp.registerTool('start_task', {
-        description: 'Mark a task as actively being worked on by you. Creates an execution link between your session and the task.',
+        description: 'Mark a task as actively being worked on by you. Creates an execution link between your session and the task. Add a comment if your planned approach or scope boundary would help future handoff/review.',
         title: 'Start Task',
         inputSchema: {
             taskId: z.string().describe('ID of the task to start'),
+            comment: z.string().optional().describe('Optional note explaining what you are starting or how you will approach it'),
         },
     }, async (args) => {
         try {
@@ -1296,7 +1778,10 @@ Use the \`send_team_message\` tool to communicate with your team members.
             // - Status change to 'in-progress'
             // - State change broadcasting
             // - Team message notification
-            const result = await taskManager.startTask(args.taskId);
+            const result = await taskManager.startTaskWithComment(args.taskId, args.comment ? {
+                displayName: client.getMetadata()?.displayName || client.getMetadata()?.name,
+                content: args.comment,
+            } : undefined);
 
             if (!result.success) {
                 return { content: [{ type: 'text', text: `Error: ${result.error}` }], isError: true };
@@ -1306,6 +1791,22 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const board = await taskManager.getBoard();
             const task = board.tasks?.find((t: any) => t.id === args.taskId);
             const taskTitle = task?.title || args.taskId;
+
+            // ── Trace: task_started ─────────────────────────────────────
+            try {
+                const metadata = client.getMetadata();
+                const teamId = metadata?.teamId || metadata?.roomId;
+                emitTraceEvent(
+                    TraceEventKind.task_started,
+                    'mcp',
+                    {
+                        team_id: teamId,
+                        task_id: args.taskId,
+                        session_id: client.sessionId,
+                    },
+                    `Task "${taskTitle}" started by ${metadata?.role || 'unknown'}`,
+                );
+            } catch { /* trace must never break main flow */ }
 
             return {
                 content: [{ type: 'text', text: `Started working on: "${taskTitle}"\nStatus: in-progress` }],
@@ -1318,10 +1819,11 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Complete Task - Uses TaskStateManager for status propagation and state broadcasting
     mcp.registerTool('complete_task', {
-        description: 'Mark a task as complete. If all subtasks of a parent are done, the parent will automatically move to review.',
+        description: 'Mark a task as complete. If all subtasks of a parent are done, the parent will automatically move to review. Add a completion comment when reviewers need context about what changed or what to verify.',
         title: 'Complete Task',
         inputSchema: {
             taskId: z.string().describe('ID of the task to complete'),
+            comment: z.string().optional().describe('Optional completion note summarizing what changed or what reviewers should check'),
         },
     }, async (args) => {
         try {
@@ -1341,13 +1843,33 @@ Use the \`send_team_message\` tool to communicate with your team members.
             // - Status propagation to parent tasks
             // - State change broadcasting
             // - Team message notification
-            const result = await taskManager.completeTask(args.taskId);
+            const result = await taskManager.completeTaskWithComment(args.taskId, args.comment ? {
+                role: client.getMetadata()?.role,
+                displayName: client.getMetadata()?.displayName || client.getMetadata()?.name,
+                content: args.comment,
+            } : undefined);
 
             if (!result.success) {
                 return { content: [{ type: 'text', text: `Error: ${result.error}` }], isError: true };
             }
 
             const propagatedCount = result.propagatedTasks?.length ? result.propagatedTasks.length - 1 : 0;
+
+            // ── Trace: task_completed ────────────────────────────────────
+            try {
+                const metadata = client.getMetadata();
+                const teamId = metadata?.teamId || metadata?.roomId;
+                emitTraceEvent(
+                    TraceEventKind.task_completed,
+                    'mcp',
+                    {
+                        team_id: teamId,
+                        task_id: args.taskId,
+                        session_id: client.sessionId,
+                    },
+                    `Task "${taskTitle}" completed by ${metadata?.role || 'unknown'} (propagated to ${propagatedCount} parent(s))`,
+                );
+            } catch { /* trace must never break main flow */ }
 
             return {
                 content: [{ type: 'text', text: `Task "${taskTitle}" completed.\nPropagated to ${propagatedCount} parent task(s).` }],
@@ -1360,12 +1882,13 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Report Blocker - Uses TaskStateManager for blocker tracking and state broadcasting
     mcp.registerTool('report_blocker', {
-        description: 'Report a blocker on a task. This will mark the task as blocked and notify the Master.',
+        description: 'Report a blocker on a task. This will mark the task as blocked and notify the Master. Include enough context that another agent can inherit the task without re-discovering the blocker.',
         title: 'Report Blocker',
         inputSchema: {
             taskId: z.string().describe('ID of the blocked task'),
             type: z.enum(['dependency', 'question', 'resource', 'technical']).describe('Type of blocker'),
             description: z.string().describe('Detailed description of the blocker'),
+            comment: z.string().optional().describe('Optional extra context, mitigation attempts, or handoff note'),
         },
     }, async (args) => {
         try {
@@ -1388,12 +1911,35 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const result = await taskManager.reportBlocker(
                 args.taskId,
                 args.type,
-                args.description
+                args.description,
+                {
+                    role: client.getMetadata()?.role,
+                    displayName: client.getMetadata()?.displayName || client.getMetadata()?.name,
+                    mentions: undefined,
+                    content: args.comment,
+                }
             );
 
             if (!result.success) {
                 return { content: [{ type: 'text', text: `Error: ${result.error}` }], isError: true };
             }
+
+            // ── Trace: task_blocked ──────────────────────────────────────
+            try {
+                const metadata = client.getMetadata();
+                const teamId = metadata?.teamId || metadata?.roomId;
+                emitTraceEvent(
+                    TraceEventKind.task_blocked,
+                    'mcp',
+                    {
+                        team_id: teamId,
+                        task_id: args.taskId,
+                        session_id: client.sessionId,
+                    },
+                    `Task "${taskTitle}" blocked (${args.type}): ${args.description.slice(0, 200)}`,
+                    { status: 'blocked', attrs: { blockerType: args.type, blockerId: result.blockerId } },
+                );
+            } catch { /* trace must never break main flow */ }
 
             return {
                 content: [{ type: 'text', text: `Blocker reported on "${taskTitle}".\nBlocker ID: ${result.blockerId}\nMaster has been notified.` }],
@@ -1406,19 +1952,24 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Resolve Blocker - Uses TaskStateManager for blocker resolution and state broadcasting
     mcp.registerTool('resolve_blocker', {
-        description: 'Resolve a blocker on a task. Coordinator roles can resolve blockers.',
+        description: 'Resolve a blocker on a task. Coordinator roles can resolve blockers. Add a follow-up note when the assignee or reviewer needs to understand what changed.',
         title: 'Resolve Blocker',
         inputSchema: {
             taskId: z.string().describe('ID of the task with the blocker'),
             blockerId: z.string().describe('ID of the blocker to resolve'),
             resolution: z.string().describe('How the blocker was resolved'),
+            comment: z.string().optional().describe('Optional follow-up note for the assignee or reviewer'),
         },
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
             const role = metadata?.role;
 
-            if (!canManageExistingTasks(role)) {
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const { effectiveGenome } = teamId
+                ? await getCurrentTeamMemberContext(teamId)
+                : { effectiveGenome: genomeSpecRef?.current ?? null };
+            if (!canManageExistingTasks(role, effectiveGenome)) {
                 return {
                     content: [{
                         type: 'text',
@@ -1447,7 +1998,13 @@ Use the \`send_team_message\` tool to communicate with your team members.
             const result = await taskManager.resolveBlocker(
                 args.taskId,
                 args.blockerId,
-                args.resolution
+                args.resolution,
+                args.comment ? {
+                    role,
+                    displayName: metadata?.displayName || metadata?.name,
+                    type: 'decision',
+                    content: args.comment,
+                } : undefined
             );
 
             if (!result.success) {
@@ -1477,33 +2034,31 @@ Use the \`send_team_message\` tool to communicate with your team members.
         description: `Browse the genome marketplace. Returns a compact directory of all available agents sorted by rating. Use like \`ls\` — scan the list, then use the id in create_agent to spawn one. Call without arguments to get the full catalog.`,
         title: 'List Available Agents',
         inputSchema: {
+            query: z.string().optional().describe('Optional search query, e.g. a role, skill, or tag'),
             category: z.string().optional().describe("Optional filter: 'coordination' | 'implementation' | 'quality' | 'research' | 'support'"),
             limit: z.number().default(100).describe('Max results (default 100)'),
         },
     }, async (args) => {
-        const role = client.getMetadata()?.role;
-        const genomeAllows = genomeSpecRef?.current?.behavior?.canSpawnAgents;
-        const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role);
+        const metadata = client.getMetadata();
+        const role = metadata?.role;
+        const teamId = metadata?.teamId || metadata?.roomId;
+        const { effectiveGenome } = teamId
+            ? await getCurrentTeamMemberContext(teamId)
+            : { effectiveGenome: genomeSpecRef?.current ?? null };
+        const genomeAllows = effectiveGenome?.behavior?.canSpawnAgents;
+        const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role, effectiveGenome);
         if (!allowed) {
             return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent marketplace.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
         try {
-            const qs = new URLSearchParams();
-            if (args.category) qs.set('category', args.category);
-            qs.set('sortBy', 'score');
-            qs.set('limit', String(args.limit ?? 100));
-
-            const res = await fetch(`${hubUrl}/genomes?${qs}`, { signal: AbortSignal.timeout(5_000) });
-            if (!res.ok) throw new Error(`hub returned ${res.status}`);
-            const data = await res.json() as { genomes: Array<{
-                id: string; namespace: string | null; name: string; version: number;
-                description: string | null; tags: string | null; category: string | null;
-                spawnCount: number; feedbackData: string | null;
-            }> };
-
-            const agents = (data.genomes ?? [])
+            const agents = (await searchMarketplaceGenomes({
+                query: args.query,
+                category: args.category,
+                limit: args.limit ?? 100,
+                hubUrl,
+            }))
                 .filter(g => g.category !== 'corps')
                 .sort((left, right) => {
                     const leftTags = left.tags ? (() => { try { return JSON.parse(left.tags) as string[]; } catch { return []; } })() : [];
@@ -1521,7 +2076,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 });
 
             if (agents.length === 0) {
-                return { content: [{ type: 'text', text: 'Marketplace is empty.' }], isError: false };
+                return { content: [{ type: 'text', text: args.query ? `No marketplace agents matched "${args.query}".` : 'Marketplace is empty.' }], isError: false };
             }
 
             // Compact directory: one line per genome, minimal tokens
@@ -1540,7 +2095,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 return `${special}${g.id} ${g.namespace ?? ''}/${g.name} ${score} ${spawns} [${tags}] ${desc}`.trim();
             });
 
-            const header = `${agents.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.`;
+            const header = `${agents.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.${args.query ? ` Query="${args.query}".` : ''}`;
             return { content: [{ type: 'text', text: header + '\n' + lines.join('\n') }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error querying genome hub: ${String(error)}` }], isError: true };
@@ -1600,16 +2155,20 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             agent: z.enum(['claude', 'codex']).default('claude').describe('Runtime: claude (default, recommended) or codex (only when user explicitly requests)'),
             executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane. Agents can only create mainline agents.'),
             specId: z.string().optional().describe('Optional spec/role-definition ID to pass to the spawned agent via AHA_SPEC_ID env var.'),
-            strategy: z.enum(['official', 'best-rated']).optional().describe('Spawn strategy: "official" (default) picks @official/{role}, "best-rated" picks highest-scored genome for this role.'),
+            strategy: z.enum(['official', 'best-rated']).optional().describe('Spawn strategy: "best-rated" (default) searches the marketplace first and falls back to @official/{role}; "official" skips market search.'),
         },
     }, async (args) => {
         try {
             const metadata = client.getMetadata();
             const role = metadata?.role;
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const { effectiveGenome } = teamId
+                ? await getCurrentTeamMemberContext(teamId)
+                : { effectiveGenome: genomeSpecRef?.current ?? null };
 
             // Genome spec is authoritative: behavior.canSpawnAgents overrides hardcode.
-            const genomeAllows = genomeSpecRef?.current?.behavior?.canSpawnAgents;
-            const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role);
+            const genomeAllows = effectiveGenome?.behavior?.canSpawnAgents;
+            const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role, effectiveGenome);
             if (!allowed) {
                 return {
                     content: [{
@@ -1660,71 +2219,27 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 },
             } as Record<string, any>;
 
-            const runtimeAwareOfficialNames = args.role === 'agent-builder' && args.agent === 'codex'
-                ? ['agent-builder-codex', 'agent-builder']
-                : [args.role];
-
-            // Auto-resolve specId from genome-hub: explicit arg > best-rated strategy > @official/{role} > none
-            let resolvedSpecId = args.specId;
-            if (!resolvedSpecId) {
-                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                const strategy = args.strategy || 'official';
-
-                // ── Phase 3-B Change 5: best-rated strategy ──
-                if (strategy === 'best-rated') {
-                    for (const queryName of runtimeAwareOfficialNames) {
-                        try {
-                            const searchUrl = `${hubUrl}/genomes?q=${encodeURIComponent(queryName)}&sortBy=score&limit=5`;
-                            const res = await fetch(searchUrl, { signal: AbortSignal.timeout(3_000) });
-                            if (res.ok) {
-                                const data = await res.json() as { genomes?: Array<{ id: string; name?: string; feedbackData?: string }> };
-                                const candidates = (data.genomes ?? []).filter(g => {
-                                    if (!g.feedbackData) return false;
-                                    if (g.name && queryName === 'agent-builder-codex' && g.name !== 'agent-builder-codex') return false;
-                                    try {
-                                        const fb = JSON.parse(g.feedbackData);
-                                        return typeof fb.evaluationCount === 'number' && fb.evaluationCount >= 3;
-                                    } catch { return false; }
-                                });
-                                if (candidates.length > 0) {
-                                    resolvedSpecId = candidates[0].id;
-                                    logger.debug(`[create_agent] best-rated strategy: selected specId=${resolvedSpecId} for role ${args.role}`);
-                                    break;
-                                } else {
-                                    logger.debug(`[create_agent] best-rated strategy: no qualified candidates (evaluationCount>=3) for ${queryName}`);
-                                }
-                            }
-                        } catch {
-                            // best-rated lookup failed — fall through to next candidate / official
-                        }
-                    }
-                    if (!resolvedSpecId) {
-                        logger.debug(`[create_agent] best-rated strategy: no runtime-aware candidates, falling back to official`);
-                    }
+            if (args.agent === 'codex') {
+                const openAiToken = await api.getVendorToken('openai');
+                if (openAiToken) {
+                    spawnBody.token = typeof openAiToken === 'string'
+                        ? openAiToken
+                        : JSON.stringify(openAiToken);
+                    logger.debug('[create_agent] Attached stored OpenAI token for Codex spawn');
+                } else {
+                    logger.debug('[create_agent] No stored OpenAI token found for Codex spawn; falling back to machine-local Codex auth');
                 }
+            }
 
-                // Fallback: @official/{role}
-                if (!resolvedSpecId) {
-                    for (const officialName of runtimeAwareOfficialNames) {
-                        try {
-                            const hubUrl2 = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                            const res = await fetch(
-                                `${hubUrl2}/genomes/%40official/${encodeURIComponent(officialName)}`,
-                                { signal: AbortSignal.timeout(3_000) }
-                            );
-                            if (res.ok) {
-                                const data = await res.json() as { genome?: { id: string } };
-                                resolvedSpecId = data.genome?.id;
-                                if (resolvedSpecId) {
-                                    logger.debug(`[create_agent] Auto-resolved specId=${resolvedSpecId} for role ${args.role} via ${officialName}`);
-                                    break;
-                                }
-                            }
-                        } catch {
-                            // genome-hub unreachable — proceed without specId
-                        }
-                    }
-                }
+            const specResolution = await resolvePreferredGenomeSpecId({
+                role: args.role,
+                runtime: args.agent || 'claude',
+                strategy: args.strategy || 'best-rated',
+                explicitSpecId: args.specId,
+            });
+            const resolvedSpecId = specResolution.specId;
+            if (resolvedSpecId) {
+                logger.debug(`[create_agent] Resolved specId=${resolvedSpecId} for role ${args.role} via ${specResolution.source}${specResolution.matchedName ? ` (${specResolution.matchedName})` : ''}`);
             }
             if (resolvedSpecId) {
                 spawnBody.specId = resolvedSpecId;
@@ -1735,6 +2250,22 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     signal: AbortSignal.timeout(3_000),
                 }).catch(() => { /* non-critical */ });
             }
+
+            // ── Trace: spawn_requested ──────────────────────────────────
+            let spawnRequestedEventId: string | null = null;
+            try {
+                spawnRequestedEventId = emitTraceEvent(
+                    TraceEventKind.spawn_requested,
+                    'mcp',
+                    {
+                        team_id: args.teamId,
+                        member_id: memberId,
+                        session_id: client.sessionId,
+                    },
+                    `${role || 'unknown'} requested spawn of ${args.role} (runtime=${args.agent || 'claude'}) in team ${args.teamId}`,
+                    { attrs: { role: args.role, runtime: args.agent || 'claude', specId: resolvedSpecId } },
+                );
+            } catch { /* trace must never break main flow */ }
 
             const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
                 method: 'POST',
@@ -1754,6 +2285,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
             // Register spawned agent as a team member
             const spawnedSessionId = result.sessionId;
+            let publishedCorpsTemplate: Awaited<ReturnType<typeof publishTeamCorpsTemplate>> | null = null;
             if (spawnedSessionId && args.teamId) {
                 try {
                     await api.addTeamMember(
@@ -1771,6 +2303,17 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         }
                     );
                     logger.debug(`[create_agent] Added ${args.role} (${spawnedSessionId}) to team ${args.teamId}`);
+
+                    publishedCorpsTemplate = await publishTeamCorpsTemplate({
+                        api,
+                        teamId: args.teamId,
+                        publisherId: client.sessionId,
+                    });
+                    if (publishedCorpsTemplate.published) {
+                        logger.debug(`[create_agent] Published corps template ${publishedCorpsTemplate.templateName} for team ${args.teamId}`);
+                    } else if (publishedCorpsTemplate.error) {
+                        logger.debug(`[create_agent] Corps publish skipped/failed for team ${args.teamId}: ${publishedCorpsTemplate.error}`);
+                    }
                 } catch (memberError) {
                     logger.debug(`[create_agent] Warning: Failed to add to team roster: ${memberError}`);
                     // Don't fail the whole operation — agent is spawned, just not in roster yet
@@ -1778,7 +2321,25 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
 
             return {
-                content: [{ type: 'text', text: JSON.stringify({ sessionId: spawnedSessionId, memberId, sessionTag, role: args.role, teamId: args.teamId, status: 'spawned_and_registered' }) }],
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        sessionId: spawnedSessionId,
+                        memberId,
+                        sessionTag,
+                        role: args.role,
+                        teamId: args.teamId,
+                        specId: resolvedSpecId,
+                        specSource: specResolution.source,
+                        corpsTemplate: publishedCorpsTemplate?.published
+                            ? {
+                                templateName: publishedCorpsTemplate.templateName,
+                                templateId: publishedCorpsTemplate.templateId,
+                            }
+                            : null,
+                        status: 'spawned_and_registered',
+                    })
+                }],
                 isError: false,
             };
         } catch (error) {
@@ -1833,6 +2394,17 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 ...headerSessions,
                 ...boardMembers.map((m: any) => m.sessionId)
             ]);
+            const daemonTrackedSessionIds = await getDaemonTrackedSessionIds().catch(() => new Set<string>());
+            const sessionSnapshots = await Promise.all(
+                Array.from(allSessionIds).map(async (sessionId: string) => {
+                    try {
+                        return [sessionId, await api.getSession(sessionId)] as const;
+                    } catch {
+                        return [sessionId, null] as const;
+                    }
+                })
+            );
+            const sessionSnapshotMap = new Map(sessionSnapshots);
 
             // Role definitions from shared config
             const roleDefinitions: Record<string, any> = {};
@@ -1841,11 +2413,20 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             });
 
             const BYPASS_ROLE_IDS = ['supervisor', 'help-agent'];
-            const agents = Array.from(allSessionIds).map((sessionId: string) => {
+            const agents = Array.from(allSessionIds).flatMap((sessionId: string) => {
                 const member = memberMap.get(sessionId) as Record<string, any> | undefined;
+                const sessionSnapshot = sessionSnapshotMap.get(sessionId);
+                const lifecycleState = sessionSnapshot?.metadata?.lifecycleState;
+                const isActive = daemonTrackedSessionIds.has(sessionId)
+                    || !!(sessionSnapshot && sessionSnapshot.active !== false && lifecycleState !== 'archived');
+
+                if (!isActive) {
+                    return [];
+                }
+
                 const roleId = member?.roleId || member?.role || '';
                 const roleDef = roleDefinitions[roleId];
-                return {
+                return [{
                     sessionId,
                     role: roleDef?.title || roleId || 'unknown',
                     roleId,
@@ -1853,8 +2434,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     specId: member?.specId || null,
                     executionPlane: member?.executionPlane ||
                         (BYPASS_ROLE_IDS.includes(roleId) ? 'bypass' : 'mainline'),
-                    runtimeType: member?.runtimeType || 'claude',
-                };
+                    runtimeType: member?.runtimeType || sessionSnapshot?.metadata?.flavor || 'claude',
+                    lifecycleState: lifecycleState || 'running',
+                }];
             });
 
             return {
@@ -1878,13 +2460,14 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             sessionId: z.string().describe('Session ID of the agent to update'),
             modelId: z.string().describe('New model to use (e.g. claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5)'),
             fallbackModelId: z.string().optional().describe('Fallback model if primary is unavailable'),
+            runtimeType: z.enum(['claude', 'codex']).optional().describe('Optional runtime switch. When set, use replace_agent semantics to hot-swap the session onto the requested runtime.'),
         },
     }, async (args) => {
         const metadata = client.getMetadata();
         const role = metadata?.role;
-        if (role !== 'supervisor' && role !== 'master') {
+        if (role !== 'supervisor' && role !== 'master' && role !== 'help-agent') {
             return {
-                content: [{ type: 'text', text: `Error: Role '${role}' cannot update agent models. Only supervisor/master can use this tool.` }],
+                content: [{ type: 'text', text: `Error: Role '${role}' cannot update agent models. Only supervisor/master/help-agent can use this tool.` }],
                 isError: true,
             };
         }
@@ -1892,6 +2475,16 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const session = await api.getSession(args.sessionId);
             if (!session) {
                 return { content: [{ type: 'text', text: `Error: Session ${args.sessionId} not found.` }], isError: true };
+            }
+            const currentRuntime = session.metadata?.flavor === 'codex' ? 'codex' : 'claude';
+            if (args.runtimeType && args.runtimeType !== currentRuntime) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Runtime switch requested for ${args.sessionId}. Use replace_agent to hot-swap from ${currentRuntime} to ${args.runtimeType}.`
+                    }],
+                    isError: false,
+                };
             }
             const nextMetadata = {
                 ...session.metadata,
@@ -1911,6 +2504,216 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    mcp.registerTool('evaluate_replacement_votes', {
+        description: 'Evaluate team vote messages for replacing an agent. Counts the latest keep/replace/unsure vote from each voter for a target session and returns whether replacement quorum has been reached.',
+        title: 'Evaluate Replacement Votes',
+        inputSchema: {
+            targetSessionId: z.string().describe('Session ID being voted on'),
+            teamId: z.string().optional().describe('Team ID. Defaults to your current team.'),
+            minVotes: z.number().int().min(1).default(2).describe('Minimum number of votes required before replacement can be recommended'),
+            limit: z.number().int().min(1).max(500).default(200).describe('How many recent team messages to inspect'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const role = metadata?.role;
+        const teamId = args.teamId || metadata?.teamId || metadata?.roomId;
+
+        if (role !== 'supervisor' && role !== 'master' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: `Error: Role '${role}' cannot evaluate replacement votes.` }], isError: true };
+        }
+        if (!teamId) {
+            return { content: [{ type: 'text', text: 'Error: You must be in a team or provide teamId.' }], isError: true };
+        }
+
+        try {
+            const evaluation = await evaluateReplacementVotes({
+                teamId,
+                targetSessionId: args.targetSessionId,
+                minVotes: args.minVotes,
+                limit: args.limit,
+            });
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        teamId,
+                        targetSessionId: args.targetSessionId,
+                        minVotes: args.minVotes,
+                        counts: evaluation.counts,
+                        totalVotes: evaluation.totalVotes,
+                        quorumReached: evaluation.quorumReached,
+                        recommendation: evaluation.recommendation,
+                        voters: evaluation.votes.map((vote) => ({
+                            fromSessionId: vote.fromSessionId,
+                            decision: vote.decision,
+                            timestamp: vote.timestamp,
+                        })),
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error evaluating votes: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('replace_agent', {
+        description: 'Hot-swap an agent session after a vote or coordinator decision. Spawns a replacement agent, optionally switches runtime between Claude and Codex, reassigns unfinished tasks, and archives the old session.',
+        title: 'Replace Agent',
+        inputSchema: {
+            sessionId: z.string().describe('Target session ID to replace'),
+            teamId: z.string().optional().describe('Team ID. Defaults to your current team or the target session team'),
+            runtimeType: z.enum(['claude', 'codex']).optional().describe('Replacement runtime. Defaults to the current runtime.'),
+            sessionName: z.string().optional().describe('Optional replacement display name'),
+            specId: z.string().optional().describe('Optional explicit genome specId for the replacement'),
+            modelId: z.string().optional().describe('Optional model override for the replacement session'),
+            fallbackModelId: z.string().optional().describe('Optional fallback model override for the replacement session'),
+            reason: z.string().describe('Why the replacement is being performed'),
+            minVotes: z.number().int().min(1).default(2).describe('Minimum replace votes required when checkVotes is enabled'),
+            checkVotes: z.boolean().default(false).describe('When true, require replace quorum from recent vote messages before proceeding'),
+            preserveTasks: z.boolean().default(true).describe('Reassign unfinished tasks from the old session to the new one'),
+            archiveOld: z.boolean().default(true).describe('Stop/archive the old session and remove it from the roster after replacement'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const callerRole = metadata?.role;
+        if (callerRole !== 'supervisor' && callerRole !== 'master' && callerRole !== 'help-agent') {
+            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot replace agents.` }], isError: true };
+        }
+        if (args.sessionId === client.sessionId) {
+            return { content: [{ type: 'text', text: 'Error: Replacing the currently running session from itself is not supported. Use another coordinator/help agent to execute the swap.' }], isError: true };
+        }
+
+        try {
+            const targetSession = await api.getSession(args.sessionId);
+            if (!targetSession) {
+                return { content: [{ type: 'text', text: `Error: Session ${args.sessionId} not found.` }], isError: true };
+            }
+
+            const inferredTeamId = args.teamId || metadata?.teamId || metadata?.roomId || targetSession.metadata?.teamId || targetSession.metadata?.roomId;
+            if (!inferredTeamId) {
+                return { content: [{ type: 'text', text: 'Error: Could not determine team for replacement.' }], isError: true };
+            }
+
+            const member = await getTeamMemberRecord(inferredTeamId, args.sessionId);
+            const roleId = member?.roleId || targetSession.metadata?.role || 'member';
+            const currentRuntime = member?.runtimeType === 'codex' || targetSession.metadata?.flavor === 'codex' ? 'codex' : 'claude';
+            const nextRuntime = args.runtimeType || currentRuntime;
+
+            if (args.checkVotes) {
+                const evaluation = await evaluateReplacementVotes({
+                    teamId: inferredTeamId,
+                    targetSessionId: args.sessionId,
+                    minVotes: args.minVotes,
+                });
+                if (!evaluation.quorumReached) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: `Replacement vote quorum not reached for ${args.sessionId}. counts=${JSON.stringify(evaluation.counts)} totalVotes=${evaluation.totalVotes}`,
+                        }],
+                        isError: true,
+                    };
+                }
+            }
+
+            const replacement = await spawnReplacementSession({
+                teamId: inferredTeamId,
+                targetSessionId: args.sessionId,
+                roleId,
+                displayName: args.sessionName || member?.displayName || targetSession.metadata?.name || `${roleId}-replacement`,
+                directory: targetSession.metadata?.path || process.cwd(),
+                runtimeType: nextRuntime,
+                executionPlane: (member?.executionPlane || targetSession.metadata?.executionPlane || 'mainline') as 'mainline' | 'bypass',
+                memberId: member?.memberId || targetSession.metadata?.memberId,
+                specId: args.specId || (nextRuntime === currentRuntime ? member?.specId : undefined),
+                parentSessionId: args.sessionId,
+                modelId: args.modelId,
+                fallbackModelId: args.fallbackModelId,
+            });
+
+            let reassignedTasks = 0;
+            if (args.preserveTasks) {
+                const tasksResult = await api.listTasks(inferredTeamId, { assigneeId: args.sessionId });
+                const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
+                for (const task of tasks) {
+                    if (task?.status === 'done') continue;
+                    await api.updateTask(inferredTeamId, task.id, {
+                        assigneeId: replacement.sessionId,
+                        comment: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
+                    });
+                    reassignedTasks += 1;
+                }
+            }
+
+            let archivedOld = false;
+            if (args.archiveOld) {
+                try {
+                    const { daemonPost } = await import('@/daemon/controlClient');
+                    await daemonPost('/stop-session', { sessionId: args.sessionId });
+                } catch (error) {
+                    logger.debug(`[replace_agent] stop-session failed for ${args.sessionId}: ${String(error)}`);
+                }
+
+                try {
+                    await api.batchArchiveSessions([args.sessionId]);
+                    archivedOld = true;
+                } catch (error) {
+                    logger.debug(`[replace_agent] batchArchiveSessions failed for ${args.sessionId}: ${String(error)}`);
+                }
+
+                try {
+                    await api.removeTeamMember(inferredTeamId, args.sessionId);
+                } catch (error) {
+                    logger.debug(`[replace_agent] removeTeamMember failed for ${args.sessionId}: ${String(error)}`);
+                }
+            }
+
+            try {
+                await api.sendTeamMessage(inferredTeamId, {
+                    id: randomUUID(),
+                    teamId: inferredTeamId,
+                    type: 'notification',
+                    content: `♻️ Replaced ${args.sessionId} with ${replacement.sessionId} (${roleId}, ${currentRuntime} → ${nextRuntime}). Reason: ${args.reason}`,
+                    shortContent: `♻️ Replaced ${roleId}: ${currentRuntime}→${nextRuntime}`,
+                    timestamp: Date.now(),
+                    fromSessionId: client.sessionId,
+                    fromRole: callerRole,
+                    metadata: {
+                        targetSessionId: args.sessionId,
+                        replacementSessionId: replacement.sessionId,
+                        runtimeType: nextRuntime,
+                    },
+                });
+            } catch (error) {
+                logger.debug('[replace_agent] Failed to send replacement notification', error);
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        teamId: inferredTeamId,
+                        oldSessionId: args.sessionId,
+                        newSessionId: replacement.sessionId,
+                        roleId,
+                        oldRuntime: currentRuntime,
+                        newRuntime: nextRuntime,
+                        specId: replacement.specId,
+                        specSource: replacement.specSource,
+                        reassignedTasks,
+                        archivedOld,
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error replacing agent: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('read_team_log', {
         description: 'Read the team message log. Returns messages since the last supervisor run (cursor-based, incremental). Pass fromCursor=0 to read all. Supervisor/help-agent only.',
         title: 'Read Team Log',
@@ -1923,6 +2726,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const role = client.getMetadata()?.role;
         if (role !== 'supervisor' && role !== 'help-agent') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read team logs.' }], isError: true };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
+            return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
         }
         try {
             const fs = await import('node:fs');
@@ -2020,125 +2826,16 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         },
     }, async (args) => {
         try {
-            const fs = await import('node:fs');
-            const path = await import('node:path');
-            const homeDir = process.env.HOME || '/tmp';
-            const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
-
-            // Resolve which session to check
-            let targetSessionId = args.sessionId;
-            let logFilePath: string | null = null;
-
-            if (!targetSessionId) {
-                // Find our own log: query daemon for current team's CC logs, match our ahaSessionId
-                try {
-                    const daemonState = await readDaemonState();
-                    if (daemonState?.httpPort) {
-                        const teamId = client.getMetadata()?.teamId;
-                        if (teamId) {
-                            const res = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list-team-logs?teamId=${teamId}`, {
-                                signal: AbortSignal.timeout(3_000)
-                            });
-                            if (res.ok) {
-                                const data = await res.json() as Array<{ ahaSessionId: string; logFilePath?: string }>;
-                                const myEntry = data.find(e => e.ahaSessionId === client.sessionId);
-                                if (myEntry?.logFilePath) logFilePath = myEntry.logFilePath;
-                            }
-                        }
-                    }
-                } catch { /* fall through to scan */ }
-
-                // Fallback: most recently modified JSONL in last 5 minutes that belongs to cwd
-                if (!logFilePath && fs.existsSync(claudeProjectsDir)) {
-                    const now = Date.now();
-                    let newest = 0;
-                    for (const dir of fs.readdirSync(claudeProjectsDir)) {
-                        const dirPath = path.join(claudeProjectsDir, dir);
-                        try {
-                            for (const file of fs.readdirSync(dirPath)) {
-                                if (!file.endsWith('.jsonl')) continue;
-                                const fp = path.join(dirPath, file);
-                                const mtime = fs.statSync(fp).mtimeMs;
-                                if (mtime > newest && (now - mtime) < 5 * 60 * 1000) {
-                                    newest = mtime;
-                                    logFilePath = fp;
-                                }
-                            }
-                        } catch { /* skip */ }
-                    }
-                }
-            } else {
-                // Find by sessionId
-                for (const dir of fs.readdirSync(claudeProjectsDir)) {
-                    const candidate = path.join(claudeProjectsDir, dir, `${targetSessionId}.jsonl`);
-                    if (fs.existsSync(candidate)) { logFilePath = candidate; break; }
-                }
-            }
-
-            if (!logFilePath || !fs.existsSync(logFilePath)) {
-                return { content: [{ type: 'text', text: 'CC log not found. Cannot determine context status.' }], isError: false };
-            }
-
-            // Read log and extract usage (same algorithm as ccusage)
-            const lines = fs.readFileSync(logFilePath, 'utf-8').split('\n').filter(Boolean);
-            let lastUsage: Record<string, number> | null = null;
-            let totalInputK = 0;
-            let totalOutputK = 0;
-            let turns = 0;
-
-            for (const line of lines) {
-                try {
-                    const entry = JSON.parse(line);
-                    if (entry.type === 'assistant') {
-                        const usage = entry.message?.usage;
-                        if (usage) {
-                            lastUsage = usage;
-                            totalInputK += ((usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0)) / 1000;
-                            totalOutputK += (usage.output_tokens || 0) / 1000;
-                            turns++;
-                        }
-                    }
-                } catch { /* skip */ }
-            }
-
-            if (!lastUsage) {
-                return { content: [{ type: 'text', text: 'No usage data found in CC log yet.' }], isError: false };
-            }
-
-            // Current context = last message's total input (= what was fed into this turn)
-            const currentContextK = Math.round(
-                ((lastUsage.input_tokens || 0) +
-                 (lastUsage.cache_creation_input_tokens || 0) +
-                 (lastUsage.cache_read_input_tokens || 0)) / 1000
-            );
-            const contextLimitK = 200; // claude-opus-4 / claude-sonnet-4
-            const remainingK = contextLimitK - currentContextK;
-            const pct = Math.round((currentContextK / contextLimitK) * 100);
-
-            const status = pct >= 85 ? '🔴 CRITICAL — compact now' :
-                           pct >= 70 ? '🟡 HIGH — consider /compact soon' :
-                           pct >= 50 ? '🟢 MODERATE — plenty remaining' :
-                                       '🟢 LOW — context is fresh';
-
+            const report = getContextStatusReport({
+                homeDir: process.env.HOME || '/tmp',
+                metadata: client.getMetadata(),
+                ahaSessionId: client.sessionId,
+                requestedSessionId: args.sessionId,
+            });
             return {
                 content: [{
                     type: 'text',
-                    text: JSON.stringify({
-                        currentContextK,
-                        remainingK,
-                        usedPercent: pct,
-                        status,
-                        turns,
-                        cumulativeCost: {
-                            inputK: Math.round(totalInputK),
-                            outputK: Math.round(totalOutputK),
-                        },
-                        recommendation: pct >= 85
-                            ? 'Output /compact immediately to avoid context overflow'
-                            : pct >= 70
-                            ? 'Plan to /compact after finishing current subtask'
-                            : 'Context healthy — no action needed',
-                    }, null, 2)
+                    text: JSON.stringify(report, null, 2)
                 }],
                 isError: false
             };
@@ -2148,12 +2845,12 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     });
 
     mcp.registerTool('read_cc_log', {
-        description: 'Read Claude Code session log (the iron proof). Shows actual tool calls since last supervisor run (cursor-based). Supervisor/help-agent only.',
+        description: 'Read Claude Code session log (the iron proof). Accepts either a claudeLocalSessionId or an Aha sessionId; when an Aha sessionId is passed, the tool will try to auto-resolve it through daemon team-session metadata. Shows actual tool calls since last supervisor run (cursor-based). Supervisor/help-agent only.',
         title: 'Read CC Log',
         inputSchema: {
-            sessionId: z.string().describe('Session ID to read CC log for'),
+            sessionId: z.string().describe('Claude local session ID or Aha session ID to read CC log for. Prefer the claudeLocalSessionId from list_team_runtime_logs/list_team_cc_logs.'),
             limit: z.number().default(100).describe('Max log entries to return'),
-            fromByteOffset: z.number().default(-1).describe('Byte offset to read from. -1 = use env AHA_SUPERVISOR_CC_LOG_CURSORS for this sessionId. 0 = read all.'),
+            fromByteOffset: z.number().default(-1).describe('Byte offset to read from. -1 = use env AHA_SUPERVISOR_CC_LOG_CURSORS for this claudeLocalSessionId. 0 = read all.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -2161,10 +2858,38 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read CC logs.' }], isError: true };
         }
         try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            let resolvedSessionId = args.sessionId;
+            let requestedSessionId = args.sessionId;
+            let autoResolvedFromAhaSessionId = false;
+
+            if (teamId) {
+                try {
+                    const { daemonPost } = await import('@/daemon/controlClient');
+                    const result = await daemonPost('/list-team-sessions', { teamId });
+                    const sessions = Array.isArray(result?.sessions) ? result.sessions as Array<{
+                        ahaSessionId: string;
+                        claudeLocalSessionId?: string;
+                        role?: string;
+                        pid: number;
+                    }> : [];
+                    const match = sessions.find((session) =>
+                        session.ahaSessionId === requestedSessionId || session.claudeLocalSessionId === requestedSessionId
+                    );
+                    if (match?.claudeLocalSessionId && match.ahaSessionId === requestedSessionId) {
+                        resolvedSessionId = match.claudeLocalSessionId;
+                        autoResolvedFromAhaSessionId = true;
+                    }
+                } catch (error) {
+                    logger.debug('[read_cc_log] Failed to auto-resolve Aha session id via daemon metadata (non-fatal)', error);
+                }
+            }
+
             const result = readRuntimeLog({
                 homeDir: process.env.HOME || '/tmp',
                 runtimeType: 'claude',
-                sessionId: args.sessionId,
+                sessionId: resolvedSessionId,
                 logKind: 'session',
                 fromCursor: args.fromByteOffset,
                 limit: args.limit,
@@ -2223,7 +2948,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 content: [{
                     type: 'text',
                     text: JSON.stringify({
-                        sessionId: args.sessionId,
+                        requestedSessionId,
+                        sessionId: resolvedSessionId,
+                        autoResolvedFromAhaSessionId,
                         fromByteOffset: result.fromCursor,
                         nextByteOffset: result.nextCursor,
                         fileSize: result.totalCount,
@@ -2298,6 +3025,21 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor can score agents.' }], isError: true };
         }
 
+        // ── Trace: score_started ────────────────────────────────────
+        let scoreStartedEventId: string | null = null;
+        try {
+            scoreStartedEventId = emitTraceEvent(
+                TraceEventKind.score_started,
+                'mcp',
+                {
+                    team_id: args.teamId,
+                    session_id: args.sessionId,
+                },
+                `Supervisor scoring ${args.role} session=${args.sessionId} action=${args.action}`,
+                { attrs: { role: args.role, action: args.action } },
+            );
+        } catch { /* trace must never break main flow */ }
+
         // Auto-resolve specId from team member record if not explicitly provided
         let resolvedSpecId = args.specId;
         if (!resolvedSpecId && args.teamId && args.sessionId) {
@@ -2338,6 +3080,20 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     specName = data.genome?.name ?? undefined;
                 }
             } catch { /* proceed without */ }
+        }
+
+        // ── Auto-extract tokensUsed from CC log when not provided ─────
+        if (args.hardMetrics && args.hardMetrics.tokensUsed === 0) {
+            try {
+                const { extractTokenUsageFromCcLog } = await import('@/claude/utils/ccLogTokenExtractor');
+                const tokenSummary = extractTokenUsageFromCcLog(args.sessionId, process.env.HOME ?? undefined);
+                if (tokenSummary && tokenSummary.totalTokens > 0) {
+                    args.hardMetrics.tokensUsed = tokenSummary.totalTokens;
+                    logger.debug(`[score_agent] Auto-extracted tokensUsed=${tokenSummary.totalTokens} from CC log for session ${args.sessionId}`);
+                }
+            } catch {
+                // Auto-extraction is best-effort; proceed with 0
+            }
         }
 
         // Resolve dimension scores: hard-first (business > raw counts > manual legacy)
@@ -2418,6 +3174,24 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             action: args.action,
         });
 
+        // ── Trace: score_completed ──────────────────────────────────
+        let scoreCompletedEventId: string | null = null;
+        try {
+            scoreCompletedEventId = emitTraceEvent(
+                TraceEventKind.score_completed,
+                'mcp',
+                {
+                    team_id: args.teamId,
+                    session_id: args.sessionId,
+                },
+                `Scored ${args.role} session=${args.sessionId}: overall=${overall} action=${args.action}`,
+                { attrs: { overall, action: args.action, scoringMode } },
+            );
+            if (scoreCompletedEventId && scoreStartedEventId) {
+                emitTraceLink(scoreCompletedEventId, scoreStartedEventId, 'caused_by');
+            }
+        } catch { /* trace must never break main flow */ }
+
         // ── Phase 3-B Change 3: Auto-trigger feedback upload when >= 3 scores ──
         if (feedbackTarget) {
             try {
@@ -2429,34 +3203,76 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 if (genomeScores.length >= 3) {
                     const { aggregateScores } = await import('@/claude/utils/feedbackPrivacy');
                     const feedback = aggregateScores(genomeScores);
-                    const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-                    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
-                    const response = await fetch(
-                        `${hubUrl}/genomes/${encodeURIComponent(feedbackTarget.namespace)}/${encodeURIComponent(feedbackTarget.name)}/feedback`,
-                        {
-                            method: 'PATCH',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
-                            },
-                            body: JSON.stringify(feedback),
-                            signal: AbortSignal.timeout(5_000),
-                        },
-                    );
+                    const upload = await syncGenomeFeedbackToMarketplace({
+                        target: feedbackTarget,
+                        role: args.role,
+                        feedback: feedback!,
+                        hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
+                        hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                    });
 
-                    if (!response.ok) {
-                        const errorText = await response.text().catch(() => '');
+                    if (!upload.ok) {
                         logger.debug(
-                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name}: ${response.status} ${errorText}`,
+                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name}: ${upload.status} ${upload.body}`,
                         );
                     } else {
                         logger.debug(
-                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, source=${feedbackTarget.source})`,
+                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, source=${feedbackTarget.source}, createdGenome=${upload.createdGenome})`,
                         );
+
+                        // ── Trace: feedback_uploaded ────────────────────────
+                        try {
+                            const feedbackEventId = emitTraceEvent(
+                                TraceEventKind.feedback_uploaded,
+                                'mcp',
+                                {
+                                    team_id: args.teamId,
+                                    session_id: args.sessionId,
+                                },
+                                `Feedback uploaded for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, createdGenome=${upload.createdGenome})`,
+                                { attrs: { namespace: feedbackTarget.namespace, name: feedbackTarget.name, scoreCount: genomeScores.length } },
+                            );
+                            if (feedbackEventId && scoreCompletedEventId) {
+                                emitTraceLink(feedbackEventId, scoreCompletedEventId, 'caused_by');
+                            }
+                        } catch { /* trace must never break main flow */ }
                     }
                 }
             } catch (error) {
                 logger.debug(`[score_agent] Auto-feedback upload error for role ${args.role}: ${String(error)}`);
+            }
+        }
+
+        // ── Immune system: score < 60 → auto-trigger help-agent to replace underperformer ──
+        // When a supervisor scores an agent below 60, it means the agent is failing.
+        // Rather than silently continuing, we auto-request a help-agent to kill and replace it.
+        if (overall < 60) {
+            try {
+                const immuneTeamId = args.teamId;
+                const failureContext = [
+                    `Agent role=${args.role} scored ${overall}/100 (below 60 threshold).`,
+                    args.recommendations?.length
+                        ? `Failure reasons: ${args.recommendations.join('; ')}`
+                        : '',
+                    resolvedSpecId ? `Genome specId=${resolvedSpecId}.` : '',
+                    `Call replace_agent(sessionId="${args.sessionId}", reason=...) to swap with a better-matched genome.`,
+                ].filter(Boolean).join(' ');
+
+                const { helpSpawned } = await triggerHelpLane({
+                    teamId: immuneTeamId,
+                    sessionId: args.sessionId,
+                    role: 'supervisor',
+                    type: 'error',
+                    description: `[AUTO-IMMUNE] ${failureContext}`,
+                    severity: 'high',
+                    sendNotification: true,
+                });
+
+                logger.debug(
+                    `[score_agent] Immune system: overall=${overall} < 60 for ${args.role}/${args.sessionId}, helpSpawned=${helpSpawned}`,
+                );
+            } catch (error) {
+                logger.debug(`[score_agent] Immune system error: ${String(error)}`);
             }
         }
 
@@ -2483,9 +3299,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         ].join(' '),
         title: 'Update Genome Feedback',
         inputSchema: {
-            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'"),
-            genomeName: z.string().describe("Genome name, e.g. 'implementer'"),
-            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, scores are filtered by specId first, falling back to role name match.'),
+            genomeNamespace: z.string().optional().describe("Genome namespace, e.g. '@official'. Optional when genomeId is provided."),
+            genomeName: z.string().optional().describe("Genome name, e.g. 'implementer'. Optional when genomeId is provided."),
+            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, the tool auto-resolves namespace/name from genome-hub and falls back to the canonical role genome if needed.'),
             role: z.string().describe('Role name used as fallback filter when specId not recorded on older scores'),
             dryRun: z.boolean().optional().describe('If true, show what would be sent without uploading'),
         },
@@ -2495,12 +3311,50 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor can update genome feedback.' }], isError: true };
         }
 
-        // Read local scores — prefer specId match, fall back to role name
+        let resolvedNamespace = args.genomeNamespace;
+        let resolvedName = args.genomeName;
+
+        if ((!resolvedNamespace || !resolvedName) && args.genomeId) {
+            try {
+                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(args.genomeId)}`, {
+                    signal: AbortSignal.timeout(5_000),
+                });
+                if (res.ok) {
+                    const data = await res.json() as { genome?: { namespace?: string; name?: string } };
+                    resolvedNamespace = resolvedNamespace ?? data.genome?.namespace;
+                    resolvedName = resolvedName ?? data.genome?.name;
+                }
+            } catch {
+                // Fall through to canonical role fallback below.
+            }
+        }
+
+        const feedbackTarget = resolveFeedbackUploadTarget({
+            role: args.role,
+            specId: args.genomeId,
+            specNamespace: resolvedNamespace,
+            specName: resolvedName,
+        });
+        if (!feedbackTarget) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Could not resolve a marketplace feedback target for role '${args.role}'. Provide genomeId or explicit genomeNamespace/genomeName, or use a canonical official role.`,
+                }],
+                isError: true,
+            };
+        }
+
+        resolvedNamespace = feedbackTarget.namespace;
+        resolvedName = feedbackTarget.name;
+
+        // Read local scores — prefer resolved genome identity, fall back to canonical role matching
         const { readScores } = await import('@/claude/utils/scoreStorage');
         const { scores } = readScores();
-        const roleScores = args.genomeId
-            ? scores.filter(s => s.specId === args.genomeId || (s.specName === args.genomeName && s.specNamespace === args.genomeNamespace) || s.role === args.role)
-            : scores.filter(s => s.role === args.role);
+        const roleScores = scores.filter((score) =>
+            scoreMatchesFeedbackTarget(score, feedbackTarget, args.role)
+        );
 
         if (roleScores.length === 0) {
             return { content: [{ type: 'text', text: `No scores found for role '${args.role}'. Score agents first with score_agent tool.` }], isError: false };
@@ -2527,33 +3381,186 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         ].join('\n');
 
         if (args.dryRun) {
-            return { content: [{ type: 'text', text: `DRY RUN — would send:\n${summary}\n\nPrivacy: session IDs, team IDs, file paths, and raw evidence are stripped before upload.` }], isError: false };
+            return {
+                content: [{
+                    type: 'text',
+                    text: `DRY RUN — would send to ${resolvedNamespace}/${resolvedName}:\n${summary}\n\nPrivacy: session IDs, team IDs, file paths, and raw evidence are stripped before upload.`,
+                }],
+                isError: false,
+            };
         }
 
-        // Send to genome-hub
-        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-        const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
-        const encodedNs = encodeURIComponent(args.genomeNamespace);
-
         try {
-            const res = await fetch(`${hubUrl}/genomes/${encodedNs}/${args.genomeName}/feedback`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
-                },
-                body: JSON.stringify(feedback),
-                signal: AbortSignal.timeout(15_000),
+            const upload = await syncGenomeFeedbackToMarketplace({
+                target: feedbackTarget,
+                role: args.role,
+                feedback,
+                hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
+                hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
             });
 
-            if (!res.ok) {
-                const err = await res.text();
-                return { content: [{ type: 'text', text: `Failed to update genome hub: ${res.status} ${err}` }], isError: true };
+            if (!upload.ok) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Failed to update genome hub for ${resolvedNamespace}/${resolvedName}: ${upload.status} ${upload.body}`,
+                    }],
+                    isError: true,
+                };
             }
 
-            return { content: [{ type: 'text', text: `Feedback uploaded to marketplace:\n${summary}` }], isError: false };
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Feedback uploaded to marketplace (${resolvedNamespace}/${resolvedName}${upload.createdGenome ? ', created placeholder genome' : ''}):\n${summary}`,
+                }],
+                isError: false,
+            };
         } catch (error) {
             return { content: [{ type: 'text', text: `Network error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ── Evolution Materializer: evolve_genome ───────────────────────────────
+    mcp.registerTool('evolve_genome', {
+        description: [
+            'Promote a genome to the next version by merging supervisor-synthesized learnings into spec.memory.learnings.',
+            'Step 1: Read feedbackData via update_genome_feedback (dryRun=true) to review suggestions.',
+            'Step 2: Synthesize 3-7 actionable learnings from the feedback patterns.',
+            'Step 3: Call evolve_genome with the synthesized learnings — it merges them into the spec and calls promote.',
+            'Requires feedbackData.avgScore >= minPromoteScore (default 60). Supervisor only.',
+        ].join(' '),
+        title: 'Evolve Genome',
+        inputSchema: {
+            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
+            genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
+            newLearnings: z.array(z.string().max(300)).min(1).max(10).describe(
+                'Synthesized learnings derived from feedbackData patterns. Each item is a short, actionable insight for future instances of this genome.'
+            ),
+            minPromoteScore: z.number().min(0).max(100).default(60).optional().describe(
+                'Minimum avgScore required to promote. Defaults to 60.'
+            ),
+            dryRun: z.boolean().optional().describe('If true, show the merged spec without calling promote.'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can evolve genomes.' }], isError: true };
+        }
+
+        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+
+        // 1. Fetch current genome (spec + feedbackData)
+        let genomeRecord: { genome?: { spec: string; feedbackData?: string | null } };
+        try {
+            const res = await fetch(
+                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
+                { signal: AbortSignal.timeout(5_000) }
+            );
+            if (!res.ok) {
+                return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} not found: ${res.status}` }], isError: true };
+            }
+            genomeRecord = await res.json() as { genome?: { spec: string; feedbackData?: string | null } };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error fetching genome: ${String(error)}` }], isError: true };
+        }
+
+        if (!genomeRecord.genome) {
+            return { content: [{ type: 'text', text: 'Unexpected response from genome-hub.' }], isError: true };
+        }
+
+        // 2. Validate feedbackData score threshold
+        let currentSpec: Record<string, unknown>;
+        try {
+            currentSpec = JSON.parse(genomeRecord.genome.spec) as Record<string, unknown>;
+        } catch {
+            return { content: [{ type: 'text', text: 'Failed to parse current genome spec JSON.' }], isError: true };
+        }
+
+        let avgScore = 0;
+        const feedbackRaw = genomeRecord.genome.feedbackData;
+        if (feedbackRaw) {
+            try {
+                const fb = JSON.parse(feedbackRaw) as { avgScore?: number };
+                avgScore = typeof fb.avgScore === 'number' ? fb.avgScore : 0;
+            } catch { /* proceed with 0 */ }
+        }
+
+        const minScore = args.minPromoteScore ?? 60;
+        if (avgScore < minScore) {
+            return {
+                content: [{ type: 'text', text: `Cannot evolve: avgScore=${Math.round(avgScore)} < minPromoteScore=${minScore}. Accumulate more evaluations via score_agent + update_genome_feedback first.` }],
+                isError: true,
+            };
+        }
+
+        // 3. Merge new learnings into spec.memory.learnings (deduplicated)
+        const existingMemory = (currentSpec.memory ?? {}) as Record<string, unknown>;
+        const existingLearnings: string[] = Array.isArray(existingMemory.learnings) ? existingMemory.learnings as string[] : [];
+        const mergedLearnings = Array.from(new Set([...existingLearnings, ...args.newLearnings]));
+        const evolvedSpec = {
+            ...currentSpec,
+            memory: {
+                ...existingMemory,
+                learnings: mergedLearnings,
+            },
+        };
+
+        if (args.dryRun) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: [
+                        `DRY RUN — evolve ${args.genomeNamespace}/${args.genomeName}`,
+                        `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore}) ✅`,
+                        `Existing learnings: ${existingLearnings.length}`,
+                        `New learnings to merge: ${args.newLearnings.length}`,
+                        `Merged total: ${mergedLearnings.length}`,
+                        `New entries: ${args.newLearnings.filter(l => !existingLearnings.includes(l)).join(' | ')}`,
+                    ].join('\n'),
+                }],
+                isError: false,
+            };
+        }
+
+        // 4. Call promote endpoint
+        try {
+            const promoteRes = await fetch(
+                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/promote`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
+                    },
+                    body: JSON.stringify({
+                        spec: JSON.stringify(evolvedSpec),
+                        minAvgScore: minScore,
+                        isPublic: true,
+                    }),
+                    signal: AbortSignal.timeout(10_000),
+                }
+            );
+
+            if (!promoteRes.ok) {
+                const errBody = await promoteRes.text();
+                return { content: [{ type: 'text', text: `Promote failed: ${promoteRes.status} ${errBody}` }], isError: true };
+            }
+
+            const promoted = await promoteRes.json() as { genome?: { version?: number; id?: string } };
+            const newVersion = promoted.genome?.version ?? '?';
+            const addedCount = args.newLearnings.filter(l => !existingLearnings.includes(l)).length;
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `✅ Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion}. Added ${addedCount} new learnings (total: ${mergedLearnings.length}).`,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error during promote: ${String(error)}` }], isError: true };
         }
     });
 
@@ -2583,6 +3590,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const callerRole = client.getMetadata()?.role;
         if (callerRole !== 'supervisor') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor can update team feedback.' }], isError: true };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
+            return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
         }
 
         const payload = {
@@ -2628,6 +3638,16 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can compact agents.' }], isError: true };
         }
         try {
+            const session = await api.getSession(args.sessionId);
+            if (!session || session.active === false || session.metadata?.lifecycleState === 'archived') {
+                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not live. Skipping compact RPC.` }], isError: true };
+            }
+
+            const trackedSessionIds = await getDaemonTrackedSessionIds();
+            if (!trackedSessionIds.has(args.sessionId)) {
+                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not tracked by the local daemon. Skipping compact RPC.` }], isError: true };
+            }
+
             const daemonState = await readDaemonState();
             if (!daemonState?.httpPort) {
                 return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
@@ -2658,6 +3678,16 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can kill agents.' }], isError: true };
         }
         try {
+            const session = await api.getSession(args.sessionId);
+            if (!session || session.active === false || session.metadata?.lifecycleState === 'archived') {
+                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not live. Skipping kill RPC.` }], isError: true };
+            }
+
+            const trackedSessionIds = await getDaemonTrackedSessionIds();
+            if (!trackedSessionIds.has(args.sessionId)) {
+                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not tracked by the local daemon. Skipping kill RPC.` }], isError: true };
+            }
+
             const daemonState = await readDaemonState();
             if (!daemonState?.httpPort) {
                 return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
@@ -2675,10 +3705,56 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    mcp.registerTool('archive_session', {
+        description: 'Archive an agent session, removing it from the active team roster. Supervisor/org-manager only. Use when an agent has completed its work or needs to be retired. Use recover_session to restore.',
+        title: 'Archive Session',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID to archive'),
+            reason: z.string().describe('Why this session is being archived'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'org-manager' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/org-manager/help-agent can archive sessions.' }], isError: true };
+        }
+        try {
+            const result = await api.batchArchiveSessions([args.sessionId]);
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ archived: result.archived, reason: args.reason }) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('recover_session', {
+        description: 'Restore a previously archived agent session, making it active again in the team roster. Supervisor/org-manager only. Use when an archived agent needs to resume work.',
+        title: 'Recover Session',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID to restore from archive'),
+            reason: z.string().describe('Why this session is being restored'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'org-manager' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/org-manager/help-agent can recover sessions.' }], isError: true };
+        }
+        try {
+            const result = await api.batchUnarchiveSessions([args.sessionId]);
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ restored: result.restored, reason: args.reason }) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
     // ========== Runtime-Aware Supervisor Log Tools ==========
 
     mcp.registerTool('list_team_runtime_logs', {
-        description: 'List runtime log files for team agents across Claude and Codex. Returns ahaSessionId → runtimeType + log paths. Supervisor/help-agent only.',
+        description: 'List runtime log files for team agents across Claude and Codex. Returns ahaSessionId, claudeLocalSessionId, and the exact readSessionId/cursorKey to use with read_runtime_log. For Claude, readSessionId is the claudeLocalSessionId (NOT the Aha sessionId). Supervisor/help-agent only.',
         title: 'List Team Runtime Logs',
         inputSchema: {
             teamId: z.string().describe('Team ID to list runtime logs for'),
@@ -2687,6 +3763,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const role = client.getMetadata()?.role;
         if (role !== 'supervisor' && role !== 'help-agent') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can use this tool.' }], isError: true };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
+            return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
         }
         try {
             const daemonState = await readDaemonState();
@@ -2724,11 +3803,11 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     });
 
     mcp.registerTool('read_runtime_log', {
-        description: 'Read runtime-aware supervisor evidence logs with cursor support. Supports Claude session logs, Codex history, and Codex session transcripts. Supervisor/help-agent only.',
+        description: 'Read runtime-aware supervisor evidence logs with cursor support. Supports Claude session logs, Codex history, and Codex session transcripts. For Claude, sessionId must be the claudeLocalSessionId returned by list_team_runtime_logs (never the Aha sessionId). Supervisor/help-agent only.',
         title: 'Read Runtime Log',
         inputSchema: {
             runtimeType: z.enum(['claude', 'codex', 'open-code']).describe('Runtime to read logs for'),
-            sessionId: z.string().optional().describe('Claude local session id or Codex transcript session id. Required for session logs.'),
+            sessionId: z.string().optional().describe('Claude: claudeLocalSessionId from list_team_runtime_logs. Codex session logs: transcript session id / aha session id. Required for session logs.'),
             logKind: z.enum(['session', 'history']).default('session').describe('Log kind. Use "history" for ~/.codex/history.jsonl.'),
             limit: z.number().default(100).describe('Max log entries to return'),
             fromCursor: z.number().default(-1).describe('Cursor to read from. Byte offset for session logs, line cursor for codex history. -1 = use supervisor env cursor.'),
@@ -2763,7 +3842,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     // ========== List Team CC Logs (supervisor only) ==========
 
     mcp.registerTool('list_team_cc_logs', {
-        description: 'List Claude Code log files for all agents in a team by querying the daemon. Returns ahaSessionId → claudeLocalSessionId + log file path. Call this first before read_cc_log to get correct session IDs. Supervisor/help-agent only.',
+        description: 'Legacy Claude-only alias for list_team_runtime_logs. Returns ahaSessionId → claudeLocalSessionId + log file path. Prefer list_team_runtime_logs + read_runtime_log; if you use this tool, pass the returned claudeLocalSessionId (not the Aha sessionId) into read_cc_log. Supervisor/help-agent only.',
         title: 'List Team CC Logs',
         inputSchema: {
             teamId: z.string().describe('Team ID to list CC logs for'),
@@ -2823,7 +3902,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         inputSchema: {
             teamId: z.string().describe('Team ID being supervised'),
             teamLogCursor: z.number().describe('nextCursor value returned by read_team_log'),
-            ccLogCursors: z.record(z.string(), z.number()).describe('Map of sessionId → nextByteOffset from read_cc_log results'),
+            ccLogCursors: z.record(z.string(), z.number()).describe('Map of claudeLocalSessionId → nextByteOffset from read_runtime_log/read_cc_log results'),
             codexHistoryCursor: z.number().optional().describe('Line cursor into ~/.codex/history.jsonl after the last inspected entry'),
             codexSessionCursors: z.record(z.string(), z.number()).optional().describe('Map of Codex session id → next byte offset in ~/.codex/sessions/... transcript files'),
             conclusion: z.string().describe('2-4 sentence plain-text summary of this supervisor cycle findings'),
@@ -2833,6 +3912,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 z.object({
                     type: z.literal('notify_help'),
                     message: z.string().describe('Help/intervention message to carry into the next cycle'),
+                    requestType: z.enum(['stuck', 'context_overflow', 'need_collaborator', 'error', 'custom']).optional(),
+                    severity: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+                    description: z.string().optional(),
+                    targetSessionId: z.string().optional(),
                 }),
                 z.object({
                     type: z.literal('conditional_escalation'),
@@ -2865,20 +3948,28 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 predictedAt: Date.now(),
             }));
 
-            await updateSupervisorState(args.teamId, (state) => ({
-                ...state,
-                lastRunAt: Date.now(),
-                teamLogCursor: args.teamLogCursor,
-                ccLogCursors: args.ccLogCursors,
-                codexHistoryCursor: args.codexHistoryCursor ?? state.codexHistoryCursor,
-                codexSessionCursors: args.codexSessionCursors ?? state.codexSessionCursors,
-                lastConclusion: args.conclusion,
-                lastSessionId: args.sessionId ?? state.lastSessionId,
-                terminated: args.teamTerminated,
-                idleRuns: 0,
-                pendingAction: args.pendingAction !== undefined ? args.pendingAction : state.pendingAction,
-                predictions,
-            }));
+            await updateSupervisorState(args.teamId, (state) => {
+                const nextPendingAction = args.pendingAction !== undefined ? args.pendingAction : state.pendingAction;
+                const nextPendingActionMeta = args.pendingAction === undefined && nextPendingAction
+                    ? state.pendingActionMeta
+                    : null;
+
+                return {
+                    ...state,
+                    lastRunAt: Date.now(),
+                    teamLogCursor: args.teamLogCursor,
+                    ccLogCursors: args.ccLogCursors,
+                    codexHistoryCursor: args.codexHistoryCursor ?? state.codexHistoryCursor,
+                    codexSessionCursors: args.codexSessionCursors ?? state.codexSessionCursors,
+                    lastConclusion: args.conclusion,
+                    lastSessionId: args.sessionId ?? state.lastSessionId,
+                    terminated: args.teamTerminated,
+                    idleRuns: 0,
+                    pendingAction: nextPendingAction,
+                    pendingActionMeta: nextPendingActionMeta,
+                    predictions,
+                };
+            });
             const predCount = predictions?.length ?? 0;
             return {
                 content: [{
@@ -3014,7 +4105,23 @@ The supervisor will see your request and may: send you guidance, compact your co
                 };
             }
 
-            const { helpSpawned } = await triggerHelpLane({
+            // ── Trace: help_requested ───────────────────────────────────
+            let helpRequestedEventId: string | null = null;
+            try {
+                helpRequestedEventId = emitTraceEvent(
+                    TraceEventKind.help_requested,
+                    'mcp',
+                    {
+                        team_id: teamId,
+                        task_id: args.taskId,
+                        session_id: sessionId,
+                    },
+                    `${role || 'unknown'} requested help (${args.type}, severity=${args.severity}): ${args.description.slice(0, 200)}`,
+                    { attrs: { helpType: args.type, severity: args.severity } },
+                );
+            } catch { /* trace must never break main flow */ }
+
+            const { helpSpawned, error } = await triggerHelpLane({
                 teamId,
                 sessionId,
                 role,
@@ -3025,12 +4132,31 @@ The supervisor will see your request and may: send you guidance, compact your co
                 sendNotification: true,
             });
 
+            // ── Trace: help_agent_spawned (if spawn confirmed) ──────────
+            if (helpSpawned && helpRequestedEventId) {
+                try {
+                    const spawnedId = emitTraceEvent(
+                        TraceEventKind.help_agent_spawned,
+                        'mcp',
+                        {
+                            team_id: teamId,
+                            task_id: args.taskId,
+                            session_id: sessionId,
+                        },
+                        `Help-agent spawned for ${role || 'unknown'} (${args.type}, severity=${args.severity})`,
+                    );
+                    if (spawnedId && helpRequestedEventId) {
+                        emitTraceLink(spawnedId, helpRequestedEventId, 'caused_by');
+                    }
+                } catch { /* trace must never break main flow */ }
+            }
+
             return {
                 content: [{
                     type: 'text',
                     text: helpSpawned
                         ? `Help request logged and help-agent spawned (${args.type}, severity: ${args.severity}). A help-agent is joining the team to assist you.`
-                        : `Help request logged (${args.type}, severity: ${args.severity}). The supervisor has been notified. If no help-agent appears within a few minutes, try again or ask @master for coordination.`,
+                        : `Help request logged (${args.type}, severity: ${args.severity}). The supervisor has been notified, but help-agent spawn was not confirmed${error ? `: ${error}` : ''}. If no help-agent appears within a few minutes, try again or ask @master for coordination.`,
                 }],
                 isError: false,
             };
@@ -3089,20 +4215,51 @@ Namespace conventions:
                 };
             }
 
-            // Inject provenance into spec if parentId is provided
+            // ── Spec validation & sanitization ──────────────────────────
             let specStr = args.spec;
-            if (args.parentId) {
-                try {
-                    const specObj = JSON.parse(specStr);
-                    specObj.provenance = {
-                        ...(specObj.provenance || {}),
-                        origin: args.origin || 'forked',
-                        parentId: args.parentId,
-                        mutationNote: args.mutationNote || null,
-                    };
-                    specStr = JSON.stringify(specObj);
-                } catch { /* spec parse failed, continue without provenance */ }
+
+            // Size guard: reject oversized specs
+            if (specStr.length > 64000) {
+                return {
+                    content: [{ type: 'text', text: 'Error: spec exceeds 64KB size limit.' }],
+                    isError: true,
+                };
             }
+
+            let specObj: Record<string, unknown>;
+            try {
+                specObj = JSON.parse(specStr);
+            } catch {
+                return {
+                    content: [{ type: 'text', text: 'Error: spec is not valid JSON.' }],
+                    isError: true,
+                };
+            }
+
+            // Strip forbidden keys for non-@official namespaces
+            const isOfficial = args.namespace === '@official';
+            if (!isOfficial) {
+                const FORBIDDEN_KEYS = ['hooks', 'permissionMode', 'executionPlane'] as const;
+                for (const key of FORBIDDEN_KEYS) {
+                    delete specObj[key];
+                }
+                // Downgrade full-access to default
+                if (specObj.accessLevel === 'full-access') {
+                    delete specObj.accessLevel;
+                }
+            }
+
+            // Inject provenance into spec if parentId is provided
+            if (args.parentId) {
+                specObj.provenance = {
+                    ...((specObj.provenance as Record<string, unknown>) || {}),
+                    origin: args.origin || 'forked',
+                    parentId: args.parentId,
+                    mutationNote: args.mutationNote || null,
+                };
+            }
+
+            specStr = JSON.stringify(specObj);
 
             const result = await api.createGenome({
                 id: args.id,
@@ -3177,6 +4334,7 @@ Namespace conventions:
             'get_team_info',
             'create_task',
             'update_task',
+            'add_task_comment',
             'delete_task',
             'list_tasks',
             // 嵌套任务工具 (v2)
@@ -3191,6 +4349,9 @@ Namespace conventions:
             'create_agent',
             'list_team_agents',
             'request_help',
+            'replace_agent',
+            'evaluate_replacement_votes',
+            'update_agent_model',
             // Evolution system (M3)
             'create_genome',
             // Supervisor-only tools
@@ -3202,6 +4363,7 @@ Namespace conventions:
             'score_agent',
             'score_supervisor_self',
             'update_genome_feedback',
+            'evolve_genome',
             'update_team_feedback',
             'compact_agent',
             'kill_agent',

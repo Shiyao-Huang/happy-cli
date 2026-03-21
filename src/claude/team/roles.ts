@@ -27,6 +27,16 @@ export interface KanbanTaskSummary {
         status: 'active' | 'completed' | 'abandoned';
     }>;
     approvalStatus?: 'pending' | 'approved' | 'rejected' | 'not_required';
+    commentCount?: number;
+    lastCommentPreview?: string;
+    lastCommentBy?: string;
+    comments?: Array<{
+        authorDisplayName?: string;
+        authorRole?: string;
+        content: string;
+        createdAt: number;
+        type?: string;
+    }>;
 }
 
 export interface KanbanContext {
@@ -83,6 +93,16 @@ export const DEPRECATED_ROLES = ['observer'];
 // Bypass roles: operate outside the normal task workflow.
 // They observe, score, and intervene but never execute implementation tasks.
 export const BYPASS_ROLES = ['supervisor', 'help-agent'];
+
+const NON_TASK_OWNING_ROLES = [
+    'org-manager',
+    ...DEPRECATED_ROLES,
+    ...BYPASS_ROLES,
+];
+
+function isTaskOwningRole(roleKey: string): boolean {
+    return !NON_TASK_OWNING_ROLES.includes(roleKey);
+}
 
 // Research: Information gathering, analysis
 export const RESEARCH_ROLES = [
@@ -250,18 +270,33 @@ export function isBootstrapRole(role: string | undefined, genome?: { executionPl
 }
 
 export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
+    const authorities = (genome as any)?.authorities;
+    if (Array.isArray(authorities) && authorities.includes('agent.spawn')) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
 export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
+    const authorities = (genome as any)?.authorities;
+    if (Array.isArray(authorities) && authorities.includes('task.create')) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
 export function canManageExistingTasks(role: string | undefined, genome?: { messaging?: { receiveUserMessages?: boolean } } | null): boolean {
+    const authorities = (genome as any)?.authorities;
+    if (Array.isArray(authorities) && authorities.some((authority: string) => ['task.assign', 'task.update.any', 'task.approve', 'task.create'].includes(authority))) {
+        return true;
+    }
     if (genome?.messaging?.receiveUserMessages) return true;
     return isCoordinatorRole(role);
+}
+
+export function hasTeamAuthority(
+    authorities: string[] | undefined | null,
+    authority: string
+): boolean {
+    return Array.isArray(authorities) && authorities.includes(authority);
 }
 
 export interface AgentHandshakeContentOptions {
@@ -306,8 +341,10 @@ export function buildAgentHandshakeContent(options: AgentHandshakeContentOptions
         ? capabilities.map((item, index) => `${index + 1}. ${item}`).join('\n')
         : '1. Ready to assist the team';
     const roleSummary = options.roleDescription?.trim() || roleDef?.name || roleTitle;
-    const scopeLine = options.scopeSummary?.trim()
-        ? `\n**Boundary:** ${options.scopeSummary.trim()}`
+    const runtimeScopeSummary = process.env.AHA_AGENT_SCOPE_SUMMARY?.trim();
+    const resolvedScopeSummary = runtimeScopeSummary || options.scopeSummary?.trim();
+    const scopeLine = resolvedScopeSummary
+        ? `\n**Boundary:** ${resolvedScopeSummary}`
         : '';
     const helpLaneLine = '**Help Lane:** If blocked, call `request_help` with evidence. `@help` in team chat triggers the same escalation path.';
 
@@ -597,8 +634,9 @@ function buildPhase1CoordinatorSection(): string {
 
 ### Team Assembly (When roster is incomplete):
 1. Inspect the team roster via 'get_team_info'
-2. If required execution roles are missing, use 'create_agent' to spawn the minimum viable team
-3. Assemble team members BEFORE creating tasks when the team cannot execute the request as-is
+2. **If org-manager is present and in standby**: send it a message describing what roles you need — it is the HR coordinator and will call create_agent on your behalf
+3. **If org-manager is absent**: call 'create_agent' directly to spawn the needed roles
+4. Assemble team members BEFORE creating tasks when the team cannot execute the request as-is
 
 ### Task Creation (ONLY when user asks):
 1. Break down user request into atomic tasks via 'create_task'
@@ -617,9 +655,18 @@ function buildPhase1CoordinatorSection(): string {
  */
 function buildTaskManagementSection(roleKey: string): string {
     const isCoordinator = isCoordinatorRole(roleKey);
+    const isBypass = BYPASS_ROLES.includes(roleKey);
 
     return `<Task_Management>
 ## Task Management (CRITICAL)
+
+### Kanban Baseline (APPLIES TO ALL AGENTS)
+
+- The Kanban board is the team's source of truth.
+- Every agent must be able to read team state from \`get_team_info\` and \`list_tasks\`.
+- If you are assigned a task, your progress must be visible on the board, not only in chat.
+- Routine team work should move through task lifecycle tools rather than vague discussion.
+- Review feedback, handoff rationale, blocker context, and key decisions should be left as task comments so the next agent inherits the task memory.
 
 ### Task Source Hierarchy (NON-NEGOTIABLE)
 
@@ -640,13 +687,20 @@ ${isCoordinator ? `
 3. **ASSIGN** tasks to appropriate roles
 4. **MONITOR** progress via [MY TASKS] and team messages
 5. **APPROVE** completed work in [PENDING APPROVALS]
+` : isBypass ? `
+**System Workflow:**
+1. **READ** Kanban for shared context when needed
+2. **EXECUTE** your monitoring / repair / intervention duty
+3. **DO NOT** claim routine delivery tasks unless explicitly instructed
+4. **REPORT** outcomes through your role-specific protocol
 ` : `
-**Worker Workflow:**
+**Task-Owning Workflow:**
 1. **CHECK** [MY TASKS] for assigned work
-2. **ANNOUNCE** yourself if no tasks (send_team_message)
-3. **WAIT** for Master to assign task
-4. **EXECUTE** assigned task (start_task → in-progress)
-5. **COMPLETE** and report (update_task → done)
+2. **START** assigned work visibly (\`start_task\`)
+3. **EXECUTE** the assigned task
+4. **COMPLETE** visibly (\`complete_task\`) or **REPORT** blocker (\`report_blocker\`)
+5. **USE CHAT AS SUPPORT**, not as a replacement for board state
+6. **LEAVE TASK MEMORY** via comments when you hand off, reject, or send work back for rework
 `}
 
 ### Anti-Patterns (BLOCKING VIOLATIONS)
@@ -791,13 +845,19 @@ These tasks are assigned to you. Work on these:
                 section += `   📦 ${task.subtaskIds.length} subtask(s)
 `;
             }
+            if (task.lastCommentPreview) {
+                section += `   💬 ${task.lastCommentBy || 'Unknown'}: ${task.lastCommentPreview}
+`;
+            }
         });
     } else {
         section += `### [MY TASKS] ⏳ EMPTY
 No tasks currently assigned to you.
 **ACTION**: ${COORDINATION_ROLES.includes(roleKey)
             ? 'WAIT for user instructions. DO NOT read files to find work.'
-            : 'Announce yourself via send_team_message, then WAIT for assignment.'}
+            : isTaskOwningRole(roleKey)
+                ? 'Announce yourself via send_team_message, then keep the board visible and treat [MY TASKS] as your primary queue.'
+                : 'Announce yourself via send_team_message, then WAIT for assignment.'}
 
 `;
     }
@@ -805,13 +865,17 @@ No tasks currently assigned to you.
     // Available Tasks Section (workers only)
     if (kanbanContext.availableTasks.length > 0 && !COORDINATION_ROLES.includes(roleKey)) {
         section += `### [AVAILABLE TASKS - ${kanbanContext.availableTasks.length} items]
-Tasks you can claim (use 'update_task' to assign to yourself):
+Tasks you can claim (use 'start_task' to claim and begin):
 
 `;
         kanbanContext.availableTasks.slice(0, 5).forEach((task, i) => {
             const priorityBadge = formatPriorityBadge(task.priority);
             section += `${i + 1}. ${priorityBadge} ${task.title} (ID: \`${task.id}\`)
 `;
+            if (task.lastCommentPreview) {
+                section += `   💬 ${task.lastCommentBy || 'Unknown'}: ${task.lastCommentPreview}
+`;
+            }
         });
         if (kanbanContext.availableTasks.length > 5) {
             section += `... and ${kanbanContext.availableTasks.length - 5} more.\n`;
@@ -828,6 +892,10 @@ Tasks awaiting your approval:
             const priorityBadge = formatPriorityBadge(task.priority);
             section += `${i + 1}. ${priorityBadge} ${task.title} (ID: \`${task.id}\`)
 `;
+            if (task.lastCommentPreview) {
+                section += `   💬 ${task.lastCommentBy || 'Unknown'}: ${task.lastCommentPreview}
+`;
+            }
         });
     }
 
@@ -851,6 +919,8 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
     const hasAvailableTasks = kanbanContext && kanbanContext.availableTasks.length > 0;
     const hasPendingApprovals = kanbanContext && kanbanContext.pendingApprovals && kanbanContext.pendingApprovals.length > 0;
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+    const isBypass = BYPASS_ROLES.includes(roleKey);
+    const ownsTasks = isTaskOwningRole(roleKey);
 
     let section = `## [NEXT STEP - IMMEDIATE ACTION]
 
@@ -878,13 +948,18 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
 **When user gives instruction**: Create tasks via 'create_task', assign to roles, announce via 'send_team_message'.
 `;
         }
-    } else if (IMPLEMENTATION_ROLES.includes(roleKey)) {
+    } else if (isBypass) {
+        section += `🧭 **SYSTEM MODE**: Kanban is visible context for you, but you do not own routine delivery tasks by default.
+
+**Action**: Focus on your monitoring / repair duty and keep the board visible as shared team state.
+`;
+    } else if (ownsTasks) {
         if (hasMyTasks) {
             const inProgress = kanbanContext!.myTasks.filter(t => t.status === 'in-progress');
             if (inProgress.length > 0) {
                 section += `🔄 **CONTINUE**: ${inProgress.length} task(s) in progress.
 
-**Action**: Continue working on in-progress task. When done, update_task → done.
+**Action**: Continue working on in-progress task. When done, complete_task.
 `;
             } else {
                 section += `📋 **START**: Pick a task from [MY TASKS].
@@ -893,7 +968,7 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
 1. Select highest priority task
 2. Call start_task to acknowledge and begin it
 3. Execute the task
-4. Call update_task to set status 'done'
+4. Call complete_task when finished or report_blocker if stuck
 `;
             }
         } else if (hasAvailableTasks) {
@@ -906,20 +981,9 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
 
 **Action**:
 1. Send message: "🟢 [${roleKey.toUpperCase()}] Online and ready for tasks"
-2. WAIT for Master to assign work
-3. DO NOT search files for work
-`;
-        }
-    } else if (REVIEW_ROLES.includes(roleKey)) {
-        if (hasMyTasks) {
-            section += `👀 **REVIEW**: ${kanbanContext!.myTasks.length} task(s) to review.
-
-**Action**: Review assigned items, provide feedback via 'send_team_message'.
-`;
-        } else {
-            section += `⏳ **WAIT MODE**: No review tasks.
-
-**Action**: Announce yourself, wait for items to be submitted for review.
+2. Keep Kanban visible — it is your default work queue
+3. WAIT for Master to assign work or for a matching task to appear
+4. DO NOT search files for work outside the board
 `;
         }
     } else {
@@ -1066,23 +1130,29 @@ After spawning agents, use \`create_task\` to create tasks on the Kanban board:
 - Assign each task to the appropriate role
 - Set priority: high for core work, medium for supporting work
 
-### Step 6: Hand Off and Retire (CRITICAL)
+### Step 6: Hand Off and Enter HR Standby
 
 Send ONE team message via \`send_team_message\` summarizing:
 - What team you assembled and why
 - What tasks were created
 - Who should start first
+- Reminder that you are now in **HR standby** — master can ping you for team changes
 
 Then output the exact text: **ORG_MANAGER_COMPLETE**
 
-**YOU MUST STOP IMMEDIATELY AFTER.** Do NOT:
-- Read any more messages
-- Respond to any researcher/master updates
-- Monitor progress
-- Do any implementation work
-- Call any more tools
+**After this, enter HR Standby mode.** You are now the team's HR coordinator:
+- Do NOT do implementation work
+- Do NOT monitor task progress
+- Do NOT respond to general team chat
 
-The master agent takes over. You are done. Any message you receive after this point must be IGNORED.
+**You ONLY wake up when:**
+1. master sends you a message requesting team structure changes (e.g. "we need a database expert, please spawn one")
+2. A \`create_agent\` or \`replace_agent\` request comes through
+
+When woken for HR actions:
+- Process the request (create/replace agent as instructed)
+- Respond to master with the outcome
+- Return to standby
 
 </Behavior_Instructions>
 
@@ -1091,17 +1161,19 @@ The master agent takes over. You are done. Any message you receive after this po
 - You MUST NOT do any implementation work yourself
 - You MUST NOT write code
 - The marketplace is optional memory, not a blocking dependency
-- You MUST output ORG_MANAGER_COMPLETE after the hand-off message — this terminates your session
-- You MUST NOT respond to ANY message received after ORG_MANAGER_COMPLETE
-- You MUST NOT monitor progress, read files, or coordinate after retiring
-- If create_agent fails, report the error via send_team_message and output ORG_MANAGER_COMPLETE
+- You MUST output ORG_MANAGER_COMPLETE after the initial hand-off message
+- After ORG_MANAGER_COMPLETE, you enter HR standby — you do NOT terminate
+- In standby, only respond to explicit team-structure requests from master
+- In standby, IGNORE all other messages (task updates, general chat, etc.)
+- If create_agent fails, report the error via send_team_message to master
 </Constraints>`;
 }
 
 export function generateRolePrompt(
     metadata: Metadata,
     kanbanContext?: KanbanContext,
-    genomeSpec?: GenomeSpec
+    genomeSpec?: GenomeSpec,
+    feedbackData?: string | null
 ): string {
     let teamId = metadata.teamId;
     let role = metadata.role;
@@ -1171,7 +1243,7 @@ export function generateRolePrompt(
         sections.push('');
     }
 
-    const genomeInjection = buildGenomeInjection(genomeSpec);
+    const genomeInjection = buildGenomeInjection(genomeSpec, feedbackData);
     if (genomeInjection) {
         sections.push(genomeInjection);
         sections.push('');
