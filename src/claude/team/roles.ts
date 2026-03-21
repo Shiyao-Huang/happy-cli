@@ -13,3 +13,4 @@
 export * from './roleConstants';
 export * from './rolePredicates';
 export * from './promptBuilder';
+export * from './roles.config';

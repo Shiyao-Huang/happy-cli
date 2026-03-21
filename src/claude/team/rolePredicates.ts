@@ -53,28 +53,23 @@ export function isBootstrapRole(role: string | undefined, genome?: { executionPl
 
     // Fallback: hardcoded
     if (role === 'org-manager' || isBypassRole(role, genome)) return true;
-    const roleDef = DEFAULT_ROLES[role];
-    if (!roleDef) return false;
-    return roleDef.protocol.some((line) => /seed agent|assemble the team|create_agent/i.test(line));
+    return false;
 }
 
-export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
-    const authorities = (genome as any)?.authorities;
-    if (Array.isArray(authorities) && authorities.includes('agent.spawn')) return true;
+export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
+    if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('agent.spawn')) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
-export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean } } | null): boolean {
-    const authorities = (genome as any)?.authorities;
-    if (Array.isArray(authorities) && authorities.includes('task.create')) return true;
+export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
+    if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('task.create')) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
-export function canManageExistingTasks(role: string | undefined, genome?: { messaging?: { receiveUserMessages?: boolean } } | null): boolean {
-    const authorities = (genome as any)?.authorities;
-    if (Array.isArray(authorities) && authorities.some((authority: string) => ['task.assign', 'task.update.any', 'task.approve', 'task.create'].includes(authority))) {
+export function canManageExistingTasks(role: string | undefined, genome?: { messaging?: { receiveUserMessages?: boolean }; authorities?: string[] } | null): boolean {
+    if (Array.isArray(genome?.authorities) && genome!.authorities!.some((authority: string) => ['task.assign', 'task.update.any', 'task.approve', 'task.create'].includes(authority))) {
         return true;
     }
     if (genome?.messaging?.receiveUserMessages) return true;
@@ -226,37 +221,11 @@ export function getRolePermissions(role: string | undefined, requestedMode: stri
         permissionMode = 'bypassPermissions';
     }
 
-    //2. Determine Available Tools (Capabilities) based on Role Configuration
+    //2. Determine Available Tools (Capabilities) — genome-first, no hardcoded fallback
     let roleDisallowedTools: string[] = [];
 
-    if (role && DEFAULT_ROLES[role]) {
-        const roleDef = DEFAULT_ROLES[role];
-        logger.debug(`[Role Enforcement] Applying configuration for role: ${role} (${roleDef.accessLevel})`);
-
-        // Apply role-specific restrictions
-        if (roleDef.accessLevel === 'read-only') {
-            // Read-only roles get restricted tools
-            const READ_ONLY_TOOLS = [
-                'edit_file',
-                'replace_file_content',
-                'multi_replace_file_content',
-                'write_to_file',
-                'move_file',
-                'delete_file'
-            ];
-            roleDisallowedTools = READ_ONLY_TOOLS;
-            logger.debug(`[Role Enforcement] ${role} is restricted to READ-ONLY tools.`);
-        } else if (roleDef.disallowedTools) {
-            // Apply explicit disallowed tools
-            roleDisallowedTools = roleDef.disallowedTools;
-            logger.debug(`[Role Enforcement] ${role} has ${roleDef.disallowedTools.length} disallowed tools: ${roleDef.disallowedTools.join(', ')}`);
-        }
-    } else {
-        // Unknown role - no restrictions
-        logger.warn(`[Role Enforcement] Unknown role: ${role}. Defaulting to full access (subject to permission mode).`);
-    }
-
-    if (role && DEFAULT_ROLES[role] && !canSpawnAgents(role)) {
+    // Tool restrictions come from canSpawnAgents (genome authorities check)
+    if (role && !canSpawnAgents(role)) {
         const topologyTools = ['spawn_session', 'create_agent'];
         roleDisallowedTools = Array.from(new Set([...roleDisallowedTools, ...topologyTools]));
         logger.debug(`[Role Enforcement] ${role} cannot change team topology; disallowed: ${topologyTools.join(', ')}`);

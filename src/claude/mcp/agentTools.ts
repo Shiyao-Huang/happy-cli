@@ -26,7 +26,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
-import { canSpawnAgents } from '@/claude/team/roles';
+import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { readDaemonState } from '@/persistence';
 import {
@@ -434,7 +434,6 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 roleDefinitions[id] = { title: def.name };
             }
 
-            const BYPASS_ROLE_IDS = ['supervisor', 'help-agent'];
             const agents = Array.from(allSessionIds).flatMap((sessionId: string) => {
                 const member = memberMap.get(sessionId) as Record<string, any> | undefined;
                 const sessionSnapshot = sessionSnapshotMap.get(sessionId);
@@ -455,7 +454,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     displayName: member?.displayName || sessionId?.substring(0, 8),
                     specId: member?.specId || null,
                     executionPlane: member?.executionPlane ||
-                        (BYPASS_ROLE_IDS.includes(roleId) ? 'bypass' : 'mainline'),
+                        (BYPASS_ROLES.includes(roleId) ? 'bypass' : 'mainline'),
                     runtimeType: member?.runtimeType || sessionSnapshot?.metadata?.flavor || 'claude',
                     lifecycleState: lifecycleState || 'running',
                 }];

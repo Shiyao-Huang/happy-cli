@@ -36,7 +36,7 @@ export interface HeartbeatContext {
   /** Report dead session IDs to the backend */
   reportDeadSessions: (ids: string[]) => void;
   /** Request daemon shutdown on integrity failures */
-  requestShutdown: (source: 'exception', msg: string) => void;
+  requestShutdown: (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', msg?: string) => void;
   /** The on-disk version string recorded at daemon startup (used for drift detection) */
   startupDiskVersion: string;
   /** The persisted daemon state written at startup (used to detect pid mismatches) */
