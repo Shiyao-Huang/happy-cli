@@ -1,28 +1,63 @@
-import fs from 'fs/promises';
+/**
+ * @module run
+ * @description Daemon entry point: lifecycle, signals, lock, auth, heartbeat orchestration.
+ *
+ * ```mermaid
+ * graph TD
+ *   A[run.ts] -->|imports| B[sessionManager]
+ *   A -->|imports| C[heartbeat]
+ *   A -->|imports| D[supervisorScheduler]
+ *   B -->|pidToTrackedSession| C
+ *   B -->|pidToTrackedSession| D
+ *   D -->|spawnSession| B
+ *   D -->|requestHelp| B
+ * ```
+ *
+ * ## Responsibilities
+ * - Shutdown promise + OS signal handlers
+ * - Version mismatch check + daemon lock
+ * - caffeinate + auth setup
+ * - team heartbeat tracking (AgentHeartbeat per team)
+ * - control server wiring
+ * - API client, machine registration, WebSocket connect
+ * - heartbeat setInterval (orchestrates heartbeat.ts + supervisorScheduler.ts)
+ * - cleanup + shutdown
+ */
+
 import os from 'os';
-import * as tmp from 'tmp';
 
 import { ApiClient } from '@/api/api';
-import { TrackedSession } from './types';
-import { MachineMetadata, DaemonState, Metadata } from '@/api/types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { AgentHeartbeat, AgentHealthStatus } from '@/claude/team/heartbeat';
+import { MachineMetadata, DaemonState } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
+import { getReconnectSeed, persistCredentials } from '@/auth/reconnect';
+import { authGetToken } from '@/api/auth';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import axios from 'axios';
-// Note: packageJson import removed — all version reads now use disk package.json
-// to prevent stale compiled versions from causing daemon restart loops.
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
-import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
-
-import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
-import { startDaemonControlServer } from './controlServer';
-import { readSupervisorState, updateSupervisorRun, updateSupervisorState } from './supervisorState';
+import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
+
+import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
+import { startDaemonControlServer } from './controlServer';
+import { TrackedSession } from './types';
+
+import {
+  pidToTrackedSession,
+  initSessionManagerHeartbeat,
+  onAhaSessionWebhook,
+  spawnSession,
+  stopSession,
+  stopTeamSessions,
+  requestHelp,
+} from './sessionManager';
+
+import { runHeartbeatCycle } from './heartbeat';
+import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
 // instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
@@ -132,428 +167,82 @@ export async function startDaemon(): Promise<void> {
     }
 
     // Ensure auth and machine registration BEFORE anything else
-    const { credentials, machineId } = await authAndSetupMachineIfNeeded();
+    let { credentials, machineId } = await authAndSetupMachineIfNeeded();
     logger.debug('[DAEMON RUN] Auth and machine setup complete');
 
-    // Setup state - key by PID
-    const pidToTrackedSession = new Map<number, TrackedSession>();
+    // ── Per-team agent heartbeat tracking ─────────────────────────────────────
+    const teamHeartbeats = new Map<string, AgentHeartbeat>();
 
-    // Session spawning awaiter system
-    const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
+    const getOrCreateTeamHeartbeat = (teamId: string): AgentHeartbeat => {
+      let hb = teamHeartbeats.get(teamId);
+      if (!hb) {
+        hb = new AgentHeartbeat(90_000, 60_000); // 90s dead, 60s suspect (daemon checks every 60s)
+        hb.startMonitoring(30_000);
+        teamHeartbeats.set(teamId, hb);
+        logger.debug(`[DAEMON RUN] Created heartbeat tracker for team ${teamId}`);
+      }
+      return hb;
+    };
 
-    // Helper functions
+    /** Ping heartbeat for a session if it belongs to a team */
+    const pingHeartbeat = (session: TrackedSession) => {
+      const meta = session.ahaSessionMetadataFromLocalWebhook;
+      const teamId = meta?.teamId || meta?.roomId;
+      if (!teamId || !session.ahaSessionId) return;
+      const hb = getOrCreateTeamHeartbeat(teamId);
+      hb.ping(session.ahaSessionId, meta?.role || 'unknown', []);
+    };
+
+    /** Get team pulse snapshot for control server */
+    const getTeamPulse = (teamId: string): Array<{
+      sessionId: string;
+      role: string;
+      status: AgentHealthStatus;
+      lastSeenMs: number;
+      pid?: number;
+      runtimeType?: string;
+    }> => {
+      const hb = teamHeartbeats.get(teamId);
+      const children = Array.from(pidToTrackedSession.values());
+      const teamChildren = children.filter(c => {
+        const meta = c.ahaSessionMetadataFromLocalWebhook;
+        return (meta?.teamId || meta?.roomId) === teamId && c.ahaSessionId;
+      });
+
+      if (!hb) {
+        return teamChildren.map(c => ({
+          sessionId: c.ahaSessionId!,
+          role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
+          status: 'alive' as AgentHealthStatus,
+          lastSeenMs: 0,
+          pid: c.pid,
+          runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+        }));
+      }
+
+      const allAgents = hb.getAllAgents();
+      const agentMap = new Map(allAgents.map(a => [a.agentId, a]));
+
+      return teamChildren.map(c => {
+        const entry = agentMap.get(c.ahaSessionId!);
+        return {
+          sessionId: c.ahaSessionId!,
+          role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
+          status: entry?.status ?? 'alive',
+          lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
+          pid: c.pid,
+          runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+        };
+      });
+    };
+
+    // Wire heartbeat ping into sessionManager
+    initSessionManagerHeartbeat(pingHeartbeat);
+
+    // Helper for control server
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
-    // Handle webhook from aha session reporting itself
-    const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
-      logger.debugLargeJson(`[DAEMON RUN] Session reported`, sessionMetadata);
-
-      const pid = sessionMetadata.hostPid;
-      if (!pid) {
-        logger.debug(`[DAEMON RUN] Session webhook missing hostPid for sessionId: ${sessionId}`);
-        return;
-      }
-
-      logger.debug(`[DAEMON RUN] Session webhook: ${sessionId}, PID: ${pid}, started by: ${sessionMetadata.startedBy || 'unknown'}`);
-      logger.debug(`[DAEMON RUN] Current tracked sessions before webhook: ${Array.from(pidToTrackedSession.keys()).join(', ')}`);
-
-      // Check if we already have this PID (daemon-spawned)
-      const existingSession = pidToTrackedSession.get(pid);
-
-      if (existingSession && existingSession.startedBy === 'daemon') {
-        // Update daemon-spawned session with reported data
-        existingSession.ahaSessionId = sessionId;
-        existingSession.ahaSessionMetadataFromLocalWebhook = sessionMetadata;
-        logger.debug(`[DAEMON RUN] Updated daemon-spawned session ${sessionId} with metadata`);
-
-        // Resolve any awaiter for this PID
-        const awaiter = pidToAwaiter.get(pid);
-        if (awaiter) {
-          pidToAwaiter.delete(pid);
-          awaiter(existingSession);
-          logger.debug(`[DAEMON RUN] Resolved session awaiter for PID ${pid}`);
-        }
-      } else if (!existingSession) {
-        // New session started externally
-        const trackedSession: TrackedSession = {
-          startedBy: 'aha directly - likely by user from terminal',
-          ahaSessionId: sessionId,
-          ahaSessionMetadataFromLocalWebhook: sessionMetadata,
-          pid
-        };
-        pidToTrackedSession.set(pid, trackedSession);
-        logger.debug(`[DAEMON RUN] Registered externally-started session ${sessionId}`);
-      }
-    };
-
-    // Spawn a new session (sessionId reserved for future --resume functionality)
-    const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
-      logger.debugLargeJson('[DAEMON RUN] Spawning session', options);
-
-      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
-      let directoryCreated = false;
-
-      try {
-        await fs.access(directory);
-        logger.debug(`[DAEMON RUN] Directory exists: ${directory}`);
-      } catch (error) {
-        logger.debug(`[DAEMON RUN] Directory doesn't exist, creating: ${directory}`);
-
-        // Check if directory creation is approved
-        if (!approvedNewDirectoryCreation) {
-          logger.debug(`[DAEMON RUN] Directory creation not approved for: ${directory}`);
-          return {
-            type: 'requestToApproveDirectoryCreation',
-            directory
-          };
-        }
-
-        try {
-          await fs.mkdir(directory, { recursive: true });
-          logger.debug(`[DAEMON RUN] Successfully created directory: ${directory}`);
-          directoryCreated = true;
-        } catch (mkdirError: any) {
-          let errorMessage = `Unable to create directory at '${directory}'. `;
-
-          // Provide more helpful error messages based on the error code
-          if (mkdirError.code === 'EACCES') {
-            errorMessage += `Permission denied. You don't have write access to create a folder at this location. Try using a different path or check your permissions.`;
-          } else if (mkdirError.code === 'ENOTDIR') {
-            errorMessage += `A file already exists at this path or in the parent path. Cannot create a directory here. Please choose a different location.`;
-          } else if (mkdirError.code === 'ENOSPC') {
-            errorMessage += `No space left on device. Your disk is full. Please free up some space and try again.`;
-          } else if (mkdirError.code === 'EROFS') {
-            errorMessage += `The file system is read-only. Cannot create directories here. Please choose a writable location.`;
-          } else {
-            errorMessage += `System error: ${mkdirError.message || mkdirError}. Please verify the path is valid and you have the necessary permissions.`;
-          }
-
-          logger.debug(`[DAEMON RUN] Directory creation failed: ${errorMessage}`);
-          return {
-            type: 'error',
-            errorMessage
-          };
-        }
-      }
-
-      try {
-
-        // Resolve authentication token if provided
-        let extraEnv: Record<string, string> = {};
-        if (options.token) {
-          if (options.agent === 'codex') {
-
-            // Create a temporary directory for Codex
-            const codexHomeDir = tmp.dirSync();
-
-            // Write the token to the temporary directory
-            fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token);
-
-            // Set the environment variable for Codex
-            extraEnv = {
-              CODEX_HOME: codexHomeDir.name
-            };
-          } else { // Assuming claude
-            extraEnv = {
-              CLAUDE_CODE_OAUTH_TOKEN: options.token
-            };
-          }
-        }
-
-        // Add team context to environment if provided
-        if (options.teamId) {
-          extraEnv.AHA_ROOM_ID = options.teamId;
-          logger.debug(`[DAEMON RUN] Setting AHA_ROOM_ID=${options.teamId}`);
-        }
-        if (options.role) {
-          extraEnv.AHA_AGENT_ROLE = options.role;
-          logger.debug(`[DAEMON RUN] Setting AHA_AGENT_ROLE=${options.role}`);
-        }
-        if (options.sessionName) {
-          extraEnv.AHA_SESSION_NAME = options.sessionName;
-          logger.debug(`[DAEMON RUN] Setting AHA_SESSION_NAME=${options.sessionName}`);
-        }
-        if (options.sessionPath) {
-          extraEnv.AHA_SESSION_PATH = options.sessionPath;
-          logger.debug(`[DAEMON RUN] Setting AHA_SESSION_PATH=${options.sessionPath}`);
-        }
-        if (options.parentSessionId) {
-          extraEnv.AHA_PARENT_SESSION_ID = options.parentSessionId;
-          logger.debug(`[DAEMON RUN] Setting AHA_PARENT_SESSION_ID=${options.parentSessionId}`);
-        }
-        if (options.specId) {
-          extraEnv.AHA_SPEC_ID = options.specId;
-          logger.debug(`[DAEMON RUN] Setting AHA_SPEC_ID=${options.specId}`);
-        }
-        if (options.executionPlane) {
-          extraEnv.AHA_EXECUTION_PLANE = options.executionPlane;
-          logger.debug(`[DAEMON RUN] Setting AHA_EXECUTION_PLANE=${options.executionPlane}`);
-        }
-        if (options.sessionId) {
-          extraEnv.AHA_RECOVER_SESSION_ID = options.sessionId;
-          logger.debug(`[DAEMON RUN] Setting AHA_RECOVER_SESSION_ID=${options.sessionId}`);
-        }
-
-        // Merge custom env variables (e.g., AHA_AGENT_LANGUAGE)
-        if (options.env) {
-          Object.assign(extraEnv, options.env);
-          logger.debug(`[DAEMON RUN] Merging custom env: ${JSON.stringify(options.env)}`);
-        }
-
-        // Construct arguments for the CLI based on agent type
-        let args: string[];
-        if (options.agent === 'ralph') {
-          // Ralph loop runs as a standalone process
-          args = [
-            'ralph', 'start',
-            '--prd', options.prdPath || join(directory, 'prd.json'),
-            '--max-iterations', String(options.maxIterations || 10),
-            '--started-by', 'daemon',
-          ];
-        } else {
-          args = [
-            options.agent === 'claude' ? 'claude' : 'codex',
-            '--aha-starting-mode', 'remote',
-            '--started-by', 'daemon',
-          ];
-        }
-
-        if (options.sessionTag) {
-          args.push('--session-tag', options.sessionTag);
-        }
-
-        // TODO: In future, sessionId could be used with --resume to continue existing sessions
-        // For now, we ignore it - each spawn creates a new session
-        // Build env: inherit parent but unset CLAUDECODE to prevent nested session detection
-        const { CLAUDECODE: _, ...cleanEnv } = process.env;
-        const ahaProcess = spawnAhaCLI(args, {
-          cwd: directory,
-          detached: true,  // Sessions stay alive when daemon stops
-          stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
-          env: {
-            ...cleanEnv,
-            ...extraEnv
-          }
-        });
-
-        // Log output for debugging
-        if (process.env.DEBUG) {
-          ahaProcess.stdout?.on('data', (data) => {
-            logger.debug(`[DAEMON RUN] Child stdout: ${data.toString()}`);
-          });
-          ahaProcess.stderr?.on('data', (data) => {
-            logger.debug(`[DAEMON RUN] Child stderr: ${data.toString()}`);
-          });
-        }
-
-        if (!ahaProcess.pid) {
-          logger.debug('[DAEMON RUN] Failed to spawn process - no PID returned');
-          return {
-            type: 'error',
-            errorMessage: 'Failed to spawn Aha process - no PID returned'
-          };
-        }
-
-        logger.debug(`[DAEMON RUN] Spawned process with PID ${ahaProcess.pid}`);
-
-        // Notify caller immediately — before waiting for webhook — so callers
-        // that need to persist the PID (e.g. supervisor singleton guard) can do
-        // so without relying on the webhook arriving within the timeout window.
-        options.onPidKnown?.(ahaProcess.pid);
-
-        const trackedSession: TrackedSession = {
-          startedBy: 'daemon',
-          pid: ahaProcess.pid,
-          childProcess: ahaProcess,
-          directoryCreated,
-          message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
-        };
-
-        pidToTrackedSession.set(ahaProcess.pid, trackedSession);
-
-        ahaProcess.on('exit', (code, signal) => {
-          logger.debug(`[DAEMON RUN] Child PID ${ahaProcess.pid} exited with code ${code}, signal ${signal}`);
-          if (ahaProcess.pid) {
-            onChildExited(ahaProcess.pid);
-          }
-        });
-
-        ahaProcess.on('error', (error) => {
-          logger.debug(`[DAEMON RUN] Child process error:`, error);
-          if (ahaProcess.pid) {
-            onChildExited(ahaProcess.pid);
-          }
-        });
-
-        // Wait for webhook to populate session with ahaSessionId
-        logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${ahaProcess.pid}`);
-
-        return new Promise((resolve) => {
-          // Set timeout for webhook
-          const timeout = setTimeout(() => {
-            pidToAwaiter.delete(ahaProcess.pid!);
-            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${ahaProcess.pid}`);
-            resolve({
-              type: 'error',
-              errorMessage: `Session webhook timeout for PID ${ahaProcess.pid}`
-            });
-            // 15 second timeout - I have seen timeouts on 10 seconds
-            // even though session was still created successfully in ~2 more seconds
-          }, 15_000);
-
-          // Register awaiter
-          pidToAwaiter.set(ahaProcess.pid!, (completedSession) => {
-            clearTimeout(timeout);
-            logger.debug(`[DAEMON RUN] Session ${completedSession.ahaSessionId} fully spawned with webhook`);
-            resolve({
-              type: 'success',
-              sessionId: completedSession.ahaSessionId!
-            });
-          });
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.debug('[DAEMON RUN] Failed to spawn session:', error);
-        return {
-          type: 'error',
-          errorMessage: `Failed to spawn session: ${errorMessage}`
-        };
-      }
-    };
-
-    // Stop a session by sessionId or PID fallback
-    const stopSession = (sessionId: string): boolean => {
-      logger.debug(`[DAEMON RUN] Attempting to stop session ${sessionId}`);
-
-      // Try to find by sessionId first
-      for (const [pid, session] of pidToTrackedSession.entries()) {
-        if (session.ahaSessionId === sessionId ||
-          (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
-
-          if (session.startedBy === 'daemon' && session.childProcess) {
-            try {
-              session.childProcess.kill('SIGTERM');
-              logger.debug(`[DAEMON RUN] Sent SIGTERM to daemon-spawned session ${sessionId}`);
-            } catch (error) {
-              logger.debug(`[DAEMON RUN] Failed to kill session ${sessionId}:`, error);
-            }
-          } else {
-            // For externally started sessions, try to kill by PID
-            try {
-              process.kill(pid, 'SIGTERM');
-              logger.debug(`[DAEMON RUN] Sent SIGTERM to external session PID ${pid}`);
-            } catch (error) {
-              logger.debug(`[DAEMON RUN] Failed to kill external session PID ${pid}:`, error);
-            }
-          }
-
-          pidToTrackedSession.delete(pid);
-          logger.debug(`[DAEMON RUN] Removed session ${sessionId} from tracking`);
-          return true;
-        }
-      }
-
-      logger.debug(`[DAEMON RUN] Session ${sessionId} not found`);
-      return false;
-    };
-
-    // Stop all sessions belonging to a team
-    const stopTeamSessions = (teamId: string): { stopped: number; errors: string[] } => {
-      logger.debug(`[DAEMON RUN] Attempting to stop all sessions for team ${teamId}`);
-
-      const errors: string[] = [];
-      let stopped = 0;
-
-      for (const [pid, session] of pidToTrackedSession.entries()) {
-        const metadata = session.ahaSessionMetadataFromLocalWebhook;
-        const sessionTeamId = metadata?.teamId || metadata?.roomId;
-
-        if (sessionTeamId === teamId) {
-          const sessionId = session.ahaSessionId || `PID-${pid}`;
-          logger.debug(`[DAEMON RUN] Stopping team session ${sessionId} (PID: ${pid})`);
-
-          try {
-            if (session.startedBy === 'daemon' && session.childProcess) {
-              session.childProcess.kill('SIGTERM');
-            } else {
-              process.kill(pid, 'SIGTERM');
-            }
-            pidToTrackedSession.delete(pid);
-            stopped++;
-            logger.debug(`[DAEMON RUN] Stopped team session ${sessionId}`);
-          } catch (error) {
-            const errorMsg = `Failed to stop session ${sessionId}: ${error instanceof Error ? error.message : 'Unknown error'}`;
-            logger.debug(`[DAEMON RUN] ${errorMsg}`);
-            errors.push(errorMsg);
-          }
-        }
-      }
-
-      logger.debug(`[DAEMON RUN] Stopped ${stopped} sessions for team ${teamId}, errors: ${errors.length}`);
-      return { stopped, errors };
-    };
-
-    const requestHelp = async (params: {
-      teamId: string;
-      sessionId?: string;
-      type: string;
-      description: string;
-      severity: string;
-    }): Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }> => {
-      const { teamId, type, description, severity } = params;
-
-      let targetSessionId = params.sessionId;
-      if (!targetSessionId) {
-        for (const session of pidToTrackedSession.values()) {
-          const metadata = session.ahaSessionMetadataFromLocalWebhook;
-          const sessionTeamId = metadata?.teamId || metadata?.roomId;
-          const role = metadata?.role;
-          if (sessionTeamId !== teamId) continue;
-          if (role === 'supervisor' || role === 'help-agent') continue;
-          if (session.ahaSessionId) {
-            targetSessionId = session.ahaSessionId;
-            break;
-          }
-        }
-      }
-
-      if (!targetSessionId) {
-        return { success: false, error: `No recoverable team session found for team ${teamId}` };
-      }
-
-      try {
-        const result = await spawnSession({
-          directory: process.cwd(),
-          agent: 'claude',
-          teamId,
-          role: 'help-agent',
-          sessionName: 'Help Agent',
-          executionPlane: 'bypass',
-          env: {
-            AHA_HELP_TARGET_SESSION: targetSessionId,
-            AHA_HELP_TYPE: type,
-            AHA_HELP_DESCRIPTION: description,
-            AHA_HELP_SEVERITY: severity,
-          },
-        });
-
-        if (result.type === 'success') {
-          return { success: true, helpAgentSessionId: result.sessionId };
-        }
-
-        return { success: false, error: result.type === 'error' ? result.errorMessage : 'Failed to spawn help-agent' };
-      } catch (error) {
-        return { success: false, error: String(error) };
-      }
-    };
-
-    // Handle child process exit
-    const onChildExited = (pid: number) => {
-      logger.debug(`[DAEMON RUN] Removing exited process PID ${pid} from tracking`);
-      pidToTrackedSession.delete(pid);
-    };
-
-    // Start control server
+    // ── Start control server ───────────────────────────────────────────────────
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
       stopSession,
@@ -561,8 +250,12 @@ export async function startDaemon(): Promise<void> {
       spawnSession,
       requestShutdown: () => requestShutdown('aha-cli'),
       onAhaSessionWebhook,
+      getTeamPulse,
+      onHeartbeatPing: (sessionId: string, teamId: string, role: string) => {
+        const hb = getOrCreateTeamHeartbeat(teamId);
+        hb.ping(sessionId, role, []);
+      },
       onClaudeLocalSessionFound: (ahaSessionId, claudeLocalSessionId) => {
-        // Map from ahaSessionId back to pid, then store the local Claude session file ID
         for (const [pid, session] of pidToTrackedSession.entries()) {
           if (session.ahaSessionId === ahaSessionId) {
             pidToTrackedSession.set(pid, { ...session, claudeLocalSessionId });
@@ -574,12 +267,9 @@ export async function startDaemon(): Promise<void> {
     });
 
     // Read version from disk (not compiled import) to avoid build/publish desync.
-    // The compiled `packageJson.version` can be stale if package.json was bumped
-    // without rebuilding dist/. Reading from disk ensures the version written to
-    // daemon.state.json matches what isDaemonRunningCurrentlyInstalledAhaVersion() reads.
     const diskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
 
-    // Write initial daemon state (no lock needed for state file)
+    // Write initial daemon state
     const fileState: DaemonLocallyPersistedState = {
       pid: process.pid,
       httpPort: controlPort,
@@ -599,41 +289,40 @@ export async function startDaemon(): Promise<void> {
     };
 
     // Create API client
-    const api = await ApiClient.create(credentials);
+    let api = await ApiClient.create(credentials);
 
-    /** Resolve the specId of a @official genome by name.
-     *  Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).
-     *  Returns null on failure — caller falls back to hardcoded role. */
-    const resolveSystemGenomeId = async (name: string): Promise<string | null> => {
-      // Primary: genome-hub (M3 marketplace)
-      const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
-      try {
-        const res = await axios.get(
-          `${hubUrl}/genomes/%40official/${name}`,
-          { timeout: 5000 }
-        );
-        const id = res.data?.genome?.id ?? null;
-        if (id) return id;
-      } catch { /* fall through */ }
+    // Get or create machine (with 401 auto-recovery)
+    let machine;
+    try {
+      machine = await api.getOrCreateMachine({
+        machineId,
+        metadata: initialMachineMetadata,
+        daemonState: initialDaemonState
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 401) {
+        logger.debug('[DAEMON RUN] Machine registration failed with 401, attempting token refresh via create mode...');
 
-      // Fallback: happy-server (M2 legacy)
-      try {
-        const res = await axios.get(
-          `${configuration.serverUrl}/v1/genomes/%40official/${name}/latest`,
-          { headers: { Authorization: `Bearer ${credentials.token}` }, timeout: 5000 }
-        );
-        return res.data?.genome?.id ?? null;
-      } catch {
-        return null;
+        const reconnectSeed = getReconnectSeed(credentials);
+        if (!reconnectSeed) {
+          throw new Error('Cannot refresh token: no reconnect seed available in credentials');
+        }
+
+        const newToken = await authGetToken(reconnectSeed, 'create');
+        credentials = { ...credentials, token: newToken };
+        await persistCredentials(credentials);
+        logger.debug('[DAEMON RUN] Token refreshed and persisted, retrying machine registration...');
+
+        api = await ApiClient.create(credentials);
+        machine = await api.getOrCreateMachine({
+          machineId,
+          metadata: initialMachineMetadata,
+          daemonState: initialDaemonState
+        });
+      } else {
+        throw error;
       }
-    };
-
-    // Get or create machine
-    const machine = await api.getOrCreateMachine({
-      machineId,
-      metadata: initialMachineMetadata,
-      daemonState: initialDaemonState
-    });
+    }
     logger.debug(`[DAEMON RUN] Machine registered: ${machine.id}`);
 
     // Create realtime machine session
@@ -650,14 +339,24 @@ export async function startDaemon(): Promise<void> {
     // Connect to server
     apiMachine.connect();
 
-    // Every 60 seconds:
-    // 1. Prune stale sessions
-    // 2. Check if daemon needs update
-    // 3. If outdated, restart with latest version
-    // 4. Write heartbeat
+    // ── Heartbeat interval configuration ──────────────────────────────────────
     const heartbeatIntervalMs = parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '60000');
-    let heartbeatRunning = false
+    const pendingActionBaseRetryMs = Math.max(
+      heartbeatIntervalMs,
+      parseInt(process.env.AHA_SUPERVISOR_PENDING_ACTION_RETRY_BASE_MS || '60000')
+    );
+    const supervisorTerminateIdleMs = parseInt(
+      process.env.AHA_SUPERVISOR_TERMINATE_IDLE_MS || `${24 * 60 * 60 * 1000}`
+    );
+    const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '20');
+
+    let heartbeatRunning = false;
     let heartbeatCount = 0;
+
+    // ── Heartbeat interval ─────────────────────────────────────────────────────
+    // Every heartbeatIntervalMs (default 60s):
+    //   1. runHeartbeatCycle — prune stale sessions, version check, write state file
+    //   2. runSupervisorCycle — pending action retry, supervisor spawn scheduling
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
@@ -668,212 +367,43 @@ export async function startDaemon(): Promise<void> {
         logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
       }
 
-      // Prune stale sessions
-      const deadSessionIds: string[] = [];
-      for (const [pid, _] of pidToTrackedSession.entries()) {
-        try {
-          // Check if process is still alive (signal 0 doesn't kill, just checks)
-          process.kill(pid, 0);
-        } catch (error) {
-          // Process is dead, remove from tracking
-          const tracked = pidToTrackedSession.get(pid);
-          logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
-          pidToTrackedSession.delete(pid);
-          if (tracked?.ahaSessionId) {
-            deadSessionIds.push(tracked.ahaSessionId);
-          }
-        }
-      }
-      if (deadSessionIds.length > 0) {
-        apiMachine.reportDeadSessions(deadSessionIds);
-      }
+      await runHeartbeatCycle({
+        pidToTrackedSession,
+        pingHeartbeat,
+        reportDeadSessions: (ids) => apiMachine.reportDeadSessions(ids),
+        requestShutdown: (source, msg) => requestShutdown(source, msg),
+        startupDiskVersion: diskVersion,
+        fileState,
+        controlPort,
+        heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
+      });
 
-      // Supervisor check: every N heartbeats, spawn a supervisor agent if there are active team sessions
       heartbeatCount++;
-      const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '20'); // Every 20 heartbeats = 20 minutes
-      if (heartbeatCount % supervisorInterval === 0 && pidToTrackedSession.size > 0) {
-        // Collect all unique teamIds with active non-bypass sessions
-        const activeTeamIds = new Set<string>();
-        for (const [_, session] of pidToTrackedSession.entries()) {
-          const meta = session.ahaSessionMetadataFromLocalWebhook;
-          const sessionTeamId = meta?.teamId || meta?.roomId;
-          if (!sessionTeamId) continue;
-          if (meta?.role === 'supervisor' || meta?.role === 'help-agent') continue;
-          activeTeamIds.add(sessionTeamId);
-        }
 
-        for (const teamId of activeTeamIds) {
-          // Skip if team is marked as terminated
-          const supervisorState = readSupervisorState(teamId);
-          if (supervisorState.terminated) {
-            logger.debug(`[DAEMON RUN] Skipping supervisor for terminated team ${teamId}`);
-            continue;
-          }
-
-          // ── Singleton guard ────────────────────────────────────────────────
-          // Use the persisted PID to detect a running supervisor even across
-          // daemon restarts (supervisors are spawned detached and outlive the
-          // daemon process that created them).
-          if (supervisorState.lastSupervisorPid > 0) {
-            try {
-              process.kill(supervisorState.lastSupervisorPid, 0); // signal 0 = liveness check, no-op
-              logger.debug(`[DAEMON RUN] Supervisor already running (PID ${supervisorState.lastSupervisorPid}) for team ${teamId}, skipping`);
-              continue;
-            } catch {
-              // ESRCH: process not found — previous supervisor has exited, safe to spawn
-              logger.debug(`[DAEMON RUN] Previous supervisor PID ${supervisorState.lastSupervisorPid} is gone for team ${teamId}, will spawn new one`);
-            }
-          }
-          // ──────────────────────────────────────────────────────────────────
-
-          // Auto-retire if too many idle runs (no new content found N times in a row)
-          const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6'); // 6 × 5 min = 30 min
-          if (supervisorState.idleRuns >= maxIdleRuns) {
-            logger.debug(`[DAEMON RUN] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`);
-            await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true }));
-            continue;
-          }
-
-          logger.debug(`[DAEMON RUN] Supervisor check triggered (heartbeat #${heartbeatCount}, team ${teamId}, cursor=${supervisorState.teamLogCursor})`);
-
-          // If the state hasn't been updated since last heartbeat trigger, the previous
-          // supervisor found nothing new and didn't call save_supervisor_state → idle run
-          const heartbeatMs = heartbeatIntervalMs * supervisorInterval;
-          const stateIsStale = supervisorState.lastRunAt > 0 && (Date.now() - supervisorState.lastRunAt) > heartbeatMs * 1.5;
-          if (stateIsStale) {
-            await updateSupervisorRun(teamId, { idleRuns: supervisorState.idleRuns + 1 });
-            logger.debug(`[DAEMON RUN] Supervisor idle run detected for team ${teamId}, idleRuns now ${supervisorState.idleRuns + 1}`);
-          }
-
-          try {
-            // Resolve @official/supervisor genome specId from genome-hub.
-            // In testing phase: log a visible warning when genome DNA is missing so we can fix it.
-            const supervisorSpecId = await resolveSystemGenomeId('supervisor');
-            if (!supervisorSpecId) {
-                if (process.env.AHA_GENOME_FALLBACK !== '1') {
-                    console.warn(
-                        `[GENOME] ⚠️  supervisor genome not found in genome-hub — spawning without DNA.\n` +
-                        `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? 'http://localhost:3006'})\n` +
-                        `         and @official/supervisor is seeded. (Set AHA_GENOME_FALLBACK=1 to silence.)`
-                    );
-                }
-            } else {
-                logger.debug(`[DAEMON RUN] Supervisor genome specId: ${supervisorSpecId}`);
-            }
-
-            const supervisorResult = await spawnSession({
-              directory: configuration.ahaHomeDir,
-              agent: 'claude',
-              teamId,
-              role: 'supervisor',
-              sessionName: 'Supervisor',
-              executionPlane: 'bypass',
-              specId: supervisorSpecId ?? undefined,
-              env: {
-                // Pass state so supervisor reads only new content
-                AHA_SUPERVISOR_TEAM_LOG_CURSOR: String(supervisorState.teamLogCursor),
-                AHA_SUPERVISOR_CC_LOG_CURSORS: JSON.stringify(supervisorState.ccLogCursors),
-                AHA_SUPERVISOR_CODEX_HISTORY_CURSOR: String(supervisorState.codexHistoryCursor),
-                AHA_SUPERVISOR_CODEX_SESSION_CURSORS: JSON.stringify(supervisorState.codexSessionCursors),
-                AHA_SUPERVISOR_LAST_CONCLUSION: supervisorState.lastConclusion,
-                AHA_SUPERVISOR_LAST_SESSION_ID: supervisorState.lastSessionId || '',
-                AHA_SUPERVISOR_PENDING_ACTION: supervisorState.pendingAction
-                    ? JSON.stringify(supervisorState.pendingAction)
-                    : '',
-              },
-              // Persist PID immediately on fork — before the webhook arrives — so
-              // the singleton guard works even if the webhook times out or the
-              // daemon restarts during the 15-second webhook wait window.
-              onPidKnown: (pid) => {
-                void updateSupervisorRun(teamId, { lastSupervisorPid: pid })
-                  .then(() => {
-                    logger.debug(`[DAEMON RUN] Persisted supervisor PID ${pid} for team ${teamId} (pre-webhook)`);
-                  })
-                  .catch((error) => {
-                    logger.debug(`[DAEMON RUN] Failed to persist supervisor PID for team ${teamId}`, error);
-                  });
-              },
-            });
-            if (supervisorResult.type === 'success') {
-              logger.debug(`[DAEMON RUN] Supervisor agent spawned: ${supervisorResult.sessionId}`);
-            }
-          } catch (e) {
-            logger.debug(`[DAEMON RUN] Failed to spawn supervisor: ${e}`);
-          }
-        }
-      }
-
-      // Check if daemon needs update by comparing current disk version with
-      // the version we recorded at startup. This detects real npm upgrades
-      // (where the dist/ files AND package.json both change on disk).
-      // Previous implementation compared disk vs compiled version, which broke
-      // when package.json was bumped without rebuilding — causing infinite restart loops.
-      const currentDiskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
-      if (currentDiskVersion !== diskVersion) {
-        // Cooldown: don't restart if daemon started less than 2 minutes ago
-        const uptimeMs = Date.now() - new Date(fileState.startTime).getTime();
-        if (uptimeMs < 120_000) {
-          logger.debug(`[DAEMON RUN] Version changed on disk (${diskVersion} → ${currentDiskVersion}) but daemon uptime is only ${Math.round(uptimeMs / 1000)}s — skipping restart to avoid loop`);
-        } else {
-          logger.debug(`[DAEMON RUN] Version changed on disk (${diskVersion} → ${currentDiskVersion}), triggering self-restart`);
-
-          clearInterval(restartOnStaleVersionAndHeartbeat);
-
-          try {
-            spawnAhaCLI(['daemon', 'start'], {
-              detached: true,
-              stdio: 'ignore'
-            });
-          } catch (error) {
-            logger.debug('[DAEMON RUN] Failed to spawn new daemon', error);
-          }
-
-          logger.debug('[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us');
-          await new Promise(resolve => setTimeout(resolve, 10_000));
-          process.exit(0);
-        }
-      }
-
-      // Before wrecklessly overriting the daemon state file, we should check if we are the ones who own it
-      // Race condition is possible, but thats okay for the time being :D
-      const daemonState = await readDaemonState();
-      if (daemonState && daemonState.pid !== process.pid) {
-        logger.debug('[DAEMON RUN] Somehow a different daemon was started without killing us. We should kill ourselves.')
-        requestShutdown('exception', 'A different daemon was started without killing us. We should kill ourselves.')
-      }
-
-      // Heartbeat
-      try {
-        const updatedState: DaemonLocallyPersistedState = {
-          pid: process.pid,
-          httpPort: controlPort,
-          startTime: fileState.startTime,
-          startedWithCliVersion: diskVersion,
-          lastHeartbeat: new Date().toLocaleString(),
-          daemonLogPath: fileState.daemonLogPath
-        };
-        writeDaemonState(updatedState);
-        if (process.env.DEBUG) {
-          logger.debug(`[DAEMON RUN] Health check completed at ${updatedState.lastHeartbeat}`);
-        }
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to write heartbeat', error);
-      }
+      await runSupervisorCycle({
+        pidToTrackedSession,
+        heartbeatCount,
+        supervisorInterval,
+        supervisorTerminateIdleMs,
+        pendingActionBaseRetryMs,
+        heartbeatIntervalMs,
+        credentialsToken: credentials.token,
+        spawnSession,
+        requestHelp,
+      });
 
       heartbeatRunning = false;
-    }, heartbeatIntervalMs); // Every 60 seconds in production
+    }, heartbeatIntervalMs);
 
-    // Setup signal handlers
+    // ── Cleanup + shutdown ─────────────────────────────────────────────────────
     const cleanupAndShutdown = async (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
 
-      // Clear health check interval
       if (restartOnStaleVersionAndHeartbeat) {
         clearInterval(restartOnStaleVersionAndHeartbeat);
         logger.debug('[DAEMON RUN] Health check interval cleared');
       }
 
-      // Update daemon state before shutting down
       await apiMachine.updateDaemonState((state: DaemonState | null) => ({
         ...state,
         status: 'shutting-down',
@@ -881,7 +411,6 @@ export async function startDaemon(): Promise<void> {
         shutdownSource: source
       }));
 
-      // Give time for metadata update to send
       await new Promise(resolve => setTimeout(resolve, 100));
 
       apiMachine.shutdown();
@@ -896,7 +425,6 @@ export async function startDaemon(): Promise<void> {
 
     logger.debug('[DAEMON RUN] Daemon started successfully, waiting for shutdown request');
 
-    // Wait for shutdown request
     const shutdownRequest = await resolvesWhenShutdownRequested;
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
