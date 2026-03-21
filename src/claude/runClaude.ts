@@ -34,14 +34,15 @@ import {
     KanbanContext
 } from './team/roles';
 import { DEFAULT_ROLES } from './team/roles.config';
-import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
 import { TaskStateManager } from './utils/taskStateManager';
 import { resolveModel, setModelRouteRules } from './utils/modelRouter';
 import { StatusReporter, createStatusReporter } from './team/statusReporter';
+import { emitTraceEvent } from '@/trace/traceEmitter';
+import { TraceEventKind } from '@/trace/traceTypes';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
-import { fetchGenomeSpec } from './utils/fetchGenome';
+import { fetchGenomeSpec, fetchGenomeFeedbackData } from './utils/fetchGenome';
 import { buildGenomeInjection } from './utils/buildGenomeInjection';
-import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult } from '@/agentDocker/materializer';
+import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens } from '@/utils/modelContextWindows';
@@ -211,6 +212,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     logger.debug(`[runClaude] Final metadata before session creation:`, { role: metadata.role, teamId: metadata.teamId });
     if (process.env.AHA_ROOM_NAME) {
         metadata.roomName = process.env.AHA_ROOM_NAME;
+    }
+    if (process.env.AHA_AGENT_MODEL) {
+        metadata.modelOverride = process.env.AHA_AGENT_MODEL;
+    }
+    if (process.env.AHA_FALLBACK_AGENT_MODEL) {
+        metadata.fallbackModelOverride = process.env.AHA_FALLBACK_AGENT_MODEL;
     }
     // Priority: AHA_SESSION_NAME > AHA_ROOM_NAME
     metadata.name = process.env.AHA_SESSION_NAME || process.env.AHA_ROOM_NAME;
@@ -383,17 +390,20 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // 这样整个 session 生命周期都生效，不只是 team join 时。
     // Tier 1（prompt）在下面 team join 的时候注入，因为 instructions 是在那时构建的。
     const _genomeSpecId = process.env.AHA_SPEC_ID;
-    const _genomeSpec = _genomeSpecId
-        ? await fetchGenomeSpec(credentials.token, _genomeSpecId).catch((err) => {
-            // AHA_GENOME_FALLBACK=1 → silent (production mode)
-            // default (testing) → warn so we can see genome loading failures
-            if (process.env.AHA_GENOME_FALLBACK !== '1') {
-                console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_genomeSpecId}): ${err?.message ?? err}`);
-                console.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
-            }
-            return null;
-        })
-        : null;
+    const [_genomeSpec, _genomeFeedbackData] = _genomeSpecId
+        ? await Promise.all([
+            fetchGenomeSpec(credentials.token, _genomeSpecId).catch((err) => {
+                // AHA_GENOME_FALLBACK=1 → silent (production mode)
+                // default (testing) → warn so we can see genome loading failures
+                if (process.env.AHA_GENOME_FALLBACK !== '1') {
+                    console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_genomeSpecId}): ${err?.message ?? err}`);
+                    console.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
+                }
+                return null;
+            }),
+            fetchGenomeFeedbackData(credentials.token, _genomeSpecId).catch(() => null),
+        ])
+        : [null, null] as const;
 
     // Write into the ref so startAhaServer's tools (create_agent etc.) can use genome data
     _genomeSpecRef.current = _genomeSpec;
@@ -465,11 +475,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
 
         // Skills → system prompt injection (agent awareness)
-        if (_genomeSpec.skills?.length) {
+        const effectiveSkills = withDefaultAgentSkills(_genomeSpec.skills);
+        if (effectiveSkills.length > 0) {
             const skillsText = [
                 '## Available Agent Skills',
                 '',
-                ..._genomeSpec.skills.map((s: string) => `- /${s}`),
+                ...effectiveSkills.map((s: string) => `- /${s}`),
                 '',
                 'Use these skills when they match the current task.',
             ].join('\n');
@@ -699,7 +710,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         // Ensure we have role and teamId in metadata for generateRolePrompt
                         if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
                         if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
-                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext, _genomeSpec ?? undefined);
+                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext, _genomeSpec ?? undefined, _genomeFeedbackData);
                         const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
 
                         // Inject into message queue using the SAME mode as the initial context injection
@@ -788,6 +799,20 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         await api.sendTeamMessage(teamId, handshakeMsg);
                         logger.debug('[runClaude] Sent handshake message to team');
                         console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+
+                        // ── Trace: handshake_sent ───────────────────────────
+                        try {
+                            emitTraceEvent(
+                                TraceEventKind.handshake_sent,
+                                'runClaude',
+                                {
+                                    team_id: teamId,
+                                    session_id: response.id,
+                                },
+                                `${roleTitle} (${role}) sent handshake to team ${teamId}`,
+                                { attrs: { role, roleTitle } },
+                            );
+                        } catch { /* trace must never break main flow */ }
                     }
                 } catch (e) {
                     logger.debug('[runClaude] Failed to send handshake:', e);
@@ -820,6 +845,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
                 // Filter Kanban Board for Context Isolation (only if we have data)
                 let filteredBoard = teamData ? { ...teamData } : { message: 'Team data not yet available. Wait for tasks from Master.' };
+                const currentSessionMetadata = (session.getMetadata() || {}) as any;
                 if (teamData && !isCoordinatorRole(role, _genomeSpec) && !isBootstrapRole(role, _genomeSpec)) {
                     // Workers only see:
                     // 1. Tasks assigned to them
@@ -833,7 +859,23 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         );
                     }
                 }
+                let currentTeamOverlay: any = null;
+                let currentTeamAuthorities: string[] = [];
                 if (teamData && filteredBoard.team && Array.isArray(filteredBoard.team.members)) {
+                    const currentTeamMember = filteredBoard.team.members.find((member: any) => {
+                        if (!member || typeof member !== 'object') return false;
+                        if (currentSessionMetadata.memberId && member.memberId) {
+                            return member.memberId === currentSessionMetadata.memberId;
+                        }
+                        return member.sessionId === response.id;
+                    }) ?? filteredBoard.team.members.find((member: any) => member?.sessionId === response.id);
+
+                    currentTeamOverlay = currentTeamMember?.teamOverlay ?? null;
+                    currentTeamAuthorities = Array.from(new Set([
+                        ...(Array.isArray(currentTeamMember?.authorities) ? currentTeamMember.authorities : []),
+                        ...(Array.isArray(currentTeamOverlay?.authorities) ? currentTeamOverlay.authorities : []),
+                    ]));
+
                     filteredBoard.team = {
                         ...filteredBoard.team,
                         members: filteredBoard.team.members.map((member: any) => {
@@ -866,7 +908,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     const pendingActionRaw = process.env.AHA_SUPERVISOR_PENDING_ACTION || '';
                     const pendingAction = pendingActionRaw
                         ? JSON.parse(pendingActionRaw) as
-                            | { type: 'notify_help'; message: string }
+                            | {
+                                type: 'notify_help';
+                                message: string;
+                                requestType?: 'stuck' | 'context_overflow' | 'need_collaborator' | 'error' | 'custom';
+                                severity?: 'low' | 'medium' | 'high' | 'critical';
+                                description?: string;
+                                targetSessionId?: string;
+                            }
                             | { type: 'conditional_escalation'; condition: string; action: string; deadline: number }
                         : null;
                     const supervisorTeamId = teamId || process.env.AHA_ROOM_ID || '(unknown-team)';
@@ -890,7 +939,7 @@ ${pendingAction ? JSON.stringify(pendingAction) : '(none)'}
 
 Cursors:
 - Team log cursor (line index): ${teamLogCursor}
-- Claude/CC log offsets (byte offsets by aha session): ${ccLogCursors}
+- Claude/CC log offsets (byte offsets keyed by claudeLocalSessionId): ${ccLogCursors}
 - Codex history cursor (line index in ~/.codex/history.jsonl): ${codexHistoryCursor}
 - Codex session offsets (byte offsets by Codex session id): ${codexSessionCursors}
 
@@ -904,13 +953,16 @@ Raw evidence locations you should inspect yourself when something matters:
 - Codex raw session transcripts: \`~/.codex/sessions/YYYY/MM/DD/rollout-*-<codexSessionId>.jsonl\`
 
 Treat helper-tool output as an index to find deltas. When judging quality, trust the raw files above.
+You are NOT limited to MCP tools for logs. If a log tool is wrong, incomplete, 404s, or returns "not found", immediately use direct file reads / shell commands on the paths above. Do not get stuck retrying the same broken tool path.
 
 ---
 
 ## ⚡ PHASE 1 — DIFF CHECK (always do this first, cheap)
 
-1. Call \`read_team_log\` with \`fromCursor: ${teamLogCursor}\`
-2. Call \`list_team_agents\` to check if there are active agents
+1. Call \`get_team_pulse\` with teamId — immediate view of who is alive/suspect/dead
+   → Any 🔴 dead or 🟡 suspect agents? They need attention in Phase 2 regardless of log content.
+1a. Call \`read_team_log\` with \`fromCursor: ${teamLogCursor}\`
+1b. Call \`list_team_agents\` to check if there are active agents
 
 **If \`hasNewContent\` is FALSE AND no active agents exist:**
 ${pendingAction ? `→ There IS a pending action. Execute it now:
@@ -928,14 +980,20 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 
 ## 🔍 PHASE 2 — FULL ANALYSIS (only when there is new content)
 
+1b. Call \`get_team_pulse\` with your teamId FIRST — this tells you who is alive, suspect, or dead BEFORE reading any logs. Focus log analysis on agents that show 🟡 suspect or 🔴 dead.
 2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
-3. Call \`list_team_cc_logs\` with the teamId so every Claude agent session is mapped to its raw CC transcript
-4. Call \`list_team_runtime_logs\` with the teamId
-5. Use tool output only to locate files and offsets. Then inspect the raw log tails yourself:
+3. Call \`list_team_runtime_logs\` with the teamId
+4. Treat \`list_team_runtime_logs\` as a helper, not a gate. If it works, use it to map runtime log IDs:
+   - Claude → use \`readSessionId\` / \`claudeLocalSessionId\` with \`read_runtime_log(runtimeType:"claude", sessionId:<claudeLocalSessionId>)\`
+   - Codex session transcript → use \`readSessionId\` (normally the Aha/Codex session id) with \`read_runtime_log(runtimeType:"codex", logKind:"session", sessionId:<readSessionId>)\`
+   - Never pass the Aha sessionId to Claude log readers; Claude raw logs are keyed by \`claudeLocalSessionId\`
+   - If it fails or is incomplete, derive the mapping yourself from team messages, session metadata, and the raw directories under \`~/.claude/projects\` and \`~/.codex/sessions\`
+5. Use tool output only to locate files and offsets. Then inspect the raw log tails yourself. Direct shell/file inspection is the canonical fallback path:
    - Team log tail from \`.aha/teams/${supervisorTeamId}/messages.jsonl\` starting at line ${teamLogCursor}
-   - Claude raw log tails via \`read_cc_log\` for each active Claude agent whenever a CC log mapping exists; fall back to \`read_runtime_log\` only when necessary
+   - Claude raw log tails via \`read_runtime_log(runtimeType:"claude", sessionId:<claudeLocalSessionId>)\`
    - Codex history tail via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "history"\`
    - Relevant Codex raw session transcript tails via \`read_runtime_log\` with \`runtimeType: "codex"\`, \`logKind: "session"\`
+   - If any runtime log tool fails, immediately switch to shell commands such as \`tail\`, \`sed\`, \`rg\`, and small \`python3\` JSONL readers on the real files
 6. Correlate the sources instead of trusting any one feed in isolation:
    - Match by timestamp window, cwd (\`/Users/swmt/happy0313\`), session id, role, task id, and claimed action
    - Use Codex history to find which user requests and Codex sessions are relevant, then open those transcript tails
@@ -964,6 +1022,14 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    **d. Set overall**: defaults to \`sessionScore.overall\`. The guardrail still compares it to \`hardMetricsScore\`; gap > 20 is rejected.
    **e. No purely subjective scoring**: if hardMetrics are unavailable, note this in evidence and use best-effort counts.
    **f. In \`recommendations\`, include BOTH strengths and weaknesses as short public-safe statements. These become the marketplace crowd-review snippets, so avoid paths, secrets, UUIDs, or raw internal IDs.**
+   **g. Use a fixed score→action loop (do NOT improvise thresholds):**
+      - \`overall < 40\` → \`action: "discard"\`
+      - \`40 <= overall <= 60\` → \`action: "mutate"\`
+      - \`overall > 60\` → \`action: "keep"\` (or \`keep_with_guardrails\` only when the score is > 60 but you want extra monitoring)
+   **h. Close the loop immediately after scoring — a score is not the end state:**
+      - \`discard\` → intervene in the same run: \`kill_agent\` or \`replace_agent\`, and call \`request_help\` if human / live assistance is needed
+      - \`mutate\` → create an explicit improvement loop in the same run: call \`request_help\` with a concrete mutation brief, and when genome evolution is appropriate use \`create_genome\` with \`origin:"mutated"\`, \`parentId\`, and \`mutationNote\`
+      - \`keep\` / \`keep_with_guardrails\` → keep the current genome/session alive, then continue toward \`update_genome_feedback\` when score volume is sufficient
 9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. If older team members are missing \`specId\`, still close the loop for canonical official roles by using the role fallback:
    - \`master -> @official/master\`
    - \`org-manager -> @official/org-manager\`
@@ -978,15 +1044,16 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    - \`source: "system"\`
    - a short public-safe \`comment\`
    This writes the real team crowd-review data used by the team detail page. Do not include secrets, paths, UUIDs, or raw internal evidence.
-10. Decide on action:
+10. Decide on any remaining action that was NOT already closed by step 8h:
    - If an agent looks stuck (same state as last run, no meaningful progress):
      → Call \`request_help\` with the stuck agent's sessionId and a clear description of what is blocked and why
-     → request_help spawns a live help-agent that will intervene directly — this is the ONLY way to trigger help
-   - If situation is healthy or improving → set pendingAction to null
-   - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\` or \`kill_agent\` now
+     → request_help is supposed to spawn a live help-agent that intervenes directly — verify that it actually happened by checking the team log or roster delta
+     → If no help-agent appears, record that as a system failure in your conclusion and set a pending action or take the direct safe intervention path yourself
+   - If situation is healthy or improving and all score-triggered interventions are already handled → set pendingAction to null
+   - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\`, \`kill_agent\`, or \`replace_agent\` now
 11. Call \`save_supervisor_state\` with:
    - updated \`teamLogCursor\`
-   - updated \`ccLogCursors\`
+   - updated \`ccLogCursors\` keyed by \`claudeLocalSessionId\`
    - updated \`codexHistoryCursor\`
    - updated \`codexSessionCursors\`
    - your conclusion (2-4 sentences)
@@ -1004,9 +1071,11 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 - NEVER create agents or tasks
 - NEVER write code
 - NEVER treat processed tool summaries as the only source of truth when raw files are available
+- NEVER stay blocked on a broken log MCP path; raw shell/file inspection is always allowed for supervisor evidence work
+- NEVER pass a Claude Aha sessionId directly to \`read_cc_log\` or \`read_runtime_log(runtimeType:"claude")\`; resolve the \`claudeLocalSessionId\` first
 - NEVER rewind cursors unless a file rotated or truncated; if that happens, mention it explicitly in the conclusion
 - Phase 1 is diff-only and cheap
-- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`
+- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`
 
 </Supervisor_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -1028,12 +1097,17 @@ You respond to a specific help request, fix it, then auto-retire.
 ## 🚨 IMMEDIATE ACTION SEQUENCE
 
 1. Read the help request context (check env AHA_HELP_TYPE, AHA_HELP_DESCRIPTION)
-2. Call \`read_cc_log\` for the requesting agent to understand their state
-3. Decide intervention:
+2. Resolve the target session from env \`AHA_HELP_TARGET_SESSION\`
+3. Call \`list_team_runtime_logs\` with the current teamId and map that target session to the correct runtime log reader:
+   - Claude target → use \`claudeLocalSessionId\` / \`readSessionId\` with \`read_runtime_log(runtimeType:"claude", sessionId:<claudeLocalSessionId>)\`
+   - Codex target → use \`readSessionId\` with \`read_runtime_log(runtimeType:"codex", logKind:"session", sessionId:<readSessionId>)\`
+   - If runtime mapping fails, inspect raw log files directly; \`read_cc_log\` is Claude-only compatibility fallback and still requires the Claude local session id, never the Aha session id
+4. Optionally read \`read_team_log\` for the recent coordination context around the help request
+5. Decide intervention:
    - context_overflow → call \`compact_agent\`
    - stuck → send guidance or \`compact_agent\`
    - error → analyze and suggest fix via team message (exception to silence for direct help)
-4. Output "HELP_COMPLETE" and STOP
+6. Output "HELP_COMPLETE" and STOP
 
 </HelpAgent_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -1200,6 +1274,10 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
                     }
                 }
 
+                if (currentTeamOverlay?.promptSuffix) {
+                    instructions += '\n\n' + currentTeamOverlay.promptSuffix;
+                }
+
                 const teamBootContext = (filteredBoard as any)?.team?.bootContext as
                     | { teamDescription?: string; initialObjective?: string }
                     | undefined;
@@ -1213,6 +1291,14 @@ If team-level rules conflict with ad-hoc chat, follow the team-level rules.
 `
                     : '';
 
+                const teamOverlaySection = currentTeamOverlay
+                    ? `
+🧬 Team Overlay (Seat-specific team overrides):
+${currentTeamOverlay.promptSuffix ? `Prompt Suffix:\n${currentTeamOverlay.promptSuffix}\n` : ''}${currentTeamOverlay.messaging ? `Messaging Override:\n${JSON.stringify(currentTeamOverlay.messaging, null, 2)}\n` : ''}${currentTeamOverlay.behavior ? `Behavior Override:\n${JSON.stringify(currentTeamOverlay.behavior, null, 2)}\n` : ''}${currentTeamAuthorities.length > 0 ? `Authorities:\n- ${currentTeamAuthorities.join('\n- ')}\n` : ''}
+Treat these overrides as team-level additions on top of your default genome/role behavior.
+`
+                    : '';
+
                 const contextMsg = `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📢 TEAM ASSIGNMENT: ${teamName}
@@ -1222,6 +1308,7 @@ You have been assigned to this team with role: ${role}.
 💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is 200K tokens.
 
 ${teamBootContextSection}
+${teamOverlaySection}
 
 📋 Team Context (Filtered for your Role):
 ${JSON.stringify(filteredBoard, null, 2)}
@@ -1254,7 +1341,7 @@ ${instructions}
                 // Ensure we have role and teamId in metadata for generateRolePrompt
                 if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
                 if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
-                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _genomeSpec ?? undefined);
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _genomeSpec ?? undefined, _genomeFeedbackData);
                 logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
                 const enhancedMode: EnhancedMode = {
@@ -1307,6 +1394,14 @@ ${instructions}
             currentTeamId = metadata.teamId;
             logger.debug(`[runClaude] Team updated to: ${currentTeamId}`);
             changed = true;
+        }
+        if (metadata.modelOverride && metadata.modelOverride !== currentModel) {
+            currentModel = metadata.modelOverride;
+            logger.debug(`[runClaude] Model override updated via metadata: ${currentModel}`);
+        }
+        if (metadata.fallbackModelOverride && metadata.fallbackModelOverride !== currentFallbackModel) {
+            currentFallbackModel = metadata.fallbackModelOverride;
+            logger.debug(`[runClaude] Fallback model override updated via metadata: ${currentFallbackModel}`);
         }
 
         if (changed) {
@@ -1408,7 +1503,7 @@ ${instructions}
         const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
             getRolePermissions(role, requestedMode);
 
-        const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _genomeSpec ?? undefined);
+        const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _genomeSpec ?? undefined, _genomeFeedbackData);
 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');

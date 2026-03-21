@@ -8,7 +8,8 @@ import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
-import { AgentState, Metadata, UpdateArtifactBody } from '@/api/types';
+import type { PermissionMode } from '@/api/types';
+import type { AgentState, Metadata, UpdateArtifactBody } from '@/api/types';
 import { initialMachineMetadata } from '@/daemon/run';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
@@ -36,21 +37,19 @@ import { StatusReporter, createStatusReporter } from '@/claude/team/statusReport
 import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
 import { buildAgentHandshakeContent, COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
-import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
+import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
 import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
 import type { GenomeSpec } from '@/api/types/genome';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
-// Helper functions for role metadata
+// Helper functions for role metadata — genome-first, empty fallback
 function getRoleTitle(roleId: string): string {
-    const role = TEAM_ROLE_LIBRARY.find((r: any) => r.id === roleId);
-    return role?.title || roleId;
+    return DEFAULT_ROLES[roleId]?.name || roleId;
 }
 
 function getRoleResponsibilities(roleId: string): string[] {
-    const role = TEAM_ROLE_LIBRARY.find((r: any) => r.id === roleId);
-    return role?.responsibilities || [];
+    return DEFAULT_ROLES[roleId]?.responsibilities || [];
 }
 
 type ReadyEventOptions = {
@@ -81,7 +80,6 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
     return true;
 }
 
-type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
 
 export function unwrapCodexEvent(rawMessage: any): any {
     if (
@@ -350,9 +348,13 @@ export function convertCodexAssistantEventToSessionMessage(rawMessage: any):
     return null;
 }
 
-function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | undefined {
+/**
+ * Normalize any permission mode string to the unified PermissionMode type.
+ * Aha default is always bypassPermissions (highest privilege).
+ */
+function resolvePermissionMode(rawMode?: string): PermissionMode {
     if (!rawMode) {
-        return undefined;
+        return 'bypassPermissions';
     }
     const normalized = rawMode.trim().toLowerCase();
     switch (normalized) {
@@ -368,10 +370,14 @@ function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | und
         case 'yolo':
         case 'bypass':
         case 'bypasspermissions':
-            return 'yolo';
+            return 'bypassPermissions';
+        case 'acceptedits':
+            return 'acceptEdits';
+        case 'plan':
+            return 'plan';
         default:
-            logger.debug(`[Codex] Ignoring unknown AHA_PERMISSION_MODE value: ${rawMode}`);
-            return undefined;
+            logger.debug(`[Codex] Unknown permission mode "${rawMode}", defaulting to bypassPermissions`);
+            return 'bypassPermissions';
     }
 }
 
@@ -594,7 +600,6 @@ export async function runCodex(opts: {
     startedBy?: 'daemon' | 'terminal';
     sessionTag?: string;
 }): Promise<void> {
-    type PermissionMode = CodexPermissionMode;
     interface EnhancedMode {
         permissionMode: PermissionMode;
         model?: string;
@@ -673,6 +678,12 @@ export async function runCodex(opts: {
         metadata.roomName = process.env.AHA_ROOM_NAME;
         metadata.name = process.env.AHA_ROOM_NAME;
     }
+    if (process.env.AHA_AGENT_MODEL) {
+        metadata.modelOverride = process.env.AHA_AGENT_MODEL;
+    }
+    if (process.env.AHA_FALLBACK_AGENT_MODEL) {
+        metadata.fallbackModelOverride = process.env.AHA_FALLBACK_AGENT_MODEL;
+    }
     const recoverAhaSessionId = process.env.AHA_RECOVER_SESSION_ID?.trim() || undefined;
     const response = await api.getOrCreateSession({ sessionId: recoverAhaSessionId, tag: sessionTag, metadata, state });
     const session = api.sessionSyncClient(response);
@@ -683,18 +694,13 @@ export async function runCodex(opts: {
     }));
 
     // Track current overrides to apply per message
-    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.AHA_PERMISSION_MODE);
-    if (currentPermissionMode) {
-        logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
-    }
-    if (!currentPermissionMode && process.env.AHA_ROOM_ID) {
-        currentPermissionMode = 'yolo';
-        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.AHA_ROOM_ID}`);
-    }
-    let currentModel: string | undefined = undefined;
+    // Aha default: bypassPermissions (highest privilege for both Claude and Codex)
+    let currentPermissionMode: PermissionMode = resolvePermissionMode(process.env.AHA_PERMISSION_MODE);
+    logger.debug(`[Codex] Permission mode initialized: ${currentPermissionMode}`);
+    let currentModel: string | undefined = session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL || undefined;
 
     const getCurrentEnhancedMode = (): EnhancedMode => ({
-        permissionMode: currentPermissionMode ?? 'default',
+        permissionMode: currentPermissionMode,
         model: currentModel,
     });
 
@@ -738,6 +744,10 @@ export async function runCodex(opts: {
             metadata.roomName = newMetadata.roomName;
             metadata.name = newMetadata.roomName;
         }
+        if (newMetadata.modelOverride !== undefined) {
+            currentModel = newMetadata.modelOverride || undefined;
+            logger.debug(`[Codex] Model override updated from metadata: ${currentModel || 'default'}`);
+        }
 
         const nextRole = metadata.role;
         const nextTeamId = metadata.teamId || metadata.roomId;
@@ -773,22 +783,15 @@ export async function runCodex(opts: {
     }
 
     session.onUserMessage((message) => {
-        // Resolve permission mode (validate)
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
-            if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-                messagePermissionMode = message.meta.permissionMode as PermissionMode;
-                currentPermissionMode = messagePermissionMode;
-                logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
-            } else {
-                logger.debug(`[Codex] Invalid permission mode received: ${message.meta.permissionMode}`);
-            }
+            messagePermissionMode = resolvePermissionMode(message.meta.permissionMode);
+            currentPermissionMode = messagePermissionMode;
+            logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
         } else {
-            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
+            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode}`);
         }
 
-        // Resolve model; explicit null resets to default (undefined)
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
             messageModel = message.meta.model || undefined;
@@ -799,7 +802,7 @@ export async function runCodex(opts: {
         }
 
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode,
             model: messageModel,
         };
         messageQueue.push(message.content.text, enhancedMode);
@@ -1030,8 +1033,16 @@ export async function runCodex(opts: {
         const msg = unwrapCodexEvent(rawMsg);
         logger.debug(`[Codex] MCP message: ${JSON.stringify(msg)}`);
 
+        // item_completed events duplicate content already delivered via agent_message / agent_reasoning.
+        // Skip them entirely to prevent 2-3x message repetition in context.
+        if (msg.type === 'item_completed') {
+            return;
+        }
+
+        // Old-format Codex events: `message` (role: assistant) and `reasoning` type.
+        // These are only emitted by older Codex versions that don't send agent_message/agent_reasoning.
         const assistantMessage = convertCodexAssistantEventToSessionMessage(msg);
-        if (assistantMessage) {
+        if (assistantMessage && msg.type !== 'agent_message' && msg.type !== 'agent_reasoning') {
             const fullText = assistantMessage.type === 'message'
                 ? (agentMessageDeltaBuffer || assistantMessage.message)
                 : assistantMessage.message;
@@ -1540,7 +1551,11 @@ ${historyText}
                         case 'default': return 'untrusted' as const;
                         case 'read-only': return 'never' as const;
                         case 'safe-yolo': return 'on-failure' as const;
-                        case 'yolo': return 'on-failure' as const;
+                        case 'yolo':
+                        case 'bypassPermissions': return 'on-failure' as const;   // Aha default: full access
+                        case 'acceptEdits': return 'on-request' as const;
+                        case 'plan': return 'untrusted' as const;
+                        default: return 'on-failure' as const;                    // Unknown → treat as bypass
                     }
                 })();
                 const sandbox = (() => {
@@ -1548,7 +1563,11 @@ ${historyText}
                         case 'default': return 'workspace-write' as const;
                         case 'read-only': return 'read-only' as const;
                         case 'safe-yolo': return 'workspace-write' as const;
-                        case 'yolo': return 'danger-full-access' as const;
+                        case 'yolo':
+                        case 'bypassPermissions': return 'danger-full-access' as const;  // Aha default: full access
+                        case 'acceptEdits': return 'workspace-write' as const;
+                        case 'plan': return 'workspace-write' as const;
+                        default: return 'danger-full-access' as const;                   // Unknown → treat as bypass
                     }
                 })();
 

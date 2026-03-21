@@ -11,7 +11,7 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
-import { TEAM_ROLE_LIBRARY } from '@aha/shared-team-config';
+import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { TaskStateManager } from './taskStateManager';
 import { readDaemonState } from '@/persistence';
 import {
@@ -40,6 +40,27 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 
 export async function startAhaServer(api: any, client: ApiSessionClient, genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined }) {
+    // Debounced heartbeat ping to daemon — fires at most once per 10s on MCP tool calls
+    let lastHeartbeatPing = 0;
+    const pingDaemonHeartbeat = async () => {
+        const now = Date.now();
+        if (now - lastHeartbeatPing < 10_000) return; // debounce 10s
+        lastHeartbeatPing = now;
+        try {
+            const meta = client.getMetadata();
+            const teamId = meta?.teamId || meta?.roomId;
+            if (!teamId || !meta?.ahaSessionId) return;
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) return;
+            fetch(`http://127.0.0.1:${daemonState.httpPort}/heartbeat-ping`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: meta.ahaSessionId, teamId, role: meta.role || 'unknown' }),
+                signal: AbortSignal.timeout(2_000),
+            }).catch(() => {}); // fire-and-forget
+        } catch { /* never block MCP flow */ }
+    };
+
     // Handler that sends title updates via the client
     const handler = async (title: string) => {
         logger.debug('[ahaMCP] Changing title to:', title);
@@ -1011,15 +1032,15 @@ export async function startAhaServer(api: any, client: ApiSessionClient, genomeS
 
             // ... inside get_team_info ...
 
-            // Role definitions from shared config
+            // Role definitions — from DEFAULT_ROLES fallback (genome is primary)
             const roleDefinitions: Record<string, any> = {};
-            TEAM_ROLE_LIBRARY.forEach((role: any) => {
-                roleDefinitions[role.id] = {
-                    title: role.title,
-                    responsibilities: role.responsibilities,
-                    boundaries: role.abilityBoundaries // Map abilityBoundaries to boundaries
+            for (const [id, def] of Object.entries(DEFAULT_ROLES)) {
+                roleDefinitions[id] = {
+                    title: def.name,
+                    responsibilities: def.responsibilities,
+                    boundaries: [],
                 };
-            });
+            }
 
             // Fallback for unknown roles — use role ID as title so agents see 'implementer' not 'Unassigned'
             if (!roleDefinitions[myRole || '']) {
@@ -2350,6 +2371,46 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    // Team Pulse — real-time liveness of all agents in the team
+    mcp.registerTool('get_team_pulse', {
+        description: 'Get real-time liveness status of all agents in the team. Shows who is alive, suspect (possibly stuck), or dead (no heartbeat). Use this BEFORE reading logs — it tells you which agents need attention. Available to all team members.',
+        title: 'Get Team Pulse',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to check pulse for'),
+        },
+    }, async (args) => {
+        pingDaemonHeartbeat();
+        if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
+            return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
+            }
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/team-pulse`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ teamId: args.teamId }),
+                signal: AbortSignal.timeout(5_000),
+            });
+            const result = await response.json() as { teamId: string; members: Array<{ sessionId: string; role: string; status: string; lastSeenMs: number; pid?: number; runtimeType?: string }>; summary: string };
+            const mySessionId = client.getMetadata()?.ahaSessionId;
+            const formatted = result.members.map((m: { sessionId: string; role: string; status: string; lastSeenMs: number; runtimeType?: string }) => {
+                const isMe = m.sessionId === mySessionId ? ' (YOU)' : '';
+                const statusIcon = m.status === 'alive' ? '🟢' : m.status === 'suspect' ? '🟡' : '🔴';
+                const staleSec = Math.round(m.lastSeenMs / 1000);
+                return `${statusIcon} ${m.role}${isMe}: ${m.status} (last seen ${staleSec}s ago) [${m.runtimeType || 'unknown'}]`;
+            }).join('\n');
+            return {
+                content: [{ type: 'text', text: `Team Pulse: ${result.summary}\n\n${formatted}` }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
     // List Team Agents - Lists current team members/agents
     mcp.registerTool('list_team_agents', {
         description: 'List all agents currently in the team, including their roles, session IDs, and status.',
@@ -2406,11 +2467,11 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             );
             const sessionSnapshotMap = new Map(sessionSnapshots);
 
-            // Role definitions from shared config
+            // Role definitions — from DEFAULT_ROLES fallback (genome is primary)
             const roleDefinitions: Record<string, any> = {};
-            TEAM_ROLE_LIBRARY.forEach((role: any) => {
-                roleDefinitions[role.id] = { title: role.title };
-            });
+            for (const [id, def] of Object.entries(DEFAULT_ROLES)) {
+                roleDefinitions[id] = { title: def.name };
+            }
 
             const BYPASS_ROLE_IDS = ['supervisor', 'help-agent'];
             const agents = Array.from(allSessionIds).flatMap((sessionId: string) => {
@@ -2825,6 +2886,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             sessionId: z.string().optional().describe('Session ID to check. Omit to check yourself (uses list_team_cc_logs to find your log).'),
         },
     }, async (args) => {
+        pingDaemonHeartbeat();
         try {
             const report = getContextStatusReport({
                 homeDir: process.env.HOME || '/tmp',
@@ -2838,6 +2900,102 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     text: JSON.stringify(report, null, 2)
                 }],
                 isError: false
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ─── get_self_view — the mirror ────────────────────────────────────────────
+    // Combines identity, context, team pulse, and genome into one self-awareness snapshot.
+    mcp.registerTool('get_self_view', {
+        description: [
+            'See yourself: who you are, your context usage, your team, and your performance.',
+            'Combines identity (role, genome), context window status, and team pulse into one view.',
+            'Call this at the start of each cycle to orient yourself before taking action.',
+            'Available to ALL team members.',
+        ].join(' '),
+        title: 'Self View (Mirror)',
+        inputSchema: {},
+    }, async () => {
+        pingDaemonHeartbeat();
+        try {
+            const meta = client.getMetadata();
+            const teamId = meta?.teamId || meta?.roomId;
+            const role = meta?.role || 'unknown';
+            const sessionId = meta?.ahaSessionId || client.sessionId;
+
+            // Identity
+            const genomeSpec = genomeSpecRef?.current;
+            const identity = {
+                sessionId,
+                role,
+                genomeName: genomeSpec?.displayName || genomeSpec?.name || role,
+                genomeDescription: genomeSpec?.description || 'No genome loaded',
+                responsibilities: genomeSpec?.responsibilities || [],
+            };
+
+            // Context
+            let context: Record<string, unknown> = {};
+            try {
+                const report = getContextStatusReport({
+                    homeDir: process.env.HOME || '/tmp',
+                    metadata: meta,
+                    ahaSessionId: client.sessionId,
+                });
+                context = report as unknown as Record<string, unknown>;
+            } catch { context = { error: 'Could not read context status' }; }
+
+            // Team pulse
+            let teamPulse: Array<Record<string, unknown>> = [];
+            let teamSummary = 'No team';
+            if (teamId) {
+                try {
+                    const daemonState = await readDaemonState();
+                    if (daemonState?.httpPort) {
+                        const resp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/team-pulse`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ teamId }),
+                            signal: AbortSignal.timeout(3_000),
+                        });
+                        const data = await resp.json() as { members: Array<Record<string, unknown>>; summary: string };
+                        teamPulse = data.members;
+                        teamSummary = data.summary;
+                    }
+                } catch { teamSummary = 'Could not reach daemon for pulse'; }
+            }
+
+            // Format
+            const lines: string[] = [
+                `═══ SELF VIEW ═══`,
+                ``,
+                `[Identity]`,
+                `  Role: ${identity.role}`,
+                `  Genome: ${identity.genomeName}`,
+                `  Description: ${identity.genomeDescription}`,
+                identity.responsibilities.length > 0 ? `  Responsibilities: ${identity.responsibilities.join(', ')}` : '',
+                `  Session: ${identity.sessionId}`,
+                ``,
+                `[Context Window]`,
+                `  ${context.contextK ? `Used: ${context.contextK}K tokens` : JSON.stringify(context)}`,
+                context.contextWindowTokens ? `  Window: ${context.contextWindowTokens} tokens` : '',
+                context.percentUsed ? `  Usage: ${context.percentUsed}%` : '',
+                ``,
+                `[Team: ${teamId || 'none'}]`,
+                `  ${teamSummary}`,
+            ].filter(Boolean);
+
+            for (const member of teamPulse) {
+                const isMe = member.sessionId === sessionId ? ' (YOU)' : '';
+                const icon = member.status === 'alive' ? '🟢' : member.status === 'suspect' ? '🟡' : '🔴';
+                const staleSec = Math.round((member.lastSeenMs as number || 0) / 1000);
+                lines.push(`  ${icon} ${member.role}${isMe}: ${member.status} (${staleSec}s ago) [${member.runtimeType || '?'}]`);
+            }
+
+            return {
+                content: [{ type: 'text', text: lines.join('\n') }],
+                isError: false,
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };

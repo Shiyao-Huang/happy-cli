@@ -4,7 +4,7 @@
 
 import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_KANBAN_BOARD } from '@aha/shared-team-config';
+import { DEFAULT_KANBAN_BOARD } from '@/claude/team/roles.config';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
@@ -16,6 +16,9 @@ interface TeamCommandOptions {
   verbose?: boolean;
   asJson?: boolean;
 }
+
+const TEAM_TASK_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'] as const;
+type TeamTaskStatus = (typeof TEAM_TASK_STATUSES)[number];
 
 function getOption(args: string[], name: string): string | undefined {
   const flag = `--${name}`;
@@ -135,6 +138,55 @@ function printTeam(team: any, verbose = false): void {
   }
 }
 
+export function summarizeTasksByStatus(tasks: any[]): { total: number; byStatus: Record<TeamTaskStatus, number> } {
+  const byStatus = Object.fromEntries(
+    TEAM_TASK_STATUSES.map(status => [status, 0]),
+  ) as Record<TeamTaskStatus, number>;
+
+  for (const task of tasks) {
+    const status = typeof task?.status === 'string' && (TEAM_TASK_STATUSES as readonly string[]).includes(task.status)
+      ? (task.status as TeamTaskStatus)
+      : 'todo';
+    byStatus[status] += 1;
+  }
+
+  return { total: tasks.length, byStatus };
+}
+
+function resolveStatusTeamId(args: string[], positional: string[]): string {
+  const teamId = getOption(args, 'team') || positional[1] || process.env.AHA_ROOM_ID;
+  if (!teamId) {
+    throw new Error('Usage: aha teams status [teamId] [--team <teamId>] (or set AHA_ROOM_ID)');
+  }
+  return teamId;
+}
+
+function colorizeTeamTaskStatus(status: TeamTaskStatus): string {
+  switch (status) {
+    case 'done':
+      return chalk.green(status);
+    case 'blocked':
+      return chalk.red(status);
+    case 'review':
+      return chalk.magenta(status);
+    case 'in-progress':
+      return chalk.yellow(status);
+    default:
+      return chalk.gray(status);
+  }
+}
+
+function printTaskHeadline(task: any): void {
+  const taskId = task.id || 'unknown';
+  const title = task.title || '(untitled)';
+  const priority = task.priority || 'medium';
+  const status = typeof task.status === 'string' && (TEAM_TASK_STATUSES as readonly string[]).includes(task.status)
+    ? (task.status as TeamTaskStatus)
+    : 'todo';
+
+  console.log(`${chalk.bold(taskId)} ${colorizeTeamTaskStatus(status)} ${chalk.cyan(`[${priority}]`)} ${chalk.white(title)}`);
+}
+
 function collectTeamIds(args: string[], positional: string[]): string[] {
   const idsFromFlag = parseCsvOption(args, 'ids');
   if (idsFromFlag && idsFromFlag.length > 0) {
@@ -244,10 +296,12 @@ ${chalk.bold.cyan('Aha Teams')} - Team management commands
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha teams')} <command> [options]
+  ${chalk.green('aha team')} <command> [options]
 
 ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List all teams
   ${chalk.yellow('show')} <teamId>                 Show one team and its roster
+  ${chalk.yellow('status')} [teamId]               Show team + Kanban status summary
   ${chalk.yellow('create')}                        Create a team artifact
   ${chalk.yellow('spawn')}                         Create team + spawn agents from preset (P0)
   ${chalk.yellow('members')} <teamId>              List team members
@@ -255,6 +309,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('remove-member')} <teamId>        Remove a member from a team
   ${chalk.yellow('rename')} <teamId> <name>        Rename a team
   ${chalk.yellow('archive')} <teamId>              Archive a team and its sessions
+  ${chalk.yellow('unarchive')} <teamId>            Restore an archived team and its sessions
   ${chalk.yellow('delete')} <teamId>               Delete a team and its sessions
   ${chalk.yellow('batch-archive')} <id...>         Archive multiple teams
   ${chalk.yellow('batch-delete')} <id...>          Delete multiple teams
@@ -294,6 +349,7 @@ ${chalk.bold('Batch options:')}
 ${chalk.bold('Examples:')}
   ${chalk.green('aha teams list --verbose')}
   ${chalk.green('aha teams create --name "Sprint Crew" --goal "Ship CLI CRUD"')}
+  ${chalk.green('aha team status team_123')}
   ${chalk.green('aha teams spawn --preset deployment --name "Deploy Crew"')}
   ${chalk.green('aha teams spawn --preset dev --team existing-team-id')}
   ${chalk.green('aha teams show team_123')}
@@ -329,6 +385,9 @@ export async function handleTeamsCommand(args: string[]) {
           throw new Error('Usage: aha teams show <teamId>');
         }
         await showTeam(api, positional[1], options);
+        break;
+      case 'status':
+        await showTeamStatus(api, resolveStatusTeamId(args, positional), options);
         break;
       case 'create':
         await createTeam(api, buildCreateTeamPayload(args, positional), options);
@@ -370,6 +429,12 @@ export async function handleTeamsCommand(args: string[]) {
           throw new Error('Usage: aha teams archive <teamId> [--force]');
         }
         await archiveTeam(api, positional[1], options);
+        break;
+      case 'unarchive':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams unarchive <teamId> [--force]');
+        }
+        await unarchiveTeamCmd(api, positional[1], options);
         break;
       case 'delete':
         if (positional.length < 2) {
@@ -457,6 +522,50 @@ async function showTeam(api: ApiClient, teamId: string, options: TeamCommandOpti
 
   console.log(chalk.bold(`\nTeam ${teamId}\n`));
   printTeam(result.team, true);
+  console.log();
+}
+
+async function showTeamStatus(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  const result = await api.getTeam(teamId);
+  if (!result?.team) {
+    throw new Error(`Team ${teamId} not found`);
+  }
+
+  const taskResult = await api.listTasks(teamId);
+  const tasks = taskResult.tasks || [];
+  const summary = summarizeTasksByStatus(tasks);
+
+  if (options.asJson) {
+    console.log(JSON.stringify({
+      team: result.team,
+      summary,
+      tasks,
+    }, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold(`\nTeam status for ${teamId}\n`));
+  printTeam(result.team, !!options.verbose);
+  console.log(chalk.bold('\nTask summary'));
+  for (const status of TEAM_TASK_STATUSES) {
+    console.log(chalk.gray(`  ${colorizeTeamTaskStatus(status)}: ${summary.byStatus[status]}`));
+  }
+  console.log(chalk.gray(`  total: ${summary.total}`));
+
+  const openTasks = tasks.filter((task: any) => task?.status !== 'done');
+  if (openTasks.length === 0) {
+    console.log(chalk.green('\nNo open tasks.\n'));
+    return;
+  }
+
+  const visibleTasks = options.verbose ? openTasks : openTasks.slice(0, 10);
+  console.log(chalk.bold(`\nOpen tasks (${openTasks.length})\n`));
+  for (const task of visibleTasks) {
+    printTaskHeadline(task);
+  }
+  if (!options.verbose && openTasks.length > visibleTasks.length) {
+    console.log(chalk.gray(`\n…and ${openTasks.length - visibleTasks.length} more. Use --verbose to show all open tasks.`));
+  }
   console.log();
 }
 
@@ -628,6 +737,27 @@ async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandO
   console.log();
 }
 
+async function unarchiveTeamCmd(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (!options.force) {
+    const confirmed = await confirm(`Restore archived team ${teamId}? (y/N): `);
+    if (!confirmed) {
+      console.log(chalk.yellow('Operation cancelled'));
+      return;
+    }
+  }
+
+  const result = await api.unarchiveTeam(teamId);
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green('✓ Team restored successfully'));
+  console.log(chalk.gray(`Restored ${result.restoredSessions} session(s)`));
+  console.log();
+}
+
 async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
   if (!options.force) {
     const confirmed = await confirm(`Delete team ${teamId}? This cannot be undone. (y/N): `);
@@ -754,7 +884,7 @@ async function spawnTeamWithPreset(
 
   const { ensureDaemonRunning } = await import('@/daemon/controlClient');
   const { readDaemonState } = await import('@/persistence');
-  const { materializeAgentWorkspace } = await import('@/agentDocker/materializer');
+  const { materializeAgentWorkspace, withDefaultAgentSkills } = await import('@/agentDocker/materializer');
   const { buildMaterializedSpawnEnv } = await import('@/agentDocker/runtimeConfig');
 
   const repoRoot = opts.cwd || process.cwd();
@@ -798,7 +928,7 @@ async function spawnTeamWithPreset(
       runtime: opts.model,
       description: `${roleId} agent`,
       systemPromptSuffix: teamContextSuffix,
-      tools: { mcpServers: ['aha'], skills: [] as string[] },
+      tools: { mcpServers: ['aha'], skills: withDefaultAgentSkills() },
       env: { required: ['ANTHROPIC_API_KEY'], optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'] },
       workspace: { defaultMode: 'shared' as const, allowedModes: ['shared' as const, 'isolated' as const] },
     };
