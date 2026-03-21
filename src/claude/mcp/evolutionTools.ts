@@ -135,6 +135,14 @@ The supervisor will see your request and may: send you guidance, compact your co
 A genome captures everything needed to reproduce a high-performing agent: system prompt,
 tool access list, model, permission mode, and any domain knowledge to seed the agent's context.
 
+IMPORTANT: Every genome MUST include team collaboration capabilities.
+The system auto-injects core team tools (kanban lifecycle, messaging, help) into allowedTools,
+and adds team protocol if missing. But you should STILL explicitly include:
+- responsibilities mentioning task management
+- protocol mentioning kanban board usage (list_tasks, start_task, complete_task)
+- capabilities including 'kanban-task-lifecycle' and 'team-collaboration'
+Without these, the agent becomes an isolated island that can't coordinate with the team.
+
 Genomes can be instantiated later via the \`specId\` parameter of \`create_agent\`.
 
 Use this tool when:
@@ -208,6 +216,38 @@ Namespace conventions:
                 if (specObj.accessLevel === 'full-access') {
                     delete specObj.accessLevel;
                 }
+            }
+
+            // ── Auto-inject core team tools into allowedTools ──────────────
+            // Every agent MUST have kanban + messaging + help tools.
+            // Without these, agents become isolated islands.
+            const CORE_TEAM_TOOLS = [
+                'create_task', 'update_task', 'list_tasks', 'start_task', 'complete_task',
+                'report_blocker', 'resolve_blocker', 'add_task_comment',
+                'create_subtask', 'list_subtasks', 'delete_task',
+                'send_team_message', 'get_team_info',
+                'get_context_status', 'change_title',
+                'request_help',
+            ];
+            if (Array.isArray(specObj.allowedTools)) {
+                specObj.allowedTools = Array.from(new Set([...CORE_TEAM_TOOLS, ...(specObj.allowedTools as string[])]));
+            }
+
+            // ── Auto-inject team collaboration protocol if missing ─────────
+            const existingProtocol = Array.isArray(specObj.protocol) ? (specObj.protocol as string[]) : [];
+            const hasKanbanProtocol = existingProtocol.some((p: string) => /kanban|task|list_tasks|start_task|complete_task/i.test(p));
+            if (!hasKanbanProtocol) {
+                const teamProtocol = [
+                    'Use the Kanban board as the source of truth: check list_tasks for assigned work, use start_task/complete_task for lifecycle',
+                    'Coordinate via send_team_message; use request_help or @help when blocked',
+                ];
+                specObj.protocol = [...existingProtocol, ...teamProtocol];
+            }
+
+            // ── Auto-inject team capability if missing ─────────────────────
+            const existingCapabilities = Array.isArray(specObj.capabilities) ? (specObj.capabilities as string[]) : [];
+            if (!existingCapabilities.includes('kanban-task-lifecycle')) {
+                specObj.capabilities = [...existingCapabilities, 'kanban-task-lifecycle', 'team-collaboration'];
             }
 
             // Inject provenance into spec if parentId is provided
