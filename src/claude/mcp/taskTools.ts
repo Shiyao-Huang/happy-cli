@@ -836,8 +836,25 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 );
             } catch { /* trace must never break main flow */ }
 
+            // After completing, fetch remaining tasks to prompt agent to claim next work
+            const updatedBoard = await taskManager.getBoard();
+            const mySessionId = client.sessionId;
+            const metadata = client.getMetadata();
+            const remainingTodo = (updatedBoard.tasks || []).filter((t: any) =>
+                t.status === 'todo' && !t.assigneeSessionId
+            );
+            const myTasks = (updatedBoard.tasks || []).filter((t: any) =>
+                t.status === 'todo' && t.assigneeSessionId === mySessionId
+            );
+
+            const nextTaskHint = myTasks.length > 0
+                ? `\n\n📋 You have ${myTasks.length} assigned task(s) waiting. Use list_tasks() to see them and start_task() on the next one.`
+                : remainingTodo.length > 0
+                    ? `\n\n📋 ${remainingTodo.length} unassigned task(s) available on the board. Use list_tasks() to review and start_task() to claim one.`
+                    : '\n\n✅ No more pending tasks on the board.';
+
             return {
-                content: [{ type: 'text', text: `Task "${taskTitle}" completed.\nPropagated to ${propagatedCount} parent task(s).` }],
+                content: [{ type: 'text', text: `Task "${taskTitle}" completed.\nPropagated to ${propagatedCount} parent task(s).${nextTaskHint}` }],
                 isError: false,
             };
         } catch (error) {
