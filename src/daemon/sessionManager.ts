@@ -35,6 +35,7 @@ import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { buildAgentLaunchContext } from '@/utils/agentLaunchContext';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
+import { execSync } from 'child_process';
 
 // ── Central shared state ───────────────────────────────────────────────────────
 /**
@@ -44,6 +45,62 @@ import { TraceEventKind } from '@/trace/traceTypes';
  */
 export const pidToTrackedSession = new Map<number, TrackedSession>();
 const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>>();
+
+/**
+ * Recover already-running aha sessions after daemon restart.
+ * Scans OS processes for `--session-tag team:TEAMID:member:SESSIONID` pattern
+ * and re-populates pidToTrackedSession so supervisor scheduling can see them.
+ */
+export function recoverExistingSessions(): number {
+  let recovered = 0;
+  try {
+    // ps output: PID COMMAND
+    const psOutput = execSync('ps -eo pid,args 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
+    // Match lines with --session-tag team:TEAMID:member:SESSIONID
+    const tagPattern = /^\s*(\d+)\s+.*--session-tag\s+team:([a-f0-9-]+):member:([a-f0-9-]+)/;
+
+    for (const line of psOutput.split('\n')) {
+      const match = line.match(tagPattern);
+      if (!match) continue;
+
+      const pid = parseInt(match[1], 10);
+      const teamId = match[2];
+      const sessionId = match[3];
+
+      // Skip if already tracked or if it's our own daemon process
+      if (pidToTrackedSession.has(pid) || pid === process.pid) continue;
+
+      // Verify process is still alive
+      try {
+        process.kill(pid, 0);
+      } catch {
+        continue; // Process already dead
+      }
+
+      const trackedSession: TrackedSession = {
+        startedBy: 'recovered after daemon restart',
+        ahaSessionId: sessionId,
+        ahaSessionMetadataFromLocalWebhook: {
+          teamId,
+          roomId: teamId,
+          hostPid: pid,
+        } as Metadata,
+        pid,
+      };
+
+      pidToTrackedSession.set(pid, trackedSession);
+      recovered++;
+      logger.debug(`[SESSION MANAGER] Recovered session ${sessionId} (team: ${teamId}, PID: ${pid})`);
+    }
+
+    if (recovered > 0) {
+      logger.debug(`[SESSION MANAGER] Recovered ${recovered} existing sessions after daemon restart`);
+    }
+  } catch (error) {
+    logger.debug(`[SESSION MANAGER] Session recovery scan failed: ${error instanceof Error ? error.message : 'unknown'}`);
+  }
+  return recovered;
+}
 
 function looksLikeConcatenatedAbsolutePaths(value: string): boolean {
   const trimmed = value.trim();

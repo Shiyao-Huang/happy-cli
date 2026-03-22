@@ -55,6 +55,7 @@ import {
   stopSession,
   stopTeamSessions,
   requestHelp,
+  recoverExistingSessions,
 } from './sessionManager';
 
 import { runHeartbeatCycle } from './heartbeat';
@@ -477,6 +478,12 @@ export async function startDaemon(): Promise<void> {
     };
 
     logger.debug('[DAEMON RUN] Daemon started successfully, waiting for shutdown request');
+
+    // Recover already-running sessions from previous daemon instance
+    const recoveredCount = recoverExistingSessions();
+    if (recoveredCount > 0) {
+      logger.debug(`[DAEMON RUN] Recovered ${recoveredCount} sessions from previous daemon instance`);
+    }
 
     const shutdownRequest = await resolvesWhenShutdownRequested;
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
