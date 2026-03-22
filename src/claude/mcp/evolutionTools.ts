@@ -239,6 +239,7 @@ Namespace conventions:
             if (!hasKanbanProtocol) {
                 const teamProtocol = [
                     'Use the Kanban board as the source of truth: check list_tasks for assigned work, use start_task/complete_task for lifecycle',
+                    'After completing any task, IMMEDIATELY call list_tasks() to find and claim the next available task. Do not wait for master to assign — proactively pick up unassigned todo tasks',
                     'Coordinate via send_team_message; use request_help or @help when blocked',
                 ];
                 specObj.protocol = [...existingProtocol, ...teamProtocol];

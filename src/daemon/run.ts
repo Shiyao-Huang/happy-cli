@@ -322,7 +322,24 @@ export async function startDaemon(): Promise<void> {
       try {
         machine = await register();
       } catch (error) {
-        if (axios.isAxiosError(error) && error.response?.status === 401) {
+        if (axios.isAxiosError(error) && error.response?.status === 409) {
+          // Machine belongs to a different account — clear local machineId and generate a new one
+          logger.warn(`[DAEMON RUN] Machine ID ${machineId} belongs to another account (409). Clearing machineId and generating a new one...`);
+          const { clearMachineId, updateSettings } = await import('@/persistence');
+          await clearMachineId();
+          const { randomUUID } = await import('node:crypto');
+          const newMachineId = randomUUID();
+          await updateSettings(s => ({ ...s, machineId: newMachineId }));
+          machineId = newMachineId;
+          logger.debug(`[DAEMON RUN] New machine ID generated: ${machineId}`);
+          try {
+            machine = await api.getOrCreateMachine({ machineId, metadata: initialMachineMetadata, daemonState: initialDaemonState });
+          } catch (retryError) {
+            logger.warn(`[DAEMON RUN] Machine re-registration failed after machineId reset: ${retryError instanceof Error ? retryError.message : 'Unknown error'}`);
+            machine = null;
+            return false;
+          }
+        } else if (axios.isAxiosError(error) && error.response?.status === 401) {
           logger.debug(`[DAEMON RUN] Machine registration failed with 401 during ${reason}, attempting token refresh via create mode...`);
 
           const reconnectSeed = getReconnectSeed(credentials);
