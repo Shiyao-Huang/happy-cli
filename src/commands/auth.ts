@@ -2,8 +2,9 @@ import chalk from 'chalk';
 import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsLegacy } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { join } from 'node:path';
 import { stopDaemon, checkIfDaemonRunningAndCleanupStaleState, ensureDaemonRunning } from '@/daemon/controlClient';
 import { logger } from '@/ui/logger';
 import os from 'node:os';
@@ -320,9 +321,23 @@ async function handleAuthLogout(): Promise<void> {
         console.log(chalk.gray('Stopped daemon'));
       } catch { }
 
-      // Remove entire aha directory (as current logout does)
+      // Remove auth files but preserve settings.json (contains machineId)
       if (existsSync(ahaDir)) {
+        const settingsPath = join(ahaDir, 'settings.json');
+        let savedSettings: string | null = null;
+
+        // Backup settings before wiping
+        if (existsSync(settingsPath)) {
+          savedSettings = readFileSync(settingsPath, 'utf-8');
+        }
+
         rmSync(ahaDir, { recursive: true, force: true });
+
+        // Restore settings (machineId persists across logout/login)
+        if (savedSettings) {
+          mkdirSync(ahaDir, { recursive: true });
+          writeFileSync(settingsPath, savedSettings);
+        }
       }
 
       console.log(chalk.green('✓ Successfully logged out'));
