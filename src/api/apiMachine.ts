@@ -268,11 +268,14 @@ export class ApiMachineClient {
     }
 
     connect() {
-        const serverUrl = configuration.serverUrl.replace(/^http/, 'ws');
+        // Socket.IO treats URL path as namespace, so we must connect to origin only
+        // and use the full path (including base path) as the Socket.IO transport path.
+        const parsedUrl = new URL(configuration.serverUrl);
+        const serverOrigin = `${parsedUrl.protocol.replace(/^http/, 'ws')}//${parsedUrl.host}`;
         const socketPath = buildSocketPath(configuration.serverUrl, '/v1/updates');
-        logger.debug(`[API MACHINE] Connecting to ${serverUrl}`);
+        logger.debug(`[API MACHINE] Connecting to ${serverOrigin} (path: ${socketPath})`);
 
-        this.socket = io(serverUrl, {
+        this.socket = io(serverOrigin, {
             transports: ['websocket'],
             auth: {
                 token: this.token,

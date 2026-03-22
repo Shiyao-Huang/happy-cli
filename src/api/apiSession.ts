@@ -59,9 +59,12 @@ export class ApiSessionClient extends EventEmitter {
         //
         // Create socket
         //
+        // Socket.IO treats URL path as namespace, so connect to origin only
+        const parsedUrl = new URL(configuration.serverUrl);
+        const serverOrigin = `${parsedUrl.protocol}//${parsedUrl.host}`;
         const socketPath = buildSocketPath(configuration.serverUrl, '/v1/updates');
 
-        this.socket = io(configuration.serverUrl, {
+        this.socket = io(serverOrigin, {
             auth: {
                 token: this.token,
                 clientType: 'session-scoped' as const,
