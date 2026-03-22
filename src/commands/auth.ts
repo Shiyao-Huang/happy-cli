@@ -225,8 +225,9 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
     await clearCredentials();
     console.log(chalk.gray('✓ Cleared credentials'));
-    await clearMachineId();
-    console.log(chalk.gray('✓ Cleared machine ID'));
+    // Note: machineId is NOT cleared on force login — it represents the physical
+    // machine identity and should persist across re-authentication. Clearing it
+    // causes the connect page to wait for a machineId that no longer exists.
     console.log('');
   }
 
