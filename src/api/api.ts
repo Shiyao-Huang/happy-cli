@@ -232,9 +232,13 @@ export class ApiClient {
     );
 
     if (response.status !== 200) {
-      console.error(chalk.red(`[API] Failed to create machine: ${response.statusText}`));
-      console.log(chalk.yellow(`[API] Failed to create machine: ${response.statusText}, most likely you have re-authenticated, but you still have a machine associated with the old account. Now we are trying to re-associate the machine with the new account. That is not allowed. Please run 'aha doctor clean' to clean up your aha state, and try your original command again. Please create an issue on github if this is causing you problems. We apologize for the inconvenience.`));
-      process.exit(1);
+      if (response.status === 409) {
+        // Machine belongs to a different account — clear local machineId so a new one is generated on next attempt
+        const { clearMachineId } = await import('@/persistence');
+        await clearMachineId();
+        throw new Error('Machine ID conflict (409): belongs to another account. Machine ID cleared — restart daemon to auto-generate a new one.');
+      }
+      throw new Error(`Failed to create machine: ${response.statusText}`);
     }
 
     const raw = response.data.machine;
