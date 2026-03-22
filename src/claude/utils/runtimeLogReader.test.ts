@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readRuntimeLog } from './runtimeLogReader';
+import { readRuntimeLog, resolveTeamRuntimeLogs } from './runtimeLogReader';
 
 const tempDirs: string[] = [];
 
@@ -123,5 +123,46 @@ describe('readRuntimeLog', () => {
         expect(result.entries[0]).toMatchObject({ payload: 'diff' });
         expect(result.entries[1]).toMatchObject({ payload: 'done' });
         expect(result.filePath).toBe(filePath);
+    });
+
+    it('exposes the exact readSessionId/cursorKey that supervisors must use for runtime log reads', () => {
+        const homeDir = makeTempHome();
+        writeJsonl(path.join(homeDir, '.claude', 'projects', 'project-a', 'claude-local-1.jsonl'), [
+            { type: 'assistant', id: 1 },
+        ]);
+        writeJsonl(path.join(homeDir, '.codex', 'sessions', '2026', '03', '20', 'rollout-1-codex-session-1.jsonl'), [
+            { type: 'event', id: 1 },
+        ]);
+        writeJsonl(path.join(homeDir, '.codex', 'history.jsonl'), [
+            { session_id: 'codex-session-1', text: 'hello' },
+        ]);
+
+        const entries = resolveTeamRuntimeLogs([
+            {
+                ahaSessionId: 'aha-claude-1',
+                claudeLocalSessionId: 'claude-local-1',
+                runtimeType: 'claude',
+                role: 'implementer',
+                pid: 101,
+            },
+            {
+                ahaSessionId: 'codex-session-1',
+                runtimeType: 'codex',
+                role: 'qa-engineer',
+                pid: 202,
+            },
+        ], homeDir);
+
+        expect(entries[0]).toMatchObject({
+            ahaSessionId: 'aha-claude-1',
+            claudeLocalSessionId: 'claude-local-1',
+            readSessionId: 'claude-local-1',
+            cursorKey: 'claude-local-1',
+        });
+        expect(entries[1]).toMatchObject({
+            ahaSessionId: 'codex-session-1',
+            readSessionId: 'codex-session-1',
+            cursorKey: 'codex-session-1',
+        });
     });
 });

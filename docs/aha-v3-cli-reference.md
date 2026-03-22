@@ -15,12 +15,14 @@ npm install -g cc-aha-cli-v3
 yarn global add cc-aha-cli-v3
 ```
 
+Use the versioned `aha-v3` command after install. `kanban-v3` is provided as an alias to the same CLI binary.
+
 ---
 
 ## Global Options
 
 ```
-aha [command] [options]
+aha-v3 [command] [options]
 
 Options:
   -h, --help        Show help
@@ -32,97 +34,103 @@ Options:
 
 ## Commands
 
-### `aha auth`
+### `aha-v3 auth`
 
 Authentication management.
 
 ```bash
-aha auth login              # Open browser to authenticate
-aha auth logout             # Clear stored credentials
+aha-v3 auth login                       # Default auth flow
+aha-v3 auth reconnect                   # Reconnect using current local credential material
+aha-v3 auth restore --code <backup-key> # Restore a known account directly from backup key
+aha-v3 auth login --force              # Create or switch to a fresh account
+aha-v3 auth status                     # Show current auth + machine + daemon state
+aha-v3 auth logout                     # Clear stored credentials
 ```
 
-### `aha connect`
+See also: [`auth-recovery-account-consistency.md`](./auth-recovery-account-consistency.md)
+
+### `aha-v3 connect`
 
 AI vendor API key management.
 
 ```bash
-aha connect list            # List configured vendors
-aha connect claude          # Configure Anthropic API key
-aha connect codex           # Configure OpenAI Codex key
-aha connect gemini          # Configure Gemini key
-aha connect remove <vendor> # Remove a vendor configuration
+aha-v3 connect list            # List configured vendors
+aha-v3 connect claude          # Configure Anthropic API key
+aha-v3 connect codex           # Configure OpenAI Codex key
+aha-v3 connect gemini          # Configure Gemini key
+aha-v3 connect remove <vendor> # Remove a vendor configuration
 ```
 
-### `aha doctor`
+### `aha-v3 doctor`
 
 Diagnostics and cleanup.
 
 ```bash
-aha doctor                  # Run full diagnostics
-aha doctor clean            # Kill runaway aha processes
+aha-v3 doctor                  # Run full diagnostics
+aha-v3 doctor clean            # Kill runaway aha processes
 ```
 
-### `aha teams` (alias: `aha team`)
+### `aha-v3 teams` (alias: `aha-v3 team`)
 
 Team CRUD and member management.
 
 ```bash
 # Listing
-aha teams list                          # List all teams
-aha teams list --json                   # JSON output
-aha teams show <teamId>                 # Show team details
-aha teams show <teamId> --json          # JSON output
+aha-v3 teams list                          # List all teams
+aha-v3 teams list --json                   # JSON output
+aha-v3 teams show <teamId>                 # Show team details
+aha-v3 teams show <teamId> --json          # JSON output
 
 # Create / Modify
-aha teams create --name "Sprint 42"     # Create team (auto-generates ID)
-aha teams create --name "MyTeam" --id "my-team-id"
-aha teams rename <teamId> <new-name>
+aha-v3 teams create --name "Sprint 42"     # Create team (auto-generates ID)
+aha-v3 teams create --name "MyTeam" --id "my-team-id"
+aha-v3 teams rename <teamId> <new-name>
 
 # Archive / Delete
-aha teams archive <teamId>             # Soft-delete
-aha teams archive <teamId> --force     # Skip confirmation
-aha teams delete <teamId>              # Hard delete
-aha teams delete <teamId> --force
+aha-v3 teams archive <teamId>             # Soft-delete
+aha-v3 teams archive <teamId> --force     # Skip confirmation
+aha-v3 teams delete <teamId>              # Hard delete
+aha-v3 teams delete <teamId> --force
 
 # Batch operations
-aha teams batch-archive <id1> <id2>
-aha teams batch-archive --ids "id1,id2,id3"
-aha teams batch-delete <id1> <id2>
+aha-v3 teams batch-archive <id1> <id2>
+aha-v3 teams batch-archive --ids "id1,id2,id3"
+aha-v3 teams batch-delete <id1> <id2>
 
 # Member management
-aha teams members <teamId>                               # List members
-aha teams add-member <teamId> --session <sessionId> \
+aha-v3 teams members <teamId>                               # List members
+aha-v3 teams add-member <teamId> --session <sessionId> \
   --role builder --spec-id "@official/builder:1"
-aha teams remove-member <teamId> --session <sessionId>
+aha-v3 teams remove-member <teamId> --session <sessionId>
 ```
 
-### `aha tasks`
+### `aha-v3 tasks`
 
 Kanban task management.
 
 ```bash
 # Listing
-aha tasks list --team <teamId>                    # List all tasks
-aha tasks list --team <teamId> --status in-progress
-aha tasks list --team <teamId> --json
-aha tasks show <taskId> --team <teamId>
+aha-v3 tasks list --team <teamId>                    # List all tasks
+aha-v3 tasks list --team <teamId> --status in-progress
+aha-v3 tasks list --team <teamId> --json
+aha-v3 tasks show <taskId> --team <teamId>
 
 # Create
-aha tasks create --team <teamId> \
+aha-v3 tasks create --team <teamId> \
   --title "Implement auth" \
   --description "..." \
   --priority high \
   --assignee <sessionId>
 
 # Update
-aha tasks update <taskId> --team <teamId> --status done
-aha tasks update <taskId> --team <teamId> --priority urgent
-aha tasks update <taskId> --team <teamId> --assignee <sessionId>
+aha-v3 tasks update <taskId> --team <teamId> --status done
+aha-v3 tasks update <taskId> --team <teamId> --priority urgent
+aha-v3 tasks update <taskId> --team <teamId> --assignee <sessionId>
 
 # Lifecycle
-aha tasks start <taskId> --team <teamId>
-aha tasks complete <taskId> --team <teamId>
-aha tasks delete <taskId> --team <teamId> [--force]
+aha-v3 tasks start <taskId> --team <teamId>
+aha-v3 tasks complete <taskId> --team <teamId>
+aha-v3 tasks delete <taskId> --team <teamId> [--force]
 
 # Options
   --status todo|in-progress|review|blocked|done
@@ -132,31 +140,31 @@ aha tasks delete <taskId> --team <teamId> [--force]
   --approval-status pending|approved|rejected
 ```
 
-### `aha agents` (alias: `aha agent`)
+### `aha-v3 agents` (alias: `aha-v3 agent`)
 
 Agent session management.
 
 ```bash
-aha agents list                     # List all agent sessions
-aha agents list --active            # Active sessions only
-aha agents list --team <teamId>     # Filter by team
-aha agents list --role builder      # Filter by role
-aha agents list --json
+aha-v3 agents list                     # List all agent sessions
+aha-v3 agents list --active            # Active sessions only
+aha-v3 agents list --team <teamId>     # Filter by team
+aha-v3 agents list --role builder      # Filter by role
+aha-v3 agents list --json
 
-aha agents show <sessionId>
-aha agents show <sessionId> --json
+aha-v3 agents show <sessionId>
+aha-v3 agents show <sessionId> --json
 
-aha agents update <sessionId> \
+aha-v3 agents update <sessionId> \
   --name "My Builder" \
   --role builder \
   --team <teamId> \
   --summary "Implementing auth module"
 
-aha agents archive <sessionId> [--force]
-aha agents delete <sessionId> [--force]
+aha-v3 agents archive <sessionId> [--force]
+aha-v3 agents delete <sessionId> [--force]
 
 # Spawn agent from local agent JSON (Docker format → running team agent)
-aha agents spawn <path/to/agent.json> \
+aha-v3 agents spawn <path/to/agent.json> \
   [--team <teamId>] \
   [--role <roleId>] \
   [--path <cwd>]
@@ -164,54 +172,54 @@ aha agents spawn <path/to/agent.json> \
 
 **`spawn` materializes workspace locally, then spawns via daemon:**
 1. Reads + validates `agent.json` (`kind: aha.agent.v1`)
-2. Runs `materializeAgentWorkspace()` → hooks, skills, env contract written to `~/.aha/runtime/<agentId>/`
+2. Runs `materializeAgentWorkspace()` → hooks, skills, env contract written to `~/.aha-v3/runtime/<agentId>/`
 3. Daemon spawns session with `AHA_SETTINGS_PATH` pointing to materialized `settings.json`
 4. If `--team` provided, registers agent in team roster
 
-### `aha roles`
+### `aha-v3 roles`
 
 Role pool and review management.
 
 ```bash
-aha roles pool                      # List role pool
-aha roles review <sessionId>        # Review agent session
-aha roles team-score <teamId>       # View team performance scores
+aha-v3 roles pool                      # List role pool
+aha-v3 roles review <sessionId>        # Review agent session
+aha-v3 roles team-score <teamId>       # View team performance scores
 ```
 
-### `aha ralph`
+### `aha-v3 ralph`
 
 Ralph autonomous loop — drives PRD tasks to completion.
 
 ```bash
-aha ralph start --team <teamId> --prd prd.json
-aha ralph status --team <teamId>
-aha ralph stop --team <teamId>
+aha-v3 ralph start --team <teamId> --prd prd.json
+aha-v3 ralph status --team <teamId>
+aha-v3 ralph stop --team <teamId>
 ```
 
-### `aha codex`
+### `aha-v3 codex`
 
 Start Codex (OpenAI) runtime team collaboration mode.
 
 ```bash
-aha codex
+aha-v3 codex
 ```
 
-### `aha notify`
+### `aha-v3 notify`
 
 Send push notifications.
 
 ```bash
-aha notify -p "Build complete!"
-aha notify -p "Deployment failed" -t "alert"
+aha-v3 notify -p "Build complete!"
+aha-v3 notify -p "Deployment failed" -t "alert"
 ```
 
-### `aha daemon`
+### `aha-v3 daemon`
 
 Background service management.
 
 ```bash
-aha daemon list                    # List active daemon sessions
-aha daemon stop <sessionId>        # Stop a daemon session
+aha-v3 daemon list                    # List active daemon sessions
+aha-v3 daemon stop <sessionId>        # Stop a daemon session
 ```
 
 ---
@@ -222,16 +230,16 @@ aha daemon stop <sessionId>        # Stop a daemon session
 
 ```bash
 # 1. Create team
-TEAM_ID=$(aha teams create --name "sprint-42" --json | jq -r '.team.id')
+TEAM_ID=$(aha-v3 teams create --name "sprint-42" --json | jq -r '.team.id')
 
-# 2. Start agent (aha CLI spawns and auto-registers)
-AHA_ROOM_ID=$TEAM_ID aha
+# 2. Start agent (aha-v3 CLI spawns and auto-registers)
+AHA_ROOM_ID=$TEAM_ID aha-v3
 
 # 3. Verify agent is in team
-aha teams members $TEAM_ID
+aha-v3 teams members $TEAM_ID
 
 # 4. Create initial tasks
-aha tasks create --team $TEAM_ID \
+aha-v3 tasks create --team $TEAM_ID \
   --title "Implement feature X" \
   --priority high
 ```
@@ -249,7 +257,7 @@ jobs:
     steps:
       - name: Create team
         run: |
-          TEAM_ID=$(aha teams create --name "ci-${{ github.run_id }}" --json | jq -r '.team.id')
+          TEAM_ID=$(aha-v3 teams create --name "ci-${{ github.run_id }}" --json | jq -r '.team.id')
           echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
 
       - name: Materializer smoke test
@@ -257,12 +265,12 @@ jobs:
 
       - name: Launch Ralph loop
         run: |
-          AHA_ROOM_ID=$TEAM_ID aha ralph start \
+          AHA_ROOM_ID=$TEAM_ID aha-v3 ralph start \
             --team $TEAM_ID --prd prd.json
 
       - name: Cleanup
         if: always()
-        run: aha teams archive $TEAM_ID --force
+        run: aha-v3 teams archive $TEAM_ID --force
 ```
 
 ### 3. Docker Agent Bootstrap (with workspace materializer)
@@ -270,7 +278,7 @@ jobs:
 ```bash
 # Workspace is materialized from genome spec
 # Settings, hooks, MCP config auto-generated at:
-#   ~/.aha/runtime/<agentId>/workspace/.claude/settings.json
+#   ~/.aha-v3/runtime/<agentId>/workspace/.claude/settings.json
 
 docker run -d \
   --name "aha-builder" \
@@ -284,15 +292,15 @@ docker run -d \
 
 ```bash
 # List available tasks
-aha tasks list --team $TEAM_ID --status todo
+aha-v3 tasks list --team $TEAM_ID --status todo
 
 # Assign to agent
-aha tasks update $TASK_ID --team $TEAM_ID \
+aha-v3 tasks update $TASK_ID --team $TEAM_ID \
   --assignee $SESSION_ID \
   --status in-progress
 
 # Mark complete
-aha tasks complete $TASK_ID --team $TEAM_ID
+aha-v3 tasks complete $TASK_ID --team $TEAM_ID
 ```
 
 ---
@@ -344,9 +352,9 @@ Docker agents are defined in `*.agent.json` files validated against `schemas/age
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AHA_SERVER_URL` | `https://api.aha.engineering` | API server endpoint |
-| `AHA_WEBAPP_URL` | — | Web app URL |
-| `AHA_HOME_DIR` | `~/.aha` | Aha home directory |
+| `AHA_SERVER_URL` | `https://top1vibe.com/api/v2` | API server endpoint |
+| `AHA_WEBAPP_URL` | `https://top1vibe.com/webappv2` | Web app URL |
+| `AHA_HOME_DIR` | `~/.aha-v3` | Aha home directory |
 | `AHA_ROOM_ID` | — | Team room ID (required for team features) |
 | `AHA_AGENT_ROLE` | — | Declare agent role |
 | `AHA_TEAM_MEMBER_ID` | — | Override agent session ID (workspace materialization) |
@@ -361,15 +369,15 @@ Docker agents are defined in `*.agent.json` files validated against `schemas/age
 
 | Path | Purpose |
 |------|---------|
-| `~/.aha/` | Aha home directory |
-| `~/.aha/runtime/<agentId>/` | Per-agent runtime root |
-| `~/.aha/runtime/<agentId>/workspace/.claude/settings.json` | Per-agent hooks settings |
-| `~/.aha/runtime/<agentId>/workspace/.claude/commands/` | Skill symlinks |
-| `~/.aha/runtime/<agentId>/workspace/.aha-agent/env.json` | Env contract |
-| `~/.aha/runtime/<agentId>/workspace/.aha-agent/mcp.json` | MCP server list |
-| `~/.aha/runtime/<agentId>/logs/` | Agent logs |
-| `~/.aha/runtime-lib/skills/` | Global skill library |
-| `~/.aha/worktrees/<agentId>/` | Isolated git worktrees (P2) |
+| `~/.aha-v3/` | Aha home directory |
+| `~/.aha-v3/runtime/<agentId>/` | Per-agent runtime root |
+| `~/.aha-v3/runtime/<agentId>/workspace/.claude/settings.json` | Per-agent hooks settings |
+| `~/.aha-v3/runtime/<agentId>/workspace/.claude/commands/` | Skill symlinks |
+| `~/.aha-v3/runtime/<agentId>/workspace/.aha-agent/env.json` | Env contract |
+| `~/.aha-v3/runtime/<agentId>/workspace/.aha-agent/mcp.json` | MCP server list |
+| `~/.aha-v3/runtime/<agentId>/logs/` | Agent logs |
+| `~/.aha-v3/runtime-lib/skills/` | Global skill library |
+| `~/.aha-v3/worktrees/<agentId>/` | Isolated git worktrees (P2) |
 
 ---
 
@@ -405,20 +413,20 @@ Docker agents are defined in `*.agent.json` files validated against `schemas/age
 
 ---
 
-### New: `aha sessions` command
+### New: `aha-v3 sessions` command
 
 Direct session management (independent of agent metadata).
 
 ```bash
-aha sessions list                     # List all sessions
-aha sessions list --active            # Active sessions only
-aha sessions list --json
+aha-v3 sessions list                     # List all sessions
+aha-v3 sessions list --active            # Active sessions only
+aha-v3 sessions list --json
 
-aha sessions show <sessionId>         # Show session + model info
-aha sessions show <sessionId> --json
+aha-v3 sessions show <sessionId>         # Show session + model info
+aha-v3 sessions show <sessionId> --json
 
-aha sessions archive <sessionId> [--force]
-aha sessions delete <sessionId> [--force]
+aha-v3 sessions archive <sessionId> [--force]
+aha-v3 sessions delete <sessionId> [--force]
 ```
 
 **`sessions show` output includes** (when available in metadata):
@@ -433,13 +441,13 @@ aha sessions delete <sessionId> [--force]
 
 ---
 
-### New: `aha agents update --model` / `--fallback-model`
+### New: `aha-v3 agents update --model` / `--fallback-model`
 
 Override the model for an existing agent session (takes effect on next restart).
 
 ```bash
-aha agents update <sessionId> --model claude-opus-4-5
-aha agents update <sessionId> --model claude-haiku-4-5 --fallback-model claude-sonnet-4-5
+aha-v3 agents update <sessionId> --model claude-opus-4-5
+aha-v3 agents update <sessionId> --model claude-haiku-4-5 --fallback-model claude-sonnet-4-5
 ```
 
 **Stored as:** `metadata.modelOverride` / `metadata.fallbackModelOverride`
@@ -474,7 +482,7 @@ When `materializeAgentWorkspace()` builds a workspace, resources are placed usin
 
 | Policy | Mechanism | When used |
 |--------|-----------|-----------|
-| `link` | Symlink to `~/.aha/runtime-lib/` | Default — shared read-only resources (skills, MCP configs) |
+| `link` | Symlink to `~/.aha-v3/runtime-lib/` | Default — shared read-only resources (skills, MCP configs) |
 | `copy` | Full copy into workspace | When `build.materializationPolicy: "copy"` set in `agent.json` |
 
 **`agent.json` opt-in:**
@@ -486,9 +494,9 @@ When `materializeAgentWorkspace()` builds a workspace, resources are placed usin
 }
 ```
 
-**Shared library layout** under `~/.aha/runtime-lib/`:
+**Shared library layout** under `~/.aha-v3/runtime-lib/`:
 ```
-~/.aha/runtime-lib/
+~/.aha-v3/runtime-lib/
 ├── skills/
 ├── mcp/
 ├── prompts/
@@ -503,7 +511,7 @@ When `materializeAgentWorkspace()` builds a workspace, resources are placed usin
 When an agent is started from a genome spec, the materializer writes self-awareness files into the workspace:
 
 ```
-~/.aha/runtime/<agentId>/workspace/.genome/
+~/.aha-v3/runtime/<agentId>/workspace/.genome/
 ├── spec.json          ← full genome spec snapshot
 ├── lineage.json       ← provenance: parentId, mutationNote, origin
 └── eval-criteria.md   ← evaluation criteria (when defined in genome)
@@ -517,13 +525,13 @@ A `__genome_ref__` entry is also injected into `contextInjections` so the agent 
 
 ### New env var: `AHA_SETTINGS_PATH`
 
-Used by `aha agents spawn` to pass a pre-materialized `settings.json` path to the daemon.
+Used by `aha-v3 agents spawn` to pass a pre-materialized `settings.json` path to the daemon.
 
 | Variable | Purpose |
 |----------|---------|
 | `AHA_SETTINGS_PATH` | Path to a pre-materialized `settings.json`; bypasses genome fetch when set (genome takes precedence if `AHA_SPEC_ID` is also set) |
 
-Set automatically by `aha agents spawn`. Does not need to be set manually in normal operation.
+Set automatically by `aha-v3 agents spawn`. Does not need to be set manually in normal operation.
 
 <!--────────────────────────────────────────────────────────────────────────
   END: SPRINT ADDITIONS — 2026-03-18

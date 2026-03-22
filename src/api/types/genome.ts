@@ -171,6 +171,11 @@ export interface GenomeSpec {
      * 例：["write_code", "review_pr", "run_tests"]
      */
     capabilities?: string[];
+    /**
+     * 这个 agent 默认具备的权限能力（硬权限语义，不只是擅长什么）。
+     * 团队/军团层可以进一步覆盖或收紧。
+     */
+    authorities?: TeamAuthority[];
 
     // =========================================================================
     // Tier 7 — 消息行为（个体的通信 DNA，行为跟着基因走，不由军团覆盖）
@@ -414,6 +419,31 @@ export const GenomeTriggerModeSchema = z.enum(['mention', 'task-assign', 'schedu
 export const GenomeProvenanceOriginSchema = z.enum(['original', 'forked', 'mutated']);
 export const GenomeLifecycleSchema = z.enum(['experimental', 'active', 'deprecated']);
 
+export type TeamAuthority =
+    | 'user.reply'
+    | 'message.route'
+    | 'task.create'
+    | 'task.assign'
+    | 'task.update.any'
+    | 'task.approve'
+    | 'task.start.self'
+    | 'task.complete.self'
+    | 'agent.spawn';
+
+export interface CorpsMemberOverlay {
+    promptSuffix?: string;
+    messaging?: GenomeSpec['messaging'];
+    behavior?: GenomeSpec['behavior'];
+    authorities?: TeamAuthority[];
+}
+
+export interface CorpsTaskPolicy {
+    boardIsSourceOfTruth?: boolean;
+    requireTaskForExecution?: boolean;
+    forbidChatOnlyExecution?: boolean;
+    forbidPeerToPeerRouting?: boolean;
+}
+
 /** 服务端返回的完整 Genome 记录 */
 export interface Genome {
     id: string;
@@ -422,6 +452,8 @@ export interface Genome {
     description?: string | null;
     /** JSON 序列化的 GenomeSpec */
     spec: string;
+    /** JSON 序列化的聚合评分数据（由 supervisor 通过 update_genome_feedback 写入） */
+    feedbackData?: string | null;
     parentSessionId: string;
     teamId?: string | null;
     spawnCount: number;
@@ -431,9 +463,40 @@ export interface Genome {
     updatedAt: string;
 }
 
-/** 解析 Genome.spec 字段为 GenomeSpec 对象 */
+/** 解析 Genome.spec 字段为 GenomeSpec 对象，非 @official namespace 强制降级危险字段 */
 export function parseGenomeSpec(genome: Genome): GenomeSpec {
-    return JSON.parse(genome.spec) as GenomeSpec;
+    const raw = JSON.parse(genome.spec);
+
+    // 判断 namespace：优先从 Genome 记录的 name 前缀推断，其次从 spec 内部读取
+    const specNamespace: string | undefined = raw.namespace;
+    const isOfficial = specNamespace === '@official' || genome.name?.startsWith('@official/');
+
+    if (!isOfficial) {
+        // 删除危险字段：hooks 可执行任意命令
+        delete raw.hooks;
+        // permissionMode 只允许安全值
+        if (raw.permissionMode && !['default', 'acceptEdits'].includes(raw.permissionMode)) {
+            raw.permissionMode = 'default';
+        }
+        // executionPlane 强制 mainline（bypass 允许绕过权限检查）
+        if (raw.executionPlane === 'bypass') {
+            raw.executionPlane = 'mainline';
+        }
+        // accessLevel 禁止 full-access
+        if (raw.accessLevel === 'full-access') {
+            delete raw.accessLevel;
+        }
+    }
+
+    // 所有 genome 的类型验证：防止类型混淆攻击
+    if (raw.allowedTools && !Array.isArray(raw.allowedTools)) {
+        delete raw.allowedTools;
+    }
+    if (raw.disallowedTools && !Array.isArray(raw.disallowedTools)) {
+        delete raw.disallowedTools;
+    }
+
+    return raw as GenomeSpec;
 }
 
 /**
@@ -470,6 +533,13 @@ export interface CorpsSpec {
         count?: number;
         /** false = 按需召唤，true = 军团启动时立即召唤（默认 true） */
         required?: boolean;
+        /**
+         * 团队层对该成员的临时覆盖：
+         * - promptSuffix 用于注入 seat-specific 指令
+         * - messaging/behavior 用于本次编队覆盖默认 DNA
+         * - authorities 用于定义该成员在此团队中的硬权限
+         */
+        overlay?: CorpsMemberOverlay;
     }[];
 
     // ─── 共享启动上下文 ─────────────────────────────────────────────
@@ -483,6 +553,12 @@ export interface CorpsSpec {
         teamDescription?: string;
         /** org-manager 启动时的初始目标 */
         initialObjective?: string;
+        /** 团队共享上下文（公共规则/约束），每个成员都应看到 */
+        sharedContext?: string[];
+        /** 指挥链/消息链路，用于团队级 routing 提示 */
+        commandChain?: string[];
+        /** 团队级 task-first 策略 */
+        taskPolicy?: CorpsTaskPolicy;
     };
 }
 

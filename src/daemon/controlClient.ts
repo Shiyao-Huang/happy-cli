@@ -251,6 +251,7 @@ export async function stopDaemon() {
 
       // Wait for daemon to die
       await waitForProcessDeath(state.pid, 2000);
+      await cleanupDaemonState();
       logger.debug('Daemon stopped gracefully via HTTP');
       return;
     } catch (error) {
@@ -260,9 +261,12 @@ export async function stopDaemon() {
     // Force kill
     try {
       process.kill(state.pid, 'SIGKILL');
+      await waitForProcessDeath(state.pid, 2000);
       logger.debug('Force killed daemon');
     } catch (error) {
       logger.debug('Daemon already dead');
+    } finally {
+      await cleanupDaemonState();
     }
   } catch (error) {
     logger.debug('Error stopping daemon', error);

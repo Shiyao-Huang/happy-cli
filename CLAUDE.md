@@ -260,6 +260,24 @@ User interface components.
 - Testing: Vitest 
 
 
+## 🔴 Org-Manager 系统级工具制约（2026-03-21，待解决）
+
+> 解决后从本节移除。
+
+### 待实现工具
+
+1. **`restart_daemon`** MCP tool — 修改 aha-cli 源码（controlServer.ts, supervisorTools.ts, mcpContext.ts, run.ts）后，agent 无法让变更生效，需手动重启 daemon。建议实现 graceful restart MCP tool。（优先级：高）
+
+2. **`tsc_check(path)`** MCP tool — aha-cli 需要 Node 22（`.node-version=22`），当前 shell 默认 Node 24 下 tsc OOM crash。需要一个工具自动 `fnm use` 读取 `.node-version` 后执行 tsc。（优先级：高）
+
+3. **`git_diff_summary`** — supervisor 评分只看 CC log，不读 git diff。org-manager 修复 P0 级 daemon 问题但被评 45/100。supervisor 应能看到代码变更的范围和影响。（优先级：中）
+
+### Node 环境注意事项
+
+- aha-cli 构建/类型检查必须在 Node 22 下运行
+- 执行前先 `fnm use 22`，再加 `NODE_OPTIONS="--max-old-space-size=8192"`
+- daemon 启动时应自动读取 `.node-version` 切换 Node 版本
+
 # Running the Daemon
 
 ## Starting the Daemon

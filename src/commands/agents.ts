@@ -12,6 +12,7 @@ import { resolve } from 'path';
 import { randomUUID } from 'node:crypto';
 import { ensureDaemonRunning } from '@/daemon/controlClient';
 import { readDaemonState } from '@/persistence';
+import { COORDINATION_ROLES } from '@/claude/team/roleConstants';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -595,7 +596,9 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   master: {
     description: 'Master coordinator — shapes delivery plan and keeps Kanban accurate',
     systemPromptSuffix: 'Translate goals into Kanban tasks. Sequence work, surface blockers, coordinate the team.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false },
+    // canSpawnAgents: true — master is a coordinator role and must be able to spawn agents via create_agent.
+    // Old templates had canSpawnAgents: false here, which incorrectly blocked agent topology management.
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: true, requireExplicitAssignment: false },
   },
   implementer: {
     description: 'Implementer — executes implementation tasks end-to-end',
@@ -707,6 +710,8 @@ async function createAgent(
         specId: specResolution.specId ?? undefined,
         executionPlane: 'mainline',
         runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
+        // Coordinator roles need task.create authority; genome spec can add more via authorities[].
+        ...(COORDINATION_ROLES.includes(roleId) ? { authorities: ['task.create'] } : {}),
       });
 
       publishedCorpsTemplate = await publishTeamCorpsTemplate({

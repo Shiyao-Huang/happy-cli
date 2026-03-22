@@ -21,6 +21,7 @@ export function startDaemonControlServer({
   onClaudeLocalSessionFound,
   getTeamPulse,
   onHeartbeatPing,
+  requestHelp,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
@@ -38,6 +39,13 @@ export function startDaemonControlServer({
     runtimeType?: string;
   }>;
   onHeartbeatPing?: (sessionId: string, teamId: string, role: string) => void;
+  requestHelp?: (params: {
+    teamId: string;
+    sessionId?: string;
+    type: string;
+    description: string;
+    severity: string;
+  }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -109,7 +117,7 @@ export function startDaemonControlServer({
       logger.debug(`[CONTROL SERVER] Listing ${children.length} sessions`);
       return {
         children: children
-          .filter(child => child.ahaSessionId !== undefined)
+          .filter(child => child.ahaSessionId != null)
           .map(child => ({
             startedBy: child.startedBy,
             ahaSessionId: child.ahaSessionId!,
@@ -152,6 +160,45 @@ export function startDaemonControlServer({
         }));
       logger.debug(`[CONTROL SERVER] list-team-sessions for ${teamId}: ${sessions.length} sessions`);
       return { sessions };
+    });
+
+    // Send a command to a running session (e.g. /compact)
+    typed.post('/session-command', {
+      schema: {
+        body: z.object({
+          sessionId: z.string(),
+          command: z.string(),
+        }),
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            error: z.string().optional(),
+          })
+        }
+      }
+    }, async (request) => {
+      const { sessionId, command } = request.body;
+      logger.debug(`[CONTROL SERVER] Session command: ${command} → ${sessionId}`);
+
+      // Find the tracked session by ahaSessionId
+      const children = getChildren();
+      const target = children.find(c => c.ahaSessionId === sessionId);
+      if (!target) {
+        return { success: false, error: `Session ${sessionId} not tracked by daemon` };
+      }
+
+      // Write command to stdin if the child process is available
+      if (target.childProcess && target.childProcess.stdin && !target.childProcess.stdin.destroyed) {
+        try {
+          target.childProcess.stdin.write(command + '\n');
+          logger.debug(`[CONTROL SERVER] Wrote '${command}' to stdin of ${sessionId}`);
+          return { success: true };
+        } catch (err) {
+          return { success: false, error: `Failed to write to stdin: ${String(err)}` };
+        }
+      }
+
+      return { success: false, error: `Session ${sessionId} has no writable stdin (externally started or stdin closed)` };
     });
 
     // Stop specific session
@@ -365,6 +412,16 @@ export function startDaemonControlServer({
       logger.debug(`[CONTROL SERVER] Help request from ${sessionId}: ${type} (${severity})`);
 
       try {
+        // Use the purpose-built requestHelp handler if available (auto-discovers target session)
+        if (requestHelp) {
+          const result = await requestHelp({ teamId, sessionId, type, description, severity });
+          if (result.success) {
+            return { success: true, helpAgentSessionId: result.helpAgentSessionId };
+          }
+          return { success: false, error: result.error || 'Failed to spawn help-agent' };
+        }
+
+        // Fallback: spawn directly
         const result = await spawnSession({
           directory: process.cwd(),
           agent: 'claude',

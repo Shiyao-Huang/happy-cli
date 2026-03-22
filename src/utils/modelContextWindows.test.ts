@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS,
     buildModelSelfAwarenessPrompt,
     isRecognizedModelId,
@@ -9,8 +10,9 @@ import {
 
 describe('modelContextWindows', () => {
     it('resolves known Claude model families to context window tokens', () => {
-        expect(resolveContextWindowTokens('claude-sonnet-4-6')).toBe(DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS);
-        expect(resolveContextWindowTokens('claude-opus-4-20250514')).toBe(DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS);
+        expect(resolveContextWindowTokens('claude-sonnet-4-6')).toBe(CLAUDE_1M_CONTEXT_WINDOW_TOKENS);
+        expect(resolveContextWindowTokens('claude-opus-4-20250514')).toBe(CLAUDE_1M_CONTEXT_WINDOW_TOKENS);
+        expect(resolveContextWindowTokens('claude-sonnet-4')).toBe(DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS);
     });
 
     it('falls back to the default Claude context window for versioned variants', () => {

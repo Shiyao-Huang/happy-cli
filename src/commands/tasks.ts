@@ -7,6 +7,7 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 const TASK_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'] as const;
 const TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 const APPROVAL_STATUSES = ['pending', 'approved', 'rejected'] as const;
+const HUMAN_LOCK_MODES = ['viewing', 'editing', 'manual-status'] as const;
 
 type TaskStatus = (typeof TASK_STATUSES)[number];
 type TaskPriority = (typeof TASK_PRIORITIES)[number];
@@ -112,6 +113,12 @@ function printTask(task: any, verbose = false): void {
     console.log(chalk.gray(`  ${task.description}`));
   }
 
+  if (task.humanStatusLock) {
+    const lock = task.humanStatusLock;
+    const lockedBy = lock.lockedByDisplayName || lock.lockedBySessionId || 'human';
+    console.log(chalk.yellow(`  human-lock=${lock.mode} by=${lockedBy}`));
+  }
+
   if (verbose) {
     if (Array.isArray(task.labels) && task.labels.length > 0) {
       console.log(chalk.gray(`  labels=${task.labels.join(', ')}`));
@@ -193,6 +200,7 @@ ${chalk.bold.cyan('Aha Tasks')} - Team task management commands
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha tasks')} <command> --team <teamId> [options]
+  ${chalk.green('aha task')} <command> --team <teamId> [options]
 
 ${chalk.bold('Commands:')}
   ${chalk.yellow('list')}                          List tasks for a team
@@ -202,6 +210,9 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('delete')} <taskId>               Delete a task
   ${chalk.yellow('start')} <taskId>                Mark a task in progress
   ${chalk.yellow('complete')} <taskId>             Mark a task done
+  ${chalk.yellow('done')} <taskId>                 Alias for complete
+  ${chalk.yellow('lock')} <taskId>                 Set a human status lock on a task
+  ${chalk.yellow('unlock')} <taskId>               Clear a human status lock from a task
 
 ${chalk.bold('Common options:')}
   ${chalk.cyan('--team <teamId>')}                Team artifact ID (falls back to AHA_ROOM_ID)
@@ -219,16 +230,23 @@ ${chalk.bold('Create / update options:')}
   ${chalk.cyan('--approval-status <status>')}     ${APPROVAL_STATUSES.join(' | ')}
 
 ${chalk.bold('Workflow options:')}
-  ${chalk.cyan('--session <sessionId>')}          Session ID for start/complete (default: cli)
-  ${chalk.cyan('--role <role>')}                  Role for start (default: builder)
+  ${chalk.cyan('--session <sessionId>')}          Session ID for start/complete/lock (default: cli)
+  ${chalk.cyan('--role <role>')}                  Role for start/update/lock (default: builder for start, user otherwise)
+  ${chalk.cyan('--name <displayName>')}           Display name for update/lock attribution
+  ${chalk.cyan('--mode <mode>')}                  Lock mode: viewing | editing | manual-status
+  ${chalk.cyan('--reason <text>')}                Optional human-lock reason
+  ${chalk.cyan('--comment <text>')}               Optional human-lock comment persisted on the task
   ${chalk.cyan('--force, -f')}                    Skip delete confirmation
   ${chalk.cyan('--verbose, -v')}                  Show extra fields in list/show output
 
 ${chalk.bold('Examples:')}
   ${chalk.green('aha tasks list --team team_123')}
   ${chalk.green('aha tasks create --team team_123 --title "Implement CLI command" --priority high')}
-  ${chalk.green('aha tasks update task_123 --team team_123 --status review')}
+  ${chalk.green('aha tasks update task_123 --team team_123 --status review --session user-session --role user')}
   ${chalk.green('aha tasks complete task_123 --team team_123 --session builder-1')}
+  ${chalk.green('aha tasks lock task_123 --team team_123 --session user-session --mode manual-status --reason "Human is editing"')}
+  ${chalk.green('aha tasks unlock task_123 --team team_123 --session user-session')}
+  ${chalk.green('aha task done task_123 --team team_123 --session builder-1')}
 `);
 }
 
@@ -268,7 +286,7 @@ export async function handleTasksCommand(args: string[]): Promise<void> {
         if (positional.length < 2) {
           throw new Error('Usage: aha tasks update <taskId> --team <teamId> [fields...]');
         }
-        await updateTask(api, resolveTeamId(args), positional[1], buildTaskPayload(args, true), asJson, verbose);
+        await updateTask(api, resolveTeamId(args), positional[1], buildTaskPayload(args, true), resolveSessionId(args), getOption(args, 'role') || 'user', getOption(args, 'name'), asJson, verbose);
         break;
       case 'delete':
         if (positional.length < 2) {
@@ -283,10 +301,35 @@ export async function handleTasksCommand(args: string[]): Promise<void> {
         await startTask(api, resolveTeamId(args), positional[1], resolveSessionId(args), getOption(args, 'role') || 'builder', asJson, verbose);
         break;
       case 'complete':
+      case 'done':
         if (positional.length < 2) {
-          throw new Error('Usage: aha tasks complete <taskId> --team <teamId> [--session <id>]');
+          throw new Error('Usage: aha tasks complete|done <taskId> --team <teamId> [--session <id>]');
         }
         await completeTask(api, resolveTeamId(args), positional[1], resolveSessionId(args), asJson, verbose);
+        break;
+      case 'lock':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha tasks lock <taskId> --team <teamId> [--session <id>] [--mode viewing|editing|manual-status]');
+        }
+        await setTaskHumanLock(api, resolveTeamId(args), positional[1], {
+          sessionId: resolveSessionId(args),
+          role: getOption(args, 'role') || 'user',
+          displayName: getOption(args, 'name'),
+          mode: parseEnumOption(args, 'mode', HUMAN_LOCK_MODES) || 'manual-status',
+          reason: getOption(args, 'reason'),
+          comment: getOption(args, 'comment'),
+        }, asJson, verbose);
+        break;
+      case 'unlock':
+        if (positional.length < 2) {
+          throw new Error('Usage: aha tasks unlock <taskId> --team <teamId> [--session <id>]');
+        }
+        await clearTaskHumanLock(api, resolveTeamId(args), positional[1], {
+          sessionId: resolveSessionId(args),
+          role: getOption(args, 'role') || 'user',
+          displayName: getOption(args, 'name'),
+          comment: getOption(args, 'comment'),
+        }, asJson, verbose);
         break;
       default:
         throw new Error(`Unknown tasks command: ${subcommand}`);
@@ -370,10 +413,21 @@ async function updateTask(
   teamId: string,
   taskId: string,
   payload: Record<string, unknown>,
+  sessionId: string,
+  role: string,
+  displayName: string | undefined,
   asJson: boolean,
   verbose: boolean,
 ): Promise<void> {
-  const result = await api.updateTask(teamId, taskId, payload);
+  const result = await api.updateTask(teamId, taskId, {
+    ...payload,
+    actor: {
+      sessionId,
+      role,
+      ...(displayName ? { displayName } : {}),
+      kind: role === 'user' ? 'human' : 'agent',
+    },
+  });
 
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
@@ -435,6 +489,65 @@ async function completeTask(
   }
 
   console.log(chalk.green(`✓ Task ${taskId} completed by ${sessionId}`));
+  printTask(result.task, verbose);
+  console.log();
+}
+
+
+async function setTaskHumanLock(
+  api: ApiClient,
+  teamId: string,
+  taskId: string,
+  payload: {
+    sessionId: string;
+    role: string;
+    displayName?: string;
+    mode: 'viewing' | 'editing' | 'manual-status';
+    reason?: string;
+    comment?: string;
+  },
+  asJson: boolean,
+  verbose: boolean,
+): Promise<void> {
+  const result = await api.setTaskHumanStatusLock(teamId, taskId, {
+    ...payload,
+    kind: payload.role === 'user' ? 'human' : 'agent',
+  });
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Human status lock set on task ${taskId}`));
+  printTask(result.task, verbose);
+  console.log();
+}
+
+async function clearTaskHumanLock(
+  api: ApiClient,
+  teamId: string,
+  taskId: string,
+  payload: {
+    sessionId: string;
+    role: string;
+    displayName?: string;
+    comment?: string;
+  },
+  asJson: boolean,
+  verbose: boolean,
+): Promise<void> {
+  const result = await api.clearTaskHumanStatusLock(teamId, taskId, {
+    ...payload,
+    kind: payload.role === 'user' ? 'human' : 'agent',
+  });
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Human status lock cleared on task ${taskId}`));
   printTask(result.task, verbose);
   console.log();
 }

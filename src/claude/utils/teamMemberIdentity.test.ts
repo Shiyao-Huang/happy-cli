@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTeamMemberSessionTag, createTeamMemberIdentity } from './teamMemberIdentity';
+import { buildTeamMemberSessionTag, createReplacementTeamMemberIdentity, createTeamMemberIdentity } from './teamMemberIdentity';
 
 describe('buildTeamMemberSessionTag', () => {
     it('builds the canonical team member session tag', () => {
@@ -18,6 +18,15 @@ describe('createTeamMemberIdentity', () => {
     it('generates a memberId when one is not provided', () => {
         const identity = createTeamMemberIdentity('team-123');
         expect(identity.memberId).toBeTruthy();
+        expect(identity.sessionTag).toBe(`team:team-123:member:${identity.memberId}`);
+    });
+});
+
+describe('createReplacementTeamMemberIdentity', () => {
+    it('generates a fresh identity for replacements instead of reusing the previous member tag', () => {
+        const identity = createReplacementTeamMemberIdentity('team-123', 'member-456');
+        expect(identity.memberId).toBeTruthy();
+        expect(identity.memberId).not.toBe('member-456');
         expect(identity.sessionTag).toBe(`team:team-123:member:${identity.memberId}`);
     });
 });

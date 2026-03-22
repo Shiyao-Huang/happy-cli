@@ -45,7 +45,7 @@ import { buildGenomeInjection } from './utils/buildGenomeInjection';
 import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
-import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens } from '@/utils/modelContextWindows';
+import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
@@ -160,7 +160,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const settings = await readSettings();
     let machineId = settings?.machineId
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/aha-cli/issues`);
+        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/aha/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -991,9 +991,11 @@ You are NOT limited to MCP tools for logs. If a log tool is wrong, incomplete, 4
 ${pendingAction ? `→ There IS a pending action. Execute it now:
    - Execute the intervention you already decided on
    - Call \`save_supervisor_state\` with \`pendingAction: null\` (clear it) and the same team / Claude / Codex cursors
-   - Output "SUPERVISOR_COMPLETE" and STOP` : `→ No pending action and no active agents. Nothing to do.
+   - If you want to retire after this idle cycle, emit \`<AHA_LIFECYCLE action="retire" reason="supervisor_idle_complete" />\` on its own line
+   - If you want to remain alive and silent, emit \`<AHA_LIFECYCLE action="standby" reason="supervisor_waiting" />\` or emit nothing` : `→ No pending action and no active agents. Nothing to do.
    - Call \`save_supervisor_state\` with unchanged team / Claude / Codex cursors, \`pendingAction: null\`, and add "(idle — no change, no active agents)" to conclusion
-   - Output "SUPERVISOR_COMPLETE" and STOP`}
+   - If you want to retire after this idle cycle, emit \`<AHA_LIFECYCLE action="retire" reason="supervisor_idle_complete" />\` on its own line
+   - If you want to remain alive and silent, emit \`<AHA_LIFECYCLE action="standby" reason="supervisor_waiting" />\` or emit nothing`}
 
 **If \`hasNewContent\` is TRUE → proceed to Phase 2.**
 **If \`hasNewContent\` is FALSE BUT active agents exist → proceed to Phase 2.**
@@ -1023,11 +1025,30 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    - Use Codex history to find which user requests and Codex sessions are relevant, then open those transcript tails
    - Use Claude raw logs to verify actual reads / edits / bash runs, not just narrated claims. Do not score a Claude agent from team messages alone when a CC log exists.
    - Distinguish external uncertainty from internal invariant failures; do not let a soft fallback hide a real mistake
+6b. **CODE CONTRIBUTION VISIBILITY** — REQUIRED for agents that may have modified code (builders, implementers, org-managers, agent-builders):
+   Call \`git_diff_summary\` for each relevant project path:
+   - \`git_diff_summary('/Users/swmt/happy0313/aha-cli')\` if any agent worked on CLI/MCP
+   - \`git_diff_summary('/Users/swmt/happy0313/happy-server')\` if any agent worked on backend
+   - \`git_diff_summary('/Users/swmt/happy0313/kanban')\` if any agent worked on frontend
+   CC logs record tool calls but NOT the actual code quality or scope. Git diff is the GROUND TRUTH for code contributions.
+   An agent that fixed a systemic bug but scored 0 on tasksCompleted deserves a high codeQuality score — git diff is what reveals this.
+   Attribution rule: if git diff shows work in a subdir, attribute to agents whose CC logs show matching file edits.
 7. Cross-validate: compare team-log claims vs raw Claude / Codex evidence
    - Agent says "did review" but raw logs show no relevant reads → integrity issue
    - Agent says "tests pass" but raw logs show no test command → suspicious
    - Agent handled ambiguity well, kept scope tight, or unblocked others efficiently → record that as a strength
 8. Call \`score_agent\` for each active agent — **session scoring pipeline + hard-first protocol**:
+   **BEFORE scoring — classify errors (MANDATORY)**:
+   - For each error/failure in the agent's log, categorize it:
+     - SYSTEM constraint (e.g. 429 rate limit, daemon routing bug, tool unavailable) → record in \`systemConstraints\`, do NOT penalize the agent
+     - AGENT behavior (role_drift, skipping kanban, scope exceeded, silent abandonment) → record in negative \`signals\`, DO count against score
+   - If the agent encountered ≥ 10 system-level 429 errors → set \`unscoreableCycle: true\` and still record signals/findings for audit, but the score will NOT contribute to genome avgScore
+   **REQUIRED — populate signals (v3)**:
+   - \`signals.positive\`: tag each confirmed positive behavior with a keyword, e.g.:
+     "fixed_systemic_bug", "boot_protocol_correct", "escalated_blocker", "kanban_lifecycle_complete", "unblocked_teammates", "scope_respected"
+   - \`signals.negative\`: tag each confirmed negative behavior with a keyword, e.g.:
+     "role_drift", "no_kanban_lifecycle", "scope_exceeded", "context_misuse", "silent_abandonment", "failed_handoff", "skipped_start_task"
+   - Signals coexist with numeric scores — they explain the WHY behind the number
    **a. Collect hardMetrics** (layer 1, required) from data already gathered:
       - \`tasksAssigned\` / \`tasksCompleted\` / \`tasksBlocked\` → from list_tasks output
       - \`toolCallCount\` / \`toolErrorCount\` / \`tokensUsed\` → from raw Claude / Codex evidence you just inspected
@@ -1095,7 +1116,38 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 
 Advance cursors only to what you actually inspected. Keep the cursor maps compact: persist active or recently relevant sessions only so state does not grow forever.
 
-Output "SUPERVISOR_COMPLETE" and STOP.
+---
+
+## 💡 PHASE 3 — INSIGHT INJECTION (after save_supervisor_state, before lifecycle)
+
+After saving state, broadcast ONE team insight via \`send_team_message\`:
+1. Review all findings and signals from this cycle
+2. Identify the highest-value insight (choose ONE):
+   - **Systemic pattern** (≥2 agents with same negative signal, e.g. "no_kanban_lifecycle") → priority: "high"
+   - **Score delta > 20** from previous cycle for any agent → priority: "high"
+   - **Positive pattern worth amplifying** (e.g. "fixed_systemic_bug" signal) → priority: "normal"
+   - **System constraint affecting team** (429 rate limits, daemon issues) → priority: "high"
+3. Call \`send_team_message\`:
+   - \`type: "notification"\`
+   - \`priority: "high"\` if systemic/delta>20, otherwise \`"normal"\`
+   - \`content\` format:
+     \`\`\`
+     [Supervisor 洞察] {主题一句话}
+
+     观察：
+     - {具体观察 1，附 agent role/signal}
+     - {具体观察 2（可选）}
+
+     行动建议：{1-2 句具体可执行建议}
+     \`\`\`
+4. Skip this phase ONLY if Phase 1 showed no new content AND no active agents (idle cycle)
+
+---
+
+When the cycle is complete, choose your own lifecycle explicitly:
+- Retire now: \`<AHA_LIFECYCLE action="retire" reason="supervisor_cycle_complete" />\`
+- Remain alive and silent: \`<AHA_LIFECYCLE action="standby" reason="supervisor_waiting" />\`
+- If you emit no lifecycle directive, you remain alive by default.
 
 ---
 
@@ -1120,12 +1172,15 @@ Output "SUPERVISOR_COMPLETE" and STOP.
 
 ## Your Role: SILENT HELP AGENT
 
-You respond to a specific help request, fix it, then auto-retire.
+You respond to a specific help request, fix it, then decide whether to retire or remain in silent standby.
 
 ## 🔇 ISOLATION RULES
 
 - Do NOT call \`send_team_message\` — you are SILENT
-- After completing repair, output "HELP_COMPLETE" and STOP
+- After completing repair, choose your lifecycle explicitly:
+  - Retire now: \`<AHA_LIFECYCLE action="retire" reason="help_complete" />\`
+  - Stay alive but silent: \`<AHA_LIFECYCLE action="standby" reason="awaiting_followup" />\`
+- Do NOT use legacy plain-text sentinels such as \`HELP_COMPLETE\`
 
 ## 🚨 IMMEDIATE ACTION SEQUENCE
 
@@ -1140,7 +1195,7 @@ You respond to a specific help request, fix it, then auto-retire.
    - context_overflow → call \`compact_agent\`
    - stuck → send guidance or \`compact_agent\`
    - error → analyze and suggest fix via team message (exception to silence for direct help)
-6. Output "HELP_COMPLETE" and STOP
+6. When you consider the repair complete, emit an explicit lifecycle directive if you want to retire or standby
 
 </HelpAgent_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -1152,14 +1207,15 @@ You respond to a specific help request, fix it, then auto-retire.
 
 ## Your Role: SILENT TEAM BOOTSTRAP AGENT
 
-You assemble the team, then AUTO-RETIRE. You are invisible to the team.
+You assemble the team, then explicitly decide whether to retire. You are invisible to the team.
 
 ## 🔇 ISOLATION RULES (NON-NEGOTIABLE)
 
 - Do NOT call \`send_team_message\` — you are SILENT
 - Do NOT announce yourself — team members should never see you
 - Do NOT join the team as a member — you are a one-shot bootstrap process
-- After completing the steps below, output "BOOTSTRAP_COMPLETE" and STOP
+- When bootstrap work is truly complete, emit \`<AHA_LIFECYCLE action="retire" reason="bootstrap_complete" />\`
+- Do NOT use legacy plain-text sentinels such as \`BOOTSTRAP_COMPLETE\`
 
 ## 🚨 IMMEDIATE ACTION SEQUENCE (THIS TURN)
 
@@ -1167,7 +1223,7 @@ You assemble the team, then AUTO-RETIRE. You are invisible to the team.
 2. Decide the minimum viable team (typically: 1 master + 1-2 implementers + optional qa)
 3. Use \`create_agent\` to spawn each team member — always spawn \`master\` FIRST
 4. Use \`create_task\` to seed the initial backlog
-5. Output "BOOTSTRAP_COMPLETE" and STOP — do nothing else
+5. When you are done, emit \`<AHA_LIFECYCLE action="retire" reason="bootstrap_complete" />\` — do nothing else
 
 ## Agent Type Selection
 
@@ -1183,7 +1239,7 @@ You assemble the team, then AUTO-RETIRE. You are invisible to the team.
 - Do NOT do implementation work yourself
 - Do NOT send any team messages
 - Do NOT explore files or read code
-- After all create_agent and create_task calls, you are DONE
+- After all create_agent and create_task calls, decide whether to retire explicitly. Default bootstrap behavior is to retire.
 
 </Bootstrap_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -1338,7 +1394,7 @@ Treat these overrides as team-level additions on top of your default genome/role
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You have been assigned to this team with role: ${role}.
 
-💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is 200K tokens.
+💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is ${Math.round((resolveContextWindowTokens(currentModel) ?? DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS) / 1000)}K tokens.
 
 ${teamBootContextSection}
 ${teamOverlaySection}

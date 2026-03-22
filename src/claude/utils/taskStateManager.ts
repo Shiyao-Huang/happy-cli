@@ -63,6 +63,15 @@ interface TaskBlocker {
     resolution?: string;
 }
 
+interface HumanStatusLock {
+    mode: 'viewing' | 'editing' | 'manual-status';
+    lockedAt: number;
+    lockedBySessionId?: string;
+    lockedByRole?: string;
+    lockedByDisplayName?: string;
+    reason?: string;
+}
+
 interface StatusPropagation {
     autoCompleteParent: boolean;
     blockParentOnBlocked: boolean;
@@ -86,6 +95,15 @@ interface KanbanTask {
     hasBlockedChild?: boolean;
     executionLinks?: TaskExecutionLink[];
     blockers?: TaskBlocker[];
+    comments?: Array<{
+        content: string;
+        createdAt: number;
+        authorDisplayName?: string;
+        authorRole?: string;
+        authorSessionId?: string;
+        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+    }>;
+    humanStatusLock?: HumanStatusLock | null;
 }
 
 interface KanbanBoard {
@@ -488,13 +506,21 @@ export class TaskStateManager {
      * 开始执行任务 - 通过 Server API
      */
     async startTask(taskId: string): Promise<{ success: boolean; error?: string }> {
+        return this.startTaskWithComment(taskId);
+    }
+
+    async startTaskWithComment(
+        taskId: string,
+        comment?: { displayName?: string; content: string; mentions?: string[] }
+    ): Promise<{ success: boolean; error?: string }> {
         try {
             // Use server API - server handles all logic and broadcasts
-            const result = await this.api.startTask(
+            const result = await this.api.startTaskWithComment(
                 this.teamId,
                 taskId,
                 this.sessionId,
-                this.roleId || 'builder'
+                this.roleId || 'builder',
+                comment
             );
 
             if (result.success) {
@@ -525,12 +551,20 @@ export class TaskStateManager {
      * 完成任务 - 通过 Server API (server handles status propagation)
      */
     async completeTask(taskId: string): Promise<{ success: boolean; propagatedTasks?: string[]; error?: string }> {
+        return this.completeTaskWithComment(taskId);
+    }
+
+    async completeTaskWithComment(
+        taskId: string,
+        comment?: { role?: string; displayName?: string; content: string; mentions?: string[] }
+    ): Promise<{ success: boolean; propagatedTasks?: string[]; error?: string }> {
         try {
             // Use server API - server handles status propagation
-            const result = await this.api.completeTask(
+            const result = await this.api.completeTaskWithComment(
                 this.teamId,
                 taskId,
-                this.sessionId
+                this.sessionId,
+                comment
             );
 
             if (result.success) {
@@ -596,16 +630,18 @@ export class TaskStateManager {
     async reportBlocker(
         taskId: string,
         type: 'dependency' | 'question' | 'resource' | 'technical',
-        description: string
+        description: string,
+        comment?: { role?: string; displayName?: string; mentions?: string[]; content?: string }
     ): Promise<{ success: boolean; blockerId?: string; error?: string }> {
         try {
             // Use server API - server handles blocker propagation
-            const result = await this.api.reportBlocker(
+            const result = await this.api.reportBlockerWithComment(
                 this.teamId,
                 taskId,
                 this.sessionId,
                 type,
-                description
+                description,
+                comment
             );
 
             if (result.success) {
@@ -661,52 +697,73 @@ export class TaskStateManager {
     async resolveBlocker(
         taskId: string,
         blockerId: string,
-        resolution: string
+        resolution: string,
+        comment?: { role?: string; displayName?: string; type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override'; content: string; mentions?: string[] }
     ): Promise<{ success: boolean; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            const result = await this.api.resolveBlockerWithComment(
+                this.teamId,
+                taskId,
+                blockerId,
+                this.sessionId,
+                resolution,
+                comment
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
+            if (!result.success) {
+                return { success: false, error: 'Server returned failure' };
             }
+            logger.debug(`[TaskStateManager] Resolved blocker ${blockerId} on task ${taskId} via server`);
 
-            const blocker = task.blockers?.find(b => b.id === blockerId);
-            if (!blocker) {
-                return { success: false, error: `Blocker ${blockerId} not found` };
-            }
-
-            blocker.resolvedAt = Date.now();
-            blocker.resolvedBy = this.sessionId;
-            blocker.resolution = resolution;
-
-            // 检查是否还有其他未解决的 blocker
-            const unresolvedBlockers = task.blockers?.filter(b => !b.resolvedAt) || [];
-            if (unresolvedBlockers.length === 0) {
-                task.status = 'in-progress';  // 恢复进行中
-            }
-            task.updatedAt = Date.now();
-
-            // 更新父任务的 hasBlockedChild 标记
-            if (task.parentTaskId) {
-                this.updateParentBlockedStatus(board, task.parentTaskId);
-            }
-
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Resolved blocker ${blockerId} on task ${taskId}`);
+            const unresolvedBlockers = result.task?.blockers?.filter((b: any) => !b.resolvedAt) || [];
 
             // Broadcast the change
             this.broadcastChange({
                 type: 'blocker-resolved',
                 taskId,
-                taskTitle: task.title,
+                taskTitle: result.task?.title || taskId,
                 details: {
                     blockerId,
                     resolution,
                     unresolvedCount: unresolvedBlockers.length,
                     newStatus: unresolvedBlockers.length === 0 ? 'in-progress' : 'blocked'
                 }
+            });
+
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: String(error) };
+        }
+    }
+
+    async addTaskComment(
+        taskId: string,
+        comment: {
+            content: string;
+            type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+            displayName?: string;
+            mentions?: string[];
+        }
+    ): Promise<{ success: boolean; error?: string }> {
+        try {
+            const result = await this.api.addTaskComment(this.teamId, taskId, {
+                sessionId: this.sessionId,
+                role: this.roleId,
+                displayName: comment.displayName,
+                type: comment.type,
+                content: comment.content,
+                mentions: comment.mentions,
+            });
+
+            if (!result.success) {
+                return { success: false, error: 'Server returned failure' };
+            }
+
+            this.broadcastChange({
+                type: 'task-updated',
+                taskId,
+                taskTitle: result.task?.title || taskId,
+                details: { task: result.task },
             });
 
             return { success: true };

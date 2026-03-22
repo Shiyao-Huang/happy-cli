@@ -11,6 +11,7 @@ export default defineConfig({
     test: {
         globals: false,
         environment: 'node',
+        hookTimeout: 30000,
         include: ['src/**/*.test.ts'],
         globalSetup: ['./src/test-setup.ts'],
         coverage: {
@@ -25,8 +26,9 @@ export default defineConfig({
             ],
         },
         env: {
-            ...process.env,
+            // Allow explicit shell env (e.g. per-run AHA_HOME_DIR) to override the integration defaults.
             ...testEnv,
+            ...process.env,
         }
     },
     resolve: {

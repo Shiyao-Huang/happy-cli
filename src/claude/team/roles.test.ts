@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     buildAgentHandshakeContent,
     canCreateTeamTasks,
@@ -17,6 +17,10 @@ import {
  * enforces access controls based on role definitions.
  */
 describe('Role Permissions System', () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
     describe('getRolePermissions', () => {
         it('should return default permissions for undefined role', () => {
             const result = getRolePermissions(undefined, undefined);
@@ -91,6 +95,27 @@ describe('Role Permissions System', () => {
             expect(canSpawnAgents('scribe', genome)).toBe(true);
         });
 
+        it('regression: master with canSpawnAgents=false but authorities=[task.create] can create tasks', () => {
+            // Regression for the @official/master bug:
+            // master has canSpawnAgents:false (correct — spawning is org-manager's job)
+            // but MUST still be able to create tasks via explicit authority.
+            // Without authorities, canCreateTeamTasks() hits the canSpawnAgents proxy and
+            // returns false, blocking master entirely. This test pins the fix.
+            const masterGenome = {
+                behavior: { canSpawnAgents: false },
+                authorities: ['task.create', 'task.assign', 'task.update.any'],
+            } as any;
+
+            expect(canCreateTeamTasks('master', masterGenome)).toBe(true);
+            expect(canSpawnAgents('master', masterGenome)).toBe(false);
+        });
+
+        it('regression: master with no genome at all falls back to coordinator role check', () => {
+            // If genome is not loaded (null), fall through to isCoordinatorRole()
+            expect(canCreateTeamTasks('master', null)).toBe(true);
+            expect(canCreateTeamTasks('master', undefined)).toBe(true);
+        });
+
         it('should inject live system state steps into the org-manager prompt', () => {
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
@@ -126,10 +151,12 @@ describe('Role Permissions System', () => {
         });
 
         it('should build a worker handshake with explicit help-lane awareness', () => {
+            vi.stubEnv('AHA_AGENT_SCOPE_SUMMARY', 'Owned paths: src/; forbidden: AGENTS.md, SYSTEM.md');
+
             const handshake = buildAgentHandshakeContent({
                 role: 'builder',
                 responsibilities: ['Implement the scoped work'],
-                scopeSummary: 'Owned paths: src/; forbidden: AGENTS.md, SYSTEM.md',
+                scopeSummary: 'fallback scope summary that should not win over env',
             });
 
             expect(handshake).toContain('SYSTEM.md and AGENTS.md');

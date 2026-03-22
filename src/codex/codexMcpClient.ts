@@ -366,9 +366,8 @@ export class CodexMcpClient {
 
         this.transport = null;
         this.connected = false;
-        this.sessionId = null;
-        this.conversationId = null;
-
-        logger.debug('[CodexMCP] Disconnected');
+        // Preserve session/conversation identifiers for potential reconnection / recovery flows.
+        // Only forceCloseSession() should clear them.
+        logger.debug(`[CodexMCP] Disconnected; session ${this.sessionId ?? 'none'} preserved`);
     }
 }

@@ -10,3 +10,11 @@ export function createTeamMemberIdentity(teamId: string, memberId: string = rand
         sessionTag: buildTeamMemberSessionTag(teamId, memberId),
     };
 }
+
+export function createReplacementTeamMemberIdentity(teamId: string, previousMemberId?: string) {
+    let identity = createTeamMemberIdentity(teamId);
+    while (previousMemberId && identity.memberId === previousMemberId) {
+        identity = createTeamMemberIdentity(teamId);
+    }
+    return identity;
+}

@@ -125,6 +125,26 @@ export interface AgentScore {
     evidence: Record<string, any>;
     recommendations: string[];
     action: 'keep' | 'keep_with_guardrails' | 'mutate' | 'discard';
+    /** Structured genome spec vs actual behavior attribution (v2) */
+    findings?: Array<{
+        type: 'violation' | 'missing' | 'exceeded' | 'good';
+        target: string;
+        evidence: string;
+        severity: 'low' | 'medium' | 'high';
+    }>;
+    /** Keyword behavior signals (v3) — richer than a single score number */
+    signals?: {
+        positive: string[];
+        negative: string[];
+    };
+    /** When true, this cycle was rate-limited or system-constrained — excluded from avgScore */
+    unscoreableCycle?: boolean;
+    /** System-level constraints that should NOT count against the agent score */
+    systemConstraints?: {
+        rateLimitedCount: number;
+        daemonErrors: number;
+        toolMissingCount: number;
+    };
 }
 
 interface ScoreFile {

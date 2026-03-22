@@ -98,6 +98,22 @@ export interface KanbanTask {
         resolvedBy?: string;
         resolution?: string;
     }>;
+    humanStatusLock?: {
+        mode: 'viewing' | 'editing' | 'manual-status';
+        lockedAt: number;
+        lockedBySessionId?: string;
+        lockedByRole?: string;
+        lockedByDisplayName?: string;
+        reason?: string;
+    } | null;
+    comments?: Array<{
+        authorDisplayName?: string;
+        authorRole?: string;
+        authorSessionId?: string;
+        content: string;
+        createdAt: number;
+        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+    }>;
     labels?: string[];
     approvalStatus?: 'pending' | 'approved' | 'rejected' | 'not_required';
 }
@@ -124,7 +140,26 @@ function toTaskSummary(task: KanbanTask): KanbanTaskSummary {
             sessionId: l.sessionId,
             status: l.status
         })),
-        approvalStatus: task.approvalStatus
+        approvalStatus: task.approvalStatus,
+        humanStatusLock: task.humanStatusLock,
+        commentCount: task.comments?.length ?? 0,
+        lastCommentPreview: task.comments?.length
+            ? task.comments[task.comments.length - 1].content.slice(0, 500)
+            : undefined,
+        lastCommentBy: task.comments?.length
+            ? ((task.comments[task.comments.length - 1] as any).authorDisplayName
+                || (task.comments[task.comments.length - 1] as any).displayName
+                || (task.comments[task.comments.length - 1] as any).authorRole
+                || (task.comments[task.comments.length - 1] as any).authorSessionId
+                || (task.comments[task.comments.length - 1] as any).sessionId)
+            : undefined,
+        comments: task.comments?.slice(-20).map((comment: any) => ({
+            authorDisplayName: comment.authorDisplayName || comment.displayName,
+            authorRole: comment.authorRole,
+            content: comment.content,
+            createdAt: comment.createdAt,
+            type: comment.type || 'note',
+        })),
     };
 }
 

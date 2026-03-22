@@ -27,3 +27,4 @@ pnpm-lock.yaml
 
 **/*.log
 .release-notes-temp.md
+.gstack/

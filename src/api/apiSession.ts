@@ -11,6 +11,7 @@ import { AsyncLock } from '@/utils/lock';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers';
 import { buildSocketPath } from './socketPath';
+import { calculateCost } from '@/utils/tokenPricing';
 
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string;
@@ -27,6 +28,13 @@ export class ApiSessionClient extends EventEmitter {
     private metadataLock = new AsyncLock();
     private encryptionKey: Uint8Array;
     private encryptionVariant: 'legacy' | 'dataKey';
+
+    /** Cumulative token counts across all messages in this session */
+    private cumulativeTokens = { total: 0, input: 0, output: 0, cache_creation: 0, cache_read: 0 };
+    /** Cumulative cost across all messages in this session */
+    private cumulativeCost = { total: 0, input: 0, output: 0, cache_creation: 0, cache_read: 0 };
+    /** Timestamp when the session started sending usage data */
+    private usageStartTime: number | null = null;
 
     constructor(token: string, session: Session) {
         super()
@@ -181,6 +189,10 @@ export class ApiSessionClient extends EventEmitter {
         return this.encryptionVariant;
     }
 
+    getAuthToken(): string {
+        return this.token;
+    }
+
     getMetadata(): Metadata | null {
         return this.metadata;
     }
@@ -319,29 +331,68 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /**
-     * Send usage data to the server
+     * Send usage data to the server.
+     *
+     * Accumulates token counts and costs across all messages in the session
+     * so the server's upsert always receives cumulative totals (not per-message
+     * deltas that would be overwritten).
      */
     sendUsageData(usage: Usage) {
-        // Calculate total tokens
-        const totalTokens = usage.input_tokens + usage.output_tokens + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+        // Record session start time on first usage report
+        if (this.usageStartTime === null) {
+            this.usageStartTime = Date.now();
+        }
 
-        // Transform Claude usage format to backend expected format
+        // Per-message token counts
+        const msgInput = usage.input_tokens;
+        const msgOutput = usage.output_tokens;
+        const msgCacheCreation = usage.cache_creation_input_tokens || 0;
+        const msgCacheRead = usage.cache_read_input_tokens || 0;
+        const msgTotal = msgInput + msgOutput + msgCacheCreation + msgCacheRead;
+
+        // Accumulate into running totals
+        this.cumulativeTokens.total += msgTotal;
+        this.cumulativeTokens.input += msgInput;
+        this.cumulativeTokens.output += msgOutput;
+        this.cumulativeTokens.cache_creation += msgCacheCreation;
+        this.cumulativeTokens.cache_read += msgCacheRead;
+
+        // Resolve model-specific pricing and accumulate cost
+        const modelId = (this.metadata as Record<string, unknown> | null)?.resolvedModel as string | undefined;
+        const msgCost = calculateCost(usage, modelId);
+        this.cumulativeCost.total += msgCost.total;
+        this.cumulativeCost.input += msgCost.input;
+        this.cumulativeCost.output += msgCost.output;
+        this.cumulativeCost.cache_creation += msgCost.cacheCreation;
+        this.cumulativeCost.cache_read += msgCost.cacheRead;
+
+        // Burning rate calculation
+        const elapsedMs = Date.now() - this.usageStartTime;
+        const elapsedMinutes = Math.max(elapsedMs / 60_000, 0.001); // floor at ~60ms to avoid division by zero
+
+        const round8 = (n: number): number => Math.round(n * 1e8) / 1e8;
+
+        // Transform to backend expected format — cumulative totals
         const usageReport = {
             key: 'claude-session',
             sessionId: this.sessionId,
             tokens: {
-                total: totalTokens,
-                input: usage.input_tokens,
-                output: usage.output_tokens,
-                cache_creation: usage.cache_creation_input_tokens || 0,
-                cache_read: usage.cache_read_input_tokens || 0
+                total: this.cumulativeTokens.total,
+                input: this.cumulativeTokens.input,
+                output: this.cumulativeTokens.output,
+                cache_creation: this.cumulativeTokens.cache_creation,
+                cache_read: this.cumulativeTokens.cache_read,
             },
             cost: {
-                // TODO: Calculate actual costs based on pricing
-                // For now, using placeholder values
-                total: 0,
-                input: 0,
-                output: 0
+                total: round8(this.cumulativeCost.total),
+                input: round8(this.cumulativeCost.input),
+                output: round8(this.cumulativeCost.output),
+                cache_creation: round8(this.cumulativeCost.cache_creation),
+                cache_read: round8(this.cumulativeCost.cache_read),
+                // Burning rate fields
+                elapsed_minutes: round8(elapsedMinutes),
+                tokens_per_minute: round8(this.cumulativeTokens.total / elapsedMinutes),
+                cost_per_hour: round8(this.cumulativeCost.total / elapsedMinutes * 60),
             }
         }
         logger.debugLargeJson('[SOCKET] Sending usage data:', usageReport)

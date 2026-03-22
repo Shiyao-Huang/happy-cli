@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -13,6 +13,8 @@ vi.mock('@/configuration', () => ({
 }));
 
 import {
+    getPendingActionRetryDelayMs,
+    listSupervisorStates,
     readSupervisorState,
     updateSupervisorRun,
     updateSupervisorState,
@@ -79,5 +81,41 @@ describe('supervisorState', () => {
         const stored = readSupervisorState('team-3');
         expect(stored.lastConclusion).toBe('alpha');
         expect(stored.lastSupervisorPid).toBe(99);
+    });
+
+    it('back-fills pendingActionMeta defaults for legacy state files', () => {
+        const legacyPath = getExpectedStatePath(root, 'team-legacy');
+        mkdirSync(join(root, 'supervisor'), { recursive: true });
+        writeFileSync(legacyPath, JSON.stringify({
+            teamId: 'team-legacy',
+            pendingAction: {
+                type: 'notify_help',
+                message: '[high] legacy help request',
+            },
+        }), 'utf-8');
+
+        const stored = readSupervisorState('team-legacy');
+        expect(stored.pendingAction?.type).toBe('notify_help');
+        expect(stored.pendingActionMeta).toBeNull();
+    });
+
+    it('lists every persisted supervisor state under ahaHomeDir', () => {
+        writeSupervisorState({
+            ...readSupervisorState('team-a'),
+            lastConclusion: 'alpha',
+        });
+        writeSupervisorState({
+            ...readSupervisorState('team-b'),
+            lastConclusion: 'beta',
+        });
+
+        const states = listSupervisorStates();
+        expect(states.map((state) => state.teamId).sort()).toEqual(['team-a', 'team-b']);
+    });
+
+    it('computes exponential pendingAction retry backoff', () => {
+        expect(getPendingActionRetryDelayMs(0, 1_000)).toBe(1_000);
+        expect(getPendingActionRetryDelayMs(1, 1_000)).toBe(2_000);
+        expect(getPendingActionRetryDelayMs(2, 1_000)).toBe(4_000);
     });
 });

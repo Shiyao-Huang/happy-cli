@@ -24,6 +24,64 @@ interface PermissionsField {
     allowedTools?: string[];
 }
 
+export type LifecycleDirectiveAction = 'retire' | 'standby';
+
+export interface LifecycleDirective {
+    action: LifecycleDirectiveAction;
+    reason?: string;
+    rawText: string;
+}
+
+const LEGACY_LIFECYCLE_SENTINELS = [
+    'BOOTSTRAP_COMPLETE',
+    'SUPERVISOR_COMPLETE',
+    'HELP_COMPLETE',
+    'ORG_MANAGER_COMPLETE',
+] as const;
+
+function collectAssistantTextBlocks(content: unknown): string[] {
+    if (typeof content === 'string') {
+        return [content];
+    }
+
+    if (!Array.isArray(content)) {
+        return [];
+    }
+
+    return content
+        .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block: any) => block.text as string);
+}
+
+export function extractLifecycleDirectiveFromContent(content: unknown): LifecycleDirective | null {
+    const blocks = collectAssistantTextBlocks(content);
+    let lastDirective: LifecycleDirective | null = null;
+
+    for (const block of blocks) {
+        const directiveRegex = /(?:^|\n)\s*<AHA_LIFECYCLE\s+action="(retire|standby)"(?:\s+reason="([^"\n<>]{1,120})")?\s*\/>\s*(?=$|\n)/gi;
+        let match: RegExpExecArray | null = null;
+
+        while ((match = directiveRegex.exec(block)) !== null) {
+            lastDirective = {
+                action: match[1].toLowerCase() as LifecycleDirectiveAction,
+                reason: match[2]?.trim() || undefined,
+                rawText: match[0].trim(),
+            };
+        }
+    }
+
+    return lastDirective;
+}
+
+function findLegacyLifecycleSentinels(content: unknown): string[] {
+    const joined = collectAssistantTextBlocks(content).join('\n');
+    if (!joined) {
+        return [];
+    }
+
+    return LEGACY_LIFECYCLE_SENTINELS.filter((sentinel) => joined.includes(sentinel));
+}
+
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
 
@@ -71,6 +129,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     let exitReason: 'switch' | 'exit' | null = null;
     let abortController: AbortController | null = null;
     let abortFuture: Future<void> | null = null;
+    let retireTimer: NodeJS.Timeout | null = null;
 
     async function abort() {
         if (abortController && !abortController.signal.aborted) {
@@ -130,26 +189,44 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
 
-        // Detect bootstrap/supervisor/help completion — auto-retire the session
+        // Lifecycle is agent-controlled via explicit directives, never via loose substring matching.
         if (message.type === 'assistant') {
             const umessage = message as SDKAssistantMessage;
             const content = (umessage.message as any)?.content;
-            const contentStr = typeof content === 'string' ? content : '';
-            const completionSignals = ['BOOTSTRAP_COMPLETE', 'SUPERVISOR_COMPLETE', 'HELP_COMPLETE'];
-            const hasCompletion = completionSignals.some(signal =>
-                contentStr.includes(signal) ||
-                (Array.isArray(content) && content.some((b: any) => b.type === 'text' && typeof b.text === 'string' && b.text.includes(signal)))
-            );
-            if (hasCompletion) {
-                const matched = completionSignals.find(s => contentStr.includes(s)) || 'UNKNOWN';
-                logger.debug(`[remote]: ${matched} detected — scheduling auto-retire`);
-                setTimeout(() => {
-                    logger.debug(`[remote]: Auto-retiring agent (${matched})`);
-                    if (!exitReason) {
-                        exitReason = 'exit';
-                    }
-                    abort().catch(() => {});
-                }, 2000);
+            const directive = extractLifecycleDirectiveFromContent(content);
+            if (directive) {
+                logger.debug(
+                    `[remote]: lifecycle directive received: action=${directive.action}` +
+                    `${directive.reason ? ` reason=${directive.reason}` : ''}`
+                );
+
+                if (directive.action === 'retire' && !retireTimer) {
+                    retireTimer = setTimeout(() => {
+                        logger.debug(
+                            `[remote]: Auto-retiring agent via explicit lifecycle directive` +
+                            `${directive.reason ? ` (${directive.reason})` : ''}`
+                        );
+                        if (!exitReason) {
+                            exitReason = 'exit';
+                        }
+                        abort().catch(() => {});
+                    }, 2000);
+                }
+
+                if (directive.action === 'standby') {
+                    logger.debug(
+                        `[remote]: Agent explicitly chose standby; session will remain alive` +
+                        `${directive.reason ? ` (${directive.reason})` : ''}`
+                    );
+                }
+            }
+
+            const legacySentinels = findLegacyLifecycleSentinels(content);
+            if (legacySentinels.length > 0) {
+                logger.debug(
+                    `[remote]: Ignoring legacy lifecycle sentinel(s): ${legacySentinels.join(', ')}. ` +
+                    `Only explicit <AHA_LIFECYCLE ... /> directives can retire a session.`
+                );
             }
         }
 

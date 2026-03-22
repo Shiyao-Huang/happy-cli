@@ -23,6 +23,16 @@ export type TeamRuntimeLogEntry = {
     runtimeType: RuntimeType;
     role?: string;
     pid: number;
+    /**
+     * Session identifier supervisors/help-agents must pass to read_runtime_log.
+     * For Claude this is the claudeLocalSessionId, not the Aha session id.
+     */
+    readSessionId: string | null;
+    /**
+     * Key supervisors should persist in ccLogCursors/codexSessionCursors when
+     * saving incremental runtime log progress.
+     */
+    cursorKey: string | null;
     logFilePath: string | null;
     logFileSize: number | null;
     historyFilePath?: string | null;
@@ -217,6 +227,9 @@ export function resolveTeamRuntimeLogs(
         const logFilePath = runtimeType === 'claude'
             ? (session.claudeLocalSessionId ? findClaudeLogFile(homeDir, session.claudeLocalSessionId) : null)
             : findCodexTranscriptFile(homeDir, session.ahaSessionId);
+        const readSessionId = runtimeType === 'claude'
+            ? (session.claudeLocalSessionId ?? null)
+            : session.ahaSessionId;
 
         return {
             ahaSessionId: session.ahaSessionId,
@@ -224,6 +237,8 @@ export function resolveTeamRuntimeLogs(
             runtimeType,
             role: session.role,
             pid: session.pid,
+            readSessionId,
+            cursorKey: readSessionId,
             logFilePath,
             logFileSize: logFilePath && fs.existsSync(logFilePath) ? fs.statSync(logFilePath).size : null,
             historyFilePath: runtimeType === 'codex' && fs.existsSync(codexHistoryPath) ? codexHistoryPath : null,

@@ -54,6 +54,14 @@ export interface KanbanTaskSummary {
         status: 'active' | 'completed' | 'abandoned';
     }>;
     approvalStatus?: 'pending' | 'approved' | 'rejected' | 'not_required';
+    humanStatusLock?: {
+        mode: 'viewing' | 'editing' | 'manual-status';
+        lockedAt: number;
+        lockedBySessionId?: string;
+        lockedByRole?: string;
+        lockedByDisplayName?: string;
+        reason?: string;
+    } | null;
     commentCount?: number;
     lastCommentPreview?: string;
     lastCommentBy?: string;
@@ -446,6 +454,21 @@ These tasks are assigned to you. Work on these:
                 section += `   📦 ${task.subtaskIds.length} subtask(s)
 `;
             }
+            if (task.humanStatusLock) {
+                const lockedBy = task.humanStatusLock.lockedByDisplayName || task.humanStatusLock.lockedBySessionId || 'a human';
+                section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
+`;
+            }
+            if (task.humanStatusLock) {
+                const lockedBy = task.humanStatusLock.lockedByDisplayName || task.humanStatusLock.lockedBySessionId || 'a human';
+                section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
+`;
+            }
+            if (task.humanStatusLock) {
+                const lockedBy = task.humanStatusLock.lockedByDisplayName || task.humanStatusLock.lockedBySessionId || 'a human';
+                section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
+`;
+            }
             if (task.lastCommentPreview) {
                 section += `   💬 ${task.lastCommentBy || 'Unknown'}: ${task.lastCommentPreview}
 `;
@@ -638,6 +661,7 @@ Read the <Task_Prompt> above. Determine:
 - How many agents are needed? (minimum viable team — do NOT over-staff)
 - What roles map to the work? Start with the standard list: master, implementer, architect, qa-engineer, researcher, reviewer
 - If the task is explicitly about creating, refining, mutating, or publishing agents/genomes, your FIRST specialist after master is agent-builder
+- If the task is about the single-agent creation experience ("/agents/new", "new agent", builder UX, genome design workflow), that is STILL agent-authoring work. You must delegate the design to agent-builder instead of designing the genome yourself.
 
 ### Step 2: Inspect Live Team State First
 
@@ -672,7 +696,10 @@ Evaluate the results:
 
 Special rule for agent-authoring work:
 - Search for \`agent-builder\` whenever the user asks to create/refine/publish agents or genomes
-- Prefer \`@official/agent-builder\` for Claude runtime and \`@official/agent-builder-codex\` for Codex runtime
+- Prefer the strongest builder genome available, not a generic fallback. Search versioned builder variants too.
+- Default preference order for Codex builder work: \`agent-builder-codex-r2\` → \`agent-builder-codex\` → \`agent-builder\`
+- Default preference order for Claude builder work: \`agent-builder-r2\` → \`agent-builder\` → \`agent-builder-portable\`
+- For agent-authoring / single-agent creation work, default to \`agent: "codex"\` for the spawned builder unless the user explicitly requires Claude-only
 - Spawn it with a prompt that says what kind of agent/genome work it should do
 
 When forking a marketplace genome, pass the original genome's \`id\` as \`parentId\` in \`create_genome\` calls, along with a brief \`mutationNote\` describing your changes.
@@ -696,6 +723,7 @@ create_agent({
 - You are a SEED AGENT. Team assembly must continue even when the marketplace is empty or incomplete
 - Always spawn a \`master\` first — it coordinates the team after you leave
 - For agent-authoring / genome-authoring requests, spawn \`agent-builder\` immediately after \`master\`, before any other optional specialists
+- When \`agent-builder\` is available, do NOT invent the genome design yourself. Your job is to route the design task to that specialist, then support with staffing and task setup.
 - If the task prompt says Claude Code only or Codex only, set the \`agent\` field on every \`create_agent\` call to match
 - If the task prompt says mixed, choose \`agent: "claude"\` or \`agent: "codex"\` deliberately per role
 - Spawn 1-3 implementation roles depending on task complexity
@@ -722,9 +750,11 @@ Send ONE team message via \`send_team_message\` summarizing:
 - Who should start first
 - Reminder that you are now in **HR standby** — master can ping you for team changes
 
-Then output the exact text: **ORG_MANAGER_COMPLETE**
+Then decide your lifecycle explicitly:
+- Stay in HR standby: emit \`<AHA_LIFECYCLE action="standby" reason="hr_standby" />\` or emit nothing
+- Retire intentionally: emit \`<AHA_LIFECYCLE action="retire" reason="org_manager_retiring" />\`
 
-**After this, enter HR Standby mode.** You are now the team's HR coordinator:
+**After the initial hand-off, enter HR Standby mode by default.** You are now the team's HR coordinator:
 - Do NOT do implementation work
 - Do NOT monitor task progress
 - Do NOT respond to general team chat
@@ -744,9 +774,10 @@ When woken for HR actions:
 - You MUST call create_agent at least once
 - You MUST NOT do any implementation work yourself
 - You MUST NOT write code
+- You MUST NOT personally design agent genomes when a dedicated \`agent-builder\` can do it
 - The marketplace is optional memory, not a blocking dependency
-- You MUST output ORG_MANAGER_COMPLETE after the initial hand-off message
-- After ORG_MANAGER_COMPLETE, you enter HR standby — you do NOT terminate
+- Do NOT use legacy plain-text sentinels such as ORG_MANAGER_COMPLETE as lifecycle commands
+- After the initial hand-off, you enter HR standby by default — you do NOT terminate unless you explicitly choose to retire
 - In standby, only respond to explicit team-structure requests from master
 - In standby, IGNORE all other messages (task updates, general chat, etc.)
 - If create_agent fails, report the error via send_team_message to master

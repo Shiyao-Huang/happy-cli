@@ -176,6 +176,12 @@ const FALLBACK_COPY_EXCLUDED_BASENAMES = new Set([
     'node_modules',
 ]);
 
+const DEFAULT_AGENT_SKILLS = ['context-mirror'];
+
+export function withDefaultAgentSkills(skills?: string[]): string[] {
+    return Array.from(new Set([...(skills ?? []), ...DEFAULT_AGENT_SKILLS]));
+}
+
 function resolveMaterializedEnvValues(opts: {
     required?: string[];
     optional?: string[];
@@ -382,6 +388,20 @@ function selectEffectiveSkills(input: MaterializeAgentWorkspaceInput): string[] 
     return declared.filter((skill) => override.includes(skill));
 }
 
+function resolveSkillSourcePath(input: MaterializeAgentWorkspaceInput, skill: string, runtimeLibRoot: string): string {
+    const runtimeLibSkill = join(runtimeLibRoot, 'skills', skill);
+    if (existsSync(runtimeLibSkill)) {
+        return runtimeLibSkill;
+    }
+
+    const repoLocalSkill = join(input.repoRoot, 'skills', skill);
+    if (existsSync(repoLocalSkill)) {
+        return repoLocalSkill;
+    }
+
+    return runtimeLibSkill;
+}
+
 export function buildAgentWorkspacePlan(
     input: MaterializeAgentWorkspaceInput,
 ): MaterializeAgentWorkspaceResult {
@@ -449,7 +469,7 @@ export function buildAgentWorkspacePlan(
     for (const skill of selectEffectiveSkills(input)) {
         actions.push({
             kind: 'link-skill',
-            source: join(runtimeLibRoot, 'skills', skill),
+            source: resolveSkillSourcePath(input, skill, runtimeLibRoot),
             target: join(commandsDir, skill),
             reason: 'Expose only package-allowed skills to this agent',
         });
@@ -731,7 +751,7 @@ export function buildAgentWorkspacePlanFromGenome(
         kind: 'aha.agent.v1',
         name: resolveGenomeDisplayName(genomeSpec),
         runtime: (genomeSpec.runtimeType as AgentRuntime | undefined) ?? 'claude',
-        skills: genomeSpec.skills,
+        skills: withDefaultAgentSkills(genomeSpec.skills),
         mcpServers: genomeSpec.mcpServers,
         hooks,
         env: resolveGenomeEnv(genomeSpec),

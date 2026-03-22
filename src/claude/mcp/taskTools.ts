@@ -12,7 +12,7 @@
  *
  * ## Tools registered
  * - create_task, update_task, add_task_comment, delete_task
- * - list_tasks, create_subtask, list_subtasks
+ * - list_tasks, get_task, create_subtask, list_subtasks
  * - start_task, complete_task, report_blocker, resolve_blocker
  *
  * ## Design
@@ -208,7 +208,14 @@ export function registerTaskTools(ctx: McpToolContext): void {
             }
 
             // Build updates object
-            const updates: any = {};
+            const updates: any = {
+                actor: {
+                    sessionId,
+                    role,
+                    displayName: metadata?.displayName || metadata?.name,
+                    kind: role === 'user' ? 'human' : 'agent',
+                },
+            };
             if (args.status) updates.status = args.status;
             if (args.assigneeId) updates.assigneeId = args.assigneeId;
             if (args.priority) updates.priority = args.priority;
@@ -274,7 +281,12 @@ export function registerTaskTools(ctx: McpToolContext): void {
             };
 
         } catch (error) {
-            return { content: [{ type: 'text', text: `Error updating task: ${String(error)}` }], isError: true };
+            const message = error instanceof Error ? error.message : String(error);
+            const normalized = message.replace(/^Error:\s*/, '');
+            if (normalized.includes('TASK_LOCKED_BY_HUMAN')) {
+                return { content: [{ type: 'text', text: normalized.replace(/^Failed to update task:\s*/, '') }], isError: true };
+            }
+            return { content: [{ type: 'text', text: `Error updating task: ${normalized}` }], isError: true };
         }
     });
 
@@ -409,8 +421,8 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
             // Format output based on role and args
             let output: any;
-            if (args.showAll && isCoordinator) {
-                // Coordinators can see all tasks
+            if (args.showAll) {
+                // Any agent can request full board view when explicitly using showAll
                 const board = await taskManager.getBoard();
                 let tasks = board.tasks || [];
                 if (args.status) {
@@ -443,6 +455,33 @@ export function registerTaskTools(ctx: McpToolContext): void {
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error listing tasks: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // Get Task - Returns full task with all comments (no truncation)
+    mcp.registerTool('get_task', {
+        description: 'Get full details of a single task including ALL comments (no truncation). Use this after list_tasks to read the complete comment history before starting work on a task.',
+        title: 'Get Task',
+        inputSchema: {
+            taskId: z.string().describe('Task ID to fetch'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: You must be in a team to get task details.' }], isError: true };
+            }
+            const task = await api.getTask(teamId, args.taskId);
+            if (!task) {
+                return { content: [{ type: 'text', text: `Error: Task ${args.taskId} not found.` }], isError: true };
+            }
+            return {
+                content: [{ type: 'text', text: JSON.stringify(task, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error getting task: ${String(error)}` }], isError: true };
         }
     });
 
@@ -734,7 +773,12 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 isError: false,
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: `Error starting task: ${String(error)}` }], isError: true };
+            const message = error instanceof Error ? error.message : String(error);
+            const normalized = message.replace(/^Error:\s*/, '');
+            if (normalized.includes('TASK_LOCKED_BY_HUMAN')) {
+                return { content: [{ type: 'text', text: normalized.replace(/^Failed to start task:\s*/, '') }], isError: true };
+            }
+            return { content: [{ type: 'text', text: `Error starting task: ${normalized}` }], isError: true };
         }
     });
 
@@ -797,7 +841,12 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 isError: false,
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: `Error completing task: ${String(error)}` }], isError: true };
+            const message = error instanceof Error ? error.message : String(error);
+            const normalized = message.replace(/^Error:\s*/, '');
+            if (normalized.includes('TASK_LOCKED_BY_HUMAN')) {
+                return { content: [{ type: 'text', text: normalized.replace(/^Failed to complete task:\s*/, '') }], isError: true };
+            }
+            return { content: [{ type: 'text', text: `Error completing task: ${normalized}` }], isError: true };
         }
     });
 

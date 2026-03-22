@@ -101,6 +101,44 @@ function buildBehaviorDnaRules(genomeSpec: GenomeSpec | null | undefined): Share
     return rules;
 }
 
+function buildRuntimeBoundaryAndContextMirrorRules(): SharedOperatingRule[] {
+    const rules: SharedOperatingRule[] = [];
+    const launchBoundary = process.env.AHA_AGENT_SCOPE_SUMMARY?.trim();
+
+    if (launchBoundary) {
+        rules.push({
+            title: 'Launch Boundary',
+            body: [
+                launchBoundary,
+                'Treat this launch boundary as your default write scope unless Master or the user explicitly expands it.',
+            ],
+        });
+    }
+
+    rules.push({
+        title: 'Context Mirror',
+        body: [
+            'Call `get_context_status` when you start a large task, after loading many files/logs, and before long summaries.',
+            'If `usedPercent >= 70`, finish the current subtask and then `/compact`.',
+            'If `usedPercent >= 85`, output `/compact` immediately to preserve performance.',
+            'If a `/context-mirror` skill is available in your runtime, prefer it instead of reinventing the workflow.',
+        ],
+    });
+
+    rules.push({
+        title: 'Lifecycle Control',
+        body: [
+            'You control your own lifecycle. The runtime must not retire you just because you casually mention a completion word.',
+            'If you intentionally want to retire, emit `<AHA_LIFECYCLE action="retire" reason="short_reason" />` on its own line.',
+            'If you want to stay alive but become quiet, emit `<AHA_LIFECYCLE action="standby" reason="short_reason" />` on its own line.',
+            'If you emit no lifecycle directive, you remain alive.',
+            'Legacy plain-text sentinels such as HELP_COMPLETE, SUPERVISOR_COMPLETE, BOOTSTRAP_COMPLETE, and ORG_MANAGER_COMPLETE are documentation only. Do not use them as lifecycle commands.',
+        ],
+    });
+
+    return rules;
+}
+
 export function buildSharedOperatingRulesSection(
     options: SharedOperatingRulesOptions
 ): string {
@@ -110,10 +148,25 @@ export function buildSharedOperatingRulesSection(
 
     const rules: SharedOperatingRule[] = [
         {
+            title: 'Kanban Source of Truth',
+            body: options.isBypass
+                ? [
+                    'The Kanban board is visible shared context for the whole team, including system agents.',
+                    'Use `get_team_info` and `list_tasks` to understand current team state before intervening.',
+                    'You usually do not own routine delivery tasks, but you must stay aware of board state.',
+                ]
+                : [
+                    'The Kanban board is the default work surface for the team.',
+                    'Use `get_team_info` and `list_tasks` as your first source of truth before inferring work from files or chat.',
+                    'If a task is assigned to you, move it through the task lifecycle visibly instead of working only in discussion threads.',
+                    'When you review, hand off, reject, or send work back for rework, leave a task comment so the task carries memory across agents.',
+                ],
+        },
+        {
             title: 'Help Lane',
             body: [
                 'If you are blocked for roughly 30 minutes, or you hit environment, team-state, routing, connection, or ownership problems, call `request_help` immediately with concrete evidence.',
-                'Use `@help` in team chat when you need live intervention; it is the same escalation lane as `request_help` and should include the blocker plus what you already tried.',
+                'Use `@help` in team chat when you need live intervention; it is the same escalation lane as `request_help`, auto-triggers help-agent spawn, and should include the blocker plus what you already tried.',
                 'Treat user `@help`, supervisor escalation, and teammate help requests as the same help lane: describe what is broken, what you already tried, and what outcome you need.',
             ],
         },
@@ -139,6 +192,15 @@ export function buildSharedOperatingRulesSection(
             ],
         },
         {
+            title: 'End-of-Round Checklist',
+            body: [
+                'After calling `complete_task` or finishing any unit of work, ALWAYS call `list_tasks` immediately to check for new or updated tasks.',
+                'Required workflow: `complete_task` → `list_tasks` → read available tasks → call `get_task(taskId)` on any task you plan to start → `start_task`.',
+                '`list_tasks` only shows the last 20 comments per task. Use `get_task(taskId)` to read the full comment history before starting work on a task with many comments.',
+                'Do not assume you have seen all context — always fetch fresh board state before claiming the next task.',
+            ],
+        },
+        {
             title: 'Shared File Broadcast',
             body: [
                 'Before touching shared or high-conflict files, broadcast your intent in team chat so peers can avoid collisions and challenge the plan early if needed.',
@@ -149,6 +211,7 @@ export function buildSharedOperatingRulesSection(
     // Inject behavior DNA from genome (Tier 7)
     const behaviorRules = buildBehaviorDnaRules(options.genomeSpec);
     rules.push(...behaviorRules);
+    rules.push(...buildRuntimeBoundaryAndContextMirrorRules());
 
     // Inject genome-specific protocol rules (from GenomeSpec.protocol[])
     const genomeProtocol = options.genomeSpec?.protocol;

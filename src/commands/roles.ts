@@ -78,6 +78,7 @@ ${chalk.bold.cyan('Aha Roles')} - Role pool and review commands
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha roles')} <command> [options]
+  ${chalk.green('aha role')} <command> [options]
 
 ${chalk.bold('Commands:')}
   ${chalk.yellow('defaults')}                       List default role templates from server

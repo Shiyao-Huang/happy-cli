@@ -9,6 +9,7 @@ import {
     buildAgentWorkspacePlanFromGenome,
     ensureRuntimeLibStructure,
     materializeAgentWorkspace,
+    withDefaultAgentSkills,
 } from './materializer';
 
 describe('buildAgentWorkspacePlan', () => {
@@ -274,6 +275,11 @@ describe('buildAgentWorkspacePlan', () => {
         expect(existsSync(layout.toolsDir)).toBe(true);
     });
 
+    it('adds context-mirror to the default skill set exactly once', () => {
+        expect(withDefaultAgentSkills()).toEqual(['context-mirror']);
+        expect(withDefaultAgentSkills(['review', 'context-mirror'])).toEqual(['review', 'context-mirror']);
+    });
+
     it('copies a skill into commandsDir when materializationPolicy requests copy', () => {
         const root = mkdtempSync(join(tmpdir(), 'aha-materializer-copy-'));
         const repoRoot = join(root, 'repo');
@@ -311,6 +317,34 @@ describe('buildAgentWorkspacePlan', () => {
         expect(existsSync(target)).toBe(true);
         expect(lstatSync(target).isSymbolicLink()).toBe(false);
         expect(readFileSync(join(target, 'SKILL.md'), 'utf-8')).toBe('# review');
+    });
+
+    it('falls back to repo-local skills when runtime-lib does not contain the skill', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-repo-skill-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+        const repoSkillDir = join(repoRoot, 'skills', 'context-mirror');
+
+        mkdirSync(repoSkillDir, { recursive: true });
+        writeFileSync(join(repoSkillDir, 'SKILL.md'), '# context-mirror', 'utf-8');
+
+        const plan = materializeAgentWorkspace({
+            agentId: `repo-skill-${Date.now()}`,
+            repoRoot,
+            runtime: 'claude',
+            workspaceMode: 'shared',
+            runtimeLibRoot,
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'RepoSkillTest',
+                runtime: 'claude',
+                tools: {
+                    skills: ['context-mirror'],
+                },
+            },
+        });
+
+        expect(readFileSync(join(plan.commandsDir, 'context-mirror', 'SKILL.md'), 'utf-8')).toBe('# context-mirror');
     });
 
     it('replaces dangling skill symlinks when rematerializing the same agent workspace', () => {

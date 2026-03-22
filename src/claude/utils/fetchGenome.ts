@@ -68,6 +68,34 @@ function isVersioned(specId: string): boolean {
     return /^@[^/]+\/[^:]+:\d+$/.test(specId);
 }
 
+/**
+ * Fetch only the feedbackData string for a genome (fire-and-forget safe, returns null on any failure).
+ * Used to inject the evaluation mirror into agent spawn-time prompts.
+ */
+export async function fetchGenomeFeedbackData(
+    token: string,
+    specId: string,
+): Promise<string | null> {
+    let lastError: unknown = null;
+    for (const url of resolveUrls(specId)) {
+        try {
+            const response = await axios.get<{ genome: Genome }>(
+                url,
+                {
+                    headers: { Authorization: `Bearer ${token}` },
+                    validateStatus: (status) => status === 200 || status === 404,
+                },
+            );
+            if (response.status === 404) continue;
+            return response.data.genome?.feedbackData ?? null;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    logger.debug(`[genome] Failed to fetch feedbackData for ${specId}: ${lastError}`);
+    return null;
+}
+
 export async function fetchGenomeSpec(
     token: string,
     specId: string,

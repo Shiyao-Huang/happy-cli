@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import packageJson from '../package.json'
 import { z } from 'zod'
 
-export const DEFAULT_SERVER_URL = 'https://top1vibe.com/api/v2'
-export const DEFAULT_WEBAPP_URL = 'https://top1vibe.com/webappv2'
+export const DEFAULT_SERVER_URL = 'https://top1vibe.com/api/v3'
+export const DEFAULT_WEBAPP_URL = 'https://top1vibe.com/webappv3'
 
 const persistentCliConfigSchema = z.object({
   serverUrl: z.string().url().optional(),

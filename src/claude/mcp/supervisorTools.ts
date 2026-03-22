@@ -17,7 +17,9 @@
  *   score_agent, update_genome_feedback, evolve_genome, update_team_feedback,
  *   compact_agent, kill_agent, archive_session, recover_session,
  *   list_team_runtime_logs, read_runtime_log, list_team_cc_logs,
- *   save_supervisor_state, score_supervisor_self
+ *   save_supervisor_state, score_supervisor_self,
+ *   tsc_check, restart_daemon, git_diff_summary,
+ *   get_effective_permissions
  *
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
@@ -34,9 +36,12 @@ import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../util
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
 import { getContextStatusReport } from '../utils/contextStatus';
+import { fetchGenomeSpec } from '../utils/fetchGenome';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
+import { getAllowedTools, getDeniedTools, getPermissionMode } from '@/claude/team/permissions';
+import { buildEffectivePermissionsReport } from './inspectionTools';
 import { McpToolContext } from './mcpContext';
 
 export function registerSupervisorTools(ctx: McpToolContext): void {
@@ -47,8 +52,69 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         genomeSpecRef,
         pingDaemonHeartbeat,
         getDaemonTrackedSessionIds,
+        parseBoardFromArtifact,
         triggerHelpLane,
     } = ctx;
+
+    const resolveInspectionSubject = async (requestedSessionId?: string): Promise<{
+        sessionId: string;
+        teamId: string | null;
+        role: string;
+        specId: string | null;
+        genomeSpec: import('@/api/types/genome').GenomeSpec | null;
+        memberAuthorities: import('@/api/types/genome').TeamAuthority[];
+        teamOverlayAuthorities: import('@/api/types/genome').TeamAuthority[];
+    }> => {
+        const requesterMetadata = client.getMetadata();
+        const sessionId = requestedSessionId || client.sessionId;
+        const isSelf = sessionId === client.sessionId;
+
+        let targetSession: any | null = null;
+        if (!isSelf) {
+            targetSession = await api.getSession(sessionId);
+        }
+
+        const teamId = requesterMetadata?.teamId
+            || requesterMetadata?.roomId
+            || targetSession?.metadata?.teamId
+            || targetSession?.metadata?.roomId
+            || null;
+
+        let member: any = null;
+        if (teamId) {
+            const artifact = await api.getArtifact(teamId).catch(() => null);
+            const board = parseBoardFromArtifact(artifact);
+            const members = Array.isArray(board?.team?.members) ? board.team.members : [];
+            member = members.find((candidate: any) => candidate?.sessionId === sessionId) ?? null;
+        }
+
+        const role = String(
+            (isSelf ? requesterMetadata?.role : undefined)
+            || member?.roleId
+            || targetSession?.metadata?.role
+            || 'unknown',
+        );
+        const specId = typeof member?.specId === 'string'
+            ? member.specId
+            : typeof targetSession?.metadata?.specId === 'string'
+                ? targetSession.metadata.specId
+                : null;
+
+        let genomeSpec = isSelf ? (genomeSpecRef?.current ?? null) : null;
+        if (!genomeSpec && specId) {
+            genomeSpec = await fetchGenomeSpec(client.getAuthToken(), specId).catch(() => null);
+        }
+
+        return {
+            sessionId,
+            teamId,
+            role,
+            specId,
+            genomeSpec,
+            memberAuthorities: Array.isArray(member?.authorities) ? member.authorities : [],
+            teamOverlayAuthorities: Array.isArray(member?.teamOverlay?.authorities) ? member.teamOverlay.authorities : [],
+        };
+    };
 
     mcp.registerTool('read_team_log', {
         description: 'Read the team message log. Returns messages since the last supervisor run (cursor-based, incremental). Pass fromCursor=0 to read all. Supervisor/help-agent only.',
@@ -277,6 +343,82 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
     });
 
+    mcp.registerTool('get_effective_permissions', {
+        description: 'Inspect computed permissions for a session. Returns granted and denied capabilities, tools, and denial reasons. Omitting sessionId inspects yourself.',
+        title: 'Get Effective Permissions',
+        inputSchema: {
+            sessionId: z.string().optional().describe('Optional session ID to inspect. Omit to inspect the calling session.'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        const requestedSessionId = args.sessionId || client.sessionId;
+        const isSelf = requestedSessionId === client.sessionId;
+        if (!isSelf && callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
+            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect other sessions' effective permissions.` }], isError: true };
+        }
+
+        try {
+            const subject = await resolveInspectionSubject(args.sessionId);
+            const report = buildEffectivePermissionsReport({
+                sessionId: subject.sessionId,
+                role: subject.role,
+                teamId: subject.teamId,
+                specId: subject.specId,
+                permissionMode: getPermissionMode(subject.role),
+                allowedTools: await getAllowedTools(subject.role),
+                deniedTools: await getDeniedTools(subject.role),
+                genomeSpec: subject.genomeSpec,
+                memberAuthorities: subject.memberAuthorities,
+                teamOverlayAuthorities: subject.teamOverlayAuthorities,
+            });
+            return {
+                content: [{ type: 'text', text: JSON.stringify(report, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error getting effective permissions: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('get_genome_spec', {
+        description: 'Inspect a genome spec by ID at runtime. Returns specId, version, authorities, and behavior fields for diagnosis.',
+        title: 'Get Genome Spec',
+        inputSchema: {
+            specId: z.string().describe('Genome spec ID to inspect'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
+            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect genome specs.` }], isError: true };
+        }
+
+        try {
+            const spec = await fetchGenomeSpec(client.getAuthToken(), args.specId);
+            if (!spec) {
+                return { content: [{ type: 'text', text: `Error: Genome spec ${args.specId} not found.` }], isError: true };
+            }
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        specId: args.specId,
+                        version: spec.version ?? null,
+                        namespace: spec.namespace ?? null,
+                        displayName: spec.displayName ?? null,
+                        description: spec.description ?? null,
+                        baseRoleId: spec.baseRoleId ?? null,
+                        authorities: spec.authorities ?? [],
+                        behavior: spec.behavior ?? null,
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error getting genome spec: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('read_cc_log', {
         description: 'Read Claude Code session log (the iron proof). Accepts either a claudeLocalSessionId or an Aha sessionId; when an Aha sessionId is passed, the tool will try to auto-resolve it through daemon team-session metadata. Shows actual tool calls since last supervisor run (cursor-based). Supervisor/help-agent only.',
         title: 'Read CC Log',
@@ -457,6 +599,39 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 severity: z.enum(['low', 'medium', 'high']).describe('Impact severity'),
             })).optional().describe('Structured attribution: genome spec vs actual behavior comparison'),
             action: z.enum(['keep', 'keep_with_guardrails', 'mutate', 'discard']),
+            // ── v3: keyword behavior signals (complements absolute scores) ───────
+            signals: z.object({
+                positive: z.array(z.string()).default([]).describe(
+                    'Positive behavior signals triggered by the agent. Examples: "fixed_systemic_bug", "boot_protocol_correct", ' +
+                    '"genome_spec_followed", "escalated_blocker_correctly", "kanban_lifecycle_complete", "unblocked_teammates"'
+                ),
+                negative: z.array(z.string()).default([]).describe(
+                    'Negative behavior signals triggered by the agent. Examples: "role_drift", "no_kanban_lifecycle", ' +
+                    '"scope_exceeded", "context_misuse", "failed_handoff", "silent_abandonment"'
+                ),
+            }).optional().describe(
+                'Keyword behavior signals. Richer and more actionable than a single number. ' +
+                'Use alongside overall score — signals tell you WHY, score tells you HOW MUCH.'
+            ),
+            unscoreableCycle: z.boolean().default(false).describe(
+                'Mark true when this cycle cannot be reliably scored due to SYSTEM constraints (e.g. 429 rate limits, ' +
+                'daemon routing bugs, tool unavailability). When true, this session entry is stored for audit but does NOT ' +
+                'contribute to genome avgScore. Prevents polluting avgScore with uncontrollable failures.'
+            ),
+            systemConstraints: z.object({
+                rateLimitedCount: z.number().int().min(0).default(0).describe(
+                    'Number of 429 rate limit errors encountered. System constraint — NOT agent fault. Exclude from scoring denominator.'
+                ),
+                daemonErrors: z.number().int().min(0).default(0).describe(
+                    'Daemon routing or process errors (e.g. kill_agent "not tracked" failures). NOT agent fault.'
+                ),
+                toolMissingCount: z.number().int().min(0).default(0).describe(
+                    'Tool calls that failed because the tool did not exist or was unavailable. NOT agent fault.'
+                ),
+            }).optional().describe(
+                'System-level constraints encountered during the cycle. These factors should NOT count against the agent score. ' +
+                'Document here so future supervisors understand why behavior may look abnormal.'
+            ),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -612,6 +787,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             recommendations: args.recommendations || [],
             findings: args.findings || [],
             action: args.action,
+            signals: args.signals,
+            unscoreableCycle: args.unscoreableCycle ?? false,
+            systemConstraints: args.systemConstraints,
         });
 
         // ── Persist supervisor findings to run log ──────────────────
@@ -658,7 +836,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         } catch { /* trace must never break main flow */ }
 
         // ── Phase 3-B Change 3: Auto-trigger feedback upload when >= 3 scores ──
-        if (feedbackTarget) {
+        // Skip if this cycle was unscorable (e.g. system rate-limits) — don't pollute avgScore
+        if (feedbackTarget && !args.unscoreableCycle) {
             try {
                 const { readScores } = await import('@/claude/utils/scoreStorage');
                 const { scores: allScores } = readScores();
@@ -711,7 +890,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         // ── Immune system: score < 60 → auto-trigger help-agent to replace underperformer ──
         // When a supervisor scores an agent below 60, it means the agent is failing.
         // Rather than silently continuing, we auto-request a help-agent to kill and replace it.
-        if (overall < 60) {
+        // Skip immune system when cycle is unscorable (system constraints) — don't penalize agent for 429s etc.
+        if (overall < 60 && !args.unscoreableCycle) {
             try {
                 const immuneTeamId = args.teamId;
                 const failureContext = [
@@ -1108,11 +1288,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 return { content: [{ type: 'text', text: `Session ${args.sessionId} is not live. Skipping compact RPC.` }], isError: true };
             }
 
-            const trackedSessionIds = await getDaemonTrackedSessionIds();
-            if (!trackedSessionIds.has(args.sessionId)) {
-                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not tracked by the local daemon. Skipping compact RPC.` }], isError: true };
-            }
-
             const daemonState = await readDaemonState();
             if (!daemonState?.httpPort) {
                 return { content: [{ type: 'text', text: 'Daemon not running.' }], isError: true };
@@ -1146,11 +1321,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const session = await api.getSession(args.sessionId);
             if (!session || session.active === false || session.metadata?.lifecycleState === 'archived') {
                 return { content: [{ type: 'text', text: `Session ${args.sessionId} is not live. Skipping kill RPC.` }], isError: true };
-            }
-
-            const trackedSessionIds = await getDaemonTrackedSessionIds();
-            if (!trackedSessionIds.has(args.sessionId)) {
-                return { content: [{ type: 'text', text: `Session ${args.sessionId} is not tracked by the local daemon. Skipping kill RPC.` }], isError: true };
             }
 
             const daemonState = await readDaemonState();
@@ -1533,6 +1703,181 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error scoring supervisor self: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== Operational Tools (org-manager / supervisor / help-agent) ==========
+
+    mcp.registerTool('restart_daemon', {
+        description: 'Gracefully restart the aha daemon process. Stops the current daemon via HTTP /stop endpoint, waits for it to exit, then spawns a new daemon. Use after modifying aha-cli source code to apply changes. Org-manager/supervisor/help-agent only.',
+        title: 'Restart Daemon',
+        inputSchema: {},
+    }, async () => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'org-manager' && role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only org-manager/supervisor/help-agent can restart the daemon.' }], isError: true };
+        }
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return { content: [{ type: 'text', text: 'Daemon not running (no state file or port).' }], isError: true };
+            }
+
+            // Step 1: Send stop signal
+            const stopResp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(5_000),
+            });
+            const stopResult = await stopResp.json() as { status: string };
+
+            // Step 2: Wait for daemon process to exit (poll PID)
+            const pid = daemonState.pid;
+            let exited = false;
+            for (let i = 0; i < 30; i++) {
+                try {
+                    process.kill(pid, 0); // Check if process exists
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                } catch {
+                    exited = true;
+                    break;
+                }
+            }
+
+            if (!exited) {
+                return { content: [{ type: 'text', text: `Daemon PID ${pid} did not exit within 15s after /stop. May need manual kill.` }], isError: true };
+            }
+
+            // Step 3: Spawn new daemon
+            const { spawnAhaCLI } = await import('@/utils/spawnAhaCLI');
+            const child = spawnAhaCLI(['daemon', 'start-sync'], {
+                detached: true,
+                stdio: 'ignore',
+            });
+            child.unref();
+
+            // Step 4: Wait for new daemon to come up (poll state file)
+            let newPort: number | null = null;
+            for (let i = 0; i < 20; i++) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const newState = await readDaemonState();
+                if (newState?.httpPort && newState.pid !== pid) {
+                    newPort = newState.httpPort;
+                    break;
+                }
+            }
+
+            if (newPort) {
+                return { content: [{ type: 'text', text: `Daemon restarted. Old PID: ${pid}, new port: ${newPort}. Code changes are now active.` }], isError: false };
+            } else {
+                return { content: [{ type: 'text', text: `Old daemon stopped (PID ${pid}). New daemon spawned but state not yet detected. Check with 'aha daemon status'.` }], isError: false };
+            }
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error restarting daemon: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('tsc_check', {
+        description: 'Run TypeScript type checking on a project directory using the correct Node version (reads .node-version). Automatically uses fnm to switch Node versions and sets --max-old-space-size to avoid OOM. Returns type errors if any. Available to all roles.',
+        title: 'TypeScript Check',
+        inputSchema: {
+            path: z.string().describe('Project directory to type-check (e.g. /Users/swmt/happy0313/aha-cli)'),
+            skipLibCheck: z.boolean().optional().describe('Skip type checking .d.ts files (faster). Default: true'),
+        },
+    }, async (args) => {
+        try {
+            const { execSync } = await import('node:child_process');
+            const fs = await import('node:fs');
+            const pathMod = await import('node:path');
+
+            const projectDir = args.path;
+            if (!fs.existsSync(projectDir)) {
+                return { content: [{ type: 'text', text: `Directory not found: ${projectDir}` }], isError: true };
+            }
+
+            // Read .node-version if present
+            const nodeVersionFile = pathMod.join(projectDir, '.node-version');
+            let nodeVersion = '22'; // default
+            if (fs.existsSync(nodeVersionFile)) {
+                nodeVersion = fs.readFileSync(nodeVersionFile, 'utf-8').trim();
+            }
+
+            const skipLib = args.skipLibCheck !== false ? '--skipLibCheck' : '';
+
+            // Build command: fnm use <version> && tsc --noEmit
+            const cmd = `eval "$(fnm env)" && fnm use ${nodeVersion} --silent-if-unchanged && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit ${skipLib} 2>&1 | head -200`;
+
+            try {
+                const output = execSync(cmd, {
+                    cwd: projectDir,
+                    timeout: 120_000,
+                    encoding: 'utf-8',
+                    shell: '/bin/zsh',
+                    env: { ...process.env, NODE_OPTIONS: '' },
+                });
+                return { content: [{ type: 'text', text: output.trim() || 'No type errors found.' }], isError: false };
+            } catch (execError: any) {
+                const output = execError.stdout || execError.stderr || String(execError);
+                // tsc returns exit code 2 when there are type errors — not a tool error
+                if (execError.status === 2 || execError.status === 1) {
+                    return { content: [{ type: 'text', text: `Type errors found:\n${output}` }], isError: false };
+                }
+                return { content: [{ type: 'text', text: `tsc execution error:\n${output}` }], isError: true };
+            }
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('git_diff_summary', {
+        description: 'Show git diff summary for a project. Returns changed files with stats (insertions/deletions) and recent commit log. Useful for supervisor to evaluate code contributions that are invisible in CC logs. Available to supervisor/help-agent/org-manager.',
+        title: 'Git Diff Summary',
+        inputSchema: {
+            path: z.string().describe('Git repository path (e.g. /Users/swmt/happy0313/aha-cli)'),
+            since: z.string().optional().describe('Show changes since this ref or time (e.g. "HEAD~5", "2 hours ago"). Default: HEAD~10'),
+            author: z.string().optional().describe('Filter commits by author name pattern'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent' && role !== 'org-manager') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager can use git_diff_summary.' }], isError: true };
+        }
+        try {
+            const { execSync } = await import('node:child_process');
+            const fs = await import('node:fs');
+
+            if (!fs.existsSync(args.path)) {
+                return { content: [{ type: 'text', text: `Directory not found: ${args.path}` }], isError: true };
+            }
+
+            const since = args.since || 'HEAD~10';
+            const authorFilter = args.author ? `--author="${args.author}"` : '';
+
+            // Collect: commit log + diff stat
+            const logCmd = `git log --oneline --no-decorate ${authorFilter} ${since}..HEAD 2>/dev/null | head -30`;
+            const diffCmd = `git diff --stat ${since} 2>/dev/null | tail -30`;
+            const statusCmd = `git status --short 2>/dev/null | head -30`;
+
+            const log = execSync(logCmd, { cwd: args.path, encoding: 'utf-8', shell: '/bin/zsh', timeout: 10_000 }).trim();
+            const diff = execSync(diffCmd, { cwd: args.path, encoding: 'utf-8', shell: '/bin/zsh', timeout: 10_000 }).trim();
+            const status = execSync(statusCmd, { cwd: args.path, encoding: 'utf-8', shell: '/bin/zsh', timeout: 10_000 }).trim();
+
+            const lines = [];
+            if (log) {
+                lines.push('=== Recent Commits ===', log);
+            } else {
+                lines.push('=== Recent Commits ===', '(no commits in range)');
+            }
+            if (diff) {
+                lines.push('', '=== Diff Stats ===', diff);
+            }
+            if (status) {
+                lines.push('', '=== Uncommitted Changes ===', status);
+            }
+
+            return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
         }
     });
 }

@@ -27,8 +27,9 @@
 import os from 'os';
 
 import { ApiClient } from '@/api/api';
+import { ApiMachineClient } from '@/api/apiMachine';
 import { AgentHeartbeat, AgentHealthStatus } from '@/claude/team/heartbeat';
-import { MachineMetadata, DaemonState } from '@/api/types';
+import { MachineMetadata, DaemonState, Machine } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
@@ -81,19 +82,22 @@ export async function startDaemon(): Promise<void> {
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
   let requestShutdown: (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
+  let shutdownForceExitTimer: ReturnType<typeof setTimeout> | null = null;
   let resolvesWhenShutdownRequested = new Promise<({ source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
     requestShutdown = (source, errorMessage) => {
       logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
-      // Fallback - in case startup malfunctions - we will force exit the process with code 1
-      setTimeout(async () => {
-        logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
+      // Fallback - in case shutdown cleanup hangs forever.
+      if (!shutdownForceExitTimer) {
+        shutdownForceExitTimer = setTimeout(async () => {
+          logger.debug('[DAEMON RUN] Shutdown cleanup timed out, forcing exit with code 1');
 
-        // Give time for logs to be flushed
-        await new Promise(resolve => setTimeout(resolve, 100))
+          // Give time for logs to be flushed
+          await new Promise(resolve => setTimeout(resolve, 100))
 
-        process.exit(1);
-      }, 1_000);
+          process.exit(1);
+        }, 10_000);
+      }
 
       // Start graceful shutdown
       resolve({ source, errorMessage });
@@ -251,6 +255,7 @@ export async function startDaemon(): Promise<void> {
       requestShutdown: () => requestShutdown('aha-cli'),
       onAhaSessionWebhook,
       getTeamPulse,
+      requestHelp,
       onHeartbeatPing: (sessionId: string, teamId: string, role: string) => {
         const hb = getOrCreateTeamHeartbeat(teamId);
         hb.ping(sessionId, role, []);
@@ -290,54 +295,80 @@ export async function startDaemon(): Promise<void> {
 
     // Create API client
     let api = await ApiClient.create(credentials);
+    let machine: Machine | null = null;
+    let apiMachine: ApiMachineClient | null = null;
 
-    // Get or create machine (with 401 auto-recovery)
-    let machine;
-    try {
-      machine = await api.getOrCreateMachine({
+    const attachRemoteMachineClient = (registeredMachine: Machine) => {
+      const nextApiMachine = api.machineSyncClient(registeredMachine);
+      nextApiMachine.setRPCHandlers({
+        spawnSession,
+        stopSession,
+        requestHelp,
+        requestShutdown: () => requestShutdown('aha-app')
+      });
+      nextApiMachine.connect();
+      apiMachine = nextApiMachine;
+      logger.debug(`[DAEMON RUN] Remote machine sync connected for machine ${registeredMachine.id}`);
+    };
+
+    const tryRegisterMachine = async (reason: 'startup' | 'heartbeat'): Promise<boolean> => {
+      const register = () => api.getOrCreateMachine({
         machineId,
         metadata: initialMachineMetadata,
         daemonState: initialDaemonState
       });
-    } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
-        logger.debug('[DAEMON RUN] Machine registration failed with 401, attempting token refresh via create mode...');
 
-        const reconnectSeed = getReconnectSeed(credentials);
-        if (!reconnectSeed) {
-          throw new Error('Cannot refresh token: no reconnect seed available in credentials');
+      try {
+        machine = await register();
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 401) {
+          logger.debug(`[DAEMON RUN] Machine registration failed with 401 during ${reason}, attempting token refresh via create mode...`);
+
+          const reconnectSeed = getReconnectSeed(credentials);
+          if (!reconnectSeed) {
+            throw new Error('Cannot refresh token: no reconnect seed available in credentials');
+          }
+
+          const newToken = await authGetToken(reconnectSeed, 'create');
+          credentials = { ...credentials, token: newToken };
+          await persistCredentials(credentials);
+          logger.debug(`[DAEMON RUN] Token refreshed and persisted during ${reason}, retrying machine registration...`);
+
+          api = await ApiClient.create(credentials);
+
+          try {
+            machine = await register();
+          } catch (retryError) {
+            if (axios.isAxiosError(retryError) && (retryError.response?.status ?? 0) >= 500) {
+              logger.warn(`[DAEMON RUN] Remote machine registration failed (${retryError.response?.status}) during ${reason}; starting in offline mode and will retry on a future heartbeat.`);
+              machine = null;
+              return false;
+            }
+            throw retryError;
+          }
+        } else if (axios.isAxiosError(error) && (error.response?.status ?? 0) >= 500) {
+          logger.warn(`[DAEMON RUN] Remote machine registration failed (${error.response?.status}) during ${reason}; starting in offline mode and will retry on a future heartbeat.`);
+          machine = null;
+          return false;
+        } else {
+          throw error;
         }
-
-        const newToken = await authGetToken(reconnectSeed, 'create');
-        credentials = { ...credentials, token: newToken };
-        await persistCredentials(credentials);
-        logger.debug('[DAEMON RUN] Token refreshed and persisted, retrying machine registration...');
-
-        api = await ApiClient.create(credentials);
-        machine = await api.getOrCreateMachine({
-          machineId,
-          metadata: initialMachineMetadata,
-          daemonState: initialDaemonState
-        });
-      } else {
-        throw error;
       }
+
+      logger.debug(`[DAEMON RUN] Machine registered (${reason}): ${machine.id}`);
+
+      if (!apiMachine) {
+        attachRemoteMachineClient(machine);
+      }
+
+      return true;
+    };
+
+    await tryRegisterMachine('startup');
+
+    if (!apiMachine) {
+      logger.warn('[DAEMON RUN] Running in LOCAL-ONLY mode — remote machine not registered. RPC sync and remote dead-session reporting will remain disabled until reconnected.');
     }
-    logger.debug(`[DAEMON RUN] Machine registered: ${machine.id}`);
-
-    // Create realtime machine session
-    const apiMachine = api.machineSyncClient(machine);
-
-    // Set RPC handlers
-    apiMachine.setRPCHandlers({
-      spawnSession,
-      stopSession,
-      requestHelp,
-      requestShutdown: () => requestShutdown('aha-app')
-    });
-
-    // Connect to server
-    apiMachine.connect();
 
     // ── Heartbeat interval configuration ──────────────────────────────────────
     const heartbeatIntervalMs = parseInt(process.env.AHA_DAEMON_HEARTBEAT_INTERVAL || '60000');
@@ -367,10 +398,19 @@ export async function startDaemon(): Promise<void> {
         logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
       }
 
+      if (!machine || !apiMachine) {
+        await tryRegisterMachine('heartbeat');
+      }
+
       await runHeartbeatCycle({
         pidToTrackedSession,
         pingHeartbeat,
-        reportDeadSessions: (ids) => apiMachine.reportDeadSessions(ids),
+        reportDeadSessions: (ids) => {
+          if (!apiMachine) {
+            return;
+          }
+          apiMachine.reportDeadSessions(ids);
+        },
         requestShutdown: (source, msg) => requestShutdown(source, msg),
         startupDiskVersion: diskVersion,
         fileState,
@@ -399,21 +439,34 @@ export async function startDaemon(): Promise<void> {
     const cleanupAndShutdown = async (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
 
+      // Remove state early so callers immediately observe that the daemon is shutting down.
+      await cleanupDaemonState();
+
+      if (shutdownForceExitTimer) {
+        clearTimeout(shutdownForceExitTimer);
+        shutdownForceExitTimer = null;
+      }
+
       if (restartOnStaleVersionAndHeartbeat) {
         clearInterval(restartOnStaleVersionAndHeartbeat);
         logger.debug('[DAEMON RUN] Health check interval cleared');
       }
 
-      await apiMachine.updateDaemonState((state: DaemonState | null) => ({
-        ...state,
-        status: 'shutting-down',
-        shutdownRequestedAt: Date.now(),
-        shutdownSource: source
-      }));
+      if (apiMachine) {
+        await apiMachine.updateDaemonState((state: DaemonState | null) => ({
+          ...state,
+          status: 'shutting-down',
+          shutdownRequestedAt: Date.now(),
+          shutdownSource: source
+        }));
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-      apiMachine.shutdown();
+        apiMachine.shutdown();
+      } else {
+        logger.warn('[DAEMON RUN] Shutting down in LOCAL-ONLY mode — no remote machine client to update or close.');
+      }
+
       await stopControlServer();
       await cleanupDaemonState();
       await stopCaffeinate();

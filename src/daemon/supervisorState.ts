@@ -11,7 +11,7 @@
 
 import { constants } from 'node:fs';
 import { open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { configuration } from '@/configuration';
 
@@ -61,6 +61,23 @@ export interface SupervisorCalibration {
     updatedAt: number;
 }
 
+export interface SupervisorPendingActionMeta {
+    /** Number of deferred retries already attempted by the daemon */
+    retryCount: number;
+    /** Timestamp of the most recent retry attempt (ms since epoch) */
+    lastAttemptAt: number;
+    /** Earliest timestamp when the next retry is allowed (ms since epoch) */
+    nextRetryAt: number;
+    /** Error from the most recent failed retry */
+    lastError: string | null;
+}
+
+export const SUPERVISOR_PENDING_ACTION_MAX_RETRIES = 3;
+
+export function getPendingActionRetryDelayMs(retryCount: number, baseMs = 60_000): number {
+    return baseMs * (2 ** Math.max(0, retryCount));
+}
+
 // ── Core state ─────────────────────────────────────────────────────────────
 
 export interface SupervisorState {
@@ -69,7 +86,7 @@ export interface SupervisorState {
     lastRunAt: number;
     /** Index into team messages.jsonl lines array — read from here next time */
     teamLogCursor: number;
-    /** Per-sessionId byte offset into CC log files */
+    /** Per-claudeLocalSessionId byte offset into Claude raw log files */
     ccLogCursors: Record<string, number>;
     /** Index into ~/.codex/history.jsonl lines array — read from here next time */
     codexHistoryCursor: number;
@@ -100,6 +117,10 @@ export interface SupervisorState {
     pendingAction: {
         type: 'notify_help';
         message: string;
+        requestType?: 'stuck' | 'context_overflow' | 'need_collaborator' | 'error' | 'custom';
+        severity?: 'low' | 'medium' | 'high' | 'critical';
+        description?: string;
+        targetSessionId?: string;
     } | {
         type: 'conditional_escalation';
         /** Condition to check (human-readable) */
@@ -109,6 +130,8 @@ export interface SupervisorState {
         /** Deadline after which the action triggers (ms since epoch) */
         deadline: number;
     } | null;
+    /** Retry bookkeeping for pendingAction execution */
+    pendingActionMeta: SupervisorPendingActionMeta | null;
     /** Predictions left by the previous run for Phase 0 verification (v2) */
     predictions?: SupervisorPrediction[];
     /** Cumulative calibration statistics (v2) */
@@ -173,9 +196,10 @@ async function readSupervisorStateUnlocked(teamId: string): Promise<SupervisorSt
     }
 }
 
-const V2_DEFAULTS: Pick<SupervisorState, 'lastSupervisorPid' | 'pendingAction' | 'predictions' | 'calibration'> = {
+const V2_DEFAULTS: Pick<SupervisorState, 'lastSupervisorPid' | 'pendingAction' | 'pendingActionMeta' | 'predictions' | 'calibration'> = {
     lastSupervisorPid: 0,
     pendingAction: null,
+    pendingActionMeta: null,
     predictions: undefined,
     calibration: undefined,
 };
@@ -225,7 +249,7 @@ export function markTeamTerminated(teamId: string): void {
 
 export function updateSupervisorRun(
     teamId: string,
-    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'predictions' | 'calibration'>>
+    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'pendingActionMeta' | 'predictions' | 'calibration'>>
 ): Promise<SupervisorState> {
     return updateSupervisorState(teamId, (state) => ({
         ...state,
@@ -244,6 +268,20 @@ export async function updateSupervisorState(
         writeSupervisorState(next);
         return next;
     });
+}
+
+export function listSupervisorStates(): SupervisorState[] {
+    const supervisorDir = join(configuration.ahaHomeDir, 'supervisor');
+    if (!existsSync(supervisorDir)) {
+        return [];
+    }
+
+    return readdirSync(supervisorDir)
+        .filter((filename) => /^state-.+\.json$/.test(filename))
+        .map((filename) => {
+            const teamId = filename.slice('state-'.length, -'.json'.length);
+            return readSupervisorState(teamId);
+        });
 }
 
 // ── Calibration helpers (v2) ────────────────────────────────────────────────

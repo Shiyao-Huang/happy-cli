@@ -11,6 +11,35 @@ import { reconnectWithStoredCredentials } from '@/auth/reconnect';
 import { parseBackupKeyToSecret } from '@/utils/backupKey';
 import { authGetToken } from '@/api/auth';
 
+function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
+  try {
+    const [, payload] = token.split('.');
+    if (!payload) {
+      return {};
+    }
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      sub?: string;
+      session?: string;
+    };
+    return {
+      accountId: parsed.sub,
+      sessionId: parsed.session,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function readRestoreCodeArg(args: string[]): string | undefined {
+  const codeIdx = args.indexOf('--code');
+  if (codeIdx >= 0 && args[codeIdx + 1]) {
+    return args[codeIdx + 1];
+  }
+
+  const positional = args.find((arg) => !arg.startsWith('-'));
+  return positional;
+}
+
 export async function handleAuthCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
 
@@ -22,6 +51,12 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
   switch (subcommand) {
     case 'login':
       await handleAuthLogin(args.slice(1));
+      break;
+    case 'reconnect':
+      await handleAuthReconnect();
+      break;
+    case 'restore':
+      await handleAuthRestore(args.slice(1));
       break;
     case 'logout':
       await handleAuthLogout();
@@ -44,18 +79,90 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--force|--new|-n|--restore|-r] [--code <key>] [--mobile] Authenticate with Aha
-  aha auth logout             Remove authentication and machine data
-  aha auth status             Show authentication status
-  aha auth help               Show this help message
+  aha auth login [--force|--new|-n] [--mobile]         Authenticate with Aha
+  aha auth reconnect                                   Refresh token for the currently cached account
+  aha auth restore --code <key>                        Restore a known account from backup key
+  aha auth logout                                      Remove authentication and machine data
+  aha auth status                                      Show authentication status
+  aha auth help                                        Show this help message
 
 ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
-  --restore,-r Reconnect to existing account (keeps daemon alive when possible)
-  --code <key> Restore from backup key directly (e.g. XXXXX-XXXXX-...), no browser needed
+  --restore,-r Legacy alias for reconnect/restore during \`login\`
+  --code <key> Backup key for restore (e.g. XXXXX-XXXXX-...), no browser needed
   --mobile    Use the old mobile QR/manual flow instead of default web login
+
+${chalk.bold('Recommended flows:')}
+  aha auth reconnect
+  aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
+  aha auth login --force
 `);
+}
+
+async function handleAuthRestore(args: string[]): Promise<void> {
+  const restoreCode = readRestoreCodeArg(args);
+  if (!restoreCode) {
+    console.error(chalk.red('Missing backup key.'));
+    console.log(chalk.gray('Usage: aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX'));
+    process.exit(1);
+  }
+
+  console.log(chalk.yellow('Restoring account from backup key...'));
+  try {
+    const secretBytes = parseBackupKeyToSecret(restoreCode);
+    const token = await authGetToken(secretBytes, 'reconnect');
+    await clearMachineId();
+    await writeCredentialsLegacy({ secret: secretBytes, token });
+    const { accountId } = decodeTokenSubject(token);
+    console.log(chalk.green('✓ Credentials restored from backup key'));
+    if (accountId) {
+      console.log(chalk.gray(`  Account ID: ${accountId}`));
+    }
+  } catch (error) {
+    console.error(chalk.red('Restore from backup key failed:'), error instanceof Error ? error.message : 'Unknown error');
+    process.exit(1);
+  }
+
+  try { await stopDaemon(); } catch { }
+  try {
+    const daemonResult = await ensureDaemonRunning();
+    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+  } catch (error) {
+    console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
+    console.log(chalk.gray('  Run "aha daemon start" to start manually'));
+  }
+}
+
+async function handleAuthReconnect(): Promise<void> {
+  const existingCreds = await readCredentials();
+  const settings = await readSettings();
+
+  if (!existingCreds) {
+    console.error(chalk.red('No local credentials found.'));
+    console.log(chalk.gray('Use `aha auth restore --code <backup-key>` to recover a known account.'));
+    process.exit(1);
+  }
+
+  console.log(chalk.yellow('Reconnecting to existing account...'));
+  try {
+    const refreshed = await reconnectWithStoredCredentials(existingCreds);
+    const daemonResult = await ensureDaemonRunning();
+    const { accountId } = decodeTokenSubject(refreshed.token);
+
+    console.log(chalk.green('\n✓ Reconnected successfully'));
+    if (accountId) {
+      console.log(chalk.gray(`  Account ID: ${accountId}`));
+    }
+    if (settings?.machineId) {
+      console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
+    }
+    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+  } catch (error) {
+    console.error(chalk.red('Reconnect failed:'), error instanceof Error ? error.message : 'Unknown error');
+    console.log(chalk.gray('Use `aha auth restore --code <backup-key>` if you need to force a known account.'));
+    process.exit(1);
+  }
 }
 
 async function handleAuthLogin(args: string[]): Promise<void> {
@@ -67,8 +174,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   const settings = await readSettings();
 
   // Extract --code <value> if provided
-  const codeIdx = args.indexOf('--code');
-  const restoreCode = codeIdx >= 0 && args[codeIdx + 1] ? args[codeIdx + 1] : undefined;
+  const restoreCode = readRestoreCodeArg(args);
 
   if (createNewAccount && restoreAccount) {
     console.error(chalk.red('Choose either --new/--force or --restore, not both.'));
@@ -77,27 +183,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
   // ── Restore with --code: direct key-based restore, no browser needed ──
   if (restoreCode) {
-    console.log(chalk.yellow('Restoring account from backup key...'));
-    try {
-      const secretBytes = parseBackupKeyToSecret(restoreCode);
-      const token = await authGetToken(secretBytes, 'reconnect');
-      // New secret key = new encryption context. Clear old machineId to force re-registration.
-      await clearMachineId();
-      await writeCredentialsLegacy({ secret: secretBytes, token });
-      console.log(chalk.green('✓ Credentials restored from backup key'));
-    } catch (error) {
-      console.error(chalk.red('Restore from backup key failed:'), error instanceof Error ? error.message : 'Unknown error');
-      process.exit(1);
-    }
-    // Stop old daemon (encrypted with old key) and restart with new credentials
-    try { await stopDaemon(); } catch { }
-    try {
-      const daemonResult = await ensureDaemonRunning();
-      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
-    } catch (error) {
-      console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
-      console.log(chalk.gray('  Run "aha daemon start" to start manually'));
-    }
+    await handleAuthRestore(['--code', restoreCode]);
     return;
   }
 
@@ -108,7 +194,11 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       await reconnectWithStoredCredentials(existingCreds);
       // Same account — daemon is still valid, just ensure it's running
       const daemonResult = await ensureDaemonRunning();
+      const { accountId } = decodeTokenSubject(existingCreds.token);
       console.log(chalk.green('\n✓ Reconnected successfully'));
+      if (accountId) {
+        console.log(chalk.gray(`  Account ID: ${accountId}`));
+      }
       if (settings?.machineId) {
         console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       }
@@ -176,7 +266,11 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       forceAuth: restoreAccount
     });
     const daemonResult = await ensureDaemonRunning();
+    const { accountId } = decodeTokenSubject(result.credentials.token);
     console.log(chalk.green('\n✓ Authentication successful'));
+    if (accountId) {
+      console.log(chalk.gray(`  Account ID: ${accountId}`));
+    }
     console.log(chalk.gray(`  Machine ID: ${result.machineId}`));
     console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
   } catch (error) {
@@ -292,7 +386,14 @@ async function handleAuthStatus(): Promise<void> {
 
   // Token preview (first few chars for security)
   const tokenPreview = credentials.token.substring(0, 30) + '...';
+  const { accountId, sessionId } = decodeTokenSubject(credentials.token);
   console.log(chalk.gray(`  Token: ${tokenPreview}`));
+  if (accountId) {
+    console.log(chalk.gray(`  Account ID: ${accountId}`));
+  }
+  if (sessionId) {
+    console.log(chalk.gray(`  Auth Session ID: ${sessionId}`));
+  }
 
   // Machine status
   if (settings?.machineId) {

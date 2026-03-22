@@ -43,6 +43,17 @@ import { TraceEventKind } from '@/trace/traceTypes';
  * without duplicating the map reference.
  */
 export const pidToTrackedSession = new Map<number, TrackedSession>();
+const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>>();
+
+function looksLikeConcatenatedAbsolutePaths(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const absolutePathTokens = trimmed.match(/(?:^|[\s\n])\/[^\s]+/g) ?? [];
+  return absolutePathTokens.length > 1;
+}
 
 // ── Internal awaiter system ────────────────────────────────────────────────────
 // Resolvers keyed by PID, awaiting the session-started webhook to populate ahaSessionId.
@@ -155,6 +166,24 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
 
   const { directory, sessionId, approvedNewDirectoryCreation = true } = options;
   let directoryCreated = false;
+
+  if (looksLikeConcatenatedAbsolutePaths(directory)) {
+    const errorMessage = `Invalid working directory: "${directory}". It appears to contain multiple absolute paths joined together. Provide exactly one project directory.`;
+    logger.debug(`[SESSION MANAGER] ${errorMessage}`);
+    return {
+      type: 'error',
+      errorMessage,
+    };
+  }
+
+  if (options.sessionPath && looksLikeConcatenatedAbsolutePaths(options.sessionPath)) {
+    const errorMessage = `Invalid sessionPath: "${options.sessionPath}". It appears to contain multiple absolute paths joined together. Provide exactly one project directory.`;
+    logger.debug(`[SESSION MANAGER] ${errorMessage}`);
+    return {
+      type: 'error',
+      errorMessage,
+    };
+  }
 
   try {
     await fs.access(directory);
@@ -271,7 +300,7 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
       ];
     } else {
       args = [
-        options.agent === 'claude' ? 'claude' : 'codex',
+        options.agent === 'codex' ? 'codex' : 'claude',
         '--aha-starting-mode', 'remote',
         '--started-by', 'daemon',
       ];
@@ -285,7 +314,9 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
     const ahaProcess = spawnAhaCLI(args, {
       cwd: directory,
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Daemon-spawned agents write their own file logs. Do not bind child stdout/stderr
+      // to daemon-owned pipes or the child will die with EPIPE when the daemon restarts.
+      stdio: ['ignore', 'ignore', 'ignore'],
       env: {
         ...cleanEnv,
         ...extraEnv,
@@ -362,6 +393,11 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
     logger.debug(`[SESSION MANAGER] Waiting for session webhook for PID ${ahaProcess.pid}`);
 
     return new Promise((resolve) => {
+      const sessionWebhookTimeoutMs = parseInt(
+        process.env.AHA_SESSION_WEBHOOK_TIMEOUT_MS || '15000',
+        10
+      );
+
       const timeout = setTimeout(() => {
         pidToAwaiter.delete(ahaProcess.pid!);
         logger.debug(`[SESSION MANAGER] Session webhook timeout for PID ${ahaProcess.pid}`);
@@ -369,7 +405,7 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
           type: 'error',
           errorMessage: `Session webhook timeout for PID ${ahaProcess.pid}`,
         });
-      }, 15_000);
+      }, sessionWebhookTimeoutMs);
 
       pidToAwaiter.set(ahaProcess.pid!, (completedSession) => {
         clearTimeout(timeout);
@@ -484,51 +520,85 @@ export const requestHelp = async (params: {
 }): Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }> => {
   const { teamId, type, description, severity } = params;
 
-  let targetSessionId = params.sessionId;
-  if (!targetSessionId) {
-    for (const session of pidToTrackedSession.values()) {
-      const metadata = session.ahaSessionMetadataFromLocalWebhook;
-      const sessionTeamId = metadata?.teamId || metadata?.roomId;
-      const role = metadata?.role;
-      if (sessionTeamId !== teamId) continue;
-      if (role === 'supervisor' || role === 'help-agent') continue;
-      if (session.ahaSessionId) {
-        targetSessionId = session.ahaSessionId;
-        break;
+  const inFlight = inFlightHelpRequestsByTeam.get(teamId);
+  if (inFlight) {
+    logger.debug(`[SESSION MANAGER] Reusing in-flight help-agent spawn for team ${teamId}`);
+    return await inFlight;
+  }
+
+  const requestPromise = (async () => {
+    const activeHelpAgents = Array.from(pidToTrackedSession.values())
+      .filter((session) => {
+        const metadata = session.ahaSessionMetadataFromLocalWebhook;
+        const sessionTeamId = metadata?.teamId || metadata?.roomId;
+        return sessionTeamId === teamId && metadata?.role === 'help-agent' && !!session.ahaSessionId;
+      })
+      .sort((a, b) => b.pid - a.pid);
+
+    if (activeHelpAgents.length > 0) {
+      const reusableSessionId = activeHelpAgents[0].ahaSessionId!;
+      logger.debug(
+        `[SESSION MANAGER] Reusing existing help-agent ${reusableSessionId} for team ${teamId}; ` +
+        `skipping duplicate spawn`
+      );
+      return { success: true, helpAgentSessionId: reusableSessionId };
+    }
+
+    let targetSessionId = params.sessionId;
+    if (!targetSessionId) {
+      for (const session of pidToTrackedSession.values()) {
+        const metadata = session.ahaSessionMetadataFromLocalWebhook;
+        const sessionTeamId = metadata?.teamId || metadata?.roomId;
+        const role = metadata?.role;
+        if (sessionTeamId !== teamId) continue;
+        if (role === 'supervisor' || role === 'help-agent') continue;
+        if (session.ahaSessionId) {
+          targetSessionId = session.ahaSessionId;
+          break;
+        }
       }
     }
-  }
 
-  if (!targetSessionId) {
-    return { success: false, error: `No recoverable team session found for team ${teamId}` };
-  }
-
-  try {
-    const result = await spawnSession({
-      directory: process.cwd(),
-      agent: 'claude',
-      teamId,
-      role: 'help-agent',
-      sessionName: 'Help Agent',
-      executionPlane: 'bypass',
-      env: {
-        AHA_HELP_TARGET_SESSION: targetSessionId,
-        AHA_HELP_TYPE: type,
-        AHA_HELP_DESCRIPTION: description,
-        AHA_HELP_SEVERITY: severity,
-      },
-    });
-
-    if (result.type === 'success') {
-      return { success: true, helpAgentSessionId: result.sessionId };
+    if (!targetSessionId) {
+      return { success: false, error: `No recoverable team session found for team ${teamId}` };
     }
 
-    return {
-      success: false,
-      error: result.type === 'error' ? result.errorMessage : 'Failed to spawn help-agent',
-    };
-  } catch (error) {
-    return { success: false, error: String(error) };
+    try {
+      const result = await spawnSession({
+        directory: process.cwd(),
+        agent: 'claude',
+        teamId,
+        role: 'help-agent',
+        sessionName: 'Help Agent',
+        executionPlane: 'bypass',
+        env: {
+          AHA_HELP_TARGET_SESSION: targetSessionId,
+          AHA_HELP_TYPE: type,
+          AHA_HELP_DESCRIPTION: description,
+          AHA_HELP_SEVERITY: severity,
+        },
+      });
+
+      if (result.type === 'success') {
+        return { success: true, helpAgentSessionId: result.sessionId };
+      }
+
+      return {
+        success: false,
+        error: result.type === 'error' ? result.errorMessage : 'Failed to spawn help-agent',
+      };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  })();
+
+  inFlightHelpRequestsByTeam.set(teamId, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    if (inFlightHelpRequestsByTeam.get(teamId) === requestPromise) {
+      inFlightHelpRequestsByTeam.delete(teamId);
+    }
   }
 };
 

@@ -1,6 +1,6 @@
 {
   "name": "cc-aha-cli-v3",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
@@ -55,11 +55,16 @@
     "scripts",
     "tools/archives",
     "tools/licenses",
+    "schemas",
+    "examples/agent-json",
     "package.json",
     "README.md",
-    "GETTING_STARTED.md",
+    "CHANGELOG.md",
     "CONTRIBUTING.md",
-    "PROMOTION.md"
+    "LICENSE",
+    "docs/aha-v3-cli-reference.md",
+    "docs/auth-quickstart.md",
+    "docs/auth-recovery-account-consistency.md"
   ],
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started aha",
@@ -135,7 +140,11 @@
     "@types/parse-path": "7.0.3"
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
-  "packageManager": "yarn@1.22.22"
+  "packageManager": "yarn@1.22.22",
+  "engines": {
+    "node": ">=22"
+  }
 }

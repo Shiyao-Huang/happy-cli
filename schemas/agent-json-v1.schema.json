@@ -151,6 +151,24 @@
           },
           "uniqueItems": true
         },
+        "authorities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "user.reply",
+              "message.route",
+              "task.create",
+              "task.assign",
+              "task.update.any",
+              "task.approve",
+              "task.start.self",
+              "task.complete.self",
+              "agent.spawn"
+            ]
+          },
+          "uniqueItems": true
+        },
         "messaging": {
           "type": "object",
           "additionalProperties": false,

@@ -1180,6 +1180,12 @@ export class ApiClient {
       return response.data;
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to update task:`, error);
+      if (axios.isAxiosError(error)) {
+        const serverMessage = typeof error.response?.data?.error === 'string'
+          ? error.response.data.error
+          : error.message;
+        throw new Error(`Failed to update task: ${serverMessage}`);
+      }
       throw new Error(`Failed to update task: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -1273,7 +1279,82 @@ export class ApiClient {
       return response.data;
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to complete task:`, error);
+      if (axios.isAxiosError(error)) {
+        const serverMessage = typeof error.response?.data?.error === 'string'
+          ? error.response.data.error
+          : error.message;
+        throw new Error(`Failed to complete task: ${serverMessage}`);
+      }
       throw new Error(`Failed to complete task: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async setTaskHumanStatusLock(teamId: string, taskId: string, lock: {
+    sessionId?: string;
+    role?: string;
+    displayName?: string;
+    kind?: 'human' | 'agent';
+    mode: 'viewing' | 'editing' | 'manual-status';
+    reason?: string;
+    comment?: string;
+  }): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/human-lock`,
+        lock,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Set human status lock on task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to set human status lock:`, error);
+      if (axios.isAxiosError(error)) {
+        const serverMessage = typeof error.response?.data?.error === 'string'
+          ? error.response.data.error
+          : error.message;
+        throw new Error(`Failed to set human status lock: ${serverMessage}`);
+      }
+      throw new Error(`Failed to set human status lock: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async clearTaskHumanStatusLock(teamId: string, taskId: string, lock?: {
+    sessionId?: string;
+    role?: string;
+    displayName?: string;
+    kind?: 'human' | 'agent';
+    mode?: 'viewing' | 'editing' | 'manual-status';
+    comment?: string;
+  }): Promise<{ success: boolean; task: any }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/tasks/${taskId}/human-lock/clear`,
+        lock ?? {},
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Cleared human status lock on task ${taskId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to clear human status lock:`, error);
+      if (axios.isAxiosError(error)) {
+        const serverMessage = typeof error.response?.data?.error === 'string'
+          ? error.response.data.error
+          : error.message;
+        throw new Error(`Failed to clear human status lock: ${serverMessage}`);
+      }
+      throw new Error(`Failed to clear human status lock: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -1320,7 +1401,7 @@ export class ApiClient {
   async resolveBlockerWithComment(teamId: string, taskId: string, blockerId: string, sessionId: string, resolution: string, comment?: {
     role?: string;
     displayName?: string;
-    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision';
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
     content: string;
     mentions?: string[];
   }): Promise<{ success: boolean; task: any }> {
@@ -1348,7 +1429,7 @@ export class ApiClient {
     sessionId: string;
     role?: string;
     displayName?: string;
-    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision';
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
     content: string;
     fromStatus?: string;
     toStatus?: string;

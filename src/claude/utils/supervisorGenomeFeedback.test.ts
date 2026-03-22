@@ -37,11 +37,53 @@ describe('supervisorGenomeFeedback', () => {
             namespace: '@official',
             name: 'architect',
         });
+        expect(getCanonicalGenomeTargetForRole('builder')).toEqual({
+            namespace: '@official',
+            name: 'implementer',
+        });
+        expect(getCanonicalGenomeTargetForRole('scout')).toEqual({
+            namespace: '@official',
+            name: 'researcher',
+        });
+        expect(getCanonicalGenomeTargetForRole('reviewer')).toEqual({
+            namespace: '@official',
+            name: 'qa-engineer',
+        });
         expect(getCanonicalGenomeTargetForRole('qa')).toEqual({
             namespace: '@official',
             name: 'qa-engineer',
         });
-        expect(getCanonicalGenomeTargetForRole('builder')).toBeNull();
+    });
+
+    it('maps bypass roles (supervisor, help-agent) to their canonical genomes', () => {
+        expect(getCanonicalGenomeTargetForRole('supervisor')).toEqual({
+            namespace: '@official',
+            name: 'supervisor',
+        });
+        expect(getCanonicalGenomeTargetForRole('help-agent')).toEqual({
+            namespace: '@official',
+            name: 'help-agent',
+        });
+    });
+
+    it('resolves supervisor feedback target via role fallback', () => {
+        expect(resolveFeedbackUploadTarget({
+            role: 'supervisor',
+        })).toEqual({
+            namespace: '@official',
+            name: 'supervisor',
+            source: 'role-fallback',
+        });
+    });
+
+    it('resolves help-agent feedback target via role fallback', () => {
+        expect(resolveFeedbackUploadTarget({
+            role: 'help-agent',
+        })).toEqual({
+            namespace: '@official',
+            name: 'help-agent',
+            source: 'role-fallback',
+        });
     });
 
     it('prefers exact scored genome identity when available', () => {
@@ -64,6 +106,34 @@ describe('supervisorGenomeFeedback', () => {
         })).toEqual({
             namespace: '@official',
             name: 'org-manager',
+            source: 'role-fallback',
+        });
+    });
+
+    it('falls back to canonical official role genome when a spec id exists but namespace/name could not be resolved', () => {
+        expect(resolveFeedbackUploadTarget({
+            role: 'QA Engineer',
+            specId: 'genome-qa-1',
+        })).toEqual({
+            namespace: '@official',
+            name: 'qa-engineer',
+            source: 'role-fallback',
+        });
+    });
+
+    it('normalizes track suffixes and maps scout/builder aliases onto canonical genomes', () => {
+        expect(resolveFeedbackUploadTarget({
+            role: 'researcher (Track A)',
+        })).toEqual({
+            namespace: '@official',
+            name: 'researcher',
+            source: 'role-fallback',
+        });
+        expect(resolveFeedbackUploadTarget({
+            role: 'Framer',
+        })).toEqual({
+            namespace: '@official',
+            name: 'implementer',
             source: 'role-fallback',
         });
     });

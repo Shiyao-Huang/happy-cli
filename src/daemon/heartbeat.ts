@@ -105,13 +105,17 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
   const currentDiskVersion = JSON.parse(
     readFileSync(join(projectPath(), 'package.json'), 'utf-8')
   ).version as string;
+  const restartMinUptimeMs = parseInt(
+    process.env.AHA_DAEMON_VERSION_RESTART_MIN_UPTIME_MS || '120000',
+    10
+  );
 
   if (currentDiskVersion !== startupDiskVersion) {
     const uptimeMs = Date.now() - new Date(fileState.startTime).getTime();
-    if (uptimeMs < 120_000) {
+    if (uptimeMs < restartMinUptimeMs) {
       logger.debug(
         `[HEARTBEAT] Version changed on disk (${startupDiskVersion} → ${currentDiskVersion}) ` +
-        `but daemon uptime is only ${Math.round(uptimeMs / 1000)}s — skipping restart to avoid loop`
+        `but daemon uptime is only ${Math.round(uptimeMs / 1000)}s (< ${Math.round(restartMinUptimeMs / 1000)}s threshold) — skipping restart to avoid loop`
       );
     } else {
       logger.debug(

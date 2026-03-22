@@ -29,6 +29,7 @@ import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { readDaemonState } from '@/persistence';
+import { extractTeamConfigSnapshot } from './inspectionTools';
 import {
     publishTeamCorpsTemplate,
     resolvePreferredGenomeSpecId,
@@ -36,7 +37,7 @@ import {
 } from '@/utils/genomeMarketplace';
 import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
-import { McpToolContext } from './mcpContext';
+import { McpToolContext, ReplaceAgentStageError } from './mcpContext';
 
 export function registerAgentTools(ctx: McpToolContext): void {
     const {
@@ -48,6 +49,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
         getDaemonTrackedSessionIds,
         getTeamMemberRecord,
         evaluateReplacementVotes,
+        parseBoardFromArtifact,
         spawnReplacementSession,
     } = ctx;
 
@@ -577,6 +579,37 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
     });
 
+    mcp.registerTool('get_team_config', {
+        description: 'Inspect the current team template/config at runtime. Returns team name, roles, agreements, and boot context. Available to all mainline agents.',
+        title: 'Get Team Config',
+        inputSchema: {
+            teamId: z.string().optional().describe('Optional team ID. Defaults to your current team.'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const executionPlane = metadata?.executionPlane || 'mainline';
+        if (executionPlane !== 'mainline') {
+            return { content: [{ type: 'text', text: 'Error: get_team_config is only available to mainline agents.' }], isError: true };
+        }
+
+        const teamId = args.teamId || metadata?.teamId || metadata?.roomId;
+        if (!teamId) {
+            return { content: [{ type: 'text', text: 'Error: You must be in a team or provide teamId.' }], isError: true };
+        }
+
+        try {
+            const artifact = await api.getArtifact(teamId);
+            const board = parseBoardFromArtifact(artifact);
+            const snapshot = extractTeamConfigSnapshot(teamId, board);
+            return {
+                content: [{ type: 'text', text: JSON.stringify(snapshot, null, 2) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error getting team config: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('replace_agent', {
         description: 'Hot-swap an agent session after a vote or coordinator decision. Spawns a replacement agent, optionally switches runtime between Claude and Codex, reassigns unfinished tasks, and archives the old session.',
         title: 'Replace Agent',
@@ -605,14 +638,32 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         }
 
         try {
-            const targetSession = await api.getSession(args.sessionId);
+            let targetSession: any | null = null;
+            try {
+                targetSession = await api.getSession(args.sessionId);
+            } catch (error) {
+                throw new ReplaceAgentStageError(
+                    'lookup.target_session',
+                    error instanceof Error ? error.message : String(error),
+                    {
+                        sessionId: args.sessionId,
+                        teamHint: args.teamId || metadata?.teamId || metadata?.roomId || null,
+                    },
+                    'Verify the session API is reachable before attempting replacement.',
+                );
+            }
             if (!targetSession) {
                 return { content: [{ type: 'text', text: `Error: Session ${args.sessionId} not found.` }], isError: true };
             }
 
             const inferredTeamId = args.teamId || metadata?.teamId || metadata?.roomId || targetSession.metadata?.teamId || targetSession.metadata?.roomId;
             if (!inferredTeamId) {
-                return { content: [{ type: 'text', text: 'Error: Could not determine team for replacement.' }], isError: true };
+                throw new ReplaceAgentStageError(
+                    'lookup.team',
+                    'Could not determine team for replacement.',
+                    { sessionId: args.sessionId },
+                    'Provide teamId explicitly or ensure the session metadata includes teamId/roomId.',
+                );
             }
 
             const member = await getTeamMemberRecord(inferredTeamId, args.sessionId);
@@ -642,7 +693,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 targetSessionId: args.sessionId,
                 roleId,
                 displayName: args.sessionName || member?.displayName || targetSession.metadata?.name || `${roleId}-replacement`,
-                directory: targetSession.metadata?.path || process.cwd(),
+                directory: targetSession.metadata?.path || metadata?.path || process.cwd(),
                 runtimeType: nextRuntime,
                 executionPlane: (member?.executionPlane || targetSession.metadata?.executionPlane || 'mainline') as 'mainline' | 'bypass',
                 memberId: member?.memberId || targetSession.metadata?.memberId,
@@ -654,15 +705,28 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
             let reassignedTasks = 0;
             if (args.preserveTasks) {
-                const tasksResult = await api.listTasks(inferredTeamId, { assigneeId: args.sessionId });
-                const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
-                for (const task of tasks) {
-                    if (task?.status === 'done') continue;
-                    await api.updateTask(inferredTeamId, task.id, {
-                        assigneeId: replacement.sessionId,
-                        comment: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
-                    });
-                    reassignedTasks += 1;
+                try {
+                    const tasksResult = await api.listTasks(inferredTeamId, { assigneeId: args.sessionId });
+                    const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
+                    for (const task of tasks) {
+                        if (task?.status === 'done') continue;
+                        await api.updateTask(inferredTeamId, task.id, {
+                            assigneeId: replacement.sessionId,
+                            comment: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
+                        });
+                        reassignedTasks += 1;
+                    }
+                } catch (error) {
+                    throw new ReplaceAgentStageError(
+                        'reassign.tasks',
+                        error instanceof Error ? error.message : String(error),
+                        {
+                            teamId: inferredTeamId,
+                            oldSessionId: args.sessionId,
+                            newSessionId: replacement.sessionId,
+                        },
+                        'Verify task APIs are healthy before retrying task reassignment.',
+                    );
                 }
             }
 
@@ -729,7 +793,26 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 isError: false,
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: `Error replacing agent: ${String(error)}` }], isError: true };
+            if (error instanceof ReplaceAgentStageError) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: false,
+                            error: {
+                                stage: error.stage,
+                                message: error.message,
+                                details: error.details,
+                                remediation: error.remediation ?? null,
+                            },
+                        }, null, 2),
+                    }],
+                    isError: true,
+                };
+            }
+            const msg = error instanceof Error ? error.message : String(error);
+            const hint = msg === 'fetch failed' ? ' (replace_agent failed before stage attribution; inspect server/daemon reachability)' : '';
+            return { content: [{ type: 'text', text: `Error replacing agent: ${msg}${hint}` }], isError: true };
         }
     });
 }

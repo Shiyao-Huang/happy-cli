@@ -64,7 +64,8 @@ export function canSpawnAgents(role: string | undefined, genome?: { behavior?: {
 
 export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
     if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('task.create')) return true;
-    if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
+    // Note: canSpawnAgents governs agent-spawning, NOT task creation — these are independent capabilities.
+    // A coordinator role (master, orchestrator) can always create tasks; genome can restrict via authorities[].
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
@@ -221,15 +222,10 @@ export function getRolePermissions(role: string | undefined, requestedMode: stri
         permissionMode = 'bypassPermissions';
     }
 
-    //2. Determine Available Tools (Capabilities) — genome-first, no hardcoded fallback
-    let roleDisallowedTools: string[] = [];
-
-    // Tool restrictions come from canSpawnAgents (genome authorities check)
-    if (role && !canSpawnAgents(role)) {
-        const topologyTools = ['spawn_session', 'create_agent'];
-        roleDisallowedTools = Array.from(new Set([...roleDisallowedTools, ...topologyTools]));
-        logger.debug(`[Role Enforcement] ${role} cannot change team topology; disallowed: ${topologyTools.join(', ')}`);
-    }
+    //2. Determine Available Tools (Capabilities) — genome-first, no hardcoded fallback.
+    // Tool visibility should not silently inherit old role-based spawn restrictions
+    // when no genome is loaded. Runtime tool handlers remain the hard authority.
+    const roleDisallowedTools: string[] = [];
 
     return {
         permissionMode,

@@ -25,7 +25,7 @@ import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { TaskStateManager } from '../utils/taskStateManager';
 import { readDaemonState } from '@/persistence';
-import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
+import { createReplacementTeamMemberIdentity, createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { resolvePreferredGenomeSpecId } from '@/utils/genomeMarketplace';
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -93,6 +93,20 @@ export interface McpToolContext {
         taskId?: string;
         sendNotification?: boolean;
     }) => Promise<{ helpSpawned: boolean; error?: string }>;
+}
+
+export class ReplaceAgentStageError extends Error {
+    readonly stage: string;
+    readonly details: Record<string, unknown>;
+    readonly remediation?: string;
+
+    constructor(stage: string, message: string, details: Record<string, unknown> = {}, remediation?: string) {
+        super(message);
+        this.name = 'ReplaceAgentStageError';
+        this.stage = stage;
+        this.details = details;
+        this.remediation = remediation;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -306,10 +320,27 @@ export function buildMcpHelpers(
     }): Promise<{ sessionId: string; memberId: string; sessionTag: string; specId: string | null; specSource: string }> => {
         const daemonState = await readDaemonState();
         if (!daemonState?.httpPort) {
-            throw new Error('Daemon is not running. Cannot replace agents without a running daemon.');
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.daemon_state',
+                'Daemon is not running. Cannot replace agents without a running daemon.',
+                { daemonState: daemonState ?? null },
+                "Restart the daemon with 'aha daemon start' before retrying replace_agent.",
+            );
+        }
+        try {
+            process.kill(daemonState.pid, 0);
+        } catch {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.daemon_pid',
+                `Daemon state file is stale (PID ${daemonState.pid} not found).`,
+                { pid: daemonState.pid, httpPort: daemonState.httpPort },
+                "Restart the daemon with 'aha daemon start' and retry the replacement.",
+            );
         }
 
-        const { memberId, sessionTag } = createTeamMemberIdentity(params.teamId, params.memberId);
+        // A replacement must mint a fresh member/session identity; reusing the prior
+        // member tag causes getOrCreateSession(tag=...) to return the old session.
+        const { memberId, sessionTag } = createReplacementTeamMemberIdentity(params.teamId, params.memberId);
         const resolvedSpec = await resolvePreferredGenomeSpecId({
             role: params.roleId,
             runtime: params.runtimeType,
@@ -345,32 +376,80 @@ export function buildMcpHelpers(
             spawnBody.specId = resolvedSpec.specId;
         }
 
-        const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(spawnBody),
-            signal: AbortSignal.timeout(15_000),
-        });
-
-        const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
-        if (!response.ok || !result.success || !result.sessionId) {
-            throw new Error(result.error || `HTTP ${response.status}`);
+        let response: Response;
+        try {
+            response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(spawnBody),
+                signal: AbortSignal.timeout(15_000),
+            });
+        } catch (error) {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.fetch',
+                error instanceof Error ? error.message : String(error),
+                {
+                    daemonHttpPort: daemonState.httpPort,
+                    teamId: params.teamId,
+                    roleId: params.roleId,
+                    runtimeType: params.runtimeType,
+                },
+                'Verify the daemon control server is reachable and accepting spawn-session requests.',
+            );
         }
 
-        await api.addTeamMember(
-            params.teamId,
-            result.sessionId,
-            params.roleId,
-            params.displayName,
-            {
-                memberId,
-                sessionTag,
-                specId: resolvedSpec.specId ?? undefined,
-                parentSessionId: params.parentSessionId || params.targetSessionId,
-                executionPlane: params.executionPlane,
-                runtimeType: params.runtimeType,
-            }
-        );
+        let result: { success?: boolean; sessionId?: string; error?: string };
+        try {
+            result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+        } catch (error) {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.parse',
+                error instanceof Error ? error.message : String(error),
+                { httpStatus: response.status },
+                'Inspect the daemon response body for malformed JSON or server-side crashes.',
+            );
+        }
+        if (!response.ok || !result.success || !result.sessionId) {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.response',
+                result.error || `HTTP ${response.status}`,
+                { httpStatus: response.status, responseOk: response.ok, responseBody: result },
+                'Fix the daemon spawn-session error before retrying replacement.',
+            );
+        }
+
+        if (result.sessionId === params.targetSessionId) {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.identity',
+                `Replacement reused the original sessionId (${result.sessionId}) instead of minting a new session.`,
+                { targetSessionId: params.targetSessionId, replacementSessionId: result.sessionId, sessionTag, memberId },
+                'Ensure replacement sessions use a fresh member/session identity rather than the original session tag.',
+            );
+        }
+
+        try {
+            await api.addTeamMember(
+                params.teamId,
+                result.sessionId,
+                params.roleId,
+                params.displayName,
+                {
+                    memberId,
+                    sessionTag,
+                    specId: resolvedSpec.specId ?? undefined,
+                    parentSessionId: params.parentSessionId || params.targetSessionId,
+                    executionPlane: params.executionPlane,
+                    runtimeType: params.runtimeType,
+                }
+            );
+        } catch (error) {
+            throw new ReplaceAgentStageError(
+                'spawn.replacement.register_member',
+                error instanceof Error ? error.message : String(error),
+                { replacementSessionId: result.sessionId, teamId: params.teamId, memberId, sessionTag },
+                'Check team member registration and server-side team membership APIs.',
+            );
+        }
 
         return {
             sessionId: result.sessionId,
@@ -495,13 +574,14 @@ export function buildMcpHelpers(
             logger.debug('[help-lane] Failed to save pendingAction (non-fatal)', error);
         }
 
-        // Deduplication: skip spawn if there's already an active help-agent in the team
+        // Deduplication: one live help-agent per team. Reuse it instead of spawning duplicates.
         try {
             const activeSessions = await listTeamSessionsViaDaemon(teamId);
-            const activeHelpAgent = activeSessions.find((s) => s.role === 'help-agent');
-            if (activeHelpAgent) {
-                logger.debug(`[help-lane] Active help-agent already present (${activeHelpAgent.ahaSessionId}) — skipping duplicate spawn for team ${teamId}`);
-                return { helpSpawned: false, error: 'help-agent already active' };
+            const activeHelpAgents = activeSessions.filter((s) => s.role === 'help-agent');
+            if (activeHelpAgents.length > 0) {
+                const reusableSessionId = activeHelpAgents[0].ahaSessionId || 'unknown';
+                logger.debug(`[help-lane] Reusing existing help-agent ${reusableSessionId} for team ${teamId}; skipping duplicate spawn`);
+                return { helpSpawned: true };
             }
         } catch (error) {
             logger.debug('[help-lane] Failed to check for active help-agents (non-fatal)', error);
