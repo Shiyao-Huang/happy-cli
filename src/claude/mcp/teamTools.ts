@@ -96,6 +96,18 @@ export function registerTeamTools(ctx: McpToolContext): void {
 
             await api.sendTeamMessage(teamId, message);
 
+            // Fire-and-forget: notify channel bridge (WeChat/Feishu) if configured.
+            // readDaemonState is already imported; daemonPost not needed here — direct fetch is cleaner.
+            readDaemonState().then(state => {
+              if (!state?.httpPort) return;
+              fetch(`http://127.0.0.1:${state.httpPort}/channels/notify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event: message }),
+                signal: AbortSignal.timeout(3_000),
+              }).catch(() => { /* non-fatal */ });
+            }).catch(() => { /* non-fatal */ });
+
             let helpSuffix = '';
             if (role !== 'help-agent' && containsHelpMention(args.content)) {
                 const escalation = await triggerHelpLane({

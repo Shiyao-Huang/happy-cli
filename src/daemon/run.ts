@@ -605,8 +605,10 @@ export async function startDaemon(): Promise<void> {
 
     logger.debug('[DAEMON RUN] Daemon started successfully, waiting for shutdown request');
 
-    // Recover already-running sessions from previous daemon instance
-    const recoveredCount = recoverExistingSessions();
+    // Recover already-running sessions from previous daemon instance.
+    // Pass api so recoverExistingSessions() can fetch the team roster and
+    // filter out archived/archiveRequested members before re-tracking them.
+    const recoveredCount = await recoverExistingSessions(api);
     if (recoveredCount > 0) {
       logger.debug(`[DAEMON RUN] Recovered ${recoveredCount} sessions from previous daemon instance`);
     }
