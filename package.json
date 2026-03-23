@@ -11,6 +11,8 @@
   "bin": {
     "aha-v3": "./bin/aha.mjs",
     "aha-v3-mcp": "./bin/aha-mcp.mjs",
+    "aha-v4": "./bin/aha.mjs",
+    "aha-v4-mcp": "./bin/aha-mcp.mjs",
     "kanban-v3": "./bin/aha.mjs",
     "kanban-v3-mcp": "./bin/aha-mcp.mjs"
   },
