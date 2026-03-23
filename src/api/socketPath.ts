@@ -1,6 +1,6 @@
 /**
  * Build a socket.io path that respects server base paths.
- * Example: https://top1vibe.com/api/v2 + /v1/updates => /api/v2/v1/updates
+ * Example: https://aha-agi.com/api + /v1/updates => /api/v1/updates
  */
 export function buildSocketPath(serverUrl: string, suffix: string): string {
   try {

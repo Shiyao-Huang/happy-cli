@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
  * fetchGenome — 从服务器拉取 GenomeSpec，支持内存缓存 + 磁盘缓存。
  *
@@ -33,7 +34,7 @@ function diskCachePath(specId: string): string | null {
 }
 
 function genomeHubBaseUrl(): string {
-    return (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    return (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
 }
 
 /**

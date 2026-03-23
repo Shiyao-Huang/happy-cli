@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
  * @module agentTools
  * @description MCP tool registrations for agent spawning and management.
@@ -75,7 +76,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent marketplace.' }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         try {
             const includeCorps = args.category === 'corps';
             const marketplaceEntries = (await searchMarketplaceGenomes({
@@ -272,7 +273,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             if (resolvedSpecId) {
                 spawnBody.specId = resolvedSpecId;
                 // Fire-and-forget: increment spawn count in genome-hub
-                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
                 fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}/spawn`, {
                     method: 'POST',
                     signal: AbortSignal.timeout(3_000),

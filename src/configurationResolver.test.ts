@@ -51,8 +51,8 @@ describe('configurationResolver', () => {
       AHA_SERVER_URL: 'http://localhost:3005',
       AHA_WEBAPP_URL: 'http://localhost:8081'
     }, {
-      serverUrl: 'https://top1vibe.com/api/v3',
-      webappUrl: 'https://top1vibe.com/webappv3'
+      serverUrl: 'https://aha-agi.com/api',
+      webappUrl: 'https://aha-agi.com/webappv3'
     })).toEqual({
       serverUrl: 'http://localhost:3005',
       webappUrl: 'http://localhost:8081'

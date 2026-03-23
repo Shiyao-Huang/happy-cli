@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
  * @module run
  * @description Daemon entry point: lifecycle, signals, lock, auth, heartbeat orchestration.
@@ -78,7 +79,7 @@ export const initialMachineMetadata: MachineMetadata = {
  *
  * 1. Applies `genomeHubPublishKey` from settings → `process.env.HUB_PUBLISH_KEY`
  *    so all spawned agent sessions inherit it without manual env setup.
- * 2. If genome-hub is unreachable at `GENOME_HUB_URL` (default localhost:3006),
+ * 2. If genome-hub is unreachable at `GENOME_HUB_URL` (default aha-agi.com/genome),
  *    and `genomeHubSshHost` is set in settings (or `GENOME_HUB_SSH_HOST` env var),
  *    creates an SSH port-forwarding tunnel: local 3006 → remote 3006.
  *
@@ -98,9 +99,9 @@ async function ensureGenomeHubAccess(): Promise<number> {
   }
 
   // 2. Check reachability and optionally create SSH tunnel
-  const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+  const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
   if (!process.env.GENOME_HUB_URL) {
-    logger.warn('[GENOME HUB] GENOME_HUB_URL not set, falling back to http://localhost:3006 — requires SSH tunnel or local genome-hub');
+    logger.warn(`[GENOME HUB] GENOME_HUB_URL not set, falling back to ${DEFAULT_GENOME_HUB_URL}`);
   }
   const sshHost = process.env.GENOME_HUB_SSH_HOST || settings.genomeHubSshHost || '';
 

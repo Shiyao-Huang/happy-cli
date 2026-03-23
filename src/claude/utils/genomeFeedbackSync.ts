@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { AggregatedFeedback } from './feedbackPrivacy';
 import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
 import { getCanonicalGenomeTargetForRole } from './supervisorGenomeFeedback';
@@ -149,7 +150,7 @@ async function patchFeedbackViaServerProxy(
 export function normalizeFeedbackProxyBaseUrl(serverUrl: string): string {
     try {
         // configuration.serverUrl may point at an API-prefixed base such as
-        // https://top1vibe.com/api/v3, but the feedback proxy route lives at
+        // https://aha-agi.com/api, but the feedback proxy route lives at
         // the site origin under /v1/genomes/...
         return new URL(serverUrl).origin.replace(/\/$/, '');
     } catch {
@@ -232,9 +233,9 @@ export async function syncGenomeFeedbackToMarketplace(args: {
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
     if (!args.hubUrl && !process.env.GENOME_HUB_URL) {
-        console.warn('[genome-feedback] GENOME_HUB_URL not set, falling back to http://localhost:3006 — ensure SSH tunnel is active');
+        console.warn(`[genome-feedback] GENOME_HUB_URL not set, falling back to ${DEFAULT_GENOME_HUB_URL}`);
     }
-    const hubUrl = (args.hubUrl ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
     if (serverUrl !== rawServerUrl.replace(/\/$/, '')) {

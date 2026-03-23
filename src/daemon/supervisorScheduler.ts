@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
  * @module supervisorScheduler
  * @description Periodic supervisor lifecycle management: spawn, idle-retire, pending-action retry.
@@ -139,7 +140,7 @@ export function resolveTeamWorkingDirectory(
  * Returns null on failure — caller falls back to hardcoded role.
  */
 async function resolveSystemGenomeId(name: string, credentialsToken: string): Promise<string | null> {
-  const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+  const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
 
   try {
     const res = await axios.get(
@@ -370,7 +371,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         if (process.env.AHA_GENOME_FALLBACK !== '1') {
           console.warn(
             `[GENOME] ⚠️  supervisor genome not found in genome-hub — spawning without DNA.\n` +
-            `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? 'http://localhost:3006'})\n` +
+            `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL})\n` +
             `         and @official/supervisor is seeded. (Set AHA_GENOME_FALLBACK=1 to silence.)`
           );
         }

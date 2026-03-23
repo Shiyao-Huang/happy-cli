@@ -74,7 +74,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'http://localhost:3006/genomes/%40official/implementer/feedback',
+                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
                 method: 'PATCH',
             },
         ]);
@@ -107,15 +107,15 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'http://localhost:3006/genomes/%40official/implementer/feedback',
+                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
                 method: 'PATCH',
             },
             {
-                input: 'http://localhost:3006/genomes',
+                input: 'https://aha-agi.com/genome/genomes',
                 method: 'POST',
             },
             {
-                input: 'http://localhost:3006/genomes/%40official/implementer/feedback',
+                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
                 method: 'PATCH',
             },
         ]);
@@ -148,7 +148,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'http://localhost:3006/genomes/%40public/custom-reviewer/feedback',
+                input: 'https://aha-agi.com/genome/genomes/%40public/custom-reviewer/feedback',
                 method: 'PATCH',
             },
         ]);
@@ -165,7 +165,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
                     : null,
             });
 
-            if (input.startsWith('http://localhost:3006/')) {
+            if (input.startsWith('https://aha-agi.com/genome/')) {
                 throw new TypeError('fetch failed');
             }
 
@@ -178,7 +178,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             feedback: makeFeedback(),
             fetchImpl: fetchImpl as any,
             authToken: 'user-token',
-            serverUrl: 'https://top1vibe.com/api/v3',
+            serverUrl: 'https://aha-agi.com/api',
         });
 
         expect(result).toMatchObject({
@@ -189,12 +189,12 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'http://localhost:3006/genomes/%40official/implementer/feedback',
+                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
                 method: 'PATCH',
                 auth: null,
             },
             {
-                input: 'https://top1vibe.com/v1/genomes/%40official/implementer/feedback',
+                input: 'https://aha-agi.com/v1/genomes/%40official/implementer/feedback',
                 method: 'PATCH',
                 auth: 'Bearer user-token',
             },
@@ -202,8 +202,8 @@ describe('syncGenomeFeedbackToMarketplace', () => {
     });
 
     it('normalizes API-prefixed server urls to their origin for proxy uploads', () => {
-        expect(normalizeFeedbackProxyBaseUrl('https://top1vibe.com/api/v3')).toBe('https://top1vibe.com');
-        expect(normalizeFeedbackProxyBaseUrl('https://top1vibe.com/api/v3/')).toBe('https://top1vibe.com');
+        expect(normalizeFeedbackProxyBaseUrl('https://aha-agi.com/api')).toBe('https://aha-agi.com');
+        expect(normalizeFeedbackProxyBaseUrl('https://aha-agi.com/api/')).toBe('https://aha-agi.com');
         expect(normalizeFeedbackProxyBaseUrl('http://localhost:3005')).toBe('http://localhost:3005');
     });
 });

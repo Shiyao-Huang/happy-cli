@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
  * @module supervisorTools
  * @description MCP tool registrations for supervisor-only monitoring, scoring, and evolution.
@@ -687,7 +688,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         let specName: string | undefined;
         if (resolvedSpecId) {
             try {
-                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
                 const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}`, { signal: AbortSignal.timeout(3_000) });
                 if (res.ok) {
                     const data = await res.json() as { genome?: { namespace?: string; name?: string } };
@@ -852,7 +853,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         target: feedbackTarget,
                         role: args.role,
                         feedback: feedback!,
-                        hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
+                        hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
                         hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
                         serverUrl: configuration.serverUrl,
                         authToken: client.getAuthToken(),
@@ -964,7 +965,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         if ((!resolvedNamespace || !resolvedName) && args.genomeId) {
             try {
-                const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
                 const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(args.genomeId)}`, {
                     signal: AbortSignal.timeout(5_000),
                 });
@@ -1043,7 +1044,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 target: feedbackTarget,
                 role: args.role,
                 feedback,
-                hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
+                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
                 hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
                 serverUrl: configuration.serverUrl,
                 authToken: client.getAuthToken(),
@@ -1098,7 +1099,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: 'Error: Only supervisor can evolve genomes.' }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
+        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
 
         // 1. Fetch current genome (spec + feedbackData)

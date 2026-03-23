@@ -4,8 +4,9 @@ import { join } from 'node:path'
 import packageJson from '../package.json'
 import { z } from 'zod'
 
-export const DEFAULT_SERVER_URL = 'https://top1vibe.com/api/v3'
-export const DEFAULT_WEBAPP_URL = 'https://top1vibe.com/webappv3'
+export const DEFAULT_SERVER_URL = 'https://aha-agi.com/api'
+export const DEFAULT_WEBAPP_URL = 'https://aha-agi.com/webappv3'
+export const DEFAULT_GENOME_HUB_URL = 'https://aha-agi.com/genome'
 
 const persistentCliConfigSchema = z.object({
   serverUrl: z.string().url().optional(),

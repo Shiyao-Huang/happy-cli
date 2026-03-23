@@ -11,7 +11,7 @@
  *
  * The integration test environment uses .env.integration-test which sets:
  * - AHA_HOME_DIR=~/.aha-dev-test (DIFFERENT from dev's ~/.aha-dev!)
- * - AHA_SERVER_URL=https://top1vibe.com (shared server)
+ * - AHA_SERVER_URL=https://aha-agi.com (shared server)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

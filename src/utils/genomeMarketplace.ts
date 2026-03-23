@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { CorpsSpec } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { buildMarketplaceConnectionHint } from './marketplaceConnection';
@@ -184,7 +185,7 @@ export async function searchMarketplaceGenomes(options?: {
     limit?: number;
     hubUrl?: string;
 }): Promise<MarketplaceGenomeRecord[]> {
-    const hubUrl = (options?.hubUrl ?? process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubUrl = (options?.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const query = new URLSearchParams();
 
     if (options?.query) query.set('q', options.query);
@@ -210,7 +211,7 @@ export async function searchMarketplaceGenomes(options?: {
 }
 
 function resolveMarketplaceGenomeUrls(specId: string, hubUrl?: string): string[] {
-    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
 
     if (nsMatch) {
@@ -285,7 +286,7 @@ export async function resolveOfficialGenomeSpecId(
     runtime: 'claude' | 'codex',
     hubUrl?: string
 ): Promise<{ specId: string | null; matchedName?: string }> {
-    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
 
     for (const officialName of getPreferredGenomeNames(role, runtime)) {
         try {
@@ -448,7 +449,7 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
     templateId?: string;
     error?: string;
 }> {
-    const hubUrl = (options.hubUrl ?? process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubUrl = (options.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const publishKey = options.publishKey ?? process.env.HUB_PUBLISH_KEY ?? '';
 
     try {

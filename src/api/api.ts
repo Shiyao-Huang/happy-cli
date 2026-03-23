@@ -1,3 +1,4 @@
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
@@ -2200,7 +2201,7 @@ export class ApiClient {
    * Register or update a genome (reusable agent specification).
    * Called by the create_genome MCP tool.
    *
-   * Routes to genome-hub (GENOME_HUB_URL, default localhost:3006) —
+   * Routes to genome-hub (GENOME_HUB_URL, default aha-agi.com/genome) —
    * the M3 standalone marketplace server. Falls back to happy-server
    * legacy endpoint if genome-hub is unreachable.
    */
@@ -2217,7 +2218,7 @@ export class ApiClient {
     category?: string;
   }): Promise<{ genome: any }> {
     // Primary: genome-hub (M3 marketplace, port 3006)
-    const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
     const namespace = genome.namespace ?? '@public';
@@ -2295,7 +2296,7 @@ export class ApiClient {
     isPublic?: boolean;
     publisherId?: string | null;
   }): Promise<{ genome: any; corps: CorpsSpec }> {
-    const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
 
