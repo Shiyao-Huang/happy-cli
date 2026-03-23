@@ -38,9 +38,10 @@ import { authGetToken } from '@/api/auth';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import axios from 'axios';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
+import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock, readSettings } from '@/persistence';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { spawn } from 'child_process';
 import { projectPath } from '@/projectPath';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
@@ -71,6 +72,92 @@ export const initialMachineMetadata: MachineMetadata = {
   ahaHomeDir: configuration.ahaHomeDir,
   ahaLibDir: projectPath()
 };
+
+/**
+ * Ensure genome-hub is reachable and the publish key is configured.
+ *
+ * 1. Applies `genomeHubPublishKey` from settings → `process.env.HUB_PUBLISH_KEY`
+ *    so all spawned agent sessions inherit it without manual env setup.
+ * 2. If genome-hub is unreachable at `GENOME_HUB_URL` (default localhost:3006),
+ *    and `genomeHubSshHost` is set in settings (or `GENOME_HUB_SSH_HOST` env var),
+ *    creates an SSH port-forwarding tunnel: local 3006 → remote 3006.
+ *
+ * Returns the tunnel child process PID (or 0 if no tunnel was created).
+ */
+async function ensureGenomeHubAccess(): Promise<number> {
+  const settings = await readSettings();
+
+  // 1. Inject publish key into process env so child processes inherit it
+  const publishKey = process.env.HUB_PUBLISH_KEY || settings.genomeHubPublishKey || '';
+  if (publishKey && !process.env.HUB_PUBLISH_KEY) {
+    process.env.HUB_PUBLISH_KEY = publishKey;
+    logger.debug('[GENOME HUB] Loaded HUB_PUBLISH_KEY from settings');
+  }
+  if (!publishKey) {
+    logger.warn('[GENOME HUB] HUB_PUBLISH_KEY not set and genomeHubPublishKey missing from settings — genome feedback uploads will fail with 401');
+  }
+
+  // 2. Check reachability and optionally create SSH tunnel
+  const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+  if (!process.env.GENOME_HUB_URL) {
+    logger.warn('[GENOME HUB] GENOME_HUB_URL not set, falling back to http://localhost:3006 — requires SSH tunnel or local genome-hub');
+  }
+  const sshHost = process.env.GENOME_HUB_SSH_HOST || settings.genomeHubSshHost || '';
+
+  if (!sshHost) {
+    logger.warn('[GENOME HUB] genomeHubSshHost not configured — no SSH tunnel will be created; genome-hub must be accessible at ' + hubUrl);
+    return 0; // No tunnel configured — assume genome-hub is accessible directly
+  }
+
+  // Quick reachability check
+  try {
+    await axios.get(`${hubUrl}/health`, { timeout: 3000 });
+    logger.debug(`[GENOME HUB] Reachable at ${hubUrl} — no tunnel needed`);
+    return 0;
+  } catch {
+    logger.debug(`[GENOME HUB] Not reachable at ${hubUrl} — attempting SSH tunnel via ${sshHost}`);
+  }
+
+  // Parse port from hubUrl (default 3006)
+  const localPort = new URL(hubUrl).port || '3006';
+
+  return new Promise<number>((resolve) => {
+    const tunnel = spawn('ssh', [
+      '-f',                          // background after auth
+      '-N',                          // no remote command
+      '-o', 'ExitOnForwardFailure=yes',
+      '-o', 'ServerAliveInterval=30',
+      '-o', 'ServerAliveCountMax=3',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-L', `${localPort}:localhost:${localPort}`,
+      sshHost,
+    ], { stdio: 'ignore', detached: true });
+
+    tunnel.on('error', (err) => {
+      logger.debug(`[GENOME HUB] SSH tunnel spawn error: ${err.message}`);
+      resolve(0);
+    });
+
+    tunnel.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        logger.debug(`[GENOME HUB] SSH tunnel exited with code ${code}`);
+        resolve(0);
+      }
+    });
+
+    // Give tunnel 3s to establish, then verify reachability
+    setTimeout(async () => {
+      try {
+        await axios.get(`${hubUrl}/health`, { timeout: 3000 });
+        logger.debug(`[GENOME HUB] SSH tunnel established via ${sshHost} — genome-hub reachable`);
+        resolve(tunnel.pid ?? 0);
+      } catch {
+        logger.debug(`[GENOME HUB] SSH tunnel created but genome-hub still unreachable at ${hubUrl}`);
+        resolve(tunnel.pid ?? 0);
+      }
+    }, 3000);
+  });
+}
 
 export async function startDaemon(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -175,13 +262,16 @@ export async function startDaemon(): Promise<void> {
     let { credentials, machineId } = await authAndSetupMachineIfNeeded();
     logger.debug('[DAEMON RUN] Auth and machine setup complete');
 
+    // ── Genome hub access: SSH tunnel + publish key injection ─────────────────
+    await ensureGenomeHubAccess();
+
     // ── Per-team agent heartbeat tracking ─────────────────────────────────────
     const teamHeartbeats = new Map<string, AgentHeartbeat>();
 
     const getOrCreateTeamHeartbeat = (teamId: string): AgentHeartbeat => {
       let hb = teamHeartbeats.get(teamId);
       if (!hb) {
-        hb = new AgentHeartbeat(90_000, 60_000); // 90s dead, 60s suspect (daemon checks every 60s)
+        hb = new AgentHeartbeat(300_000, 180_000); // 5min dead, 3min suspect (MCP tool calls drive ping)
         hb.startMonitoring(30_000);
         teamHeartbeats.set(teamId, hb);
         logger.debug(`[DAEMON RUN] Created heartbeat tracker for team ${teamId}`);
@@ -189,11 +279,30 @@ export async function startDaemon(): Promise<void> {
       return hb;
     };
 
-    /** Ping heartbeat for a session if it belongs to a team */
+    /** Ping heartbeat for a session if it belongs to a team.
+     *
+     * For established Claude sessions (claudeLocalSessionId is known), we intentionally
+     * skip the daemon-side PID-based ping. Their heartbeat is driven exclusively by MCP
+     * tool calls (via /heartbeat-ping endpoint), which reflects actual Claude activity.
+     *
+     * Without this guard, zombie sessions — where the Claude session has ended (e.g.
+     * context exhausted) but the wrapper process is still alive — appear permanently
+     * "alive" in get_team_pulse, misleading agents and users. (System constraint #7/#8)
+     *
+     * Codex / open-code sessions have no MCP tool ping, so they keep the PID-based ping.
+     */
     const pingHeartbeat = (session: TrackedSession) => {
       const meta = session.ahaSessionMetadataFromLocalWebhook;
       const teamId = meta?.teamId || meta?.roomId;
       if (!teamId || !session.ahaSessionId) return;
+
+      // Established Claude sessions: MCP tool calls are the sole heartbeat source.
+      const flavor = meta?.flavor;
+      const isClaude = flavor !== 'codex' && flavor !== 'open-code';
+      if (isClaude && session.claudeLocalSessionId) {
+        return; // Do not mask zombie sessions with PID-alive pings
+      }
+
       const hb = getOrCreateTeamHeartbeat(teamId);
       hb.ping(session.ahaSessionId, meta?.role || 'unknown', []);
     };
