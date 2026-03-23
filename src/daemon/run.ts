@@ -271,7 +271,7 @@ export async function startDaemon(): Promise<void> {
     const getOrCreateTeamHeartbeat = (teamId: string): AgentHeartbeat => {
       let hb = teamHeartbeats.get(teamId);
       if (!hb) {
-        hb = new AgentHeartbeat(300_000, 180_000); // 5min dead, 3min suspect (MCP tool calls drive ping)
+        hb = new AgentHeartbeat(90_000, 60_000); // 90s dead, 60s suspect (daemon checks every 60s)
         hb.startMonitoring(30_000);
         teamHeartbeats.set(teamId, hb);
         logger.debug(`[DAEMON RUN] Created heartbeat tracker for team ${teamId}`);
