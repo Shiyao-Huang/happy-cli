@@ -1,0 +1,79 @@
+{
+  "namespace": "@official",
+  "name": "gstack-platoon",
+  "version": 1,
+  "description": "Seven-seat operational gstack full-stack team with separate product strategy, architecture, two builders, QA/design, and release.",
+  "tags": [
+    "corps",
+    "gstack",
+    "fullstack",
+    "platoon",
+    "parallel-execution",
+    "task-driven"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/gstack-master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-product-strategist",
+      "roleAlias": "product-strategist",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-architect",
+      "roleAlias": "architect",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-builder",
+      "roleAlias": "builder",
+      "count": 2,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "You are one of two parallel builders. Coordinate strictly through task ownership, comments, and master-approved scope changes.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-qa-design",
+      "roleAlias": "qa-design",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-release-engineer",
+      "roleAlias": "release-engineer",
+      "count": 1,
+      "required": true
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "A larger gstack full-stack team that supports parallel execution without sacrificing task-driven coordination or quality gates.",
+    "initialObjective": "Separate product framing, architecture, implementation, QA/design, and release so the team can move multiple workstreams in parallel while preserving one board-centered operating model.",
+    "sharedContext": [
+      "This roster is still one full-stack team, not a federation of side pods: all seats operate against the same board and one delivery objective.",
+      "Parallel builders only work well when architecture, strategy, and acceptance criteria are recorded explicitly before code diverges.",
+      "QA/design and release are independent closure gates; both must leave evidence on the board.",
+      "No peer-to-peer scope changes off-board: ownership, priority, and acceptance changes must route through tasks and master coordination."
+    ],
+    "commandChain": [
+      "user -> master -> task board -> product-strategist/architect -> builders -> qa-design/release-engineer -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": true
+    }
+  }
+}

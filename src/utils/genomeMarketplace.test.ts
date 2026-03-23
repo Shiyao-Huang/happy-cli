@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildPublishedCorpsSpec,
+    deriveRoleIdFromGenomeRef,
+    formatMarketplaceGenomeRef,
     getPreferredGenomeNames,
     parseMarketplaceFeedbackData,
+    parseCorpsSpecFromGenome,
     searchMatchesRole,
     selectBestRatedGenomeCandidate,
 } from './genomeMarketplace';
@@ -78,5 +81,56 @@ describe('genomeMarketplace helpers', () => {
         expect(corps.members).toHaveLength(2);
         expect(corps.members.find((member) => member.roleAlias === 'builder')?.count).toBe(2);
         expect(corps.bootContext?.initialObjective).toBe('Ship the sprint backlog');
+    });
+
+    it('does not merge members that have different overlays', () => {
+        const corps = buildPublishedCorpsSpec({
+            name: 'delivery-squad',
+            description: 'Auto-published corps template',
+            members: [
+                {
+                    genome: '@official/implementer:3',
+                    roleAlias: 'builder',
+                    required: true,
+                    overlay: { promptSuffix: 'Focus on backend tasks.' },
+                },
+                {
+                    genome: '@official/implementer:3',
+                    roleAlias: 'builder',
+                    required: true,
+                    overlay: { promptSuffix: 'Focus on frontend tasks.' },
+                },
+            ],
+        });
+
+        expect(corps.members).toHaveLength(2);
+        expect(corps.members.every((member) => member.count === 1)).toBe(true);
+    });
+
+    it('formats pinned genome refs for corps publishing and template spawn', () => {
+        expect(formatMarketplaceGenomeRef({
+            namespace: '@public',
+            name: 'fullstack-squad',
+            version: 4,
+        }, { pinVersion: true })).toBe('@public/fullstack-squad:4');
+        expect(deriveRoleIdFromGenomeRef('@official/qa-engineer:2')).toBe('qa-engineer');
+    });
+
+    it('parses corps specs from marketplace records', () => {
+        const corps = parseCorpsSpecFromGenome({
+            name: 'fullstack-squad',
+            category: 'corps',
+            spec: JSON.stringify({
+                namespace: '@public',
+                name: 'fullstack-squad',
+                version: 1,
+                description: 'Template',
+                members: [
+                    { genome: '@official/master', roleAlias: 'master' },
+                ],
+            }),
+        });
+
+        expect(corps.members[0]?.roleAlias).toBe('master');
     });
 });

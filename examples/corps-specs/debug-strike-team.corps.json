@@ -1,0 +1,105 @@
+{
+  "namespace": "@official",
+  "name": "debug-strike-team",
+  "version": 1,
+  "description": "Root-cause and recovery squad for regressions, flaky behavior, or high-uncertainty incidents.",
+  "tags": [
+    "corps",
+    "team-template",
+    "debugging",
+    "incident-response",
+    "root-cause",
+    "regression"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve",
+          "agent.spawn"
+        ]
+      }
+    },
+    {
+      "genome": "@official/researcher",
+      "roleAlias": "researcher",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Own reproduction, evidence gathering, trace collection, and narrowing of failure conditions. Prioritize root cause over patch speculation.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/architect",
+      "roleAlias": "architect",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Own fault isolation strategy, rollback/risk assessment, and the shape of the smallest safe fix for cross-cutting issues.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/implementer",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Implement only after repro and containment plan are clear. Prefer the smallest safe fix with explicit regression guards.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "qa-engineer",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Verify the fix, guard against recurrence, and document repro plus verification evidence before closure.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "Incident/debugging team for failures that need evidence, technical judgment, and disciplined validation.",
+    "initialObjective": "Reproduce first, isolate root cause, define the safest fix/rollback path, and close only after regression protection is verified.",
+    "sharedContext": [
+      "No speculative fixes. Reproduce first and preserve evidence.",
+      "Architect and researcher narrow the problem before builder changes code.",
+      "Every incident task should capture current behavior, expected behavior, likely blast radius, and verification steps.",
+      "QA owns regression confidence before the team declares recovery complete."
+    ],
+    "commandChain": [
+      "user -> master -> researcher/architect -> builder -> qa-engineer -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": false
+    }
+  }
+}

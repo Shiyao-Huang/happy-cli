@@ -1,5 +1,6 @@
 import type { CorpsSpec } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
+import { buildMarketplaceConnectionHint } from './marketplaceConnection';
 
 export type MarketplaceGenomeRecord = {
     id: string;
@@ -7,6 +8,7 @@ export type MarketplaceGenomeRecord = {
     name: string;
     version?: number | null;
     description?: string | null;
+    spec?: string | null;
     tags?: string | null;
     category?: string | null;
     spawnCount?: number | null;
@@ -90,6 +92,20 @@ function parseJsonArray(value?: string | null): string[] {
     } catch {
         return [];
     }
+}
+
+function stableStringify(value: unknown): string {
+    if (value === null || value === undefined) return 'null';
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+    }
+    if (typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, nested]) => `${JSON.stringify(key)}:${stableStringify(nested)}`);
+        return `{${entries.join(',')}}`;
+    }
+    return JSON.stringify(value);
 }
 
 export function parseMarketplaceFeedbackData(feedbackData?: string | null): MarketplaceFeedbackSummary {
@@ -176,9 +192,14 @@ export async function searchMarketplaceGenomes(options?: {
     query.set('sortBy', 'score');
     query.set('limit', String(options?.limit ?? 20));
 
-    const response = await fetch(`${hubUrl}/genomes?${query.toString()}`, {
-        signal: AbortSignal.timeout(5_000),
-    });
+    let response: Response;
+    try {
+        response = await fetch(`${hubUrl}/genomes?${query.toString()}`, {
+            signal: AbortSignal.timeout(5_000),
+        });
+    } catch (error) {
+        throw new Error(`${String(error)}. ${buildMarketplaceConnectionHint(hubUrl)}`);
+    }
 
     if (!response.ok) {
         throw new Error(`genome-hub returned ${response.status}`);
@@ -188,18 +209,75 @@ export async function searchMarketplaceGenomes(options?: {
     return payload.genomes ?? [];
 }
 
-export async function fetchGenomeRecordById(specId: string, hubUrl?: string): Promise<MarketplaceGenomeRecord | null> {
+function resolveMarketplaceGenomeUrls(specId: string, hubUrl?: string): string[] {
     const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
-    const response = await fetch(`${baseUrl}/genomes/id/${encodeURIComponent(specId)}`, {
-        signal: AbortSignal.timeout(5_000),
-    });
+    const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
 
-    if (!response.ok) {
-        return null;
+    if (nsMatch) {
+        const [, ns, name, version] = nsMatch;
+        const encodedNs = encodeURIComponent(ns);
+        return version
+            ? [`${baseUrl}/genomes/${encodedNs}/${name}/${version}`]
+            : [`${baseUrl}/genomes/${encodedNs}/${name}`];
     }
 
-    const payload = await response.json() as { genome?: MarketplaceGenomeRecord };
-    return payload.genome ?? null;
+    return [`${baseUrl}/genomes/id/${encodeURIComponent(specId)}`];
+}
+
+export async function fetchMarketplaceGenomeDetail(specId: string, hubUrl?: string): Promise<MarketplaceGenomeRecord | null> {
+    for (const url of resolveMarketplaceGenomeUrls(specId, hubUrl)) {
+        const response = await fetch(url, {
+            signal: AbortSignal.timeout(5_000),
+        });
+
+        if (!response.ok) {
+            continue;
+        }
+
+        const payload = await response.json() as { genome?: MarketplaceGenomeRecord };
+        if (payload.genome) {
+            return payload.genome;
+        }
+    }
+
+    return null;
+}
+
+export async function fetchGenomeRecordById(specId: string, hubUrl?: string): Promise<MarketplaceGenomeRecord | null> {
+    return fetchMarketplaceGenomeDetail(specId, hubUrl);
+}
+
+export function formatMarketplaceGenomeRef(
+    genome: Pick<MarketplaceGenomeRecord, 'namespace' | 'name' | 'version'>,
+    options?: { pinVersion?: boolean },
+): string | null {
+    if (!genome.namespace || !genome.name) return null;
+    if (options?.pinVersion && typeof genome.version === 'number') {
+        return `${genome.namespace}/${genome.name}:${genome.version}`;
+    }
+    return `${genome.namespace}/${genome.name}`;
+}
+
+export function parseCorpsSpecFromGenome(genome: Pick<MarketplaceGenomeRecord, 'name' | 'category' | 'spec'>): CorpsSpec {
+    if (!genome.spec) {
+        throw new Error(`Marketplace record "${genome.name}" has no spec payload.`);
+    }
+
+    const parsed = JSON.parse(genome.spec) as CorpsSpec;
+    if (!parsed || !Array.isArray(parsed.members)) {
+        throw new Error(`Marketplace record "${genome.name}" is not a valid CorpsSpec team template.`);
+    }
+
+    if (genome.category && genome.category !== 'corps') {
+        throw new Error(`Marketplace record "${genome.name}" is category "${genome.category}", not a corps/team template.`);
+    }
+
+    return parsed;
+}
+
+export function deriveRoleIdFromGenomeRef(genomeRef: string): string {
+    const match = genomeRef.match(/^@[^/]+\/([^:]+)(?::\d+)?$/);
+    return match?.[1] || 'member';
 }
 
 export async function resolveOfficialGenomeSpecId(
@@ -317,7 +395,7 @@ export function buildPublishedCorpsSpec(options: {
     const aggregated = new Map<string, CorpsSpec['members'][number]>();
 
     for (const member of options.members) {
-        const key = `${member.genome}::${member.roleAlias || ''}::${member.required !== false}`;
+        const key = `${member.genome}::${member.roleAlias || ''}::${member.required !== false}::${stableStringify(member.overlay ?? null)}`;
         const existing = aggregated.get(key);
         if (existing) {
             existing.count = (existing.count ?? 1) + 1;
@@ -397,8 +475,9 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
 
             if (member?.specId) {
                 const genome = await fetchGenomeRecordById(String(member.specId), hubUrl);
-                if (genome?.namespace && genome?.name) {
-                    genomeRef = `${genome.namespace}/${genome.name}`;
+                const pinnedRef = genome ? formatMarketplaceGenomeRef(genome, { pinVersion: true }) : null;
+                if (pinnedRef) {
+                    genomeRef = pinnedRef;
                 }
             }
 

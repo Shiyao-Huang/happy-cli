@@ -143,7 +143,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             assigneeId: z.string().optional().describe('New assignee Session ID'),
             priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('New priority'),
             comment: z.string().optional().describe('Add a comment/note to the task'),
-            commentType: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'decision']).optional().describe('Optional structured comment type'),
+            commentType: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'decision', 'plan', 'plan-review', 'execution-check', 'rework-request']).optional().describe('Optional structured comment type'),
         },
     }, async (args) => {
         try {
@@ -296,7 +296,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
         inputSchema: {
             taskId: z.string().describe('The ID of the task to comment on'),
             content: z.string().describe('Comment text'),
-            type: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'blocker', 'decision']).default('note').describe('Structured comment type'),
+            type: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'blocker', 'decision', 'plan', 'plan-review', 'execution-check', 'rework-request']).default('note').describe('Structured comment type'),
             mentions: z.array(z.string()).optional().describe('Optional session IDs to mention'),
         },
     }, async (args) => {
@@ -720,7 +720,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
     // Start Task - Uses TaskStateManager for execution link management and state broadcasting
     mcp.registerTool('start_task', {
-        description: 'Mark a task as actively being worked on by you. Creates an execution link between your session and the task. Add a comment if your planned approach or scope boundary would help future handoff/review.',
+        description: 'Mark a task as actively being worked on by you. Creates an execution link between your session and the task. After start_task, you should read the full task with get_task and leave a type=plan task comment before implementation.',
         title: 'Start Task',
         inputSchema: {
             taskId: z.string().describe('ID of the task to start'),

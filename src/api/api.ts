@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
+import type { CorpsSpec } from '@/api/types/genome'
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
 import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumDecryptWithSecretKey, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey, libsodiumSecretKeyFromSeed } from './encryption';
@@ -8,6 +9,7 @@ import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
 import chalk from 'chalk';
 import { Credentials } from '@/persistence';
+import { buildMarketplaceConnectionHint, buildMarketplacePublishAuthHint } from '@/utils/marketplaceConnection';
 
 export class ApiClient {
 
@@ -1401,7 +1403,7 @@ export class ApiClient {
   async resolveBlockerWithComment(teamId: string, taskId: string, blockerId: string, sessionId: string, resolution: string, comment?: {
     role?: string;
     displayName?: string;
-    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
     content: string;
     mentions?: string[];
   }): Promise<{ success: boolean; task: any }> {
@@ -1429,7 +1431,7 @@ export class ApiClient {
     sessionId: string;
     role?: string;
     displayName?: string;
-    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+    type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
     content: string;
     fromStatus?: string;
     toStatus?: string;
@@ -2217,6 +2219,7 @@ export class ApiClient {
     // Primary: genome-hub (M3 marketplace, port 3006)
     const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const connectionHint = buildMarketplaceConnectionHint(hubUrl);
     const namespace = genome.namespace ?? '@public';
     const encodedNs = encodeURIComponent(namespace);
     const encodedName = encodeURIComponent(genome.name);
@@ -2250,7 +2253,8 @@ export class ApiClient {
       if (hubError?.response) {
         const status = hubError.response.status;
         const body = JSON.stringify(hubError.response.data ?? {});
-        throw new Error(`genome-hub returned ${status}: ${body}`);
+        const authHint = buildMarketplacePublishAuthHint(status);
+        throw new Error(`genome-hub returned ${status}: ${body}. ${authHint}`);
       }
 
       // genome-hub unreachable — fall back to happy-server legacy endpoint
@@ -2271,8 +2275,89 @@ export class ApiClient {
         return fallback.data;
       } catch (fallbackError) {
         logger.debug(`[API] [ERROR] Both genome-hub and happy-server failed`, fallbackError);
-        throw new Error(`Failed to create genome: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}`);
+        throw new Error(`Failed to create genome: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}. ${connectionHint}`);
       }
     }
+  }
+
+  /**
+   * Publish a CorpsSpec team template directly to genome-hub /corps.
+   * Unlike createGenome, corps publication currently has no happy-server fallback
+   * because the public marketplace is the source of truth for team templates.
+   */
+  async createCorpsTemplate(corps: {
+    name: string;
+    description: string;
+    spec: string;
+    namespace?: string;
+    version?: number;
+    tags?: string;
+    isPublic?: boolean;
+    publisherId?: string | null;
+  }): Promise<{ genome: any; corps: CorpsSpec }> {
+    const hubUrl = (process.env.GENOME_HUB_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const connectionHint = buildMarketplaceConnectionHint(hubUrl);
+
+    try {
+      const response = await axios.post(
+        `${hubUrl}/corps`,
+        {
+          namespace: corps.namespace ?? '@public',
+          name: corps.name,
+          version: corps.version ?? 1,
+          description: corps.description,
+          spec: corps.spec,
+          tags: corps.tags,
+          isPublic: corps.isPublic ?? true,
+          publisherId: corps.publisherId ?? null,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
+          },
+          timeout: 10000,
+        }
+      );
+      logger.debug(`[API] Created corps template in genome-hub: ${response.data?.genome?.id}`);
+      return response.data;
+    } catch (hubError: any) {
+      if (hubError?.response) {
+        const status = hubError.response.status;
+        const body = JSON.stringify(hubError.response.data ?? {});
+        const authHint = buildMarketplacePublishAuthHint(status);
+        throw new Error(`genome-hub returned ${status}: ${body}. ${authHint}`);
+      }
+
+      logger.debug(`[API] [ERROR] Failed to create corps template in genome-hub`, hubError);
+      throw new Error(`Failed to create corps template: ${hubError instanceof Error ? hubError.message : 'Unknown error'}. ${connectionHint}`);
+    }
+  }
+
+  /**
+   * Update genome marketing metadata (description, tags, category, isPublic, status)
+   * without creating a new spec version. Calls PATCH /v1/genomes/:id on happy-server.
+   * Called by the update_genome MCP tool.
+   */
+  async updateGenome(genomeId: string, updates: {
+    description?: string | null;
+    tags?: string | null;
+    category?: string | null;
+    isPublic?: boolean;
+    status?: 'draft' | 'unverified' | 'verified' | 'official' | 'archived';
+  }): Promise<{ genome: any }> {
+    const response = await axios.patch(
+      `${configuration.serverUrl}/v1/genomes/${encodeURIComponent(genomeId)}`,
+      updates,
+      {
+        headers: {
+          'Authorization': `Bearer ${this.credential.token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+    return response.data;
   }
 }

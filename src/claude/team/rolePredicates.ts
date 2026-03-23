@@ -59,6 +59,9 @@ export function isBootstrapRole(role: string | undefined, genome?: { executionPl
 export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
     if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('agent.spawn')) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
+    // agent-builder genome defines canSpawnAgents:true; add hardcoded fallback for solo/no-genome sessions
+    // (genome spec is authoritative when loaded, this fallback covers local dev and direct-chat solo sessions)
+    if (role === 'agent-builder') return true;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 

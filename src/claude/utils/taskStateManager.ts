@@ -101,7 +101,7 @@ interface KanbanTask {
         authorDisplayName?: string;
         authorRole?: string;
         authorSessionId?: string;
-        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
     }>;
     humanStatusLock?: HumanStatusLock | null;
 }
@@ -698,7 +698,7 @@ export class TaskStateManager {
         taskId: string,
         blockerId: string,
         resolution: string,
-        comment?: { role?: string; displayName?: string; type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override'; content: string; mentions?: string[] }
+        comment?: { role?: string; displayName?: string; type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request'; content: string; mentions?: string[] }
     ): Promise<{ success: boolean; error?: string }> {
         try {
             const result = await this.api.resolveBlockerWithComment(
@@ -740,7 +740,7 @@ export class TaskStateManager {
         taskId: string,
         comment: {
             content: string;
-            type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+            type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
             displayName?: string;
             mentions?: string[];
         }

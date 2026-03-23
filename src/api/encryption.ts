@@ -130,6 +130,9 @@ export function encryptLegacy(data: any, secret: Uint8Array): Uint8Array {
  * @returns The decrypted data
  */
 export function decryptLegacy(data: Uint8Array, secret: Uint8Array): any | null {
+  if (data.length < tweetnacl.secretbox.nonceLength) {
+    return null;
+  }
   const nonce = data.slice(0, tweetnacl.secretbox.nonceLength);
   const encrypted = data.slice(tweetnacl.secretbox.nonceLength);
   const decrypted = tweetnacl.secretbox.open(encrypted, nonce, secret);

@@ -4,12 +4,19 @@
 
 import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { DEFAULT_KANBAN_BOARD } from '@/claude/team/roles.config';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { stopDaemonTeamSessions, checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
+import {
+  deriveRoleIdFromGenomeRef,
+  fetchMarketplaceGenomeDetail,
+  parseCorpsSpecFromGenome,
+} from '@/utils/genomeMarketplace';
 
 interface TeamCommandOptions {
   force?: boolean;
@@ -35,7 +42,7 @@ function hasFlag(args: string[], ...flags: string[]): boolean {
 
 function getPositionalArgs(args: string[]): string[] {
   const positional: string[] = [];
-  const booleanFlags = new Set(['--force', '-f', '--verbose', '-v', '--json', '--help', '-h']);
+  const booleanFlags = new Set(['--force', '-f', '--verbose', '-v', '--json', '--help', '-h', '--no-spawn']);
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -304,6 +311,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('status')} [teamId]               Show team + Kanban status summary
   ${chalk.yellow('create')}                        Create a team artifact
   ${chalk.yellow('spawn')}                         Create team + spawn agents from preset (P0)
+  ${chalk.yellow('publish-template')}              Publish a CorpsSpec JSON file to the marketplace
   ${chalk.yellow('members')} <teamId>              List team members
   ${chalk.yellow('add-member')} <teamId>           Add a member to a team
   ${chalk.yellow('remove-member')} <teamId>        Remove a member from a team
@@ -327,10 +335,20 @@ ${chalk.bold('Create options:')}
 
 ${chalk.bold('Spawn options (P0 — one-command team bootstrap):')}
   ${chalk.cyan('--preset <name>')}                Preset: deployment | dev | review | minimal
+  ${chalk.cyan('--template <id|@ns/name[:v]>')}   Marketplace corps/team-template to instantiate
   ${chalk.cyan('--name "Team Name"')}             Team name (default: preset name)
   ${chalk.cyan('--team <teamId>')}                Add agents to existing team instead of creating new
   ${chalk.cyan('--path <cwd>')}                   Working directory for spawned agents
   ${chalk.cyan('--model claude|codex')}           Runtime model for all agents (default: claude)
+  ${chalk.cyan('--no-spawn')}                     Create the team from template without immediately spawning members
+
+${chalk.bold('Publish-template options:')}
+  ${chalk.cyan('--file <path>')}                  Path to a .corps.json file
+  ${chalk.cyan('--name <templateName>')}          Optional marketplace name override
+  ${chalk.cyan('--namespace <scope>')}            Optional namespace override (default from file or @public)
+  ${chalk.cyan('--description <text>')}           Optional description override
+  ${chalk.cyan('--version <n>')}                  Optional version override
+  ${chalk.cyan('--tags <json-array>')}            Optional tags override, e.g. '["corps","gstack"]'
 
 ${chalk.bold('Member options:')}
   ${chalk.cyan('--session <sessionId>')}          Session ID for add-member/remove-member
@@ -352,6 +370,8 @@ ${chalk.bold('Examples:')}
   ${chalk.green('aha team status team_123')}
   ${chalk.green('aha teams spawn --preset deployment --name "Deploy Crew"')}
   ${chalk.green('aha teams spawn --preset dev --team existing-team-id')}
+  ${chalk.green('aha teams spawn --template @public/fullstack-squad:1 --name "Fullstack Squad"')}
+  ${chalk.green('aha teams publish-template --file examples/gstack-teams/gstack-trio.corps.json --namespace @official')}
   ${chalk.green('aha teams show team_123')}
   ${chalk.green('aha teams add-member team_123 --session sess_1 --role builder --name "Builder 2"')}
   ${chalk.green('aha teams archive team_123 --force')}
@@ -394,18 +414,36 @@ export async function handleTeamsCommand(args: string[]) {
         break;
       case 'spawn': {
         const preset = getOption(args, 'preset');
-        if (!preset) {
-          throw new Error('Usage: aha teams spawn --preset <deployment|dev|review|minimal> [--name "..."] [--team <id>] [--path <cwd>] [--model claude|codex]');
+        const template = getOption(args, 'template');
+        if (!preset && !template) {
+          throw new Error('Usage: aha teams spawn (--preset <deployment|dev|review|minimal> | --template <id|@ns/name[:v]>) [--name "..."] [--team <id>] [--path <cwd>] [--model claude|codex] [--no-spawn]');
         }
-        await spawnTeamWithPreset(api, preset, {
-          teamId: getOption(args, 'team'),
-          name: getOption(args, 'name'),
-          cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
-          model: (getOption(args, 'model') || 'claude') as 'claude' | 'codex',
-          asJson: options.asJson,
-        });
+        if (preset && template) {
+          throw new Error('Use either --preset or --template, not both.');
+        }
+        if (template) {
+          await spawnTeamFromTemplate(api, template, {
+            teamId: getOption(args, 'team'),
+            name: getOption(args, 'name'),
+            cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
+            model: (getOption(args, 'model') || 'claude') as 'claude' | 'codex',
+            spawnAgents: !hasFlag(args, '--no-spawn'),
+            asJson: options.asJson,
+          });
+        } else {
+          await spawnTeamWithPreset(api, preset!, {
+            teamId: getOption(args, 'team'),
+            name: getOption(args, 'name'),
+            cwd: getOption(args, 'path') || getOption(args, 'cwd') || process.cwd(),
+            model: (getOption(args, 'model') || 'claude') as 'claude' | 'codex',
+            asJson: options.asJson,
+          });
+        }
         break;
       }
+      case 'publish-template':
+        await publishTemplateFromFile(api, args, positional, options);
+        break;
       case 'members':
         if (positional.length < 2) {
           throw new Error('Usage: aha teams members <teamId>');
@@ -871,6 +909,352 @@ const TEAM_PRESETS: Record<string, { description: string; roles: Array<{ roleId:
   },
 };
 
+function humanizeRoleLabel(roleId: string): string {
+  return roleId
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+async function maybeAttachCodexToken(
+  api: ApiClient,
+  runtime: 'claude' | 'codex',
+  spawnBody: Record<string, unknown>,
+): Promise<void> {
+  if (runtime !== 'codex') {
+    return;
+  }
+
+  try {
+    const openAiToken = await api.getVendorToken('openai');
+    if (!openAiToken) {
+      logger.debug('[teams spawn] No stored OpenAI token found for Codex spawn; falling back to machine-local Codex auth');
+      return;
+    }
+
+    spawnBody.token = typeof openAiToken === 'string'
+      ? openAiToken
+      : JSON.stringify(openAiToken);
+  } catch (error) {
+    logger.debug('[teams spawn] Failed to attach OpenAI token for Codex spawn:', error);
+  }
+}
+
+async function createTemplateBackedTeam(
+  api: ApiClient,
+  payload: {
+    teamId: string;
+    name: string;
+    template: { id: string; name: string; namespace: string | null; version?: number | null };
+    bootContext?: Record<string, unknown>;
+  },
+  options: TeamCommandOptions,
+): Promise<void> {
+  const board = JSON.parse(JSON.stringify(DEFAULT_KANBAN_BOARD));
+  board.name = payload.name;
+  board.metadata = {
+    ...(board.metadata || {}),
+    provenance: {
+      source: 'template',
+      templateGenomeId: payload.template.id,
+    },
+  };
+  if (!board.team) {
+    board.team = { members: [] };
+  }
+  board.team.name = payload.name;
+  board.team.members = [];
+  board.team.bootContext = payload.bootContext || {};
+  board.team.template = {
+    templateGenomeId: payload.template.id,
+    namespace: payload.template.namespace,
+    name: payload.template.name,
+    version: payload.template.version ?? null,
+  };
+
+  const initialObjective = typeof payload.bootContext?.initialObjective === 'string'
+    ? payload.bootContext.initialObjective
+    : undefined;
+  if (initialObjective) {
+    board.tasks.push({
+      id: 'team-goal',
+      title: `🎯 Team Goal: ${initialObjective}`,
+      description: 'This is the primary objective for this team.',
+      status: 'todo',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
+
+  const artifact = await api.createArtifact(
+    payload.teamId,
+    {
+      type: 'team',
+      title: payload.name,
+      name: payload.name,
+      sessions: [],
+      draft: false,
+      createdAt: Date.now(),
+    },
+    board,
+  );
+
+  const team = (await api.getTeam(payload.teamId))?.team || {
+    id: artifact.id,
+    name: payload.name,
+    memberCount: 0,
+    taskCount: Array.isArray(board.tasks) ? board.tasks.length : 0,
+    members: [],
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  };
+
+  if (!options.asJson) {
+    console.log(chalk.green(`✓ Team ${payload.teamId} created successfully from template ${payload.template.name}`));
+    printTeam(team, true);
+    console.log();
+  }
+}
+
+async function publishTemplateFromFile(
+  api: ApiClient,
+  args: string[],
+  positional: string[],
+  options: TeamCommandOptions,
+): Promise<void> {
+  const filePath = getOption(args, 'file') || positional[2];
+  if (!filePath) {
+    throw new Error('Usage: aha teams publish-template --file <path-to-corps.json> [--namespace @public]');
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(`Failed to read template file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!Array.isArray(parsed.members) || parsed.members.length === 0) {
+    throw new Error(`Template file ${filePath} is not a valid CorpsSpec: expected a non-empty members array.`);
+  }
+
+  const name = getOption(args, 'name')
+    || (typeof parsed.name === 'string' ? parsed.name : basename(filePath).replace(/\.corps\.json$/u, '').replace(/\.json$/u, ''));
+  const description = getOption(args, 'description')
+    || (typeof parsed.description === 'string' ? parsed.description : '');
+  if (!description) {
+    throw new Error(`Template file ${filePath} is missing description. Pass --description or add CorpsSpec.description.`);
+  }
+
+  const namespace = getOption(args, 'namespace') || (typeof parsed.namespace === 'string' ? parsed.namespace : '@public');
+  const version = Number(getOption(args, 'version') || (typeof parsed.version === 'number' ? parsed.version : 1));
+  const tagsOverride = getOption(args, 'tags');
+  const tags = tagsOverride
+    || (Array.isArray(parsed.tags) ? JSON.stringify(parsed.tags) : undefined);
+
+  const normalized = {
+    ...parsed,
+    namespace,
+    name,
+    version,
+    description,
+    category: 'corps',
+  };
+
+  const result = await api.createCorpsTemplate({
+    name,
+    description,
+    spec: JSON.stringify(normalized),
+    namespace,
+    version,
+    tags,
+    isPublic: true,
+    publisherId: null,
+  });
+
+  if (options.asJson) {
+    console.log(JSON.stringify({ success: true, filePath, genome: result.genome, corps: result.corps }, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`✓ Published corps template ${namespace}/${name}@${version}`));
+  console.log(chalk.gray(`Source file: ${filePath}`));
+  console.log(chalk.gray(`Genome ID: ${result.genome?.id ?? 'unknown'}`));
+  console.log();
+}
+
+async function spawnTeamFromTemplate(
+  api: ApiClient,
+  templateSpec: string,
+  opts: { teamId?: string; name?: string; cwd?: string; model: 'claude' | 'codex'; spawnAgents: boolean; asJson?: boolean },
+): Promise<void> {
+  const templateRecord = await fetchMarketplaceGenomeDetail(templateSpec);
+  if (!templateRecord) {
+    throw new Error(`Template "${templateSpec}" was not found in genome marketplace.`);
+  }
+
+  const corps = parseCorpsSpecFromGenome(templateRecord);
+  const repoRoot = opts.cwd || process.cwd();
+  const teamName = opts.name
+    || (typeof corps.bootContext?.teamDescription === 'string' && corps.bootContext.teamDescription.trim())
+    || templateRecord.description
+    || humanizeRoleLabel(templateRecord.name);
+
+  let teamId = opts.teamId;
+  if (!teamId) {
+    teamId = randomUUID();
+    if (!opts.asJson) {
+      console.log(chalk.bold(`\nCreating team from template: ${teamName}\n`));
+    }
+    await createTemplateBackedTeam(api, {
+      teamId,
+      name: teamName,
+      template: {
+        id: templateRecord.id,
+        name: templateRecord.name,
+        namespace: templateRecord.namespace,
+        version: templateRecord.version,
+      },
+      bootContext: corps.bootContext as Record<string, unknown> | undefined,
+    }, { asJson: opts.asJson });
+  } else if (!opts.asJson) {
+    console.log(chalk.bold(`\nSpawning template members into existing team: ${teamId}\n`));
+  }
+
+  const plannedMembers = corps.members.flatMap((member) => {
+    const count = Math.max(1, member.count ?? 1);
+    return Array.from({ length: count }, (_, index) => ({
+      genome: member.genome,
+      roleId: member.roleAlias || deriveRoleIdFromGenomeRef(member.genome),
+      required: member.required !== false,
+      overlay: member.overlay,
+      ordinal: index + 1,
+      count,
+    }));
+  });
+
+  if (!opts.spawnAgents) {
+    const result = {
+      success: true,
+      teamId,
+      template: {
+        id: templateRecord.id,
+        name: templateRecord.name,
+        namespace: templateRecord.namespace,
+        version: templateRecord.version ?? null,
+      },
+      plannedMembers,
+      spawnedAgents: [],
+    };
+    if (opts.asJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(chalk.green(`✓ Team ${teamId} created from template without spawning members`));
+      console.log(chalk.gray(`Planned members: ${plannedMembers.length}`));
+      console.log(chalk.gray(`Use: aha teams show ${teamId}`));
+      console.log();
+    }
+    return;
+  }
+
+  const { ensureDaemonRunning } = await import('@/daemon/controlClient');
+  const { readDaemonState } = await import('@/persistence');
+  await ensureDaemonRunning();
+  const daemonState = await readDaemonState();
+  if (!daemonState?.httpPort) {
+    throw new Error('Daemon is not running. Start it with: aha');
+  }
+
+  const spawnedAgents: Array<{ sessionId: string; roleId: string; name: string; genome: string }> = [];
+  const skippedOptional = plannedMembers.filter((member) => !member.required).length;
+
+  if (!opts.asJson) {
+    console.log(chalk.cyan(`Template: ${templateRecord.namespace ?? ''}/${templateRecord.name}`));
+    console.log(chalk.gray(`Planned members: ${plannedMembers.length} (${skippedOptional} optional seats deferred)\n`));
+  }
+
+  for (const member of plannedMembers) {
+    if (!member.required) {
+      continue;
+    }
+
+    const suffix = member.count > 1 ? ` ${member.ordinal}` : '';
+    const name = `${humanizeRoleLabel(member.roleId)}${suffix}`;
+    const spawnBody: Record<string, unknown> = {
+      directory: repoRoot,
+      agent: opts.model,
+      role: member.roleId,
+      sessionName: name,
+      teamId,
+      specId: member.genome,
+    };
+
+    await maybeAttachCodexToken(api, opts.model, spawnBody);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spawnBody),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+      if (!response.ok || !result.success || !result.sessionId) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+
+      await api.addTeamMember(teamId, result.sessionId, member.roleId, name, {
+        executionPlane: 'mainline',
+        runtimeType: opts.model,
+        specId: member.genome,
+        ...(member.overlay ? { teamOverlay: member.overlay } : {}),
+      });
+
+      spawnedAgents.push({ sessionId: result.sessionId, roleId: member.roleId, name, genome: member.genome });
+
+      if (!opts.asJson) {
+        console.log(chalk.green(`  ✓ ${name} (${member.roleId}) → ${result.sessionId}`));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!opts.asJson) {
+        console.log(chalk.red(`  ✗ ${name} (${member.roleId}): ${message}`));
+      } else {
+        logger.debug(`[teams spawn-template] Failed to spawn ${name}:`, error);
+      }
+    }
+  }
+
+  const summary = {
+    success: true,
+    teamId,
+    template: {
+      id: templateRecord.id,
+      name: templateRecord.name,
+      namespace: templateRecord.namespace,
+      version: templateRecord.version ?? null,
+    },
+    plannedMembers,
+    spawnedAgents,
+  };
+
+  if (opts.asJson) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+
+  console.log();
+  console.log(chalk.bold(`Template team ready: ${teamId}`));
+  console.log(chalk.gray(`Spawned required members: ${spawnedAgents.length}/${plannedMembers.filter((member) => member.required).length}`));
+  if (skippedOptional > 0) {
+    console.log(chalk.gray(`Deferred optional members: ${skippedOptional}`));
+  }
+  console.log(chalk.gray(`Use: aha teams show ${teamId}`));
+  console.log();
+}
+
 async function spawnTeamWithPreset(
   api: ApiClient,
   preset: string,
@@ -956,6 +1340,8 @@ async function spawnTeamWithPreset(
         teamId,
         env: materializedEnv,
       };
+
+      await maybeAttachCodexToken(api, opts.model, spawnBody);
 
       const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
         method: 'POST',

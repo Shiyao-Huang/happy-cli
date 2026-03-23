@@ -77,13 +77,14 @@ export function registerAgentTools(ctx: McpToolContext): void {
 
         const hubUrl = process.env.GENOME_HUB_URL ?? 'http://localhost:3006';
         try {
-            const agents = (await searchMarketplaceGenomes({
+            const includeCorps = args.category === 'corps';
+            const marketplaceEntries = (await searchMarketplaceGenomes({
                 query: args.query,
                 category: args.category,
                 limit: args.limit ?? 100,
                 hubUrl,
             }))
-                .filter(g => g.category !== 'corps')
+                .filter(g => includeCorps || g.category !== 'corps')
                 .sort((left, right) => {
                     const leftTags = left.tags ? (() => { try { return JSON.parse(left.tags) as string[]; } catch { return []; } })() : [];
                     const rightTags = right.tags ? (() => { try { return JSON.parse(right.tags) as string[]; } catch { return []; } })() : [];
@@ -99,12 +100,13 @@ export function registerAgentTools(ctx: McpToolContext): void {
                     return Number(rightSpecial) - Number(leftSpecial);
                 });
 
-            if (agents.length === 0) {
-                return { content: [{ type: 'text', text: args.query ? `No marketplace agents matched "${args.query}".` : 'Marketplace is empty.' }], isError: false };
+            if (marketplaceEntries.length === 0) {
+                const noun = includeCorps ? 'team templates' : 'agents';
+                return { content: [{ type: 'text', text: args.query ? `No marketplace ${noun} matched "${args.query}".` : 'Marketplace is empty.' }], isError: false };
             }
 
             // Compact directory: one line per genome, minimal tokens
-            const lines = agents.map(g => {
+            const lines = marketplaceEntries.map(g => {
                 let fb: { avgScore?: number; evaluationCount?: number } = {};
                 try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
                 const parsedTags = g.tags ? (() => { try { return JSON.parse(g.tags!) as string[]; } catch { return []; } })() : [];
@@ -119,7 +121,9 @@ export function registerAgentTools(ctx: McpToolContext): void {
                 return `${special}${g.id} ${g.namespace ?? ''}/${g.name} ${score} ${spawns} [${tags}] ${desc}`.trim();
             });
 
-            const header = `${agents.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.${args.query ? ` Query="${args.query}".` : ''}`;
+            const header = includeCorps
+                ? `${marketplaceEntries.length} team templates (category=corps). Use the returned ids/refs in template-based team creation flows.${args.query ? ` Query="${args.query}".` : ''}`
+                : `${marketplaceEntries.length} agents (sorted by score). Pass id to create_agent(specId=...) to spawn.${args.query ? ` Query="${args.query}".` : ''}`;
             return { content: [{ type: 'text', text: header + '\n' + lines.join('\n') }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error querying genome hub: ${String(error)}` }], isError: true };

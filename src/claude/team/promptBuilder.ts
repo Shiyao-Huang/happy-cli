@@ -65,6 +65,11 @@ export interface KanbanTaskSummary {
     commentCount?: number;
     lastCommentPreview?: string;
     lastCommentBy?: string;
+    hasPlanComment?: boolean;
+    latestPlanPreview?: string;
+    latestPlanBy?: string;
+    hasExecutionCheckComment?: boolean;
+    latestExecutionCheckPreview?: string;
     comments?: Array<{
         authorDisplayName?: string;
         authorRole?: string;
@@ -213,9 +218,14 @@ function buildPhase1WorkerSection(): string {
     return `## Phase 1 - Task Execution (When assigned)
 
 ### Pre-Execution Checklist:
-1. Call 'start_task' to acknowledge and begin the task BEFORE starting implementation
-2. Understand the full scope from task description
-3. Ask clarifying questions if requirements unclear
+1. Call 'get_task' to read the FULL task description and complete comment history before acting
+2. Call 'start_task' to acknowledge and begin the task BEFORE starting implementation
+3. Immediately leave a task comment of type \`plan\` with:
+   - your proposed approach,
+   - a markdown checklist using \`- [ ]\` items,
+   - any risks / open questions / dependencies
+4. Ask clarifying questions if requirements are still unclear
+5. If there is a newer blocking \`review-feedback\`, \`plan-review\`, or \`rework-request\` comment, revise the plan first instead of coding immediately
 
 ### Execution:
 - Follow existing codebase patterns
@@ -225,8 +235,9 @@ function buildPhase1WorkerSection(): string {
 
 ### Post-Execution:
 1. Verify changes work (run tests if applicable)
-2. Mark task \`done\` via 'update_task'
-3. Report completion via 'send_team_message'
+2. Leave a task comment of type \`execution-check\` that mirrors the plan checklist with \`[x]\` / \`[ ]\` states plus evidence / what to verify
+3. Mark task \`done\` via 'update_task' or \`complete_task\`
+4. Report completion via 'send_team_message'
 `;
 }
 
@@ -254,8 +265,9 @@ function buildPhase1CoordinatorSection(): string {
 
 ### Team Coordination:
 1. Announce plan via 'send_team_message'
-2. Monitor [PENDING APPROVALS] for items needing review
-3. Resolve blockers reported by team members
+2. Review task comments of type \`plan\`, \`execution-check\`, and \`rework-request\` before approving work to continue or merge
+3. Monitor [PENDING APPROVALS] for items needing review
+4. Resolve blockers reported by team members
 `;
 }
 
@@ -305,11 +317,14 @@ ${isCoordinator ? `
 ` : `
 **Task-Owning Workflow:**
 1. **CHECK** [MY TASKS] for assigned work
-2. **START** assigned work visibly (\`start_task\`)
-3. **EXECUTE** the assigned task
-4. **COMPLETE** visibly (\`complete_task\`) or **REPORT** blocker (\`report_blocker\`)
-5. **USE CHAT AS SUPPORT**, not as a replacement for board state
-6. **LEAVE TASK MEMORY** via comments when you hand off, reject, or send work back for rework
+2. **READ FULL TASK MEMORY** via \`get_task(taskId)\` before acting on a task with comments
+3. **START** assigned work visibly (\`start_task\`)
+4. **POST A PLAN COMMENT** (\`add_task_comment\` type=\`plan\`) before implementation, including checklist items in markdown \`- [ ]\` form
+5. **EXECUTE** only after your latest plan comment reflects the intended work and no unresolved rework/review comment contradicts it
+6. **POST AN EXECUTION CHECK COMMENT** (\`add_task_comment\` type=\`execution-check\`) before handoff / completion so reviewers can compare plan vs reality item-by-item
+7. **COMPLETE** visibly (\`complete_task\`) or **REPORT** blocker (\`report_blocker\`)
+8. **USE CHAT AS SUPPORT**, not as a replacement for board state
+9. **LEAVE TASK MEMORY** via comments when you hand off, reject, or send work back for rework
 `}
 
 ### Anti-Patterns (BLOCKING VIOLATIONS)
@@ -459,14 +474,15 @@ These tasks are assigned to you. Work on these:
                 section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
 `;
             }
-            if (task.humanStatusLock) {
-                const lockedBy = task.humanStatusLock.lockedByDisplayName || task.humanStatusLock.lockedBySessionId || 'a human';
-                section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
+            if (!task.hasPlanComment && ['todo', 'in-progress', 'review'].includes(task.status)) {
+                section += `   🧠 PLAN COMMENT MISSING: post a type=plan comment before coding
+`;
+            } else if (task.latestPlanPreview) {
+                section += `   🧠 PLAN by ${task.latestPlanBy || 'Unknown'}: ${task.latestPlanPreview}
 `;
             }
-            if (task.humanStatusLock) {
-                const lockedBy = task.humanStatusLock.lockedByDisplayName || task.humanStatusLock.lockedBySessionId || 'a human';
-                section += `   ✋ HUMAN LOCK (${task.humanStatusLock.mode}): ${lockedBy}
+            if (task.latestExecutionCheckPreview) {
+                section += `   ☑️ EXECUTION CHECK: ${task.latestExecutionCheckPreview}
 `;
             }
             if (task.lastCommentPreview) {
@@ -580,6 +596,18 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
     } else if (ownsTasks) {
         if (hasMyTasks) {
             const inProgress = kanbanContext!.myTasks.filter(t => t.status === 'in-progress');
+            const missingPlan = kanbanContext!.myTasks.filter(t => !t.hasPlanComment && ['todo', 'in-progress', 'review'].includes(t.status));
+            if (missingPlan.length > 0) {
+                section += `🧠 **PLAN FIRST**: ${missingPlan.length} active task(s) still need a plan comment.
+
+**Action**:
+1. Call get_task on the active task
+2. Post \`add_task_comment\` with \`type: "plan"\`
+3. Write checklist items as \`- [ ]\` entries so execution can be reviewed against them
+4. Only then continue implementation
+`;
+                return section;
+            }
             if (inProgress.length > 0) {
                 section += `🔄 **CONTINUE**: ${inProgress.length} task(s) in progress.
 
@@ -590,9 +618,11 @@ function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): s
 
 **Action**:
 1. Select highest priority task
-2. Call start_task to acknowledge and begin it
-3. Execute the task
-4. Call complete_task when finished or report_blocker if stuck
+2. Call get_task to read the full comment history
+3. Call start_task to acknowledge and begin it
+4. Immediately add a \`plan\` comment with checklist items
+5. Execute the task
+6. Add an \`execution-check\` comment and call complete_task when finished (or report_blocker if stuck)
 `;
             }
         } else if (hasAvailableTasks) {
@@ -703,6 +733,11 @@ Special rule for agent-authoring work:
 - Spawn it with a prompt that says what kind of agent/genome work it should do
 
 When forking a marketplace genome, pass the original genome's \`id\` as \`parentId\` in \`create_genome\` calls, along with a brief \`mutationNote\` describing your changes.
+
+Important marketplace publish rule:
+- Use \`create_genome\` for \`GenomeSpec\` payloads
+- Use \`create_corps\` for \`CorpsSpec\` / reusable team-template payloads
+- Do NOT try to publish a team template through \`create_genome\`
 
 ### Step 4: Spawn Team Members
 

@@ -181,6 +181,12 @@ export const ROLE_COLLABORATION_MAP: Record<string, string[]> = {
 
     // Help Agent: responds to help requests, listens to nobody (event-triggered)
     'help-agent': [],
+
+    // ===========================================
+    // SPECIAL ROLES (genome authoring)
+    // ===========================================
+    // Agent Builder: genome architect, listens to user + coordinators + org-manager
+    'agent-builder': ['user', 'master', 'orchestrator', 'org-manager'],
 };
 
 /**

@@ -112,7 +112,7 @@ export interface KanbanTask {
         authorSessionId?: string;
         content: string;
         createdAt: number;
-        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override';
+        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
     }>;
     labels?: string[];
     approvalStatus?: 'pending' | 'approved' | 'rejected' | 'not_required';
@@ -122,6 +122,21 @@ export interface KanbanTask {
  * Convert a KanbanTask to KanbanTaskSummary for prompt injection
  */
 function toTaskSummary(task: KanbanTask): KanbanTaskSummary {
+    const latestPlanComment = [...(task.comments || [])]
+        .filter((comment) => comment.type === 'plan')
+        .sort((left, right) => right.createdAt - left.createdAt)[0];
+    const latestExecutionCheckComment = [...(task.comments || [])]
+        .filter((comment) => comment.type === 'execution-check')
+        .sort((left, right) => right.createdAt - left.createdAt)[0];
+
+    const formatCommentAuthor = (comment?: NonNullable<KanbanTask['comments']>[number]) =>
+        comment
+            ? (comment.authorDisplayName
+                || comment.authorRole
+                || comment.authorSessionId
+                || 'Unknown')
+            : undefined;
+
     return {
         id: task.id,
         title: task.title,
@@ -153,6 +168,11 @@ function toTaskSummary(task: KanbanTask): KanbanTaskSummary {
                 || (task.comments[task.comments.length - 1] as any).authorSessionId
                 || (task.comments[task.comments.length - 1] as any).sessionId)
             : undefined,
+        hasPlanComment: Boolean(latestPlanComment),
+        latestPlanPreview: latestPlanComment?.content.slice(0, 500),
+        latestPlanBy: formatCommentAuthor(latestPlanComment),
+        hasExecutionCheckComment: Boolean(latestExecutionCheckComment),
+        latestExecutionCheckPreview: latestExecutionCheckComment?.content.slice(0, 500),
         comments: task.comments?.slice(-20).map((comment: any) => ({
             authorDisplayName: comment.authorDisplayName || comment.displayName,
             authorRole: comment.authorRole,

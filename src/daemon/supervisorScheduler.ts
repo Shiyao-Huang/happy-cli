@@ -79,7 +79,10 @@ export function collectLiveMainlineSessionIdsByTeam(
     const meta = session.ahaSessionMetadataFromLocalWebhook;
     const sessionTeamId = meta?.teamId || meta?.roomId;
     if (!sessionTeamId || !session.ahaSessionId) continue;
+    // Exclude supervisor and help-agent roles
     if (meta?.role === 'supervisor' || meta?.role === 'help-agent') continue;
+    // Exclude bypass execution plane (double-safety with role check)
+    if (meta?.executionPlane === 'bypass') continue;
 
     const teamSessions = sessionsByTeam.get(sessionTeamId) ?? new Set<string>();
     teamSessions.add(session.ahaSessionId);
@@ -87,6 +90,45 @@ export function collectLiveMainlineSessionIdsByTeam(
   }
 
   return sessionsByTeam;
+}
+
+/**
+ * Resolve the best working directory for bypass agents on a team.
+ *
+ * We prefer the project path reported by a live mainline team member so
+ * supervisors/help-agents inherit the real repo context instead of the daemon's
+ * private aha home directory. If no trustworthy mainline path exists, fall back
+ * to the daemon process cwd.
+ */
+export function resolveTeamWorkingDirectory(
+  teamId: string,
+  pidToTrackedSession: Map<number, TrackedSession>
+): string {
+  const candidates = Array.from(pidToTrackedSession.values())
+    .filter((session) => {
+      const meta = session.ahaSessionMetadataFromLocalWebhook;
+      const sessionTeamId = meta?.teamId || meta?.roomId;
+      if (sessionTeamId !== teamId) return false;
+      if (!session.ahaSessionId) return false;
+      if (meta?.role === 'supervisor' || meta?.role === 'help-agent') return false;
+      if (meta?.executionPlane === 'bypass') return false;
+
+      const candidatePath = meta?.path?.trim();
+      return Boolean(candidatePath) && candidatePath !== configuration.ahaHomeDir;
+    })
+    .sort((left, right) => {
+      const leftStartedAt = left.ahaSessionMetadataFromLocalWebhook?.processStartedAt ?? 0;
+      const rightStartedAt = right.ahaSessionMetadataFromLocalWebhook?.processStartedAt ?? 0;
+      if (rightStartedAt !== leftStartedAt) return rightStartedAt - leftStartedAt;
+      return right.pid - left.pid;
+    });
+
+  const resolvedPath = candidates[0]?.ahaSessionMetadataFromLocalWebhook?.path?.trim();
+  if (resolvedPath) {
+    return resolvedPath;
+  }
+
+  return process.cwd();
 }
 
 // ── Genome resolution ──────────────────────────────────────────────────────────
@@ -336,8 +378,19 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         logger.debug(`[SUPERVISOR SCHEDULER] Supervisor genome specId: ${supervisorSpecId}`);
       }
 
+      const supervisorDirectory = resolveTeamWorkingDirectory(teamId, pidToTrackedSession);
+      if (supervisorDirectory === process.cwd()) {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] No trusted team project path found for ${teamId}; falling back to daemon cwd ${supervisorDirectory}`
+        );
+      } else {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Using team project cwd ${supervisorDirectory} for supervisor on team ${teamId}`
+        );
+      }
+
       const supervisorResult = await spawnSession({
-        directory: configuration.ahaHomeDir,
+        directory: supervisorDirectory,
         agent: 'claude',
         teamId,
         role: 'supervisor',

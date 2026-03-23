@@ -1,0 +1,153 @@
+{
+  "namespace": "@official",
+  "name": "gstack-platoon",
+  "version": 1,
+  "description": "Seven-seat full-stack gstack delivery team with maximum specialization: separate product strategy, architecture, two parallel builders, QA/design, release engineering, and master coordination.",
+  "tags": [
+    "corps",
+    "team-template",
+    "gstack",
+    "fullstack",
+    "platoon",
+    "parallel-execution",
+    "task-driven"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/gstack-master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "retro",
+          "careful"
+        ],
+        "promptSuffix": "You coordinate a 7-person full-stack team with parallel builders. Use /retro after delivery slices and /careful before destructive operations. Product strategy and architecture are delegated to specialist seats; your job is to keep the board accurate, route work to the right seats, sequence parallel execution, and unblock the team.",
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-product-strategist",
+      "roleAlias": "product-strategist",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "office-hours",
+          "plan-ceo-review"
+        ],
+        "promptSuffix": "You sharpen product direction for a 7-person team. Use /office-hours to pressure-test ideas and find the narrowest valuable wedge, and /plan-ceo-review for founder-mode product framing. Convert strategic clarity into task constraints and acceptance signals. Avoid endless expansion; choose the smallest leverageful next step.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-architect",
+      "roleAlias": "architect",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "plan-eng-review",
+          "plan-design-review",
+          "design-consultation"
+        ],
+        "promptSuffix": "You lock in architecture and design decisions that enable parallel execution. Use /plan-eng-review for technical validation, /plan-design-review for UX critique, and /design-consultation for design system strategy. Your recommendations must land as task-ready constraints that both builders and QA can execute against.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-builder",
+      "roleAlias": "builder",
+      "count": 2,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "investigate",
+          "guard",
+          "freeze",
+          "unfreeze"
+        ],
+        "promptSuffix": "You are one of two parallel builders. Coordinate strictly through task ownership, comments, and master-approved scope changes. Use /investigate before non-trivial fixes, /guard for safety-scoped editing, and /freeze//unfreeze to lock down risky directories. Never silently overlap with the other builder; if scope bleeds, request a task split from master.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-qa-design",
+      "roleAlias": "qa-design",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "qa",
+          "qa-only",
+          "design-review",
+          "browse",
+          "setup-browser-cookies",
+          "gstack-upgrade"
+        ],
+        "promptSuffix": "You verify that what the builders produce actually works and looks right. Use /qa for full suites, /qa-only for report-only testing, /design-review for visual audits, /browse and /setup-browser-cookies for browser-based verification, and /gstack-upgrade to keep the team's gstack tooling current. Every finding must include evidence, repro steps, and a pass/fail decision.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-release-engineer",
+      "roleAlias": "release-engineer",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "review",
+          "codex",
+          "ship",
+          "document-release"
+        ],
+        "promptSuffix": "You are the last gate before merge and deploy. Use /review for pre-merge code quality checks, /codex for cross-model second opinions, /ship for PR creation and delivery, and /document-release to sync docs and changelogs. Do not declare readiness without explicit build and QA evidence on the task.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "A larger full-stack gstack team that supports parallel execution with maximum skill specialization without sacrificing task-driven coordination or quality gates.",
+    "initialObjective": "Separate product framing, architecture, implementation, QA/design, and release so the team can move multiple workstreams in parallel while preserving one board-centered operating model.",
+    "sharedContext": [
+      "This roster is still one full-stack team, not a federation of side pods: all seats operate against the same board and one delivery objective.",
+      "Parallel builders only work well when architecture, strategy, and acceptance criteria are recorded explicitly before code diverges.",
+      "QA/design and release are independent closure gates; both must leave evidence on the board.",
+      "No peer-to-peer scope changes off-board: ownership, priority, and acceptance changes must route through tasks and master coordination.",
+      "Every gstack skill invocation should be tied to an active task and its evidence recorded on the board."
+    ],
+    "commandChain": [
+      "user -> master -> task board -> product-strategist/architect -> builders (parallel) -> qa-design/release-engineer -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": true
+    }
+  }
+}

@@ -95,6 +95,15 @@ describe('Role Permissions System', () => {
             expect(canSpawnAgents('scribe', genome)).toBe(true);
         });
 
+        it('should allow supervisor to spawn agents when the genome explicitly enables recovery spawning', () => {
+            const supervisorGenome = {
+                authorities: ['agent.spawn'],
+                behavior: { canSpawnAgents: true },
+            } as any;
+
+            expect(canSpawnAgents('supervisor', supervisorGenome)).toBe(true);
+        });
+
         it('regression: master with canSpawnAgents=false but authorities=[task.create] can create tasks', () => {
             // Regression for the @official/master bug:
             // master has canSpawnAgents:false (correct — spawning is org-manager's job)

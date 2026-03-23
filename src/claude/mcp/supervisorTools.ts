@@ -30,6 +30,7 @@
 
 import { z } from "zod";
 import { logger } from "@/ui/logger";
+import { configuration } from '@/configuration';
 import { writeScore } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorGenomeFeedback';
@@ -853,15 +854,17 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         feedback: feedback!,
                         hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
                         hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                        serverUrl: configuration.serverUrl,
+                        authToken: client.getAuthToken(),
                     });
 
                     if (!upload.ok) {
                         logger.debug(
-                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name}: ${upload.status} ${upload.body}`,
+                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport}: ${upload.status} ${upload.body}`,
                         );
                     } else {
                         logger.debug(
-                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, source=${feedbackTarget.source}, createdGenome=${upload.createdGenome})`,
+                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport} (${genomeScores.length} scores, source=${feedbackTarget.source}, createdGenome=${upload.createdGenome})`,
                         );
 
                         // ── Trace: feedback_uploaded ────────────────────────
@@ -1042,6 +1045,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 feedback,
                 hubUrl: process.env.GENOME_HUB_URL ?? 'http://localhost:3006',
                 hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                serverUrl: configuration.serverUrl,
+                authToken: client.getAuthToken(),
             });
 
             if (!upload.ok) {
@@ -1057,7 +1062,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return {
                 content: [{
                     type: 'text',
-                    text: `Feedback uploaded to marketplace (${resolvedNamespace}/${resolvedName}${upload.createdGenome ? ', created placeholder genome' : ''}):\n${summary}`,
+                    text: `Feedback uploaded to marketplace (${resolvedNamespace}/${resolvedName}${upload.createdGenome ? ', created placeholder genome' : ''}${upload.transport === 'server-proxy' ? ', via happy-server proxy' : ''}):\n${summary}`,
                 }],
                 isError: false,
             };
@@ -1354,8 +1359,29 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
         try {
             const result = await api.batchArchiveSessions([args.sessionId]);
+
+            // Also stop the OS process so it cannot be re-recovered on the next
+            // daemon restart. archive_session marks the session on the server but
+            // leaves the process running, which causes recoverExistingSessions()
+            // to revive it as a zombie after every daemon restart.
+            let processTerminated = false;
+            try {
+                const daemonState = await readDaemonState();
+                if (daemonState?.httpPort) {
+                    const stopResp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop-session`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sessionId: args.sessionId }),
+                        signal: AbortSignal.timeout(10_000),
+                    });
+                    processTerminated = stopResp.ok;
+                }
+            } catch {
+                // Best-effort: daemon may not be running or session may not be tracked locally
+            }
+
             return {
-                content: [{ type: 'text', text: JSON.stringify({ archived: result.archived, reason: args.reason }) }],
+                content: [{ type: 'text', text: JSON.stringify({ archived: result.archived, reason: args.reason, processTerminated }) }],
                 isError: false,
             };
         } catch (error) {

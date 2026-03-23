@@ -29,6 +29,7 @@ import { join } from 'path';
 import { TrackedSession } from './types';
 import { AgentHeartbeat } from '@/claude/team/heartbeat';
 import { Metadata } from '@/api/types';
+import { ApiClient } from '@/api/api';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
@@ -48,16 +49,25 @@ const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; h
 
 /**
  * Recover already-running aha sessions after daemon restart.
- * Scans OS processes for `--session-tag team:TEAMID:member:SESSIONID` pattern
- * and re-populates pidToTrackedSession so supervisor scheduling can see them.
+ * Scans OS processes for `--session-tag team:TEAMID:member:MEMBERID` pattern,
+ * re-populates pidToTrackedSession, then resolves real session identity from
+ * the team roster via the API.
+ *
+ * Phase 1: Discover live PIDs and their team/member IDs from process args.
+ * Phase 2: For each discovered team, call api.getTeam() to map memberId → real
+ *          ahaSessionId + role + executionPlane. Sessions that cannot be resolved
+ *          are kept with ahaSessionId=undefined so they don't pollute the live set
+ *          but can still be healed by a subsequent webhook.
  */
-export function recoverExistingSessions(): number {
+export async function recoverExistingSessions(api?: ApiClient): Promise<number> {
   let recovered = 0;
   try {
-    // ps output: PID COMMAND
+    // ── Phase 1: Discover PIDs ──────────────────────────────────────────────
     const psOutput = execSync('ps -eo pid,args 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
-    // Match lines with --session-tag team:TEAMID:member:SESSIONID
     const tagPattern = /^\s*(\d+)\s+.*--session-tag\s+team:([a-f0-9-]+):member:([a-f0-9-]+)/;
+
+    // Collect discovered processes grouped by teamId
+    const discovered: Array<{ pid: number; teamId: string; memberId: string }> = [];
 
     for (const line of psOutput.split('\n')) {
       const match = line.match(tagPattern);
@@ -65,7 +75,7 @@ export function recoverExistingSessions(): number {
 
       const pid = parseInt(match[1], 10);
       const teamId = match[2];
-      const sessionId = match[3];
+      const memberId = match[3];
 
       // Skip if already tracked or if it's our own daemon process
       if (pidToTrackedSession.has(pid) || pid === process.pid) continue;
@@ -77,24 +87,116 @@ export function recoverExistingSessions(): number {
         continue; // Process already dead
       }
 
-      const trackedSession: TrackedSession = {
-        startedBy: 'recovered after daemon restart',
-        ahaSessionId: sessionId,
-        ahaSessionMetadataFromLocalWebhook: {
-          teamId,
-          roomId: teamId,
-          hostPid: pid,
-        } as Metadata,
-        pid,
-      };
+      discovered.push({ pid, teamId, memberId });
+    }
 
-      pidToTrackedSession.set(pid, trackedSession);
-      recovered++;
-      logger.debug(`[SESSION MANAGER] Recovered session ${sessionId} (team: ${teamId}, PID: ${pid})`);
+    if (discovered.length === 0) return 0;
+
+    // ── Phase 2: Resolve identity from team roster ──────────────────────────
+    // Group by teamId so we make one API call per team
+    const byTeam = new Map<string, typeof discovered>();
+    for (const entry of discovered) {
+      const list = byTeam.get(entry.teamId) ?? [];
+      list.push(entry);
+      byTeam.set(entry.teamId, list);
+    }
+
+    for (const [teamId, entries] of Array.from(byTeam.entries())) {
+      // Try to fetch team roster for identity resolution
+      let teamMembers: Array<{
+        memberId?: string;
+        sessionId?: string;
+        roleId?: string;
+        executionPlane?: string;
+        runtimeType?: string;
+        displayName?: string;
+        sessionTag?: string;
+      }> = [];
+
+      if (api) {
+        try {
+          const teamData = await api.getTeam(teamId);
+          teamMembers = teamData?.team?.members ?? [];
+        } catch (error) {
+          logger.debug(
+            `[SESSION MANAGER] Failed to fetch team roster for ${teamId} during recovery: ` +
+            `${error instanceof Error ? error.message : 'unknown'}`
+          );
+        }
+      }
+
+      for (const { pid, memberId } of entries) {
+        // Try to find this member in the team roster
+        const rosterMember = teamMembers.find(m => m.memberId === memberId);
+
+        // Defense-in-depth: if the server marks this member as archived or
+        // archiveRequested, kill the orphaned process and skip recovery.
+        // This catches sessions that were archived without being killed (e.g.
+        // archive_session called without kill_agent prior to this fix).
+        const rosterLifecycle = (rosterMember as any)?.lifecycleState as string | undefined;
+        if (rosterLifecycle === 'archived' || rosterLifecycle === 'archiveRequested') {
+          logger.debug(
+            `[SESSION MANAGER] Skipping recovery of PID ${pid} (member: ${memberId}) — ` +
+            `lifecycleState=${rosterLifecycle}; terminating orphaned process`
+          );
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+          continue;
+        }
+
+        const trackedSession: TrackedSession = {
+          startedBy: 'recovered after daemon restart',
+          pid,
+        };
+
+        if (rosterMember?.sessionId) {
+          // Successfully resolved — use real session identity
+          trackedSession.ahaSessionId = rosterMember.sessionId;
+          trackedSession.ahaSessionMetadataFromLocalWebhook = {
+            teamId,
+            roomId: teamId,
+            hostPid: pid,
+            role: rosterMember.roleId,
+            executionPlane: rosterMember.executionPlane as 'mainline' | 'bypass' | undefined,
+            flavor: rosterMember.runtimeType,
+            memberId,
+            sessionTag: rosterMember.sessionTag,
+            name: rosterMember.displayName,
+          } as Metadata;
+          logger.debug(
+            `[SESSION MANAGER] Recovered session ${rosterMember.sessionId} ` +
+            `(team: ${teamId}, member: ${memberId}, role: ${rosterMember.roleId || 'unknown'}, PID: ${pid})`
+          );
+        } else {
+          // Could not resolve — leave ahaSessionId undefined so this session
+          // does not pollute collectLiveMainlineSessionIdsByTeam, but keep
+          // it in pidToTrackedSession so a subsequent webhook can heal it.
+          trackedSession.ahaSessionId = undefined;
+          trackedSession.ahaSessionMetadataFromLocalWebhook = {
+            teamId,
+            roomId: teamId,
+            hostPid: pid,
+            memberId,
+          } as Metadata;
+          logger.debug(
+            `[SESSION MANAGER] Partially recovered PID ${pid} (team: ${teamId}, member: ${memberId}) ` +
+            `— could not resolve true ahaSessionId from team roster, awaiting webhook self-heal`
+          );
+        }
+
+        pidToTrackedSession.set(pid, trackedSession);
+        recovered++;
+      }
     }
 
     if (recovered > 0) {
-      logger.debug(`[SESSION MANAGER] Recovered ${recovered} existing sessions after daemon restart`);
+      const resolved = [...pidToTrackedSession.values()].filter(
+        s => s.startedBy === 'recovered after daemon restart' && s.ahaSessionId
+      ).length;
+      const unresolved = recovered - resolved;
+      logger.debug(
+        `[SESSION MANAGER] Recovered ${recovered} sessions after daemon restart ` +
+        `(${resolved} resolved, ${unresolved} unresolved)`
+      );
     }
   } catch (error) {
     logger.debug(`[SESSION MANAGER] Session recovery scan failed: ${error instanceof Error ? error.message : 'unknown'}`);
@@ -183,6 +285,17 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
       awaiter(existingSession);
       logger.debug(`[SESSION MANAGER] Resolved session awaiter for PID ${pid}`);
     }
+  } else if (existingSession && existingSession.startedBy === 'recovered after daemon restart') {
+    // Self-heal recovered session with real webhook metadata
+    const previousId = existingSession.ahaSessionId;
+    existingSession.ahaSessionId = sessionId;
+    existingSession.ahaSessionMetadataFromLocalWebhook = sessionMetadata;
+    existingSession.startedBy = 'daemon'; // Normalize so future webhooks follow the standard path
+    logger.debug(
+      `[SESSION MANAGER] Self-healed recovered session: ${previousId || '(unresolved)'} → ${sessionId} ` +
+      `(PID: ${pid}, role: ${sessionMetadata.role || 'unknown'})`
+    );
+    pingHeartbeatIfAvailable(existingSession);
   } else if (!existingSession) {
     // New session started externally (user ran aha directly)
     const trackedSession: TrackedSession = {

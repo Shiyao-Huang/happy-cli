@@ -11,12 +11,14 @@
  * ```
  *
  * ## Tools registered
- * - request_help, create_genome
+ * - request_help, create_genome, create_corps, update_genome
  *
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
  * - request_help is available to ALL agents and directly calls triggerHelpLane
  * - create_genome validates and sanitizes spec before delegating to api.createGenome
+ * - create_corps publishes a CorpsSpec team template directly to genome-hub /corps
+ * - update_genome patches marketing metadata (description/tags/category) for an owned genome
  * - Non-@official genomes have hooks/permissionMode/executionPlane stripped at write time
  */
 
@@ -24,6 +26,7 @@ import { z } from "zod";
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext } from './mcpContext';
+import { normalizeGenomeSpecForPublication } from '@/utils/genomePublication';
 
 export function registerEvolutionTools(ctx: McpToolContext): void {
     const {
@@ -195,9 +198,15 @@ Namespace conventions:
                 };
             }
 
-            let specObj: Record<string, unknown>;
+            let normalized;
             try {
-                specObj = JSON.parse(specStr);
+                normalized = normalizeGenomeSpecForPublication({
+                    specJson: specStr,
+                    namespace: args.namespace,
+                    parentId: args.parentId,
+                    mutationNote: args.mutationNote,
+                    origin: args.origin,
+                });
             } catch {
                 return {
                     content: [{ type: 'text', text: 'Error: spec is not valid JSON.' }],
@@ -205,63 +214,11 @@ Namespace conventions:
                 };
             }
 
-            // Strip forbidden keys for non-@official namespaces
-            const isOfficial = args.namespace === '@official';
-            if (!isOfficial) {
-                const FORBIDDEN_KEYS = ['hooks', 'permissionMode', 'executionPlane'] as const;
-                for (const key of FORBIDDEN_KEYS) {
-                    delete specObj[key];
-                }
-                // Downgrade full-access to default
-                if (specObj.accessLevel === 'full-access') {
-                    delete specObj.accessLevel;
-                }
+            specStr = normalized.specJson;
+            const warnings = [...normalized.warnings];
+            if (!args.namespace) {
+                warnings.push('namespace omitted: api.createGenome currently routes unnamed publications to the default marketplace namespace. Set namespace explicitly if you need deterministic scope.');
             }
-
-            // ── Auto-inject core team tools into allowedTools ──────────────
-            // Every agent MUST have kanban + messaging + help tools.
-            // Without these, agents become isolated islands.
-            const CORE_TEAM_TOOLS = [
-                'create_task', 'update_task', 'list_tasks', 'start_task', 'complete_task',
-                'report_blocker', 'resolve_blocker', 'add_task_comment',
-                'create_subtask', 'list_subtasks', 'delete_task',
-                'send_team_message', 'get_team_info',
-                'get_context_status', 'change_title',
-                'request_help',
-            ];
-            if (Array.isArray(specObj.allowedTools)) {
-                specObj.allowedTools = Array.from(new Set([...CORE_TEAM_TOOLS, ...(specObj.allowedTools as string[])]));
-            }
-
-            // ── Auto-inject team collaboration protocol if missing ─────────
-            const existingProtocol = Array.isArray(specObj.protocol) ? (specObj.protocol as string[]) : [];
-            const hasKanbanProtocol = existingProtocol.some((p: string) => /kanban|task|list_tasks|start_task|complete_task/i.test(p));
-            if (!hasKanbanProtocol) {
-                const teamProtocol = [
-                    'Use the Kanban board as the source of truth: check list_tasks for assigned work, use start_task/complete_task for lifecycle',
-                    'After completing any task, IMMEDIATELY call list_tasks() to find and claim the next available task. Do not wait for master to assign — proactively pick up unassigned todo tasks',
-                    'Coordinate via send_team_message; use request_help or @help when blocked',
-                ];
-                specObj.protocol = [...existingProtocol, ...teamProtocol];
-            }
-
-            // ── Auto-inject team capability if missing ─────────────────────
-            const existingCapabilities = Array.isArray(specObj.capabilities) ? (specObj.capabilities as string[]) : [];
-            if (!existingCapabilities.includes('kanban-task-lifecycle')) {
-                specObj.capabilities = [...existingCapabilities, 'kanban-task-lifecycle', 'team-collaboration'];
-            }
-
-            // Inject provenance into spec if parentId is provided
-            if (args.parentId) {
-                specObj.provenance = {
-                    ...((specObj.provenance as Record<string, unknown>) || {}),
-                    origin: args.origin || 'forked',
-                    parentId: args.parentId,
-                    mutationNote: args.mutationNote || null,
-                };
-            }
-
-            specStr = JSON.stringify(specObj);
 
             const result = await api.createGenome({
                 id: args.id,
@@ -277,12 +234,165 @@ Namespace conventions:
             });
 
             return {
-                content: [{ type: 'text', text: JSON.stringify({ success: true, genome: result.genome }) }],
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        genome: result.genome,
+                        warnings,
+                    }),
+                }],
                 isError: false,
             };
         } catch (error) {
             return {
                 content: [{ type: 'text', text: `Error creating genome: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool('create_corps', {
+        description: `Publish a CorpsSpec team template directly to the marketplace.
+
+Use this for 3/5/7-person team templates and other reusable roster presets.
+This routes to genome-hub \`POST /corps\`, which is the public marketplace source of truth
+for team templates. Unlike \`create_genome\`, this is for \`CorpsSpec\`, not \`GenomeSpec\`.
+
+Best practice:
+- publish member genomes first
+- then publish the corps template that references them
+- keep team execution task-driven via bootContext.taskPolicy`,
+        title: 'Create / Update Corps Template',
+        inputSchema: {
+            name: z.string().describe('Template name, e.g. "gstack-squad"'),
+            spec: z.string().describe('JSON-serialized CorpsSpec'),
+            description: z.string().optional().describe('Optional marketplace description override'),
+            namespace: z.string().optional().describe('Namespace scope, e.g. "@official", "@acme", or omit for @public'),
+            version: z.number().int().min(1).optional().describe('Template version override; defaults to the spec version or 1'),
+            tags: z.string().optional().describe('JSON-serialized string array of discovery tags'),
+            isPublic: z.boolean().default(true).describe('Whether the template is public in the marketplace'),
+        },
+    }, async (args) => {
+        try {
+            const sessionId = client.sessionId;
+            if (!sessionId) {
+                return {
+                    content: [{ type: 'text', text: 'Error: No session ID available.' }],
+                    isError: true,
+                };
+            }
+
+            let parsed: Record<string, unknown>;
+            try {
+                parsed = JSON.parse(args.spec) as Record<string, unknown>;
+            } catch {
+                return {
+                    content: [{ type: 'text', text: 'Error: spec is not valid JSON.' }],
+                    isError: true,
+                };
+            }
+
+            if (!Array.isArray(parsed.members) || parsed.members.length === 0) {
+                return {
+                    content: [{ type: 'text', text: 'Error: spec must be a valid CorpsSpec with at least one member.' }],
+                    isError: true,
+                };
+            }
+
+            const normalized = {
+                ...parsed,
+                namespace: args.namespace ?? (typeof parsed.namespace === 'string' ? parsed.namespace : '@public'),
+                name: args.name,
+                version: args.version ?? (typeof parsed.version === 'number' ? parsed.version : 1),
+                description: args.description ?? (typeof parsed.description === 'string' ? parsed.description : ''),
+                category: 'corps',
+            };
+
+            if (!normalized.description) {
+                return {
+                    content: [{ type: 'text', text: 'Error: description is required either in args.description or CorpsSpec.description.' }],
+                    isError: true,
+                };
+            }
+
+            const result = await api.createCorpsTemplate({
+                name: normalized.name,
+                description: normalized.description,
+                spec: JSON.stringify(normalized),
+                namespace: normalized.namespace,
+                version: normalized.version,
+                tags: args.tags,
+                isPublic: args.isPublic,
+                publisherId: sessionId,
+            });
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        genome: result.genome,
+                        corps: result.corps,
+                    }),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error creating corps template: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    // ========== Update Genome Tool (genome owners) ==========
+
+    mcp.registerTool('update_genome', {
+        description: [
+            'Update the marketing metadata of an existing genome you own: description, tags, category, or isPublic.',
+            'Does NOT change the genome spec or create a new version.',
+            'Use this to improve how your genome appears in the marketplace without bumping its version.',
+            'Requires genomeId (get it from get_self_view specId or from the create_genome response).',
+            'Cannot update @official genomes unless you own them.',
+        ].join(' '),
+        title: 'Update Genome',
+        inputSchema: {
+            genomeId: z.string().describe('Immutable genome ID to update (from get_self_view specId or create_genome response)'),
+            description: z.string().nullable().optional().describe('New marketing description for the genome'),
+            tags: z.string().nullable().optional().describe('Comma-separated tags, e.g. "fullstack,typescript,agent"'),
+            category: z.string().nullable().optional().describe('Category, e.g. "implementation", "coordination", "review"'),
+            isPublic: z.boolean().optional().describe('Whether the genome should be visible in the public marketplace'),
+        },
+    }, async (args) => {
+        if (!args.description && args.tags === undefined && args.category === undefined && args.isPublic === undefined) {
+            return {
+                content: [{ type: 'text', text: 'Error: Provide at least one field to update (description, tags, category, or isPublic).' }],
+                isError: true,
+            };
+        }
+
+        try {
+            const updates: Record<string, unknown> = {};
+            if (args.description !== undefined) updates.description = args.description;
+            if (args.tags !== undefined) updates.tags = args.tags;
+            if (args.category !== undefined) updates.category = args.category;
+            if (args.isPublic !== undefined) updates.isPublic = args.isPublic;
+
+            const result = await api.updateGenome(args.genomeId, updates as Parameters<typeof api.updateGenome>[1]);
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        genome: result.genome,
+                    }),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error updating genome: ${String(error)}` }],
                 isError: true,
             };
         }

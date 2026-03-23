@@ -89,6 +89,7 @@ user
 | `score_supervisor_self` | Self-score as supervisor |
 | `update_genome_feedback` | Submit feedback to improve a genome |
 | `create_genome` | Create a new genome definition |
+| `create_corps` | Publish a CorpsSpec team template to the marketplace |
 
 #### 2.5 Logs & Diagnostics
 

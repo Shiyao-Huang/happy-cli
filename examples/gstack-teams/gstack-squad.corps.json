@@ -1,0 +1,65 @@
+{
+  "namespace": "@official",
+  "name": "gstack-squad",
+  "version": 1,
+  "description": "Five-seat operational gstack full-stack team with clearer separation between coordination, planning, building, release, and QA/design.",
+  "tags": [
+    "corps",
+    "gstack",
+    "fullstack",
+    "squad",
+    "task-driven"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/gstack-master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-architect-planner",
+      "roleAlias": "architect-planner",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-builder",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-release-engineer",
+      "roleAlias": "reviewer-release",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-qa-design",
+      "roleAlias": "qa-lead",
+      "count": 1,
+      "required": true
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "A balanced gstack full-stack team that splits planning, implementation, release, and QA/design into explicit seats while keeping one task-driven flow.",
+    "initialObjective": "Turn unclear requirements into buildable tasks, execute them with disciplined investigation, verify them with real QA/design evidence, and close them with release-grade review and docs sync.",
+    "sharedContext": [
+      "This is a general-purpose full-stack team: each seat owns a direction, but the whole roster covers the end-to-end delivery loop.",
+      "Planning and design outputs are only real when reflected back into tasks, subtasks, acceptance criteria, or comments.",
+      "Release/review and QA/design are both first-class closure functions; neither should be compressed into an afterthought.",
+      "Peer advice is welcome, but work changes must happen through the board and master-controlled routing."
+    ],
+    "commandChain": [
+      "user -> master -> task board -> architect-planner -> builder -> qa-lead/reviewer-release -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": true
+    }
+  }
+}

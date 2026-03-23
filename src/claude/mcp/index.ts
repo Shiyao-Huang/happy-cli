@@ -239,6 +239,8 @@ export async function startAhaServer(
             'update_agent_model',
             // Evolution system (M3)
             'create_genome',
+            'create_corps',
+            'update_genome',
             // Supervisor-only tools
             'read_team_log',
             'get_context_status',

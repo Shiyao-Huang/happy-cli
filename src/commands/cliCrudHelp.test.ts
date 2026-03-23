@@ -43,6 +43,7 @@ describe('CLI CRUD help surfaces', () => {
     const output = logSpy.mock.calls[0]?.[0] as string;
     expect(output).toContain('Aha Teams');
     expect(output).toContain('create');
+    expect(output).toContain('publish-template');
     expect(output).toContain('add-member');
     expect(output).toContain('batch-delete');
   });

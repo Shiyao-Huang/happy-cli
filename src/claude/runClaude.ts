@@ -389,7 +389,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // 在 session 启动阶段就把 model / permissionMode / tools 从 genome spec 注入，
     // 这样整个 session 生命周期都生效，不只是 team join 时。
     // Tier 1（prompt）在下面 team join 的时候注入，因为 instructions 是在那时构建的。
-    const _genomeSpecId = process.env.AHA_SPEC_ID;
+    const _explicitSpecId = process.env.AHA_SPEC_ID;
+    const _roleBasedSpecId = !_explicitSpecId && process.env.AHA_AGENT_ROLE
+        ? `@official/${process.env.AHA_AGENT_ROLE}`
+        : undefined;
+    const _genomeSpecId = _explicitSpecId ?? _roleBasedSpecId;
     const [_genomeSpec, _genomeFeedbackData] = _genomeSpecId
         ? await Promise.all([
             fetchGenomeSpec(credentials.token, _genomeSpecId).catch((err) => {
@@ -1082,6 +1086,7 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    **h. Close the loop immediately after scoring — a score is not the end state:**
       - \`discard\` → intervene in the same run: \`kill_agent\` or \`replace_agent\`, and call \`request_help\` if human / live assistance is needed
       - \`mutate\` → create an explicit improvement loop in the same run: call \`request_help\` with a concrete mutation brief, and when genome evolution is appropriate use \`create_genome\` with \`origin:"mutated"\`, \`parentId\`, and \`mutationNote\`
+      - when publishing reusable team templates / CorpsSpec payloads, use \`create_corps\` instead of \`create_genome\`
       - \`keep\` / \`keep_with_guardrails\` → keep the current genome/session alive, then continue toward \`update_genome_feedback\` when score volume is sufficient
 9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. If older team members are missing \`specId\`, still close the loop for canonical official roles by using the role fallback:
    - \`master -> @official/master\`
@@ -1160,7 +1165,7 @@ When the cycle is complete, choose your own lifecycle explicitly:
 - NEVER pass a Claude Aha sessionId directly to \`read_cc_log\` or \`read_runtime_log(runtimeType:"claude")\`; resolve the \`claudeLocalSessionId\` first
 - NEVER rewind cursors unless a file rotated or truncated; if that happens, mention it explicitly in the conclusion
 - Phase 1 is diff-only and cheap
-- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`
+- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`, \`create_corps\`
 
 </Supervisor_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
