@@ -2,6 +2,15 @@
 
 All notable changes to this package will be documented in this file.
 
+## [2.0.11] - 2026-03-24
+
+### Added
+- WeChat bridge commands for cross-platform team messaging.
+- Corps publication diagnostics: `createCorpsTemplate` API method with connection hints and auth error guidance on genome-hub publish failures.
+
+### Fixed
+- Improved error messages on genome-hub publish failure — now surfaces connection hint and auth hint alongside the HTTP status.
+
 ## [2.0.1] - 2026-03-22
 
 ### Added
