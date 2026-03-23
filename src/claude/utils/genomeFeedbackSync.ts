@@ -1,6 +1,7 @@
 import type { AggregatedFeedback } from './feedbackPrivacy';
 import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
 import { getCanonicalGenomeTargetForRole } from './supervisorGenomeFeedback';
+import { configuration } from '@/configuration';
 
 type FetchResponseLike = {
     ok: boolean;
@@ -102,6 +103,13 @@ function buildFeedbackHeaders(hubPublishKey?: string): Record<string, string> {
     };
 }
 
+function buildServerProxyHeaders(authToken?: string): Record<string, string> {
+    return {
+        'Content-Type': 'application/json',
+        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
+    };
+}
+
 async function patchFeedback(
     fetchImpl: FetchLike,
     hubUrl: string,
@@ -118,6 +126,37 @@ async function patchFeedback(
             signal: AbortSignal.timeout(15_000),
         },
     );
+}
+
+async function patchFeedbackViaServerProxy(
+    fetchImpl: FetchLike,
+    serverUrl: string,
+    authToken: string | undefined,
+    target: FeedbackUploadTarget,
+    feedback: AggregatedFeedback,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`,
+        {
+            method: 'PATCH',
+            headers: buildServerProxyHeaders(authToken),
+            body: JSON.stringify(feedback),
+            signal: AbortSignal.timeout(15_000),
+        },
+    );
+}
+
+export function normalizeFeedbackProxyBaseUrl(serverUrl: string): string {
+    try {
+        // configuration.serverUrl may point at an API-prefixed base such as
+        // https://top1vibe.com/api/v3, but the feedback proxy route lives at
+        // the site origin under /v1/genomes/...
+        return new URL(serverUrl).origin.replace(/\/$/, '');
+    } catch {
+        return serverUrl
+            .replace(/\/api\/v\d+\/?$/i, '')
+            .replace(/\/$/, '');
+    }
 }
 
 function canAutoCreateOfficialTarget(target: FeedbackUploadTarget, role: string): boolean {
@@ -181,25 +220,99 @@ export async function syncGenomeFeedbackToMarketplace(args: {
     feedback: AggregatedFeedback;
     hubUrl?: string;
     hubPublishKey?: string;
+    serverUrl?: string;
+    authToken?: string;
     fetchImpl?: FetchLike;
 }): Promise<{
     ok: boolean;
     status: number;
     createdGenome: boolean;
     body: string;
+    transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
+    if (!args.hubUrl && !process.env.GENOME_HUB_URL) {
+        console.warn('[genome-feedback] GENOME_HUB_URL not set, falling back to http://localhost:3006 — ensure SSH tunnel is active');
+    }
     const hubUrl = (args.hubUrl ?? 'http://localhost:3006').replace(/\/$/, '');
+    const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
+    const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
+    if (serverUrl !== rawServerUrl.replace(/\/$/, '')) {
+        console.warn(`[genome-feedback] serverUrl has path prefix ("${rawServerUrl}"), normalized to origin "${serverUrl}" for feedback proxy`);
+    }
 
-    let response = await patchFeedback(fetchImpl, hubUrl, args.hubPublishKey, args.target, args.feedback);
-    let body = await response.text().catch(() => '');
+    let response: FetchResponseLike | null = null;
+    let body = '';
+    let directError: unknown = null;
 
-    if (response.ok) {
+    try {
+        response = await patchFeedback(fetchImpl, hubUrl, args.hubPublishKey, args.target, args.feedback);
+        body = await response.text().catch(() => '');
+    } catch (error) {
+        directError = error;
+    }
+
+    const shouldTryServerProxy = Boolean(args.authToken) && (
+        directError
+        || !response
+        || response.status === 401
+        || response.status === 403
+        || response.status >= 500
+    );
+
+    if (shouldTryServerProxy) {
+        try {
+            const proxiedResponse = await patchFeedbackViaServerProxy(
+                fetchImpl,
+                serverUrl,
+                args.authToken,
+                args.target,
+                args.feedback,
+            );
+            const proxiedBody = await proxiedResponse.text().catch(() => '');
+
+            if (proxiedResponse.ok) {
+                return {
+                    ok: true,
+                    status: proxiedResponse.status,
+                    createdGenome: false,
+                    body: proxiedBody,
+                    transport: 'server-proxy',
+                };
+            }
+
+            response = proxiedResponse;
+            body = proxiedBody;
+        } catch (proxyError) {
+            if (!response) {
+                return {
+                    ok: false,
+                    status: 0,
+                    createdGenome: false,
+                    body: String(proxyError || directError || 'Unknown network error'),
+                    transport: 'server-proxy',
+                };
+            }
+        }
+    }
+
+    if (response?.ok) {
         return {
             ok: true,
             status: response.status,
             createdGenome: false,
             body,
+            transport: 'direct-hub',
+        };
+    }
+
+    if (!response) {
+        return {
+            ok: false,
+            status: 0,
+            createdGenome: false,
+            body: String(directError || 'Unknown network error'),
+            transport: 'direct-hub',
         };
     }
 
@@ -209,6 +322,7 @@ export async function syncGenomeFeedbackToMarketplace(args: {
             status: response.status,
             createdGenome: false,
             body,
+            transport: 'direct-hub',
         };
     }
 
@@ -220,6 +334,7 @@ export async function syncGenomeFeedbackToMarketplace(args: {
             status: createResponse.status,
             createdGenome: false,
             body: createBody || body,
+            transport: 'direct-hub',
         };
     }
 
@@ -230,5 +345,6 @@ export async function syncGenomeFeedbackToMarketplace(args: {
         status: response.status,
         createdGenome: true,
         body,
+        transport: 'direct-hub',
     };
 }

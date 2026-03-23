@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AggregatedFeedback } from './feedbackPrivacy';
-import { syncGenomeFeedbackToMarketplace } from './genomeFeedbackSync';
+import { normalizeFeedbackProxyBaseUrl, syncGenomeFeedbackToMarketplace } from './genomeFeedbackSync';
 import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
 
 function makeFeedback(): AggregatedFeedback {
@@ -70,6 +70,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             ok: true,
             status: 200,
             createdGenome: false,
+            transport: 'direct-hub',
         });
         expect(calls).toEqual([
             {
@@ -102,6 +103,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             ok: true,
             status: 200,
             createdGenome: true,
+            transport: 'direct-hub',
         });
         expect(calls).toEqual([
             {
@@ -142,6 +144,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             ok: false,
             status: 404,
             createdGenome: false,
+            transport: 'direct-hub',
         });
         expect(calls).toEqual([
             {
@@ -149,5 +152,58 @@ describe('syncGenomeFeedbackToMarketplace', () => {
                 method: 'PATCH',
             },
         ]);
+    });
+
+    it('falls back to happy-server proxy when direct genome-hub access fails', async () => {
+        const calls: Array<{ input: string; method?: string; auth?: string | null }> = [];
+        const fetchImpl = async (input: string, init?: RequestInit) => {
+            calls.push({
+                input,
+                method: init?.method,
+                auth: init?.headers && typeof init.headers === 'object' && 'Authorization' in init.headers
+                    ? (init.headers as Record<string, string>).Authorization
+                    : null,
+            });
+
+            if (input.startsWith('http://localhost:3006/')) {
+                throw new TypeError('fetch failed');
+            }
+
+            return response(200, '{"genome":{"id":"g-1","feedbackData":"{}"}}');
+        };
+
+        const result = await syncGenomeFeedbackToMarketplace({
+            target: makeTarget(),
+            role: 'implementer',
+            feedback: makeFeedback(),
+            fetchImpl: fetchImpl as any,
+            authToken: 'user-token',
+            serverUrl: 'https://top1vibe.com/api/v3',
+        });
+
+        expect(result).toMatchObject({
+            ok: true,
+            status: 200,
+            createdGenome: false,
+            transport: 'server-proxy',
+        });
+        expect(calls).toEqual([
+            {
+                input: 'http://localhost:3006/genomes/%40official/implementer/feedback',
+                method: 'PATCH',
+                auth: null,
+            },
+            {
+                input: 'https://top1vibe.com/v1/genomes/%40official/implementer/feedback',
+                method: 'PATCH',
+                auth: 'Bearer user-token',
+            },
+        ]);
+    });
+
+    it('normalizes API-prefixed server urls to their origin for proxy uploads', () => {
+        expect(normalizeFeedbackProxyBaseUrl('https://top1vibe.com/api/v3')).toBe('https://top1vibe.com');
+        expect(normalizeFeedbackProxyBaseUrl('https://top1vibe.com/api/v3/')).toBe('https://top1vibe.com');
+        expect(normalizeFeedbackProxyBaseUrl('http://localhost:3005')).toBe('http://localhost:3005');
     });
 });
