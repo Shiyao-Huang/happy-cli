@@ -2,11 +2,16 @@
 
 All notable changes to this package will be documented in this file.
 
-## [2.0.11] - 2026-03-24
+## [2.0.12] - 2026-03-24
 
 ### Added
 - WeChat bridge commands for cross-platform team messaging.
 - Corps publication diagnostics: `createCorpsTemplate` API method with connection hints and auth error guidance on genome-hub publish failures.
+- `aha-v4` bin alias for forward compatibility.
+
+### Changed
+- Default URLs migrated from `top1vibe.com` to `aha-agi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
+- All scattered `localhost:3006` genome-hub fallbacks replaced with `DEFAULT_GENOME_HUB_URL` constant.
 
 ### Fixed
 - Improved error messages on genome-hub publish failure — now surfaces connection hint and auth hint alongside the HTTP status.
