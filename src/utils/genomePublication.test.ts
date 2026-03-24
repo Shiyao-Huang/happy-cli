@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeGenomeSpecForPublication } from './genomePublication';
+import { getInjectedAllowedToolsForGenome, normalizeGenomeSpecForPublication } from './genomePublication';
 
 describe('normalizeGenomeSpecForPublication', () => {
     it('adds neutral team collaboration scaffolding without forcing self-assignment', () => {
@@ -41,5 +41,36 @@ describe('normalizeGenomeSpecForPublication', () => {
         expect(result.spec.hooks).toBeUndefined();
         expect(result.spec.executionPlane).toBe('mainline');
         expect(result.spec.accessLevel).toBeUndefined();
+    });
+
+    it('injects create_agent tooling for spawn-capable genomes with explicit allowlists', () => {
+        const result = normalizeGenomeSpecForPublication({
+            namespace: '@public',
+            specJson: JSON.stringify({
+                allowedTools: ['Read'],
+                behavior: {
+                    canSpawnAgents: true,
+                },
+            }),
+        });
+
+        expect(result.spec.allowedTools).toEqual(expect.arrayContaining([
+            'Read',
+            'create_agent',
+            'list_available_agents',
+            'list_team_agents',
+            'get_team_config',
+        ]));
+    });
+
+    it('supports runtime spawn-tool injection when role fallback allows spawning', () => {
+        expect(getInjectedAllowedToolsForGenome(undefined, { spawnCapable: true })).toEqual(
+            expect.arrayContaining([
+                'create_agent',
+                'list_available_agents',
+                'list_team_agents',
+                'get_team_config',
+            ]),
+        );
     });
 });
