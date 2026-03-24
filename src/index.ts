@@ -544,7 +544,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     // Show version
     if (showVersion) {
       console.log(`aha version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+      process.exit(0)
     }
 
     // Normal flow - auth and machine setup
