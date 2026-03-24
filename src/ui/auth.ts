@@ -8,21 +8,26 @@ import { delay } from "@/utils/time";
 import { writeCredentialsLegacy, readCredentials, updateSettings, Credentials, writeCredentialsDataKey, writeCredentialsContentSecretKey } from "@/persistence";
 import { generateWebAuthUrl } from "@/api/webAuth";
 import { openBrowser } from "@/utils/browser";
-import { AuthSelector, AuthMethod } from "./ink/AuthSelector";
-import { render } from 'ink';
-import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { logger } from './logger';
 
-export async function doAuth(): Promise<Credentials | null> {
-    console.clear();
+export type AuthMethod = 'mobile' | 'web';
+export type WebAuthMode = 'auto' | 'create' | 'reconnect';
 
-    // Show authentication method selector
-    const authMethod = await selectAuthenticationMethod();
-    if (!authMethod) {
-        console.log('\nAuthentication cancelled.\n');
-        process.exit(0);
-    }
+interface DoAuthOptions {
+    method?: AuthMethod;
+    webNextPath?: string;
+    machineId?: string;
+    webMode?: WebAuthMode;
+}
+
+interface AuthSetupOptions extends DoAuthOptions {
+    forceAuth?: boolean;
+}
+
+export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials | null> {
+    console.clear();
+    const authMethod = options.method ?? 'web';
 
     // Generating ephemeral key
     const secret = new Uint8Array(randomBytes(32));
@@ -47,38 +52,8 @@ export async function doAuth(): Promise<Credentials | null> {
     if (authMethod === 'mobile') {
         return await doMobileAuth(keypair);
     } else {
-        return await doWebAuth(keypair);
+        return await doWebAuth(keypair, options);
     }
-}
-
-/**
- * Display authentication method selector and return user choice
- */
-function selectAuthenticationMethod(): Promise<AuthMethod | null> {
-    return new Promise((resolve) => {
-        let hasResolved = false;
-
-        const onSelect = (method: AuthMethod) => {
-            if (!hasResolved) {
-                hasResolved = true;
-                app.unmount();
-                resolve(method);
-            }
-        };
-
-        const onCancel = () => {
-            if (!hasResolved) {
-                hasResolved = true;
-                app.unmount();
-                resolve(null);
-            }
-        };
-
-        const app = render(React.createElement(AuthSelector, { onSelect, onCancel }), {
-            exitOnCtrlC: false,
-            patchConsole: false
-        });
-    });
 }
 
 /**
@@ -87,9 +62,9 @@ function selectAuthenticationMethod(): Promise<AuthMethod | null> {
 async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | null> {
     console.clear();
     console.log('\nMobile Authentication\n');
-    console.log('Scan this QR code with your Happy mobile app:\n');
+    console.log('Scan this QR code with your Aha mobile app:\n');
 
-    const authUrl = 'happy://terminal?' + encodeBase64Url(keypair.publicKey);
+    const authUrl = 'aha://terminal?' + encodeBase64Url(keypair.publicKey);
     displayQRCode(authUrl);
 
     console.log('\nOr manually enter this URL:');
@@ -102,11 +77,15 @@ async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials 
 /**
  * Handle web authentication flow
  */
-async function doWebAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | null> {
+async function doWebAuth(keypair: tweetnacl.BoxKeyPair, options: DoAuthOptions): Promise<Credentials | null> {
     console.clear();
     console.log('\nWeb Authentication\n');
 
-    const webUrl = generateWebAuthUrl(keypair.publicKey);
+    const webUrl = generateWebAuthUrl(keypair.publicKey, {
+        nextPath: options.webNextPath,
+        machineId: options.machineId,
+        mode: options.webMode
+    });
     console.log('Opening your browser...');
 
     const browserOpened = await openBrowser(webUrl);
@@ -119,9 +98,9 @@ async function doWebAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | n
     }
 
     // I changed this to always show the URL because we got a report from
-    // someone running happy inside a devcontainer that they saw the
+    // someone running aha inside a devcontainer that they saw the
     // "Complete authentication in your browser window." but nothing opened.
-    // https://github.com/slopus/happy/issues/19
+    // https://github.com/slopus/aha/issues/19
     console.log('\nIf the browser did not open, please copy and paste this URL:');
     console.log(webUrl);
     console.log('');
@@ -236,41 +215,56 @@ export function decryptWithEphemeralKey(encryptedBundle: Uint8Array, recipientSe
  * Ensure authentication and machine setup
  * This replaces the onboarding flow and ensures everything is ready
  */
-export async function authAndSetupMachineIfNeeded(): Promise<{
+export async function authAndSetupMachineIfNeeded(options: AuthSetupOptions = {}): Promise<{
     credentials: Credentials;
     machineId: string;
 }> {
     logger.debug('[AUTH] Starting auth and machine setup...');
 
+    const settings = await updateSettings(async s => {
+        if (s.machineId) {
+            return s;
+        }
+        return {
+            ...s,
+            machineId: randomUUID()
+        };
+    });
+
+    const machineId = settings.machineId!;
+
     // Step 1: Handle authentication
     let credentials = await readCredentials();
-    let newAuth = false;
 
     if (!credentials) {
         logger.debug('[AUTH] No credentials found, starting authentication flow...');
-        const authResult = await doAuth();
+        const authResult = await doAuth({
+            method: options.method,
+            webNextPath: options.webNextPath,
+            machineId,
+            webMode: options.webMode
+        });
         if (!authResult) {
             throw new Error('Authentication failed or was cancelled');
         }
         credentials = authResult;
-        newAuth = true;
+    } else if (options.forceAuth) {
+        logger.debug('[AUTH] Force authentication requested, starting authentication flow...');
+        const authResult = await doAuth({
+            method: options.method,
+            webNextPath: options.webNextPath,
+            machineId,
+            webMode: options.webMode
+        });
+        if (!authResult) {
+            throw new Error('Authentication failed or was cancelled');
+        }
+        credentials = authResult;
     } else {
         logger.debug('[AUTH] Using existing credentials');
     }
 
-    // Make sure we have a machine ID
-    // Server machine entity will be created either by the daemon or by the CLI
-    const settings = await updateSettings(async s => {
-        if (newAuth || !s.machineId) {
-            return {
-                ...s,
-                machineId: randomUUID()
-            };
-        }
-        return s;
-    });
+    logger.debug(`[AUTH] Machine ID: ${machineId}`);
 
-    logger.debug(`[AUTH] Machine ID: ${settings.machineId}`);
-
-    return { credentials, machineId: settings.machineId! };
+    return { credentials, machineId };
 }

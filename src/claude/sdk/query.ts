@@ -273,7 +273,8 @@ export function query(config: {
             model,
             fallbackModel,
             strictMcpConfig,
-            canCallTool
+            canCallTool,
+            settingsPath
         } = {}
     } = config
 
@@ -304,6 +305,7 @@ export function query(config: {
     }
     if (strictMcpConfig) args.push('--strict-mcp-config')
     if (permissionMode) args.push('--permission-mode', permissionMode)
+    if (settingsPath) args.push('--settings', settingsPath)
 
     if (fallbackModel) {
         if (model && fallbackModel === model) {
@@ -345,12 +347,16 @@ export function query(config: {
         childStdin = child.stdin
     }
 
-    // Handle stderr in debug mode
-    if (process.env.DEBUG) {
-        child.stderr.on('data', (data) => {
-            console.error('Claude Code stderr:', data.toString())
-        })
-    }
+    // Always capture stderr for debugging spawn failures
+    let stderrBuffer = '';
+    child.stderr.on('data', (data) => {
+        const text = data.toString();
+        stderrBuffer += text;
+        if (process.env.DEBUG) {
+            console.error('Claude Code stderr:', text);
+        }
+        logger.debug('[Claude Code stderr]', text.trim().substring(0, 500));
+    });
 
     // Setup cleanup
     const cleanup = () => {
@@ -369,7 +375,9 @@ export function query(config: {
                 query.setError(new AbortError('Claude Code process aborted by user'))
             }
             if (code !== 0) {
-                query.setError(new Error(`Claude Code process exited with code ${code}`))
+                const errMsg = `Claude Code process exited with code ${code}. stderr: ${stderrBuffer.trim().substring(0, 1000) || '(empty)'}`;
+                logger.debug(`[SDK] ${errMsg}`);
+                query.setError(new Error(errMsg))
             } else {
                 resolve()
             }

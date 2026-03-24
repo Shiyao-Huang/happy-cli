@@ -10,8 +10,10 @@ import { ChildProcess } from 'child_process';
  */
 export interface TrackedSession {
   startedBy: 'daemon' | string;
-  happySessionId?: string;
-  happySessionMetadataFromLocalWebhook?: Metadata;
+  ahaSessionId?: string;
+  ahaSessionMetadataFromLocalWebhook?: Metadata;
+  /** Local Claude Code session file ID (from onSessionFound callback). Used to locate CC JSONL logs. */
+  claudeLocalSessionId?: string;
   pid: number;
   childProcess?: ChildProcess;
   error?: string;

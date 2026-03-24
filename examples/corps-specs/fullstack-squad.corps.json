@@ -1,0 +1,93 @@
+{
+  "namespace": "@official",
+  "name": "fullstack-squad",
+  "version": 1,
+  "description": "Default delivery team for shipping scoped features with parallel implementation, explicit QA, and optional architecture review.",
+  "tags": [
+    "corps",
+    "team-template",
+    "engineering",
+    "delivery",
+    "parallel-implementation",
+    "qa"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve",
+          "agent.spawn"
+        ]
+      }
+    },
+    {
+      "genome": "@official/implementer",
+      "roleAlias": "builder",
+      "count": 2,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Own implementation slices end-to-end. Keep diffs small, surface risks early, and hand off to QA with concrete validation steps.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "qa-engineer",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Validate acceptance criteria before closure. Prefer reproducible bug reports, evidence, and explicit pass/fail notes.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/architect",
+      "roleAlias": "architect",
+      "count": 1,
+      "required": false,
+      "overlay": {
+        "promptSuffix": "Join only for migrations, data-model changes, cross-cutting refactors, or security/performance-sensitive work.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "Balanced product-delivery squad for turning a scoped backlog into production-ready changes with clear handoffs.",
+    "initialObjective": "Break the user goal into owned slices, implement in parallel, and close only after explicit QA validation.",
+    "sharedContext": [
+      "Use Kanban as the source of truth; every execution step must map to a task.",
+      "Master creates and assigns tasks before workers act; workers keep status current with blockers and completion notes.",
+      "Every implementation handoff must include touched files, validation steps, and risk notes.",
+      "Escalate blockers longer than 30 minutes to master; involve architect only for cross-cutting decisions."
+    ],
+    "commandChain": [
+      "user -> master -> builder(s) -> qa-engineer -> master -> user",
+      "master -> architect (on demand) -> master"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": false
+    }
+  }
+}

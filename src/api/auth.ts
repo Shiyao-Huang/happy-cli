@@ -2,6 +2,8 @@ import axios from 'axios';
 import { encodeBase64, encodeBase64Url, authChallenge } from './encryption';
 import { configuration } from '@/configuration';
 
+export type SecretAuthMode = 'create' | 'reconnect';
+
 /**
  * Note: This function is deprecated. Use readPrivateKey/writePrivateKey from persistence module instead.
  * Kept for backward compatibility only.
@@ -16,10 +18,11 @@ export async function getOrCreateSecretKey(): Promise<Uint8Array> {
  * @param secret - The secret key to use for authentication
  * @returns The authentication token
  */
-export async function authGetToken(secret: Uint8Array): Promise<string> {
+export async function authGetToken(secret: Uint8Array, mode: SecretAuthMode = 'create'): Promise<string> {
   const { challenge, publicKey, signature } = authChallenge(secret);
-  
-  const response = await axios.post(`${configuration.serverUrl}/v1/auth`, {
+
+  const endpoint = mode === 'reconnect' ? '/v1/auth/reconnect' : '/v1/auth';
+  const response = await axios.post(`${configuration.serverUrl}${endpoint}`, {
     challenge: encodeBase64(challenge),
     publicKey: encodeBase64(publicKey),
     signature: encodeBase64(signature)
@@ -39,5 +42,5 @@ export async function authGetToken(secret: Uint8Array): Promise<string> {
  */
 export function generateAppUrl(secret: Uint8Array): string {
   const secretBase64Url = encodeBase64Url(secret);
-  return `handy://${secretBase64Url}`;
+  return `aha://${secretBase64Url}`;
 }

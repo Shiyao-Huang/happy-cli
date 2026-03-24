@@ -1,13 +1,48 @@
 /**
  * Task State Manager
- * 
- * 管理嵌套任务的状态传播、执行链接和阻塞追踪
- * 这是多 Agent 协作的核心状态引擎
+ *
+ * Server-Driven Task Orchestration Client
+ *
+ * This is a thin client that delegates all task mutations to the server.
+ * The server is the SINGLE SOURCE OF TRUTH for task state.
+ *
+ * Key Features:
+ * - All mutations go through server API
+ * - Local cache updated via WebSocket events
+ * - Handles task events from server in real-time
+ * - Backward compatible with existing code
  */
 
 import { randomUUID } from 'crypto';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
+import { filterTasksForRole } from '@/claude/team/taskFilter';
+import { KanbanContext } from '@/claude/team/roles';
+
+// === State Change Broadcasting Types ===
+
+export type KanbanStateChangeType =
+    | 'task-created'
+    | 'task-updated'
+    | 'task-deleted'
+    | 'task-status-changed'
+    | 'task-assigned'
+    | 'subtask-created'
+    | 'blocker-reported'
+    | 'blocker-resolved'
+    | 'execution-started'
+    | 'execution-completed';
+
+export interface KanbanStateChange {
+    type: KanbanStateChangeType;
+    taskId: string;
+    taskTitle: string;
+    details: Record<string, any>;
+    triggeredBy: string;
+    timestamp: number;
+}
+
+export type StateChangeCallback = (change: KanbanStateChange) => void;
 
 // 类型定义 (与 kanban/sources/sync/kanbanTypes.ts 保持同步)
 interface TaskExecutionLink {
@@ -26,6 +61,15 @@ interface TaskBlocker {
     resolvedAt?: number;
     resolvedBy?: string;
     resolution?: string;
+}
+
+interface HumanStatusLock {
+    mode: 'viewing' | 'editing' | 'manual-status';
+    lockedAt: number;
+    lockedBySessionId?: string;
+    lockedByRole?: string;
+    lockedByDisplayName?: string;
+    reason?: string;
 }
 
 interface StatusPropagation {
@@ -51,6 +95,15 @@ interface KanbanTask {
     hasBlockedChild?: boolean;
     executionLinks?: TaskExecutionLink[];
     blockers?: TaskBlocker[];
+    comments?: Array<{
+        content: string;
+        createdAt: number;
+        authorDisplayName?: string;
+        authorRole?: string;
+        authorSessionId?: string;
+        type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
+    }>;
+    humanStatusLock?: HumanStatusLock | null;
 }
 
 interface KanbanBoard {
@@ -65,15 +118,253 @@ const DEFAULT_STATUS_PROPAGATION: StatusPropagation = {
     cascadeDeleteSubtasks: false
 };
 
+// Default Kanban columns for new team artifacts
+const DEFAULT_COLUMNS = [
+    { id: 'todo', title: 'To Do' },
+    { id: 'in-progress', title: 'In Progress' },
+    { id: 'review', title: 'Review' },
+    { id: 'done', title: 'Done' }
+];
+
 export class TaskStateManager {
     private api: ApiClient;
     private teamId: string;
     private sessionId: string;
+    private roleId?: string;
+    private onStateChange?: StateChangeCallback;
 
-    constructor(api: ApiClient, teamId: string, sessionId: string) {
+    constructor(api: ApiClient, teamId: string, sessionId: string, roleId?: string) {
         this.api = api;
         this.teamId = teamId;
         this.sessionId = sessionId;
+        this.roleId = roleId;
+    }
+
+    /**
+     * Set the role ID for this manager (used for filtering)
+     */
+    setRoleId(roleId: string): void {
+        this.roleId = roleId;
+    }
+
+    /**
+     * Set the state change callback for broadcasting updates
+     */
+    setOnStateChange(callback: StateChangeCallback): void {
+        this.onStateChange = callback;
+    }
+
+    /**
+     * Broadcast a state change to listeners and optionally send team message
+     */
+    private broadcastChange(change: Omit<KanbanStateChange, 'timestamp' | 'triggeredBy'>): void {
+        const fullChange: KanbanStateChange = {
+            ...change,
+            triggeredBy: this.sessionId,
+            timestamp: Date.now()
+        };
+
+        // Call local callback if set
+        if (this.onStateChange) {
+            try {
+                this.onStateChange(fullChange);
+            } catch (err) {
+                logger.debug('[TaskStateManager] Error in state change callback:', err);
+            }
+        }
+
+        // Send team message for state change (fire and forget)
+        this.sendStateChangeMessage(fullChange).catch(err => {
+            logger.debug('[TaskStateManager] Failed to broadcast state change:', err);
+        });
+    }
+
+    /**
+     * Send a team message about the state change
+     */
+    private async sendStateChangeMessage(change: KanbanStateChange): Promise<void> {
+        const message = await this.formatStateChangeMessage(change);
+
+        await this.api.sendTeamMessage(this.teamId, {
+            id: randomUUID(),
+            teamId: this.teamId,
+            type: 'task-update',
+            content: message,
+            fromSessionId: this.sessionId,
+            fromRole: this.roleId,
+            timestamp: change.timestamp,
+            metadata: {
+                taskId: change.taskId,
+                changeType: change.type,
+                ...change.details
+            }
+        });
+    }
+
+    /**
+     * Format a human-readable message for a state change
+     */
+    private async formatStateChangeMessage(change: KanbanStateChange): Promise<string> {
+        switch (change.type) {
+            case 'task-created':
+                return `Created task "${change.taskTitle}"`;
+            case 'task-status-changed':
+                return `Updated "${change.taskTitle}" to ${this.formatStatusLabel(String(change.details.newStatus || 'updated'))}`;
+            case 'task-assigned':
+                return `Assigned "${change.taskTitle}" to ${await this.getMemberLabel(change.details.assigneeId)}`;
+            case 'subtask-created':
+                return `Created subtask "${change.taskTitle}" under "${change.details.parentTitle}"`;
+            case 'blocker-reported':
+                return `⚠️ Blocked "${change.taskTitle}": ${change.details.description}`;
+            case 'blocker-resolved':
+                return `✅ Resolved blocker on "${change.taskTitle}"`;
+            case 'execution-started':
+                return `Started working on "${change.taskTitle}"`;
+            case 'execution-completed':
+                return `✅ Completed "${change.taskTitle}"`;
+            default:
+                return `Updated "${change.taskTitle}"`;
+        }
+    }
+
+    private formatStatusLabel(status: string): string {
+        switch (status) {
+            case 'in-progress':
+                return 'In Progress';
+            case 'todo':
+                return 'To Do';
+            case 'done':
+                return 'Done';
+            case 'blocked':
+                return 'Blocked';
+            case 'review':
+                return 'Review';
+            default:
+                return status;
+        }
+    }
+
+    private async getMemberLabel(sessionId?: string): Promise<string> {
+        if (!sessionId) {
+            return 'someone';
+        }
+
+        try {
+            const artifact = await this.api.getArtifact(this.teamId);
+            const board = this.parseBoard(artifact);
+            const members = board.team?.members ?? [];
+            const member = members.find((entry: any) => entry.sessionId === sessionId);
+            return member?.displayName || member?.roleId || 'someone';
+        } catch {
+            return 'someone';
+        }
+    }
+
+    /**
+     * Get the full Kanban board (via server API)
+     * Includes lazy initialization: automatically creates team artifact if it doesn't exist
+     */
+    async getBoard(): Promise<KanbanBoard> {
+        // Step 1: Ensure artifact exists (lazy initialization)
+        // This MUST happen BEFORE calling server API, because server requires artifact to exist
+        await this.ensureArtifactExists();
+
+        // Step 2: Now use server API (artifact is guaranteed to exist)
+        try {
+            const result = await this.api.listTasks(this.teamId);
+            return {
+                columns: DEFAULT_COLUMNS,
+                tasks: result.tasks
+            };
+        } catch (error) {
+            // Fallback to artifact if server API fails for other reasons
+            logger.debug('[TaskStateManager] Server API failed, falling back to artifact:', error);
+            const artifact = await this.api.getArtifact(this.teamId);
+            return this.parseBoard(artifact);
+        }
+    }
+
+    /**
+     * Ensure team artifact exists, create if not
+     * This is the key to CLI-first workflow - no need for Kanban UI
+     */
+    private async ensureArtifactExists(): Promise<void> {
+        try {
+            // Try to get artifact - if it exists, we're done
+            const artifact = await this.api.getArtifact(this.teamId);
+            logger.debug('[TaskStateManager] Team artifact exists');
+            if (artifact.body == null) {
+                logger.debug('[TaskStateManager] Team artifact body missing, attempting initialization repair...');
+                await this.initializeTeamArtifact();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const isNotFound = message.includes('404') || message.includes('Artifact not found');
+            const isConflict = message.includes('409') || message.includes('already exists');
+
+            if (!isNotFound && !isConflict) {
+                throw error;
+            }
+
+            // Artifact doesn't exist (or was created concurrently) - perform lazy initialization / retry
+            logger.debug('[TaskStateManager] Team artifact unavailable, performing lazy initialization...');
+            try {
+                await this.initializeTeamArtifact();
+            } catch (createError) {
+                const createMessage = createError instanceof Error ? createError.message : String(createError);
+                if (createMessage.includes('409') || createMessage.includes('already exists')) {
+                    await this.api.getArtifact(this.teamId);
+                    logger.debug('[TaskStateManager] Team artifact appeared after conflict; continuing');
+                    return;
+                }
+                throw createError;
+            }
+        }
+    }
+
+    /**
+     * Lazy initialization: Create team artifact if it doesn't exist
+     * This enables CLI agents to work with teams without requiring Kanban UI initialization
+     */
+    private async initializeTeamArtifact(): Promise<void> {
+        const initialHeader = {
+            type: 'team',
+            name: `Team ${this.teamId.substring(0, 8)}`,
+            createdAt: Date.now()
+        };
+        const initialBody = {
+            body: JSON.stringify({
+                tasks: [],
+                columns: DEFAULT_COLUMNS,
+                team: {
+                    members: [],
+                },
+                createdAt: Date.now()
+            })
+        };
+
+        try {
+            await this.api.createArtifact(this.teamId, initialHeader, initialBody);
+            logger.debug(`[TaskStateManager] Successfully initialized team artifact ${this.teamId}`);
+        } catch (createError) {
+            logger.debug(`[TaskStateManager] Failed to initialize team artifact:`, createError);
+            throw new Error(`Failed to initialize team artifact: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * Get filtered Kanban context for the current role
+     * This is the main method for getting context to inject into prompts
+     */
+    async getFilteredContext(): Promise<KanbanContext> {
+        const board = await this.getBoard();
+        const roleId = this.roleId || 'builder'; // Default to builder if no role set
+
+        return filterTasksForRole(
+            board.tasks as KanbanTask[],
+            roleId,
+            this.sessionId
+        );
     }
 
     /**
@@ -82,9 +373,14 @@ export class TaskStateManager {
     private parseBoard(artifact: any): KanbanBoard {
         let board: KanbanBoard = { columns: [], tasks: [] };
         if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
-            try {
-                board = JSON.parse(artifact.body.body);
-            } catch (e) { /* ignore */ }
+            const bodyValue = (artifact.body as { body?: unknown }).body;
+            if (typeof bodyValue === 'string') {
+                try {
+                    board = JSON.parse(bodyValue);
+                } catch (e) { /* ignore */ }
+            } else if (bodyValue && typeof bodyValue === 'object') {
+                board = bodyValue as KanbanBoard;
+            }
         } else if (artifact.body) {
             board = artifact.body;
         }
@@ -175,6 +471,19 @@ export class TaskStateManager {
             await this.saveBoard(artifact, board);
             logger.debug(`[TaskStateManager] Created subtask ${subtaskId} under ${parentTaskId}`);
 
+            // Broadcast the change
+            this.broadcastChange({
+                type: 'subtask-created',
+                taskId: subtaskId,
+                taskTitle: title,
+                details: {
+                    parentTaskId,
+                    parentTitle: parentTask.title,
+                    assigneeId: subtask.assigneeId,
+                    priority: subtask.priority
+                }
+            });
+
             return { success: true, subtask };
         } catch (error) {
             return { success: false, error: String(error) };
@@ -194,102 +503,92 @@ export class TaskStateManager {
     }
 
     /**
-     * 开始执行任务 - 创建执行链接
+     * 开始执行任务 - 通过 Server API
      */
     async startTask(taskId: string): Promise<{ success: boolean; error?: string }> {
+        return this.startTaskWithComment(taskId);
+    }
+
+    async startTaskWithComment(
+        taskId: string,
+        comment?: { displayName?: string; content: string; mentions?: string[] }
+    ): Promise<{ success: boolean; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            // Use server API - server handles all logic and broadcasts
+            const result = await this.api.startTaskWithComment(
+                this.teamId,
+                taskId,
+                this.sessionId,
+                this.roleId || 'builder',
+                comment
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
+            if (result.success) {
+                logger.debug(`[TaskStateManager] Started task ${taskId} via server`);
+
+                // Broadcast locally (server already broadcasted via WebSocket)
+                this.broadcastChange({
+                    type: 'execution-started',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        previousStatus: 'todo',
+                        newStatus: 'in-progress'
+                    }
+                });
+
+                return { success: true };
             }
 
-            // 检查是否已有 active 链接
-            const existingActive = task.executionLinks?.find(l => l.status === 'active');
-            if (existingActive && existingActive.sessionId !== this.sessionId) {
-                return { success: false, error: `Task is already being executed by session ${existingActive.sessionId}` };
-            }
-
-            // 添加执行链接
-            task.executionLinks = task.executionLinks || [];
-            task.executionLinks.push({
-                sessionId: this.sessionId,
-                linkedAt: Date.now(),
-                role: 'primary',
-                status: 'active'
-            });
-
-            // 更新状态
-            if (task.status === 'todo') {
-                task.status = 'in-progress';
-            }
-            task.updatedAt = Date.now();
-
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Started task ${taskId}`);
-
-            return { success: true };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to start task via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
     /**
-     * 完成任务 - 触发状态传播
+     * 完成任务 - 通过 Server API (server handles status propagation)
      */
     async completeTask(taskId: string): Promise<{ success: boolean; propagatedTasks?: string[]; error?: string }> {
+        return this.completeTaskWithComment(taskId);
+    }
+
+    async completeTaskWithComment(
+        taskId: string,
+        comment?: { role?: string; displayName?: string; content: string; mentions?: string[] }
+    ): Promise<{ success: boolean; propagatedTasks?: string[]; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            // Use server API - server handles status propagation
+            const result = await this.api.completeTaskWithComment(
+                this.teamId,
+                taskId,
+                this.sessionId,
+                comment
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
-            }
+            if (result.success) {
+                logger.debug(`[TaskStateManager] Completed task ${taskId} via server`);
 
-            // 检查是否有未完成的子任务
-            if (task.subtaskIds?.length) {
-                const subtasks = board.tasks.filter(t => task.subtaskIds!.includes(t.id));
-                const incomplete = subtasks.filter(st => st.status !== 'done');
-                if (incomplete.length > 0) {
-                    return {
-                        success: false,
-                        error: `Cannot complete: ${incomplete.length} subtasks still pending`
-                    };
-                }
-            }
-
-            // 更新执行链接状态
-            const activeLink = task.executionLinks?.find(l => l.sessionId === this.sessionId && l.status === 'active');
-            if (activeLink) {
-                activeLink.status = 'completed';
-            }
-
-            // 完成任务
-            task.status = 'done';
-            task.updatedAt = Date.now();
-
-            const propagatedTasks: string[] = [taskId];
-
-            // 状态传播到父任务
-            if (task.parentTaskId) {
-                const propagation = task.statusPropagation ?? DEFAULT_STATUS_PROPAGATION;
-                if (propagation.autoCompleteParent) {
-                    const result = this.propagateCompletionToParent(board, task.parentTaskId, propagatedTasks);
-                    if (result.changed) {
-                        propagatedTasks.push(...result.changed);
+                // Broadcast locally
+                this.broadcastChange({
+                    type: 'execution-completed',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        previousStatus: 'in-progress',
+                        newStatus: 'done',
+                        propagatedTasks: [taskId]
                     }
-                }
+                });
+
+                return { success: true, propagatedTasks: [taskId] };
             }
 
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Completed task ${taskId}, propagated: ${propagatedTasks.join(', ')}`);
-
-            return { success: true, propagatedTasks };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to complete task via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
@@ -326,50 +625,50 @@ export class TaskStateManager {
     }
 
     /**
-     * 报告阻塞
+     * 报告阻塞 - 通过 Server API
      */
     async reportBlocker(
         taskId: string,
         type: 'dependency' | 'question' | 'resource' | 'technical',
-        description: string
+        description: string,
+        comment?: { role?: string; displayName?: string; mentions?: string[]; content?: string }
     ): Promise<{ success: boolean; blockerId?: string; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
-
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
-            }
-
-            const blockerId = randomUUID();
-            const blocker: TaskBlocker = {
-                id: blockerId,
+            // Use server API - server handles blocker propagation
+            const result = await this.api.reportBlockerWithComment(
+                this.teamId,
+                taskId,
+                this.sessionId,
                 type,
                 description,
-                raisedAt: Date.now(),
-                raisedBy: this.sessionId
-            };
+                comment
+            );
 
-            task.blockers = task.blockers || [];
-            task.blockers.push(blocker);
-            task.status = 'blocked';
-            task.updatedAt = Date.now();
+            if (result.success) {
+                const blockerId = result.task?.blockers?.[result.task.blockers.length - 1]?.id;
+                logger.debug(`[TaskStateManager] Reported blocker ${blockerId} on task ${taskId} via server`);
 
-            // 向上传播阻塞标记
-            if (task.parentTaskId) {
-                const propagation = task.statusPropagation ?? DEFAULT_STATUS_PROPAGATION;
-                if (propagation.blockParentOnBlocked) {
-                    this.propagateBlockerToParent(board, task.parentTaskId);
-                }
+                // Broadcast locally
+                this.broadcastChange({
+                    type: 'blocker-reported',
+                    taskId,
+                    taskTitle: result.task?.title || taskId,
+                    details: {
+                        blockerId,
+                        blockerType: type,
+                        description,
+                        previousStatus: 'in-progress',
+                        newStatus: 'blocked'
+                    }
+                });
+
+                return { success: true, blockerId };
             }
 
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Reported blocker ${blockerId} on task ${taskId}`);
-
-            return { success: true, blockerId };
-        } catch (error) {
-            return { success: false, error: String(error) };
+            return { success: false, error: 'Server returned failure' };
+        } catch (error: any) {
+            logger.debug(`[TaskStateManager] Failed to report blocker via server:`, error);
+            return { success: false, error: error.message || String(error) };
         }
     }
 
@@ -398,40 +697,74 @@ export class TaskStateManager {
     async resolveBlocker(
         taskId: string,
         blockerId: string,
-        resolution: string
+        resolution: string,
+        comment?: { role?: string; displayName?: string; type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request'; content: string; mentions?: string[] }
     ): Promise<{ success: boolean; error?: string }> {
         try {
-            const artifact = await this.api.getArtifact(this.teamId);
-            const board = this.parseBoard(artifact);
-            const task = board.tasks.find(t => t.id === taskId);
+            const result = await this.api.resolveBlockerWithComment(
+                this.teamId,
+                taskId,
+                blockerId,
+                this.sessionId,
+                resolution,
+                comment
+            );
 
-            if (!task) {
-                return { success: false, error: `Task ${taskId} not found` };
+            if (!result.success) {
+                return { success: false, error: 'Server returned failure' };
+            }
+            logger.debug(`[TaskStateManager] Resolved blocker ${blockerId} on task ${taskId} via server`);
+
+            const unresolvedBlockers = result.task?.blockers?.filter((b: any) => !b.resolvedAt) || [];
+
+            // Broadcast the change
+            this.broadcastChange({
+                type: 'blocker-resolved',
+                taskId,
+                taskTitle: result.task?.title || taskId,
+                details: {
+                    blockerId,
+                    resolution,
+                    unresolvedCount: unresolvedBlockers.length,
+                    newStatus: unresolvedBlockers.length === 0 ? 'in-progress' : 'blocked'
+                }
+            });
+
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: String(error) };
+        }
+    }
+
+    async addTaskComment(
+        taskId: string,
+        comment: {
+            content: string;
+            type?: 'note' | 'status-change' | 'review-feedback' | 'handoff' | 'blocker' | 'decision' | 'human-override' | 'plan' | 'plan-review' | 'execution-check' | 'rework-request';
+            displayName?: string;
+            mentions?: string[];
+        }
+    ): Promise<{ success: boolean; error?: string }> {
+        try {
+            const result = await this.api.addTaskComment(this.teamId, taskId, {
+                sessionId: this.sessionId,
+                role: this.roleId,
+                displayName: comment.displayName,
+                type: comment.type,
+                content: comment.content,
+                mentions: comment.mentions,
+            });
+
+            if (!result.success) {
+                return { success: false, error: 'Server returned failure' };
             }
 
-            const blocker = task.blockers?.find(b => b.id === blockerId);
-            if (!blocker) {
-                return { success: false, error: `Blocker ${blockerId} not found` };
-            }
-
-            blocker.resolvedAt = Date.now();
-            blocker.resolvedBy = this.sessionId;
-            blocker.resolution = resolution;
-
-            // 检查是否还有其他未解决的 blocker
-            const unresolvedBlockers = task.blockers?.filter(b => !b.resolvedAt) || [];
-            if (unresolvedBlockers.length === 0) {
-                task.status = 'in-progress';  // 恢复进行中
-            }
-            task.updatedAt = Date.now();
-
-            // 更新父任务的 hasBlockedChild 标记
-            if (task.parentTaskId) {
-                this.updateParentBlockedStatus(board, task.parentTaskId);
-            }
-
-            await this.saveBoard(artifact, board);
-            logger.debug(`[TaskStateManager] Resolved blocker ${blockerId} on task ${taskId}`);
+            this.broadcastChange({
+                type: 'task-updated',
+                taskId,
+                taskTitle: result.task?.title || taskId,
+                details: { task: result.task },
+            });
 
             return { success: true };
         } catch (error) {
@@ -491,5 +824,54 @@ export class TaskStateManager {
 
         collectSubtasks(taskId);
         return result;
+    }
+
+    /**
+     * Handle incoming task event from WebSocket (server broadcast)
+     * This is called when server pushes task updates
+     */
+    handleTaskEvent(event: {
+        type: 'task-created' | 'task-updated' | 'task-deleted';
+        teamId: string;
+        taskId: string;
+        task?: KanbanTask;
+    }): void {
+        if (event.teamId !== this.teamId) {
+            return; // Ignore events for other teams
+        }
+
+        logger.debug(`[TaskStateManager] Received task event: ${event.type} for ${event.taskId}`);
+
+        // Broadcast to local listeners
+        switch (event.type) {
+            case 'task-created':
+                if (event.task) {
+                    this.broadcastChange({
+                        type: 'task-created',
+                        taskId: event.taskId,
+                        taskTitle: event.task.title,
+                        details: { task: event.task }
+                    });
+                }
+                break;
+            case 'task-updated':
+                if (event.task) {
+                    this.broadcastChange({
+                        type: 'task-updated',
+                        taskId: event.taskId,
+                        taskTitle: event.task.title,
+                        details: { task: event.task }
+                    });
+                }
+                break;
+            case 'task-deleted':
+                this.broadcastChange({
+                    type: 'task-deleted',
+                    taskId: event.taskId,
+                    taskTitle: event.taskId,
+                    details: {}
+                });
+                break;
+        }
     }
 }

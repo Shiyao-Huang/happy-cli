@@ -1,12 +1,12 @@
-# Happy CLI Codebase Overview
+# Aha CLI Codebase Overview
 
 ## Project Overview
 
-Happy CLI (`handy-cli`) is a command-line tool that wraps Claude Code to enable remote control and session sharing. It's part of a three-component system:
+Aha CLI (`aha-cli`) is a command-line tool that wraps Claude Code to enable remote control and session sharing. It's part of a three-component system:
 
-1. **handy-cli** (this project) - CLI wrapper for Claude Code
-2. **handy** - React Native mobile client
-3. **handy-server** - Node.js server with Prisma (hosted at https://api.happy-servers.com/)
+1. **aha-cli** (this project) - CLI wrapper for Claude Code
+2. **aha** - React Native mobile client
+3. **aha-server** - Node.js server with Prisma (hosted at https://api.aha-servers.com/)
 
 ## Code Style Preferences
 
@@ -24,6 +24,11 @@ Happy CLI (`handy-cli`) is a command-line tool that wraps Claude Code to enable 
 - Create stupid small functions / getters / setters
 - Excessive use of `if` statements - especially if you can avoid control flow changes with a better design
 - **NEVER import modules mid-code** - ALL imports must be at the top of the file
+- For Agent Docker work, **DO NOT** push agent-specific injection logic down into:
+  - `src/claude/sdk/*`
+  - `src/claude/session.ts`
+  - equivalent Codex base wrapper layers
+- Agent Docker belongs at the package parser / workspace materializer / runtime adapter layer.
 
 ### Error Handling
 - Graceful error handling with proper error messages
@@ -77,6 +82,125 @@ Core Claude Code integration layer.
 - Real-time message streaming
 - Permission intercepting via MCP [Permission checking not implemented yet]
 
+### Agent Docker v1 Boundary
+
+Agent Docker v1 is a flat `agent.json` package format with these runtime components:
+
+- `tools.mcpServers`
+- `tools.skills`
+- `hooks.*`
+- `env.*`
+- `routing.*`
+
+Important:
+
+- keep the JSON flat; concept groups live in docs, not artificial nested sections
+- do not solve hooks/skills/env by patching SDK internals
+- solve them by **workspace materialization**
+
+Preferred runtime model:
+
+- `shared` workspace mode for ordinary team execution
+- `isolated` workspace mode for agent-specific hooks or mutation experiments
+
+Runtime materialization should produce an agent-specific working view, e.g.:
+
+```text
+.aha/runtime/<agent-id>/
+  workspace/
+    .claude/
+      settings.json
+      commands/
+  logs/
+  cache/
+  tmp/
+```
+
+Shared read-only resources may be linked in.
+Mutable or secret-bearing resources must remain instance-isolated.
+
+### Agent Runtime Materializer v1
+
+The materializer is now the preferred integration point for Agent Docker runtime setup.
+
+It should:
+
+- read `agent.json`
+- read repo root and workspace mode
+- create `.aha/runtime/<agent-id>/`
+- materialize an agent-specific runtime workspace view
+
+It should not:
+
+- patch npm-installed SDK internals
+- push agent-specific logic into `src/claude/sdk/*`
+- push agent-specific logic into `src/claude/session.ts`
+
+v1 responsibilities:
+
+- hooks -> per-agent effective settings
+- skills -> per-agent visible command view
+- env -> per-agent validation/materialization
+- logs/cache/tmp -> per-agent directories
+
+Shared public resources may be linked in from runtime libraries.
+Mutable effective config must be per-agent.
+
+### Codex Bridge Compatibility
+
+- `aha-cli` does **not** embed Codex. It invokes the system-installed `codex` CLI.
+- Current bridge compatibility target: `codex-cli 0.115.0`
+- Treat Codex bridge issues as **event-model compatibility** problems first, not RPC problems first.
+- The current version-specific event families to watch are:
+  - `item_started`
+  - `item_completed`
+  - `raw_response_item`
+  - `mcp_tool_call_begin`
+  - `mcp_tool_call_end`
+  - `exec_command_output_delta`
+- If Codex is upgraded, verify the bridge again before assuming regressions come from Kanban or transport.
+
+## Team 交付隔离记录（2026-03-18）
+
+> The following changes were completed as one coordinated **team-delivered batch**. Because they span runtime setup, CLI commands, model control, Docker validation, and genome workspace behavior, keep them mentally grouped as an isolated change set when debugging regressions.
+
+### Included in this batch
+- Materializer v1 integration in `runClaude.ts`
+  - `buildAgentWorkspacePlanFromGenome()`
+  - `materializeAgentWorkspace()`
+  - `settingsPath` propagation
+  - `effectiveCwd` handoff
+- Shared runtime-lib support
+  - `runtime-lib/{skills,mcp,prompts,hooks,tools}`
+  - symlink/copy helpers
+  - `materializationPolicy` resolution
+- `.genome/` workspace overlay
+  - `.genome/spec.json`
+  - `.genome/lineage.json`
+  - `.genome/eval-criteria.md`
+  - `__genome_ref__` self-awareness injection
+- CLI additions
+  - `aha sessions list/show/archive/delete`
+  - `aha agents spawn <agent.json>`
+- Model control plane and agent self-awareness
+  - `aha agents update --model --fallback-model`
+  - `update_agent_model` MCP tool
+  - `MODEL_CONTEXT_WINDOWS`
+  - `resolvedModel` / `contextWindowTokens`
+- Docker / agent-json verification pyramid
+  - schema validation
+  - materializer artifact checks
+  - hook / skill mechanism tests
+  - Layer 3/4 CI-capable tests
+- Team display repair
+  - default `executionPlane` / `runtimeType` in `list_team_agents`
+  - `org-manager` is `mainline`, not `bypass`
+
+### Why this section is isolated
+- These changes are intentionally grouped because failures may appear unrelated while sharing the same rollout.
+- If you see regressions in session startup, settings loading, genome-backed sessions, Docker-spawned agents, team roster display, or model visibility, inspect this batch first.
+- Treat this as a broad infrastructure rollout, not as isolated one-off patches.
+
 ### 3. UI Module (`/src/ui/`)
 User interface components.
 
@@ -120,7 +244,7 @@ User interface components.
 
 ## Security Considerations
 
-- Private keys stored in `~/.handy/access.key` with restricted permissions
+- Private keys stored in `~/.aha/access.key` with restricted permissions
 - All communications encrypted using TweetNaCl
 - Challenge-response authentication prevents replay attacks
 - Session isolation through unique session IDs
@@ -136,25 +260,43 @@ User interface components.
 - Testing: Vitest 
 
 
+## 🔴 Org-Manager 系统级工具制约（2026-03-21，待解决）
+
+> 解决后从本节移除。
+
+### 待实现工具
+
+1. **`restart_daemon`** MCP tool — 修改 aha-cli 源码（controlServer.ts, supervisorTools.ts, mcpContext.ts, run.ts）后，agent 无法让变更生效，需手动重启 daemon。建议实现 graceful restart MCP tool。（优先级：高）
+
+2. **`tsc_check(path)`** MCP tool — aha-cli 需要 Node 22（`.node-version=22`），当前 shell 默认 Node 24 下 tsc OOM crash。需要一个工具自动 `fnm use` 读取 `.node-version` 后执行 tsc。（优先级：高）
+
+3. **`git_diff_summary`** — supervisor 评分只看 CC log，不读 git diff。org-manager 修复 P0 级 daemon 问题但被评 45/100。supervisor 应能看到代码变更的范围和影响。（优先级：中）
+
+### Node 环境注意事项
+
+- aha-cli 构建/类型检查必须在 Node 22 下运行
+- 执行前先 `fnm use 22`，再加 `NODE_OPTIONS="--max-old-space-size=8192"`
+- daemon 启动时应自动读取 `.node-version` 切换 Node 版本
+
 # Running the Daemon
 
 ## Starting the Daemon
 ```bash
-# From the happy-cli directory:
-./bin/happy.mjs daemon start
+# From the aha-cli directory:
+./bin/aha.mjs daemon start
 
 # With custom server URL (for local development):
-HAPPY_SERVER_URL=http://localhost:3005 ./bin/happy.mjs daemon start
+AHA_SERVER_URL=http://localhost:3005 ./bin/aha.mjs daemon start
 
 # Stop the daemon:
-./bin/happy.mjs daemon stop
+./bin/aha.mjs daemon stop
 
 # Check daemon status:
-./bin/happy.mjs daemon status
+./bin/aha.mjs daemon status
 ```
 
 ## Daemon Logs
-- Daemon logs are stored in `~/.happy-dev/logs/` (or `$HAPPY_HOME_DIR/logs/`)
+- Daemon logs are stored in `~/.aha-dev/logs/` (or `$AHA_HOME_DIR/logs/`)
 - Named with format: `YYYY-MM-DD-HH-MM-SS-daemon.log`
 
 # Session Forking `claude` and sdk behavior
@@ -219,7 +361,7 @@ Lines 7-8: New messages from current interaction
 {"parentUuid":"...","sessionId":"1433467f-ff14-4292-b5b2-2aac77a808f0","message":{"role":"user","content":"what file did we just see?"},...}
 ```
 
-## Implications for handy-cli
+## Implications for aha-cli
 
 When using --resume:
 1. Must handle new session ID in responses

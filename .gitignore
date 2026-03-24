@@ -4,6 +4,7 @@
 /.idea
 /dist
 /tmp
+.tsbuildinfo
 /node_modules
 oclif.manifest.json
 
@@ -22,7 +23,8 @@ pnpm-lock.yaml
 .claude/settings.local.json
 
 # Local installation
-.happy/
+.aha/
 
 **/*.log
 .release-notes-temp.md
+.gstack/

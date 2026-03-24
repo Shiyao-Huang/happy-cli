@@ -1,0 +1,40 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { ensureCurrentSessionRegisteredToTeam } from './ensureTeamMembership';
+
+describe('ensureCurrentSessionRegisteredToTeam', () => {
+    it('registers bypass executionPlane when present in session metadata', async () => {
+        const getArtifact = vi.fn().mockResolvedValue({
+            body: JSON.stringify({ team: { members: [] } }),
+        });
+        const addTeamMember = vi.fn().mockResolvedValue(undefined);
+
+        const result = await ensureCurrentSessionRegisteredToTeam({
+            api: {
+                getArtifact,
+                addTeamMember,
+            } as any,
+            teamId: 'team-1',
+            sessionId: 'session-1',
+            role: 'supervisor',
+            metadata: {
+                name: 'Supervisor',
+                flavor: 'claude',
+                executionPlane: 'bypass',
+                sessionTag: 'supervisor-team-1',
+            } as any,
+        });
+
+        expect(result).toEqual({ registered: true, alreadyPresent: false });
+        expect(addTeamMember).toHaveBeenCalledWith(
+            'team-1',
+            'session-1',
+            'supervisor',
+            'Supervisor',
+            expect.objectContaining({
+                executionPlane: 'bypass',
+                runtimeType: 'claude',
+            })
+        );
+    });
+});

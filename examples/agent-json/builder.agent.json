@@ -1,0 +1,71 @@
+{
+  "$schema": "../../schemas/agent-json-v1.schema.json",
+  "kind": "aha.agent.v1",
+  "name": "builder",
+  "description": "Code builder agent — implements tasks in an isolated git worktree",
+  "baseRoleId": "builder",
+  "runtime": "claude",
+  "prompt": {
+    "suffix": "Implement assigned tasks. Write clean, tested code. Report blockers immediately."
+  },
+  "tools": {
+    "mcpServers": ["aha"],
+    "skills": ["review", "ship"]
+  },
+  "permissions": {
+    "permissionMode": "default",
+    "accessLevel": "full-access",
+    "executionPlane": "mainline",
+    "maxTurns": 100
+  },
+  "context": {
+    "teamRole": "builder",
+    "capabilities": ["implement_tasks", "write_code", "run_tests"],
+    "behavior": {
+      "onIdle": "self-assign",
+      "onBlocked": "report",
+      "canSpawnAgents": false,
+      "requireExplicitAssignment": true
+    }
+  },
+  "env": {
+    "required": ["ANTHROPIC_API_KEY"],
+    "optional": ["AHA_ROOM_ID", "AHA_SESSION_ID"]
+  },
+  "workspace": {
+    "defaultMode": "isolated",
+    "allowedModes": ["shared", "isolated"]
+  },
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "echo \"[builder] Editing file at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+        "description": "Log file edits for audit trail"
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "prettier --write \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true",
+        "description": "Auto-format files after editing"
+      }
+    ],
+    "stop": [
+      {
+        "command": "echo \"[builder] Session ended at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+        "description": "Log session completion"
+      }
+    ]
+  },
+  "market": {
+    "namespace": "@official",
+    "category": "builder",
+    "tags": ["builder", "code", "isolated"],
+    "lifecycle": "active"
+  },
+  "package": {
+    "ref": "@official/builder:1",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

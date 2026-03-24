@@ -20,6 +20,8 @@ export async function claudeRemote(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[],
     allowedTools: string[],
+    maxTurns?: number,
+    settingsPath?: string,
     signal?: AbortSignal,
     canCallTool: (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }) => Promise<PermissionResult>,
 
@@ -121,6 +123,8 @@ export async function claudeRemote(opts: {
         canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
         executable: 'node',
         abort: opts.signal,
+        maxTurns: opts.maxTurns,
+        settingsPath: opts.settingsPath,
         pathToClaudeCodeExecutable: (() => {
             return resolve(join(projectPath(), 'scripts', 'claude_remote_launcher.cjs'));
         })(),

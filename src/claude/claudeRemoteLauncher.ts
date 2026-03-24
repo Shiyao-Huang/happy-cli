@@ -15,12 +15,71 @@ import { EnhancedMode } from "./loop";
 import { RawJSONLines } from "@/claude/types";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { getToolName } from "./utils/getToolName";
+import { daemonPost } from "@/daemon/controlClient";
 
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
     mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     allowedTools?: string[];
+}
+
+export type LifecycleDirectiveAction = 'retire' | 'standby';
+
+export interface LifecycleDirective {
+    action: LifecycleDirectiveAction;
+    reason?: string;
+    rawText: string;
+}
+
+const LEGACY_LIFECYCLE_SENTINELS = [
+    'BOOTSTRAP_COMPLETE',
+    'SUPERVISOR_COMPLETE',
+    'HELP_COMPLETE',
+    'ORG_MANAGER_COMPLETE',
+] as const;
+
+function collectAssistantTextBlocks(content: unknown): string[] {
+    if (typeof content === 'string') {
+        return [content];
+    }
+
+    if (!Array.isArray(content)) {
+        return [];
+    }
+
+    return content
+        .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block: any) => block.text as string);
+}
+
+export function extractLifecycleDirectiveFromContent(content: unknown): LifecycleDirective | null {
+    const blocks = collectAssistantTextBlocks(content);
+    let lastDirective: LifecycleDirective | null = null;
+
+    for (const block of blocks) {
+        const directiveRegex = /(?:^|\n)\s*<AHA_LIFECYCLE\s+action="(retire|standby)"(?:\s+reason="([^"\n<>]{1,120})")?\s*\/>\s*(?=$|\n)/gi;
+        let match: RegExpExecArray | null = null;
+
+        while ((match = directiveRegex.exec(block)) !== null) {
+            lastDirective = {
+                action: match[1].toLowerCase() as LifecycleDirectiveAction,
+                reason: match[2]?.trim() || undefined,
+                rawText: match[0].trim(),
+            };
+        }
+    }
+
+    return lastDirective;
+}
+
+function findLegacyLifecycleSentinels(content: unknown): string[] {
+    const joined = collectAssistantTextBlocks(content).join('\n');
+    if (!joined) {
+        return [];
+    }
+
+    return LEGACY_LIFECYCLE_SENTINELS.filter((sentinel) => joined.includes(sentinel));
 }
 
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
@@ -70,6 +129,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     let exitReason: 'switch' | 'exit' | null = null;
     let abortController: AbortController | null = null;
     let abortFuture: Future<void> | null = null;
+    let retireTimer: NodeJS.Timeout | null = null;
 
     async function abort() {
         if (abortController && !abortController.signal.aborted) {
@@ -128,6 +188,47 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
+
+        // Lifecycle is agent-controlled via explicit directives, never via loose substring matching.
+        if (message.type === 'assistant') {
+            const umessage = message as SDKAssistantMessage;
+            const content = (umessage.message as any)?.content;
+            const directive = extractLifecycleDirectiveFromContent(content);
+            if (directive) {
+                logger.debug(
+                    `[remote]: lifecycle directive received: action=${directive.action}` +
+                    `${directive.reason ? ` reason=${directive.reason}` : ''}`
+                );
+
+                if (directive.action === 'retire' && !retireTimer) {
+                    retireTimer = setTimeout(() => {
+                        logger.debug(
+                            `[remote]: Auto-retiring agent via explicit lifecycle directive` +
+                            `${directive.reason ? ` (${directive.reason})` : ''}`
+                        );
+                        if (!exitReason) {
+                            exitReason = 'exit';
+                        }
+                        abort().catch(() => {});
+                    }, 2000);
+                }
+
+                if (directive.action === 'standby') {
+                    logger.debug(
+                        `[remote]: Agent explicitly chose standby; session will remain alive` +
+                        `${directive.reason ? ` (${directive.reason})` : ''}`
+                    );
+                }
+            }
+
+            const legacySentinels = findLegacyLifecycleSentinels(content);
+            if (legacySentinels.length > 0) {
+                logger.debug(
+                    `[remote]: Ignoring legacy lifecycle sentinel(s): ${legacySentinels.join(', ')}. ` +
+                    `Only explicit <AHA_LIFECYCLE ... /> directives can retire a session.`
+                );
+            }
+        }
 
         // Detect plan mode tool call
         if (message.type === 'assistant') {
@@ -299,7 +400,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // This prevents context loss when mode changes (permission mode, model, etc.)
         // without starting a new session. Only reset parent chain when session ID
         // actually changes (e.g., new session started or /clear command used).
-        // See: https://github.com/anthropics/happy-cli/issues/143
+        // See: https://github.com/anthropics/aha-cli/issues/143
         let previousSessionId: string | null = null;
         while (!exitReason) {
             logger.debug('[remote]: launch');
@@ -366,10 +467,19 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         // Update converter's session ID when new session is found
                         sdkToLogConverter.updateSessionId(sessionId);
                         session.onSessionFound(sessionId);
+                        // Notify daemon so it can map ahaSessionId → claudeLocalSessionId
+                        // (used by supervisor to locate CC JSONL logs by teamId)
+                        const ahaSessionId = session.client.sessionId;
+                        if (ahaSessionId) {
+                            daemonPost('/session-found', { ahaSessionId, claudeLocalSessionId: sessionId })
+                                .catch((e: unknown) => logger.debug(`[remote]: Failed to report local session to daemon: ${e}`));
+                        }
                     },
                     onThinkingChange: session.onThinkingChange,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
+                    settingsPath: session.settingsPath,
+                    maxTurns: session.maxTurns,
                     onMessage,
                     onCompletionEvent: (message: string) => {
                         logger.debug(`[remote]: Completion event: ${message}`);
@@ -399,7 +509,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 }
             } catch (e) {
-                logger.debug('[remote]: launch error', e);
+                const errorDetail = e instanceof Error
+                    ? { message: e.message, name: e.name, stack: e.stack?.split('\n').slice(0, 3).join('\n') }
+                    : JSON.stringify(e);
+                logger.debug('[remote]: launch error', errorDetail);
                 if (!exitReason) {
                     session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
                     continue;

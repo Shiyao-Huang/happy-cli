@@ -207,4 +207,38 @@ describe('sessionScanner', () => {
     //   expect(lastAssistantMsg.message.id).toBe('msg_01KWeuP88pkzRtXmggJRnQmV')
     // }
   })
+
+  it('should pick up a session file created shortly after onNewSession without waiting for the long poll', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg)
+    })
+
+    const sessionId = 'race-session-id'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    const line = JSON.stringify({
+      parentUuid: null,
+      isSidechain: false,
+      userType: 'external',
+      cwd: testDir,
+      sessionId,
+      version: '1.0.0',
+      type: 'user',
+      uuid: 'race-user-1',
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'user',
+        content: 'hello from race test'
+      }
+    })
+
+    scanner.onNewSession(sessionId)
+    await new Promise(resolve => setTimeout(resolve, 25))
+    await writeFile(sessionFile, `${line}\n`)
+    await new Promise(resolve => setTimeout(resolve, 350))
+
+    expect(collectedMessages).toHaveLength(1)
+    expect(collectedMessages[0].type).toBe('user')
+  })
 })

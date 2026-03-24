@@ -24,7 +24,7 @@ export class TeamMessageStorage {
     private storageDir: string;
 
     constructor(baseDir: string) {
-        this.storageDir = path.join(baseDir, '.happy', 'teams');
+        this.storageDir = path.join(baseDir, '.aha', 'teams');
         if (!fs.existsSync(this.storageDir)) {
             fs.mkdirSync(this.storageDir, { recursive: true });
         }

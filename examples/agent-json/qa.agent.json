@@ -1,0 +1,58 @@
+{
+  "$schema": "../../schemas/agent-json-v1.schema.json",
+  "kind": "aha.agent.v1",
+  "name": "qa",
+  "description": "QA validation agent — validates schema, tests, and integration correctness",
+  "baseRoleId": "qa",
+  "runtime": "claude",
+  "prompt": {
+    "suffix": "Validate all implementations against spec. Run tests. Report findings accurately without over-blocking."
+  },
+  "tools": {
+    "mcpServers": ["aha"],
+    "skills": ["review"]
+  },
+  "permissions": {
+    "permissionMode": "default",
+    "accessLevel": "read-only",
+    "executionPlane": "mainline",
+    "maxTurns": 150
+  },
+  "context": {
+    "teamRole": "qa",
+    "capabilities": ["validate_schema", "run_tests", "review_code"],
+    "behavior": {
+      "onIdle": "wait",
+      "onBlocked": "report",
+      "canSpawnAgents": false,
+      "requireExplicitAssignment": false
+    }
+  },
+  "env": {
+    "required": ["ANTHROPIC_API_KEY"],
+    "optional": ["AHA_ROOM_ID"]
+  },
+  "workspace": {
+    "defaultMode": "shared",
+    "allowedModes": ["shared"]
+  },
+  "hooks": {
+    "postToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "echo \"[qa] Command executed at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+        "description": "Log all bash executions for audit"
+      }
+    ]
+  },
+  "market": {
+    "namespace": "@official",
+    "category": "coordination",
+    "tags": ["qa", "validation", "testing"],
+    "lifecycle": "active"
+  },
+  "package": {
+    "ref": "@official/qa:1",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

@@ -1,6 +1,19 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
-import { PermissionMode } from '@/claude/loop'
+
+/**
+ * Permission mode type - includes both Claude and Codex modes
+ * Must match MessageMetaSchema.permissionMode enum values
+ *
+ * Claude modes: default, acceptEdits, bypassPermissions, plan
+ * Codex modes: read-only, safe-yolo, yolo
+ *
+ * When calling Codex, Claude modes are mapped at the session boundary:
+ * - bypassPermissions → yolo (danger-full-access sandbox)
+ * - acceptEdits → on-request approval
+ * - plan → untrusted approval
+ */
+export type PermissionMode = import('@/claude/loop').PermissionMode
 
 /**
  * Usage data type from Claude
@@ -85,6 +98,7 @@ export type Artifact = {
   dataEncryptionKey?: string;
   headerVersion?: number;
   bodyVersion?: number;
+  seq?: number;
 }
 
 export interface ArtifactUpdateRequest {
@@ -130,6 +144,44 @@ export type TeamMessageUpdateBody = z.infer<typeof TeamMessageUpdateBodySchema>
 /**
  * Update event from server
  */
+export const TeamUpdateBodySchema = z.object({
+  t: z.literal('team-update'),
+  teamId: z.string(),
+  eventType: z.enum(['member-added', 'member-removed', 'team-archived', 'team-deleted', 'team-renamed']),
+  details: z.any()
+})
+
+export type TeamUpdateBody = z.infer<typeof TeamUpdateBodySchema>
+
+export const TaskCreatedBodySchema = z.object({
+  t: z.literal('task-created'),
+  teamId: z.string(),
+  taskId: z.string(),
+  task: z.any()
+})
+
+export type TaskCreatedBody = z.infer<typeof TaskCreatedBodySchema>
+
+export const TaskUpdatedBodySchema = z.object({
+  t: z.literal('task-updated'),
+  teamId: z.string(),
+  taskId: z.string(),
+  task: z.any()
+})
+
+export type TaskUpdatedBody = z.infer<typeof TaskUpdatedBodySchema>
+
+export const TaskDeletedBodySchema = z.object({
+  t: z.literal('task-deleted'),
+  teamId: z.string(),
+  taskId: z.string()
+})
+
+export type TaskDeletedBody = z.infer<typeof TaskDeletedBodySchema>
+
+/**
+ * Update event from server
+ */
 export const UpdateSchema = z.object({
   id: z.string(),
   seq: z.number(),
@@ -139,7 +191,11 @@ export const UpdateSchema = z.object({
     UpdateMachineBodySchema,
     UpdateArtifactBodySchema,
     KvBatchUpdateBodySchema,
-    TeamMessageUpdateBodySchema
+    TeamMessageUpdateBodySchema,
+    TeamUpdateBodySchema,
+    TaskCreatedBodySchema,
+    TaskUpdatedBodySchema,
+    TaskDeletedBodySchema
   ]),
   createdAt: z.number()
 })
@@ -243,10 +299,10 @@ export type Session = {
 export const MachineMetadataSchema = z.object({
   host: z.string(),
   platform: z.string(),
-  happyCliVersion: z.string(),
+  ahaCliVersion: z.string(),
   homeDir: z.string(),
-  happyHomeDir: z.string(),
-  happyLibDir: z.string()
+  ahaHomeDir: z.string(),
+  ahaLibDir: z.string()
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
@@ -300,7 +356,7 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>
  */
 export const MessageMetaSchema = z.object({
   sentFrom: z.string().optional(), // Source identifier
-  permissionMode: z.string().optional(), // Permission mode for this message
+  permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo']).optional(), // Permission mode for this message
   model: z.string().nullable().optional(), // Model name for this message (null = reset)
   fallbackModel: z.string().nullable().optional(), // Fallback model for this message (null = reset)
   customSystemPrompt: z.string().nullable().optional(), // Custom system prompt for this message (null = reset)
@@ -324,7 +380,8 @@ export const CreateSessionResponseSchema = z.object({
     metadata: z.string(),
     metadataVersion: z.number(),
     agentState: z.string().nullable(),
-    agentStateVersion: z.number()
+    agentStateVersion: z.number(),
+    dataEncryptionKey: z.string().optional()
   })
 })
 
@@ -344,10 +401,13 @@ export type UserMessage = z.infer<typeof UserMessageSchema>
 
 export const AgentMessageSchema = z.object({
   role: z.literal('agent'),
-  content: z.object({
-    type: z.literal('output'),
-    data: z.any()
-  }),
+  content: z.union([
+    z.object({
+      type: z.literal('output'),
+      data: z.any()
+    }),
+    z.any() // Allow raw message content for backward compatibility
+  ]),
   meta: MessageMetaSchema.optional()
 })
 
@@ -372,10 +432,11 @@ export type Metadata = {
   tools?: string[],
   slashCommands?: string[],
   homeDir: string,
-  happyHomeDir: string,
-  happyLibDir: string,
-  happyToolsDir: string,
+  ahaHomeDir: string,
+  ahaLibDir: string,
+  ahaToolsDir: string,
   startedFromDaemon?: boolean,
+  processStartedAt?: number,
   hostPid?: number,
   startedBy?: 'daemon' | 'terminal',
   // Lifecycle state management
@@ -384,10 +445,17 @@ export type Metadata = {
   archivedBy?: string,
   archiveReason?: string,
   flavor?: string,
+  codexCliVersion?: string,
   role?: string,
+  memberId?: string,
+  sessionTag?: string,
+  executionPlane?: 'mainline' | 'bypass',
   teamId?: string,  // Team artifact ID if this session is part of a team
   roomId?: string,
-  roomName?: string
+  roomName?: string,
+  // Model override: set by master/supervisor to switch a running agent's model
+  modelOverride?: string,
+  fallbackModelOverride?: string,
 };
 
 export type AgentState = {

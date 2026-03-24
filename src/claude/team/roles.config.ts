@@ -1,5 +1,9 @@
-import { TEAM_ROLE_LIBRARY } from '@happy/shared-team-config';
-import type { SharedTeamRole } from '@happy/shared-team-config';
+/**
+ * Role type definitions and board template.
+ *
+ * All role behavior comes from GenomeSpec. No hardcoded fallback.
+ * If an agent has no genome, it runs as a blank agent with no role constraints.
+ */
 
 export interface RoleDefinition {
     name: string;
@@ -10,51 +14,21 @@ export interface RoleDefinition {
     disallowedTools?: string[];
 }
 
-const toRoleDefinition = (role: SharedTeamRole): RoleDefinition => {
-    const accessLevel = role.policy?.accessLevel
-        || (role.policy?.permissionMode === 'read-only' ? 'read-only' : 'full-access');
+/** Empty map — genome is the only source of truth for role behavior. */
+export const DEFAULT_ROLES: Record<string, RoleDefinition> = {};
 
-    return {
-        name: (role.title || role.id).toUpperCase(),
-        description: role.summary,
-        responsibilities: role.responsibilities,
-        protocol: role.protocol,
-        accessLevel,
-        disallowedTools: role.policy?.disallowedTools
-    };
+/** Minimal kanban board template for team creation */
+export const DEFAULT_KANBAN_BOARD = {
+    columns: [
+        { id: 'todo', title: 'To Do' },
+        { id: 'in-progress', title: 'In Progress' },
+        { id: 'done', title: 'Done' },
+    ],
+    tasks: [],
+    taskSettings: {
+        maxDepth: 3,
+        statusPropagation: { autoCompleteParent: true, blockParentOnBlocked: true, cascadeDeleteSubtasks: false },
+        execution: { requirePlan: true, autoLinkSessions: true, broadcastStatus: true },
+    },
+    team: { members: [] },
 };
-
-// Create role definitions from TEAM_ROLE_LIBRARY
-const roleDefinitions: Record<string, RoleDefinition> = TEAM_ROLE_LIBRARY.reduce((acc: Record<string, RoleDefinition>, role: SharedTeamRole) => {
-    acc[role.id] = toRoleDefinition(role);
-    return acc;
-}, {} as Record<string, RoleDefinition>);
-
-// Backward compatibility mappings: old role IDs -> new role IDs
-const ROLE_ID_MIGRATIONS: Record<string, string> = {
-    'master': 'master-coordinator',
-    'framer': 'framing-engineer',
-    'builder': 'builder-/-executor',
-    'reviewer': 'reviewer-/-observer'
-};
-
-// Export DEFAULT_ROLES with backward compatibility
-export const DEFAULT_ROLES: Record<string, RoleDefinition> = new Proxy(roleDefinitions, {
-    get(target, prop: string) {
-        // Check if the requested role is the old ID, migrate to new ID
-        const migratedId = ROLE_ID_MIGRATIONS[prop] || prop;
-        const roleDef = target[migratedId];
-
-        if (!roleDef) {
-            console.warn(`[RoleConfig] Role not found: ${prop} (migrated to: ${migratedId})`);
-            return undefined;
-        }
-
-        // Log migration for debugging
-        if (prop !== migratedId) {
-            console.log(`[RoleConfig] Migrated old role ID '${prop}' -> '${migratedId}'`);
-        }
-
-        return roleDef;
-    }
-});

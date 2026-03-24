@@ -23,6 +23,8 @@ export async function claudeLocal(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
+    settingsPath?: string
+    maxTurns?: number
     sessionTag?: string
 }) {
 
@@ -98,13 +100,21 @@ export async function claudeLocal(opts: {
                 args.push('--allowedTools', opts.allowedTools.join(','));
             }
 
+            if (opts.maxTurns) {
+                args.push('--max-turns', opts.maxTurns.toString());
+            }
+
+            if (opts.settingsPath) {
+                args.push('--settings', opts.settingsPath);
+            }
+
             // Add custom Claude arguments
             if (opts.claudeArgs) {
                 args.push(...opts.claudeArgs)
             }
 
             if (!claudeCliPath || !existsSync(claudeCliPath)) {
-                throw new Error('Claude local launcher not found. Please ensure HAPPY_PROJECT_ROOT is set correctly for development.');
+                throw new Error('Claude local launcher not found. Please ensure AHA_PROJECT_ROOT is set correctly for development.');
             }
 
             // Prepare environment variables

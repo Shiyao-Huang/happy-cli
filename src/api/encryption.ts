@@ -52,10 +52,14 @@ export function getRandomBytes(size: number): Uint8Array {
   return new Uint8Array(randomBytes(size))
 }
 
+export function libsodiumSecretKeyFromSeed(seed: Uint8Array): Uint8Array {
+  const hashedSeed = new Uint8Array(createHash('sha512').update(seed).digest());
+  return hashedSeed.slice(0, 32);
+}
+
 export function libsodiumPublicKeyFromSecretKey(seed: Uint8Array): Uint8Array {
   // NOTE: This matches libsodium implementation, tweetnacl doesnt do this by default
-  const hashedSeed = new Uint8Array(createHash('sha512').update(seed).digest());
-  const secretKey = hashedSeed.slice(0, 32);
+  const secretKey = libsodiumSecretKeyFromSeed(seed);
   return new Uint8Array(tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey);
 }
 
@@ -126,6 +130,9 @@ export function encryptLegacy(data: any, secret: Uint8Array): Uint8Array {
  * @returns The decrypted data
  */
 export function decryptLegacy(data: Uint8Array, secret: Uint8Array): any | null {
+  if (data.length < tweetnacl.secretbox.nonceLength) {
+    return null;
+  }
   const nonce = data.slice(0, tweetnacl.secretbox.nonceLength);
   const encrypted = data.slice(tweetnacl.secretbox.nonceLength);
   const decrypted = tweetnacl.secretbox.open(encrypted, nonce, secret);

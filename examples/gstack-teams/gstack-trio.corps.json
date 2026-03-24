@@ -1,0 +1,53 @@
+{
+  "namespace": "@official",
+  "name": "gstack-trio",
+  "version": 1,
+  "description": "Three-seat operational gstack full-stack team: one coordinating strategist, one implementation seat, and one QA/design seat.",
+  "tags": [
+    "corps",
+    "gstack",
+    "fullstack",
+    "trio",
+    "task-driven"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/gstack-master-strategist",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-builder",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true
+    },
+    {
+      "genome": "@official/gstack-qa-design",
+      "roleAlias": "qa-designer",
+      "count": 1,
+      "required": true
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "A tiny but full-stack gstack team where each seat owns multiple adjacent skills without leaving the board-driven workflow.",
+    "initialObjective": "Use planning skills to shape the smallest viable slice, implement it, verify both function and polish, and keep every transition visible on the task board.",
+    "sharedContext": [
+      "This is a full-stack team, not a specialist-only pod: the three seats jointly cover strategy, implementation, QA, browser testing, and design review.",
+      "All execution must happen through tasks. Chat may clarify, but it must not replace task creation, comments, status changes, or explicit handoffs.",
+      "Smaller-team tradeoff: fewer seats means each role carries multiple gstack skills. Use those skills deliberately but keep task flow legible.",
+      "The board must be sufficient to reconstruct current state, blockers, and next action without reading the entire chat transcript."
+    ],
+    "commandChain": [
+      "user -> master -> task board -> builder -> qa-designer -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": true
+    }
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "namespace": "@official",
+  "name": "gstack-trio",
+  "version": 1,
+  "description": "Three-seat full-stack gstack delivery team: one strategist-coordinator, one builder covering build-review-release, and one QA/browser seat. Each role carries multiple gstack skills to cover the entire delivery loop with minimal headcount.",
+  "tags": [
+    "corps",
+    "team-template",
+    "gstack",
+    "fullstack",
+    "trio",
+    "task-driven"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/gstack-master-strategist",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "office-hours",
+          "plan-ceo-review",
+          "plan-eng-review",
+          "plan-design-review",
+          "retro",
+          "careful",
+          "design-consultation"
+        ],
+        "promptSuffix": "You lead a 3-person full-stack team. You own all planning, strategy, retrospective, and safety skills. Use /office-hours to sharpen scope, /plan-ceo-review /plan-eng-review /plan-design-review to validate plans from multiple angles, /design-consultation for UX decisions, /retro after delivery slices, and /careful before risky operations. Every decision must land on the task board.",
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-builder",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "investigate",
+          "review",
+          "codex",
+          "ship",
+          "document-release",
+          "guard",
+          "freeze",
+          "unfreeze"
+        ],
+        "promptSuffix": "In this 3-person team you cover the full build-review-release cycle alone. Use /investigate before non-trivial fixes, /guard and /freeze//unfreeze for risky edits, /review for pre-merge code quality checks, /codex for cross-model second opinions, /ship for PR and delivery, and /document-release to keep docs in sync. Keep diffs small and hand off to QA with explicit validation steps.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/gstack-qa-design",
+      "roleAlias": "qa-browser",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "skills": [
+          "qa",
+          "qa-only",
+          "design-review",
+          "browse",
+          "setup-browser-cookies",
+          "gstack-upgrade"
+        ],
+        "promptSuffix": "You own all testing, visual QA, browser automation, and tooling maintenance. Use /qa and /qa-only for functional testing, /design-review for visual audits, /browse and /setup-browser-cookies for browser-based verification, and /gstack-upgrade to keep the team's gstack skills current. Produce evidence-based pass/fail results on every task.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "A tiny but complete full-stack gstack delivery team where each of the 3 seats carries multiple adjacent skills to cover strategy, build, review, release, QA, browser testing, and tooling without leaving the board-driven workflow.",
+    "initialObjective": "Use planning skills to shape the smallest viable slice, implement it with investigation-first discipline, verify both function and visual polish through browser-based QA, and close with review and docs sync. Every transition must be visible on the task board.",
+    "sharedContext": [
+      "This is a full-stack team, not a specialist pod: the three seats jointly cover strategy, implementation, QA, browser testing, release, and design review.",
+      "All execution must happen through tasks. Chat may clarify, but it must not replace task creation, comments, status changes, or explicit handoffs.",
+      "Smaller-team tradeoff: fewer seats means each role carries multiple gstack skills. Use those skills deliberately but keep task flow legible.",
+      "The board must be sufficient to reconstruct current state, blockers, and next action without reading the entire chat transcript.",
+      "Every gstack skill invocation should be tied to an active task and its evidence recorded on the board."
+    ],
+    "commandChain": [
+      "user -> master -> task board -> builder -> qa-browser -> master -> user"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": true
+    }
+  }
+}

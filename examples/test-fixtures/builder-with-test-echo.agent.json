@@ -1,0 +1,58 @@
+{
+  "$schema": "../../schemas/agent-json-v1.schema.json",
+  "kind": "aha.agent.v1",
+  "name": "builder-with-test-echo",
+  "description": "Builder test fixture with test-echo skill and hook verification command",
+  "baseRoleId": "builder",
+  "runtime": "claude",
+  "prompt": {
+    "suffix": "Use the test-echo skill when explicitly requested by tests."
+  },
+  "tools": {
+    "mcpServers": ["aha"],
+    "skills": ["review", "ship", "test-echo"]
+  },
+  "permissions": {
+    "permissionMode": "default",
+    "accessLevel": "full-access",
+    "executionPlane": "mainline",
+    "maxTurns": 100
+  },
+  "context": {
+    "teamRole": "builder",
+    "capabilities": ["implement_tasks", "write_code", "run_tests"],
+    "behavior": {
+      "onIdle": "self-assign",
+      "onBlocked": "report",
+      "canSpawnAgents": false,
+      "requireExplicitAssignment": true
+    }
+  },
+  "env": {
+    "required": ["ANTHROPIC_API_KEY"],
+    "optional": ["AHA_ROOM_ID", "AHA_SESSION_ID", "AHA_HOOK_VERIFY_FILE"]
+  },
+  "workspace": {
+    "defaultMode": "isolated",
+    "allowedModes": ["shared", "isolated"]
+  },
+  "hooks": {
+    "postToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "[ -n \"$AHA_HOOK_VERIFY_FILE\" ] && echo \"HOOK_FIRED=$(date +%s)\" >> \"$AHA_HOOK_VERIFY_FILE\" || true",
+        "description": "Append a timestamped marker so tests can verify the hook fired."
+      }
+    ]
+  },
+  "market": {
+    "namespace": "@test",
+    "category": "builder",
+    "tags": ["builder", "test-fixture", "skill", "hook"],
+    "lifecycle": "experimental"
+  },
+  "package": {
+    "ref": "@test/builder-with-test-echo:1",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}

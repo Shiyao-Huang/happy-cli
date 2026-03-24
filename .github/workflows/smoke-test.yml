@@ -41,30 +41,30 @@ jobs:
     - name: Test binary execution
       run: |
         # Test that the binary starts successfully
-        echo "Testing happy --help..."
-        timeout 30s happy --help || {
-          echo "Error: happy --help failed or timed out"
+        echo "Testing aha --help..."
+        timeout 30s aha --help || {
+          echo "Error: aha --help failed or timed out"
           exit 1
         }
-        
-        echo "Testing happy --version..."
-        timeout 10s happy --version || {
-          echo "Error: happy --version failed or timed out"
+
+        echo "Testing aha --version..."
+        timeout 10s aha --version || {
+          echo "Error: aha --version failed or timed out"
           exit 1
         }
-        
-        echo "Testing happy doctor..."
-        timeout 30s happy doctor || {
-          echo "Error: happy doctor failed or timed out"
+
+        echo "Testing aha doctor..."
+        timeout 30s aha doctor || {
+          echo "Error: aha doctor failed or timed out"
           exit 1
         }
-        
-        echo "Testing happy daemon status..."
-        timeout 10s happy daemon status || {
-          echo "Error: happy daemon status failed or timed out"
+
+        echo "Testing aha daemon status..."
+        timeout 10s aha daemon status || {
+          echo "Error: aha daemon status failed or timed out"
           exit 1
         }
-        
+
         echo "✅ Smoke test passed on Linux!"
 
   smoke-test-windows:
@@ -110,20 +110,20 @@ jobs:
           echo Found node_modules directory
           dir "%NPM_PREFIX%\node_modules" 2>nul
           echo.
-          echo Checking for happy-coder package:
-          if exist "%NPM_PREFIX%\node_modules\happy-coder" (
-            echo Found happy-coder package
-            dir "%NPM_PREFIX%\node_modules\happy-coder" 2>nul
+          echo Checking for aha-coder package:
+          if exist "%NPM_PREFIX%\node_modules\aha-coder" (
+            echo Found aha-coder package
+            dir "%NPM_PREFIX%\node_modules\aha-coder" 2>nul
             echo.
             echo Checking for dist directory:
-            if exist "%NPM_PREFIX%\node_modules\happy-coder\dist" (
+            if exist "%NPM_PREFIX%\node_modules\aha-coder\dist" (
               echo Found dist directory
-              dir "%NPM_PREFIX%\node_modules\happy-coder\dist" 2>nul
+              dir "%NPM_PREFIX%\node_modules\aha-coder\dist" 2>nul
             ) else (
               echo No dist directory found
             )
           ) else (
-            echo No happy-coder package found
+            echo No aha-coder package found
           )
         ) else (
           echo No node_modules directory found
@@ -133,77 +133,77 @@ jobs:
       shell: cmd
       run: |
         @echo on
-        
+
         rem Get npm global prefix and add to PATH
         for /f "tokens=*" %%i in ('npm config get prefix') do set NPM_PREFIX=%%i
         set PATH=%NPM_PREFIX%;%PATH%
         echo NPM_PREFIX: %NPM_PREFIX%
         echo Current PATH: %PATH%
-        
-        rem Debug: Check if happy exists in various locations
-        echo Checking for happy binary...
-        where happy 2>nul && echo Found happy in PATH || echo happy not found in PATH
-        if exist "%NPM_PREFIX%\happy.cmd" echo Found happy.cmd in NPM_PREFIX
-        if exist "%NPM_PREFIX%\node_modules\.bin\happy.cmd" echo Found happy.cmd in .bin directory
-        dir "%NPM_PREFIX%\*happy*" 2>nul || echo No happy files found in NPM_PREFIX
-        
+
+        rem Debug: Check if aha exists in various locations
+        echo Checking for aha binary...
+        where aha 2>nul && echo Found aha in PATH || echo aha not found in PATH
+        if exist "%NPM_PREFIX%\aha.cmd" echo Found aha.cmd in NPM_PREFIX
+        if exist "%NPM_PREFIX%\node_modules\.bin\aha.cmd" echo Found aha.cmd in .bin directory
+        dir "%NPM_PREFIX%\*aha*" 2>nul || echo No aha files found in NPM_PREFIX
+
         rem Debug: Check the actual contents and encoding of the installed file
-        if exist "%NPM_PREFIX%\happy.cmd" (
+        if exist "%NPM_PREFIX%\aha.cmd" (
           echo File size and type:
-          dir "%NPM_PREFIX%\happy.cmd"
+          dir "%NPM_PREFIX%\aha.cmd"
           echo.
           echo First few lines of the file:
-          type "%NPM_PREFIX%\happy.cmd" | head -5
+          type "%NPM_PREFIX%\aha.cmd" | head -5
           echo.
           echo Hex dump of first 50 bytes to check line endings:
-          powershell -Command "Get-Content '%NPM_PREFIX%\happy.cmd' -Encoding Byte -TotalCount 50 | ForEach-Object { '{0:X2}' -f $_ } | Join-String -Separator ' '"
+          powershell -Command "Get-Content '%NPM_PREFIX%\aha.cmd' -Encoding Byte -TotalCount 50 | ForEach-Object { '{0:X2}' -f $_ } | Join-String -Separator ' '"
           echo.
           echo Testing with direct path...
-          "%NPM_PREFIX%\happy.cmd" --help
+          "%NPM_PREFIX%\aha.cmd" --help
         ) else (
-          echo Testing happy --help...
-          happy --help
+          echo Testing aha --help...
+          aha --help
         )
         if errorlevel 1 (
-          echo Error: happy --help failed
+          echo Error: aha --help failed
           exit /b 1
         )
-        
+
         rem Test version
-        if exist "%NPM_PREFIX%\happy.cmd" (
-          "%NPM_PREFIX%\happy.cmd" --version
+        if exist "%NPM_PREFIX%\aha.cmd" (
+          "%NPM_PREFIX%\aha.cmd" --version
         ) else (
-          happy --version
+          aha --version
         )
         if errorlevel 1 (
-          echo Error: happy --version failed
+          echo Error: aha --version failed
           exit /b 1
         )
-        
+
         rem Test doctor
-        echo Testing happy doctor...
-        if exist "%NPM_PREFIX%\happy.cmd" (
-          "%NPM_PREFIX%\happy.cmd" doctor
+        echo Testing aha doctor...
+        if exist "%NPM_PREFIX%\aha.cmd" (
+          "%NPM_PREFIX%\aha.cmd" doctor
         ) else (
-          happy doctor
+          aha doctor
         )
         if errorlevel 1 (
-          echo Error: happy doctor failed
+          echo Error: aha doctor failed
           exit /b 1
         )
-        
+
         rem Test daemon status
-        echo Testing happy daemon status...
-        if exist "%NPM_PREFIX%\happy.cmd" (
-          "%NPM_PREFIX%\happy.cmd" daemon status
+        echo Testing aha daemon status...
+        if exist "%NPM_PREFIX%\aha.cmd" (
+          "%NPM_PREFIX%\aha.cmd" daemon status
         ) else (
-          happy daemon status
+          aha daemon status
         )
         if errorlevel 1 (
-          echo Error: happy daemon status failed
+          echo Error: aha daemon status failed
           exit /b 1
         )
-        
+
         echo ✅ Smoke test passed on Windows!
 
 # We don't need a smoke test for macOS because most contributors are developing on macOS.

@@ -1,14 +1,15 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexMcpClient } from './codexMcpClient';
+import { CodexMcpClient, detectCodexCliVersion } from './codexMcpClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
-import { AgentState, Metadata, UpdateArtifactBody } from '@/api/types';
+import type { PermissionMode } from '@/api/types';
+import type { AgentState, Metadata, UpdateArtifactBody } from '@/api/types';
 import { initialMachineMetadata } from '@/daemon/run';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
@@ -18,7 +19,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import { projectPath } from '@/projectPath';
 import { resolve, join } from 'node:path';
 import fs from 'node:fs';
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import { trimIdent } from "@/utils/trimIdent";
@@ -29,6 +30,27 @@ import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
 import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
+// Team collaboration imports
+import { TaskStateManager } from '@/claude/utils/taskStateManager';
+import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
+import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
+import { buildAgentHandshakeContent, COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
+import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
+import { DEFAULT_ROLES } from '@/claude/team/roles.config';
+import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
+import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
+import type { GenomeSpec } from '@/api/types/genome';
+import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+
+// Helper functions for role metadata — genome-first, empty fallback
+function getRoleTitle(roleId: string): string {
+    return DEFAULT_ROLES[roleId]?.name || roleId;
+}
+
+function getRoleResponsibilities(roleId: string): string[] {
+    return DEFAULT_ROLES[roleId]?.responsibilities || [];
+}
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -58,11 +80,281 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
     return true;
 }
 
-type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
 
-function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | undefined {
+export function unwrapCodexEvent(rawMessage: any): any {
+    if (
+        rawMessage &&
+        typeof rawMessage === 'object' &&
+        rawMessage.type === 'raw_response_item' &&
+        rawMessage.item &&
+        typeof rawMessage.item === 'object'
+    ) {
+        return rawMessage.item;
+    }
+    if (
+        rawMessage &&
+        typeof rawMessage === 'object' &&
+        (rawMessage.type === 'event_msg' || rawMessage.type === 'response_item') &&
+        rawMessage.payload &&
+        typeof rawMessage.payload === 'object'
+    ) {
+        return rawMessage.payload;
+    }
+    return rawMessage;
+}
+
+function parseStructuredCodexValue(value: unknown): unknown {
+    if (typeof value !== 'string') {
+        return value;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return value;
+    }
+
+    try {
+        return JSON.parse(trimmed);
+    } catch {
+        return value;
+    }
+}
+
+function decodeCodexDeltaChunk(value: unknown): string {
+    if (typeof value !== 'string' || value.length === 0) {
+        return '';
+    }
+
+    try {
+        return Buffer.from(value, 'base64').toString('utf-8');
+    } catch {
+        return value;
+    }
+}
+
+function isMcpFunctionName(name: unknown): name is string {
+    return typeof name === 'string' && name.startsWith('mcp__');
+}
+
+export function convertCodexFunctionEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'tool-call';
+        name: string;
+        callId: string;
+        input: unknown;
+        id: string;
+    }
+    | {
+        type: 'tool-call-result';
+        callId: string;
+        output: unknown;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'function_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.name,
+            callId: message.call_id,
+            input: parseStructuredCodexValue(message.arguments),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'function_call_output' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output: parseStructuredCodexValue(message.output),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'custom_tool_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.name,
+            callId: message.call_id,
+            input: parseStructuredCodexValue(message.input),
+            id: randomUUID()
+        };
+    }
+
+    if (message.type === 'custom_tool_call_output' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output: parseStructuredCodexValue(message.output),
+            id: randomUUID()
+        };
+    }
+
+    return null;
+}
+
+export function convertCodexMcpLifecycleEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'tool-call';
+        name: string;
+        callId: string;
+        input: unknown;
+        id: string;
+    }
+    | {
+        type: 'tool-call-result';
+        callId: string;
+        output: unknown;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'mcp_tool_call_begin' && typeof message.call_id === 'string') {
+        return {
+            type: 'tool-call',
+            name: message.invocation?.tool || 'unknown',
+            callId: message.call_id,
+            input: message.invocation?.arguments,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'mcp_tool_call_end' && typeof message.call_id === 'string') {
+        const ok = message.result?.Ok;
+        const err = message.result?.Err;
+        const output = ok ?? err ?? message.result;
+
+        return {
+            type: 'tool-call-result',
+            callId: message.call_id,
+            output,
+            id: randomUUID(),
+        };
+    }
+
+    return null;
+}
+
+export function convertCodexAssistantEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'message';
+        message: string;
+        id: string;
+    }
+    | {
+        type: 'reasoning';
+        message: string;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+
+    if (message.type === 'item_completed' && message.item?.type === 'AgentMessage' && Array.isArray(message.item.content)) {
+        const text = message.item.content
+            .filter((item: any) => (item?.type === 'Text' || item?.type === 'output_text') && typeof item.text === 'string')
+            .map((item: any) => item.text)
+            .join('');
+
+        if (!text.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'message',
+            message: text,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'item_completed' && message.item?.type === 'Reasoning') {
+        const summary = Array.isArray(message.item.summary_text)
+            ? message.item.summary_text
+                .map((item: any) => {
+                    if (typeof item === 'string') return item;
+                    if (item && typeof item.text === 'string') return item.text;
+                    if (item && typeof item.summary === 'string') return item.summary;
+                    return '';
+                })
+                .filter(Boolean)
+                .join('\n')
+            : '';
+
+        if (!summary.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'reasoning',
+            message: summary,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'message' && message.role === 'assistant' && Array.isArray(message.content)) {
+        const text = message.content
+            .filter((item: any) => item?.type === 'output_text' && typeof item.text === 'string')
+            .map((item: any) => item.text)
+            .join('');
+
+        if (!text.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'message',
+            message: text,
+            id: randomUUID(),
+        };
+    }
+
+    if (message.type === 'reasoning') {
+        const summary = Array.isArray(message.summary)
+            ? message.summary
+                .map((item: any) => {
+                    if (typeof item === 'string') return item;
+                    if (item && typeof item.text === 'string') return item.text;
+                    if (item && typeof item.summary === 'string') return item.summary;
+                    return '';
+                })
+                .filter(Boolean)
+                .join('\n')
+            : '';
+
+        if (!summary.trim()) {
+            return null;
+        }
+
+        return {
+            type: 'reasoning',
+            message: summary,
+            id: randomUUID(),
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Normalize any permission mode string to the unified PermissionMode type.
+ * Aha default is always bypassPermissions (highest privilege).
+ */
+function resolvePermissionMode(rawMode?: string): PermissionMode {
     if (!rawMode) {
-        return undefined;
+        return 'bypassPermissions';
     }
     const normalized = rawMode.trim().toLowerCase();
     switch (normalized) {
@@ -78,10 +370,14 @@ function resolveCodexPermissionMode(rawMode?: string): CodexPermissionMode | und
         case 'yolo':
         case 'bypass':
         case 'bypasspermissions':
-            return 'yolo';
+            return 'bypassPermissions';
+        case 'acceptedits':
+            return 'acceptEdits';
+        case 'plan':
+            return 'plan';
         default:
-            logger.debug(`[Codex] Ignoring unknown HAPPY_PERMISSION_MODE value: ${rawMode}`);
-            return undefined;
+            logger.debug(`[Codex] Unknown permission mode "${rawMode}", defaulting to bypassPermissions`);
+            return 'bypassPermissions';
     }
 }
 
@@ -119,7 +415,7 @@ type DesktopKanbanState = {
 
 async function fetchDesktopKanbanState(desktopMcpUrl: string, roomId: string): Promise<DesktopKanbanState | null> {
     const client = new McpHttpClient(
-        { name: 'happy-cli-kanban-bootstrap', version: '1.0.0' },
+        { name: 'aha-cli-kanban-bootstrap', version: '1.0.0' },
         { capabilities: { tools: {} } }
     );
     let transport: StreamableHTTPClientTransport | null = null;
@@ -288,12 +584,22 @@ async function buildKanbanInstructionBlock(opts: {
 
 /**
  * Main entry point for the codex command with ink UI
+ *
+ * Codex bridge compatibility target:
+ * - codex-cli 0.115.0
+ *
+ * The current bridge work is anchored to the event model observed from that version,
+ * especially these high-value families:
+ * - item_started / item_completed
+ * - raw_response_item
+ * - mcp_tool_call_begin / mcp_tool_call_end
+ * - exec_command_output_delta
  */
 export async function runCodex(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
+    sessionTag?: string;
 }): Promise<void> {
-    type PermissionMode = CodexPermissionMode;
     interface EnhancedMode {
         permissionMode: PermissionMode;
         model?: string;
@@ -303,11 +609,13 @@ export async function runCodex(opts: {
     // Define session
     //
 
-    const sessionTag = randomUUID();
+    const sessionTag = opts.sessionTag || randomUUID();
+    const codexCliVersion = detectCodexCliVersion();
     const api = await ApiClient.create(opts.credentials);
 
     // Log startup options
     logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}`);
+    logger.debug(`[codex] Bridge compatibility target active for codex-cli ${codexCliVersion ?? 'unknown'}`);
 
     //
     // Machine
@@ -316,7 +624,7 @@ export async function runCodex(opts: {
     const settings = await readSettings();
     let machineId = settings?.machineId;
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/slopus/happy-cli/issues`);
+        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/aha/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -339,29 +647,45 @@ export async function runCodex(opts: {
         os: os.platform(),
         machineId: machineId,
         homeDir: os.homedir(),
-        happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: projectPath(),
-        happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
+        ahaHomeDir: configuration.ahaHomeDir,
+        ahaLibDir: projectPath(),
+        ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
+        processStartedAt: Date.now(),
         hostPid: process.pid,
         startedBy: opts.startedBy || 'terminal',
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'codex'
+        flavor: 'codex',
+        codexCliVersion: codexCliVersion ?? undefined,
+        sessionTag,
     };
-    if (process.env.HAPPY_AGENT_ROLE) {
-        metadata.role = process.env.HAPPY_AGENT_ROLE;
+    if (process.env.AHA_TEAM_MEMBER_ID) {
+        metadata.memberId = process.env.AHA_TEAM_MEMBER_ID;
     }
-    if (process.env.HAPPY_ROOM_ID) {
-        metadata.roomId = process.env.HAPPY_ROOM_ID;
-        metadata.teamId = process.env.HAPPY_ROOM_ID; // Ensure teamId is set for startHappyServer tools
+    if (process.env.AHA_AGENT_ROLE) {
+        metadata.role = process.env.AHA_AGENT_ROLE;
     }
-    if (process.env.HAPPY_ROOM_NAME) {
-        metadata.roomName = process.env.HAPPY_ROOM_NAME;
-        metadata.name = process.env.HAPPY_ROOM_NAME;
+    if (process.env.AHA_ROOM_ID) {
+        metadata.teamId = process.env.AHA_ROOM_ID;
+        metadata.roomId = process.env.AHA_ROOM_ID;
     }
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+    if (process.env.AHA_EXECUTION_PLANE) {
+        metadata.executionPlane = process.env.AHA_EXECUTION_PLANE as 'bypass' | 'mainline';
+    }
+    if (process.env.AHA_ROOM_NAME) {
+        metadata.roomName = process.env.AHA_ROOM_NAME;
+        metadata.name = process.env.AHA_ROOM_NAME;
+    }
+    if (process.env.AHA_AGENT_MODEL) {
+        metadata.modelOverride = process.env.AHA_AGENT_MODEL;
+    }
+    if (process.env.AHA_FALLBACK_AGENT_MODEL) {
+        metadata.fallbackModelOverride = process.env.AHA_FALLBACK_AGENT_MODEL;
+    }
+    const recoverAhaSessionId = process.env.AHA_RECOVER_SESSION_ID?.trim() || undefined;
+    const response = await api.getOrCreateSession({ sessionId: recoverAhaSessionId, tag: sessionTag, metadata, state });
     const session = api.sessionSyncClient(response);
 
     const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
@@ -369,41 +693,79 @@ export async function runCodex(opts: {
         model: mode.model,
     }));
 
+    // Track current overrides to apply per message
+    // Aha default: bypassPermissions (highest privilege for both Claude and Codex)
+    let currentPermissionMode: PermissionMode = resolvePermissionMode(process.env.AHA_PERMISSION_MODE);
+    logger.debug(`[Codex] Permission mode initialized: ${currentPermissionMode}`);
+    let currentModel: string | undefined = session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL || undefined;
+
+    const getCurrentEnhancedMode = (): EnhancedMode => ({
+        permissionMode: currentPermissionMode,
+        model: currentModel,
+    });
+
     session.on('artifact-update', (update: UpdateArtifactBody) => {
         logger.debug('[Codex] Received artifact update, forwarding to agent');
         client.sendArtifactUpdate(update);
     });
 
     session.on('team-message', (message: any) => {
-        // Filter out messages not for this team
-        if (metadata.teamId && message.teamId && message.teamId !== metadata.teamId) {
+        const activeTeamId = metadata.teamId || metadata.roomId;
+        // CRITICAL: Filter by teamId to prevent cross-team message leakage
+        if (!activeTeamId || message.teamId !== activeTeamId) {
+            logger.debug(`[Codex] Ignoring message from other team: ${message.teamId} !== ${activeTeamId}`);
             return;
         }
-
         logger.debug('[Codex] Received team message, injecting as user message');
         const senderLabel = message.fromDisplayName || message.fromRole || message.fromSessionId || 'Unknown';
         if (message.fromSessionId === session.sessionId) return;
 
-        // Specialized handling for different message types
-        let formattedMessage = '';
+        const content = message.content || JSON.stringify(message);
+        const formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
 
-        if (message.type === 'task-update') {
-            formattedMessage = `[Team Notification] ${senderLabel}: ${message.content}`;
-        } else {
-            const content = message.content || JSON.stringify(message);
-            formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;
-        }
-
-        messageQueue.push(formattedMessage, { permissionMode: 'default' });
+        messageQueue.push(formattedMessage, getCurrentEnhancedMode());
     });
 
     session.on('metadata-update', (newMetadata: Metadata) => {
         logger.debug('[Codex] Session metadata updated', newMetadata);
-        if (newMetadata.role && newMetadata.role !== metadata.role) {
-            logger.debug(`[Codex] Role changed to ${newMetadata.role}`);
-            const msg = `[System]: Your role has been updated to: ${newMetadata.role}. Please act accordingly.`;
-            messageQueue.push(msg, { permissionMode: 'default' });
+        const previousRole = metadata.role;
+        const previousTeamId = metadata.teamId || metadata.roomId;
+
+        if (newMetadata.role) {
             metadata.role = newMetadata.role;
+        }
+        if (newMetadata.teamId) {
+            metadata.teamId = newMetadata.teamId;
+        }
+        if (newMetadata.roomId) {
+            metadata.roomId = newMetadata.roomId;
+        }
+        if (newMetadata.roomName) {
+            metadata.roomName = newMetadata.roomName;
+            metadata.name = newMetadata.roomName;
+        }
+        if (newMetadata.modelOverride !== undefined) {
+            currentModel = newMetadata.modelOverride || undefined;
+            logger.debug(`[Codex] Model override updated from metadata: ${currentModel || 'default'}`);
+        }
+
+        const nextRole = metadata.role;
+        const nextTeamId = metadata.teamId || metadata.roomId;
+        const roleChanged = !!nextRole && nextRole !== previousRole;
+        const teamChanged = !!nextTeamId && nextTeamId !== previousTeamId;
+
+        if (roleChanged || teamChanged) {
+            const updates: string[] = [];
+            if (teamChanged) {
+                updates.push(`You have joined team ${nextTeamId}.`);
+            }
+            if (roleChanged) {
+                updates.push(`Your role is now ${nextRole}.`);
+            }
+            updates.push('Call functions.aha__get_team_info immediately to load the latest team context, roster, and workflow rules.');
+            messageQueue.push(`[System]: ${updates.join(' ')}`, getCurrentEnhancedMode());
+            teamInitialized = false;
+            teamContextBlock = null;
         }
     });
 
@@ -420,34 +782,16 @@ export async function runCodex(opts: {
         logger.debug('[START] Failed to report to daemon (may not be running):', error);
     }
 
-    // Track current overrides to apply per message
-    let currentPermissionMode: PermissionMode | undefined = resolveCodexPermissionMode(process.env.HAPPY_PERMISSION_MODE);
-    if (currentPermissionMode) {
-        logger.debug(`[Codex] Permission mode initialized from env: ${currentPermissionMode}`);
-    }
-    if (!currentPermissionMode && process.env.HAPPY_ROOM_ID) {
-        currentPermissionMode = 'yolo';
-        logger.debug(`[Codex] Permission mode defaulted to yolo for team session ${process.env.HAPPY_ROOM_ID}`);
-    }
-    let currentModel: string | undefined = undefined;
-
     session.onUserMessage((message) => {
-        // Resolve permission mode (validate)
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
-            if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-                messagePermissionMode = message.meta.permissionMode as PermissionMode;
-                currentPermissionMode = messagePermissionMode;
-                logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
-            } else {
-                logger.debug(`[Codex] Invalid permission mode received: ${message.meta.permissionMode}`);
-            }
+            messagePermissionMode = resolvePermissionMode(message.meta.permissionMode);
+            currentPermissionMode = messagePermissionMode;
+            logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
         } else {
-            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
+            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode}`);
         }
 
-        // Resolve model; explicit null resets to default (undefined)
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
             messageModel = message.meta.model || undefined;
@@ -458,7 +802,7 @@ export async function runCodex(opts: {
         }
 
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode,
             model: messageModel,
         };
         messageQueue.push(message.content.text, enhancedMode);
@@ -570,8 +914,8 @@ export async function runCodex(opts: {
             // Stop caffeinate
             stopCaffeinate();
 
-            // Stop Happy MCP server
-            happyServer.stop();
+            // Stop Aha MCP server
+            ahaServer.stop();
 
             logger.debug('[Codex] Session termination complete, exiting');
             process.exit(0);
@@ -676,12 +1020,84 @@ export async function runCodex(opts: {
         session.sendCodexMessage(message);
     });
     client.setPermissionHandler(permissionHandler);
-    client.setHandler((msg) => {
+
+    // Accumulator for agent_message_delta events.
+    // Newer Codex SDK versions stream text via agent_message_delta and only
+    // emit agent_message with a short summary (e.g. title update).  We
+    // accumulate the deltas so we can forward the full text to kanban.
+    let agentMessageDeltaBuffer = '';
+    const mcpLifecycleCallIds = new Set<string>();
+    const execOutputBuffers = new Map<string, { stdout: string; stderr: string }>();
+
+    client.setHandler((rawMsg) => {
+        const msg = unwrapCodexEvent(rawMsg);
         logger.debug(`[Codex] MCP message: ${JSON.stringify(msg)}`);
+
+        // item_completed events duplicate content already delivered via agent_message / agent_reasoning.
+        // Skip them entirely to prevent 2-3x message repetition in context.
+        if (msg.type === 'item_completed') {
+            return;
+        }
+
+        // Old-format Codex events: `message` (role: assistant) and `reasoning` type.
+        // These are only emitted by older Codex versions that don't send agent_message/agent_reasoning.
+        const assistantMessage = convertCodexAssistantEventToSessionMessage(msg);
+        if (assistantMessage && msg.type !== 'agent_message' && msg.type !== 'agent_reasoning') {
+            const fullText = assistantMessage.type === 'message'
+                ? (agentMessageDeltaBuffer || assistantMessage.message)
+                : assistantMessage.message;
+            agentMessageDeltaBuffer = '';
+
+            if (assistantMessage.type === 'message') {
+                messageBuffer.addMessage(fullText, 'assistant');
+            } else {
+                messageBuffer.addMessage(`[Thinking] ${fullText.substring(0, 100)}...`, 'system');
+            }
+
+            session.sendCodexMessage({
+                ...assistantMessage,
+                message: fullText,
+            });
+            return;
+        }
+
+        const mcpLifecycleMessage = convertCodexMcpLifecycleEventToSessionMessage(msg);
+        if (mcpLifecycleMessage) {
+            if (mcpLifecycleMessage.type === 'tool-call') {
+                mcpLifecycleCallIds.add(mcpLifecycleMessage.callId);
+                messageBuffer.addMessage(`Tool: ${mcpLifecycleMessage.name}`, 'tool');
+            }
+            session.sendCodexMessage(mcpLifecycleMessage);
+            return;
+        }
+
+        // Accumulate streaming text deltas
+        if (msg.type === 'agent_message_delta') {
+            agentMessageDeltaBuffer += msg.delta;
+            return; // Don't process further — wait for agent_message or task_complete
+        }
+        // agent_message_content_delta is a duplicate of agent_message_delta with extra metadata — skip
+        if (msg.type === 'agent_message_content_delta') {
+            return;
+        }
+        if (msg.type === 'exec_command_output_delta') {
+            const buffer = execOutputBuffers.get(msg.call_id) || { stdout: '', stderr: '' };
+            const decoded = decodeCodexDeltaChunk(msg.chunk);
+            if (msg.stream === 'stderr') {
+                buffer.stderr += decoded;
+            } else {
+                buffer.stdout += decoded;
+            }
+            execOutputBuffers.set(msg.call_id, buffer);
+            return;
+        }
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
-            messageBuffer.addMessage(msg.message, 'assistant');
+            // Use accumulated delta text when available (newer SDK); fall back to msg.message (older SDK)
+            const fullText = agentMessageDeltaBuffer || msg.message;
+            agentMessageDeltaBuffer = '';
+            messageBuffer.addMessage(fullText, 'assistant');
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning') {
@@ -718,6 +1134,15 @@ export async function runCodex(opts: {
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
             }
+            // Flush any remaining delta text that wasn't closed by agent_message
+            if (agentMessageDeltaBuffer) {
+                session.sendCodexMessage({
+                    type: 'message',
+                    message: agentMessageDeltaBuffer,
+                    id: randomUUID()
+                });
+                agentMessageDeltaBuffer = '';
+            }
             // Reset diff processor on task end or abort
             diffProcessor.reset();
         }
@@ -734,11 +1159,27 @@ export async function runCodex(opts: {
             reasoningProcessor.complete(msg.text);
         }
         if (msg.type === 'agent_message') {
+            // Use accumulated delta text when available; fall back to msg.message for older SDK
+            const fullText = agentMessageDeltaBuffer || msg.message;
+            agentMessageDeltaBuffer = '';
             session.sendCodexMessage({
                 type: 'message',
-                message: msg.message,
+                message: fullText,
                 id: randomUUID()
             });
+        }
+        const functionToolMessage = convertCodexFunctionEventToSessionMessage(msg);
+        if (functionToolMessage) {
+            if (functionToolMessage.type === 'tool-call' && isMcpFunctionName(functionToolMessage.name)) {
+                return;
+            }
+            if (functionToolMessage.type === 'tool-call-result' && mcpLifecycleCallIds.has(functionToolMessage.callId)) {
+                return;
+            }
+            if (functionToolMessage.type === 'tool-call') {
+                messageBuffer.addMessage(`Tool: ${functionToolMessage.name}`, 'tool');
+            }
+            session.sendCodexMessage(functionToolMessage);
         }
         if (msg.type === 'exec_command_begin' || msg.type === 'exec_approval_request') {
             let { call_id, type, ...inputs } = msg;
@@ -752,6 +1193,15 @@ export async function runCodex(opts: {
         }
         if (msg.type === 'exec_command_end') {
             let { call_id, type, ...output } = msg;
+            const buffered = execOutputBuffers.get(call_id);
+            if (buffered) {
+                output = {
+                    ...output,
+                    stdout: typeof output.stdout === 'string' && output.stdout.length > 0 ? output.stdout : buffered.stdout,
+                    stderr: typeof output.stderr === 'string' && output.stderr.length > 0 ? output.stderr : buffered.stderr,
+                };
+                execOutputBuffers.delete(call_id);
+            }
             session.sendCodexMessage({
                 type: 'tool-call-result',
                 callId: call_id,
@@ -819,58 +1269,206 @@ export async function runCodex(opts: {
         }
     });
 
-    // Start Happy MCP server
-    const desktopMcpUrl = process.env.HAPPY_DESKTOP_MCP_URL;
-    const happyServer = await startHappyServer(api, session);
-    logger.debug(`[START] Happy MCP server started at ${happyServer.url}`);
-    const bridgeCommand = join(projectPath(), 'bin', 'happy-mcp.mjs');
-    const mcpServers: Record<string, { command: string; args: string[] }> = {
-        happy: {
+    // Start Aha MCP server
+    const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
+    const ahaServer = await startAhaServer(api, session);
+    logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
+    const bridgeCommand = join(projectPath(), 'bin', 'aha-mcp.mjs');
+    const allowedMaterializedMcpServerNames = process.env.AHA_AGENT_MCP_CONFIG_PATH
+        ? readMaterializedMcpServerNames(process.env.AHA_AGENT_MCP_CONFIG_PATH)
+        : [];
+    const availableMcpServers: Record<string, { type: string; command: string; args: string[] }> = {
+        aha: {
+            type: 'stdio',
             command: bridgeCommand,
-            args: ['--url', happyServer.url]
+            args: ['--url', ahaServer.url]
         }
     };
     if (desktopMcpUrl) {
-        mcpServers['happy-desktop'] = {
+        availableMcpServers['aha-desktop'] = {
+            type: 'stdio',
             command: bridgeCommand,
             args: ['--url', desktopMcpUrl]
         };
     }
-    const happyRoomIdEnv = process.env.HAPPY_ROOM_ID;
-    const happyRoleLabelEnv = process.env.HAPPY_ROLE_LABEL;
-    const happyMemberIdEnv = process.env.HAPPY_MEMBER_ID;
+    const mcpServers = filterMaterializedMcpServers(availableMcpServers, allowedMaterializedMcpServerNames);
+    const ahaRoomIdEnv = process.env.AHA_ROOM_ID;
+    const ahaRoleLabelEnv = process.env.AHA_ROLE_LABEL;
+    const ahaMemberIdEnv = process.env.AHA_MEMBER_ID;
     let desktopKanbanInstructionBlock: string | null = null;
-    if (desktopMcpUrl && happyRoomIdEnv) {
+    if (desktopMcpUrl && ahaRoomIdEnv) {
         try {
             desktopKanbanInstructionBlock = await buildKanbanInstructionBlock({
                 desktopMcpUrl,
-                roomId: happyRoomIdEnv,
-                roleId: process.env.HAPPY_AGENT_ROLE,
-                roleLabel: happyRoleLabelEnv,
-                memberId: happyMemberIdEnv
+                roomId: ahaRoomIdEnv,
+                roleId: process.env.AHA_AGENT_ROLE,
+                roleLabel: ahaRoleLabelEnv,
+                memberId: ahaMemberIdEnv
             });
         } catch (error) {
             logger.debug('[Codex] Failed to prepare Kanban instruction block', error);
         }
     }
 
-    //
-    // Auto-start Trigger for Team Roles
-    // Agents started by Daemon need a "kick" to start working, otherwise they wait for User Input forever.
-    //
-    if (metadata.teamId && metadata.role) {
-        logger.debug(`[Codex] Auto-starting agent with role: ${metadata.role}`);
-        const role = metadata.role;
-        let startInstruction = '';
-
-        if (role === 'master') {
-            startInstruction = "System: [AUTO-ACTIVATION] You have been activated as the team MASTER. Please immediately Check for any existing tasks or user requests, and coordinate the team accordingly. Start by calling 'list_tasks'.";
-        } else {
-            startInstruction = `System: [AUTO-ACTIVATION] You have been activated as ${role.toUpperCase()}. Please Check for any tasks assigned to you by calling 'list_tasks' and report your status.`;
+    // ============================================================
+    // Genome Spec — fetch and build injection text
+    // ============================================================
+    let genomeInjectionBlock: string | null = null;
+    let genomeSpec: GenomeSpec | null = null;
+    const genomeSpecId = process.env.AHA_SPEC_ID;
+    if (genomeSpecId) {
+        try {
+            genomeSpec = await fetchGenomeSpec(opts.credentials.token, genomeSpecId);
+            const injection = buildGenomeInjection(genomeSpec);
+            if (injection) {
+                genomeInjectionBlock = injection;
+                logger.debug(`[Codex] Genome injection built for spec ${genomeSpecId}`);
+            }
+        } catch (error) {
+            if (process.env.AHA_GENOME_FALLBACK !== '1') {
+                logger.debug(`[Codex] Failed to load genome spec (specId=${genomeSpecId}): ${error}`);
+            }
         }
+    }
+    const mountedAgentPromptBlock = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
 
-        // We push this message to the queue so it's processed as soon as the client connects
-        messageQueue.push(startInstruction, { permissionMode: 'default' });
+    // ============================================================
+    // Team Collaboration Initialization
+    // ============================================================
+    const teamId = metadata.teamId || metadata.roomId;
+    const role = metadata.role;
+    let taskStateManager: TaskStateManager | undefined;
+    let statusReporter: StatusReporter | undefined;
+    let teamStorage: TeamMessageStorage | undefined;
+    let teamInitialized = false;
+    let teamContextBlock: string | null = null;
+
+    if (teamId && role) {
+        logger.debug(`[Codex] Team mode detected: teamId=${teamId}, role=${role}`);
+
+        try {
+            // Initialize TaskStateManager
+            taskStateManager = new TaskStateManager(api, teamId, response.id, role);
+            logger.debug(`[Codex] TaskStateManager initialized for role ${role}`);
+
+            // Set up state change notifications
+            taskStateManager.setOnStateChange((change) => {
+                logger.debug(`[Codex] Kanban state change: ${change.type} - ${change.taskTitle}`);
+            });
+
+            // Initialize StatusReporter for automatic status updates
+            statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
+            logger.debug(`[Codex] StatusReporter initialized for role ${role}`);
+
+            const membershipResult = await ensureCurrentSessionRegisteredToTeam({
+                api,
+                teamId,
+                sessionId: response.id,
+                role,
+                metadata,
+                taskStateManager,
+            });
+            logger.debug(
+                `[Codex] Team membership sync result: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
+            );
+
+            // Initialize team message storage
+            teamStorage = new TeamMessageStorage(process.cwd());
+
+            // Get role metadata
+            const roleTitle = getRoleTitle(role) || role;
+            const roleResponsibilities = getRoleResponsibilities(role) || [];
+            const isCoordinator = COORDINATION_ROLES.includes(role);
+
+            // Send handshake message to announce presence
+            const introContent = buildAgentHandshakeContent({
+                role,
+                roleTitle,
+                isCoordinator,
+                roleDescription: isCoordinator ? `Coordinate the team as ${roleTitle}` : undefined,
+                responsibilities: roleResponsibilities,
+            });
+
+            // Send handshake message
+            const handshakeMsg = {
+                id: randomUUID(),
+                teamId,
+                content: introContent,
+                type: 'chat' as const,
+                timestamp: Date.now(),
+                fromSessionId: response.id,
+                fromRole: role,
+                metadata: { type: 'handshake', roleTitle }
+            };
+            await api.sendTeamMessage(teamId, handshakeMsg);
+            logger.debug(`[Codex] Sent handshake message to team`);
+            console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+
+            // Fetch team context (artifact + recent messages)
+            let teamData: any = null;
+            let teamName = 'Team';
+            let historyText = '(No recent history)';
+
+            try {
+                const artifact = await api.getArtifact(teamId);
+                teamData = artifact.body;
+                teamName = typeof artifact.header === 'object' && artifact.header?.name
+                    ? artifact.header.name
+                    : 'Team';
+                logger.debug('[Codex] Successfully fetched team artifact');
+            } catch (e) {
+                logger.debug('[Codex] Team artifact not available (this is OK for new teams):', e);
+            }
+
+            // Get recent messages for context
+            try {
+                const recentMessages = await teamStorage.getRecentContext(teamId, 20);
+                if (recentMessages && recentMessages.length > 0) {
+                    historyText = recentMessages.map((m: any) =>
+                        `[${m.fromRole || 'unknown'}] ${m.content?.substring(0, 100)}...`
+                    ).join('\n');
+                }
+            } catch (e) {
+                logger.debug('[Codex] Failed to get recent messages:', e);
+            }
+
+            // Get kanban context
+            let joinKanbanContext: Awaited<ReturnType<TaskStateManager['getFilteredContext']>> | undefined;
+            try {
+                joinKanbanContext = await taskStateManager.getFilteredContext();
+            } catch (e) {
+                logger.debug('[Codex] Failed to get kanban context:', e);
+            }
+
+            const sessionMetadataForPrompt = {
+                ...(session.getMetadata() || {}),
+                teamId,
+                role,
+            } as Metadata;
+
+            const sharedRolePrompt = generateRolePrompt(
+                sessionMetadataForPrompt,
+                joinKanbanContext,
+                genomeSpec ?? undefined
+            );
+
+            const recentTeamActivityBlock = trimIdent(`
+## Team Name
+${teamName}
+
+## Recent Team Activity
+${historyText}
+`);
+
+            teamContextBlock = [sharedRolePrompt, recentTeamActivityBlock].join('\n\n');
+
+            teamInitialized = true;
+            logger.debug('[Codex] Team initialization complete');
+
+        } catch (e) {
+            logger.debug('[Codex] Team initialization failed:', e);
+            console.log(`[Team] ⚠️ Failed to initialize team mode: ${e}`);
+        }
     }
 
     let first = true;
@@ -953,7 +1551,11 @@ export async function runCodex(opts: {
                         case 'default': return 'untrusted' as const;
                         case 'read-only': return 'never' as const;
                         case 'safe-yolo': return 'on-failure' as const;
-                        case 'yolo': return 'on-failure' as const;
+                        case 'yolo':
+                        case 'bypassPermissions': return 'on-failure' as const;   // Aha default: full access
+                        case 'acceptEdits': return 'on-request' as const;
+                        case 'plan': return 'untrusted' as const;
+                        default: return 'on-failure' as const;                    // Unknown → treat as bypass
                     }
                 })();
                 const sandbox = (() => {
@@ -961,30 +1563,61 @@ export async function runCodex(opts: {
                         case 'default': return 'workspace-write' as const;
                         case 'read-only': return 'read-only' as const;
                         case 'safe-yolo': return 'workspace-write' as const;
-                        case 'yolo': return 'danger-full-access' as const;
+                        case 'yolo':
+                        case 'bypassPermissions': return 'danger-full-access' as const;  // Aha default: full access
+                        case 'acceptEdits': return 'workspace-write' as const;
+                        case 'plan': return 'workspace-write' as const;
+                        default: return 'danger-full-access' as const;                   // Unknown → treat as bypass
                     }
                 })();
 
                 if (!wasCreated) {
                     const startConfig: CodexSessionConfig = {
-                        prompt: first ? message.message + '\n\n' + trimIdent(`Based on this message, call functions.happy__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.`) : message.message,
+                        prompt: first ? message.message + '\n\n' + trimIdent(`If functions.aha__change_title is available in this session, call it to set a chat title that represents the current task. If the task changes dramatically later and the tool is available, call it again to update the title.`) : message.message,
                         sandbox,
                         'approval-policy': approvalPolicy,
                         config: { mcp_servers: mcpServers }
                     };
 
                     const instructionBlocks: string[] = [];
-                    if (metadata.role) {
+
+                    if (mountedAgentPromptBlock) {
+                        instructionBlocks.push(mountedAgentPromptBlock);
+                    }
+
+                    // Inject team context if initialized (this includes role, responsibilities, kanban state, required actions)
+                    if (teamInitialized && teamContextBlock) {
+                        instructionBlocks.push(teamContextBlock);
+                    } else if (metadata.role) {
+                        // Fallback: basic role instruction if team initialization failed
                         instructionBlocks.push(
                             `You are a ${metadata.role} in a collaborative team. Coordinate with other agents via the shared Kanban board and keep task statuses accurate.`
                         );
                     }
+
+                    // Inject genome memory (learnings, patterns, scope, etc.)
+                    if (genomeInjectionBlock && !teamInitialized) {
+                        instructionBlocks.push(genomeInjectionBlock);
+                    }
+
                     if (desktopKanbanInstructionBlock) {
                         instructionBlocks.push(desktopKanbanInstructionBlock);
+                    } else if (!teamInitialized && (metadata.role || metadata.teamId || metadata.roomId)) {
+                        // No desktop MCP context AND team initialization failed
+                        // Instruct the agent to fetch team info via Aha MCP server
+                        instructionBlocks.push(
+                            trimIdent(`IMPORTANT: You are part of a team but don't have full team context yet.
+Before starting any work, you MUST call the get_team_info tool from the "aha" MCP server to:
+1. Understand your role and responsibilities
+2. See who else is on the team
+3. Learn the communication and workflow protocols
+
+Call functions.aha__get_team_info immediately as your first action.`)
+                        );
                     }
                     if (desktopMcpUrl) {
                         instructionBlocks.push(
-                            trimIdent(`The desktop has exposed a Kanban MCP server named "happy-desktop".
+                            trimIdent(`The desktop has exposed a Kanban MCP server named "aha-desktop".
 - Use kanban_list_rooms to see available rooms.
 - Use kanban_get_room_state to inspect tasks for the active room.
 - Use kanban_create_task / kanban_update_task / kanban_assign_member to manage the board.
@@ -1093,9 +1726,9 @@ Always reflect progress on the board and call these tools whenever you start or 
         logger.debug('[codex]: client.disconnect begin');
         await client.disconnect();
         logger.debug('[codex]: client.disconnect done');
-        // Stop Happy MCP server
-        logger.debug('[codex]: happyServer.stop');
-        happyServer.stop();
+        // Stop Aha MCP server
+        logger.debug('[codex]: ahaServer.stop');
+        ahaServer.stop();
 
         // Clean up ink UI
         if (process.stdin.isTTY) {

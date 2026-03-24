@@ -1,0 +1,80 @@
+{
+  "namespace": "@official",
+  "name": "rapid-prototype-pod",
+  "version": 1,
+  "description": "Lean prototype team optimized for speed of learning, end-to-end demos, and fast scope cuts.",
+  "tags": [
+    "corps",
+    "team-template",
+    "prototype",
+    "mvp",
+    "demo",
+    "lean"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve",
+          "agent.spawn"
+        ]
+      }
+    },
+    {
+      "genome": "@official/implementer",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Bias toward the thinnest end-to-end slice that proves value. Prefer scaffolds and explicit TODOs over hidden polish work.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "qa-engineer",
+      "count": 1,
+      "required": false,
+      "overlay": {
+        "promptSuffix": "Engage near demo cut or when prototype risk is unclear. Keep validation lightweight, fast, and evidence-based.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "Small, fast-moving pod for prototypes, proofs of concept, and internal demos.",
+    "initialObjective": "Produce one demonstrable end-to-end slice quickly, document shortcuts, and keep the path to hardening visible.",
+    "sharedContext": [
+      "Optimize for learning speed and demo value, not completeness.",
+      "Prefer one working vertical slice over broad, unfinished scaffolding.",
+      "Document all shortcuts, mocks, stubs, and follow-up hardening tasks explicitly.",
+      "Bring in the optional QA seat only when demo risk or external visibility warrants validation."
+    ],
+    "commandChain": [
+      "user -> master -> builder -> master -> user",
+      "master -> qa-engineer (optional smoke validation) -> master"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": false
+    }
+  }
+}

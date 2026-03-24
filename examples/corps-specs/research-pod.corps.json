@@ -1,0 +1,106 @@
+{
+  "namespace": "@official",
+  "name": "research-pod",
+  "version": 1,
+  "description": "Research-first team that collapses unknowns quickly, then converts validated findings into scoped implementation.",
+  "tags": [
+    "corps",
+    "team-template",
+    "research",
+    "discovery",
+    "implementation",
+    "decision-support"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve",
+          "agent.spawn"
+        ]
+      }
+    },
+    {
+      "genome": "@official/researcher",
+      "roleAlias": "researcher",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Start with reconnaissance. Produce citations, decision options, dependencies, and a risk map before implementation begins.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/implementer",
+      "roleAlias": "builder",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Convert validated findings into the smallest useful implementation slices once master turns research output into tasks.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "qa-engineer",
+      "count": 1,
+      "required": false,
+      "overlay": {
+        "promptSuffix": "Join when research turns into a shippable slice that needs verification or when evidence quality is critical.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/architect",
+      "roleAlias": "architect",
+      "count": 1,
+      "required": false,
+      "overlay": {
+        "promptSuffix": "Join when research uncovers structural tradeoffs, migration questions, or cross-cutting architecture decisions.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "Discovery-driven pod for uncertain requirements, unfamiliar codebases, or design spaces with unresolved tradeoffs.",
+    "initialObjective": "Collapse the unknowns first, then turn only validated findings into owned implementation work.",
+    "sharedContext": [
+      "Research first, then implementation. No blind coding before unknowns are reduced enough for a bounded slice.",
+      "Research outputs must include citations, options, constraints, and a recommendation with rationale.",
+      "Master converts research into explicit tasks before builders move.",
+      "Use optional QA and architect seats only when findings expose test risk or structural decisions."
+    ],
+    "commandChain": [
+      "user -> master -> researcher -> master -> builder -> qa-engineer -> master -> user",
+      "master -> architect (optional design review) -> master"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": false
+    }
+  }
+}

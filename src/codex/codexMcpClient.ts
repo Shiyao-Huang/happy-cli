@@ -43,6 +43,17 @@ function getCodexMcpCommand(): string {
     }
 }
 
+export function detectCodexCliVersion(): string | null {
+    try {
+        const version = execSync('codex --version', { encoding: 'utf8' }).trim();
+        const match = version.match(/codex-cli\s+(\d+\.\d+\.\d+(?:-alpha\.\d+)?)/);
+        return match ? match[1] : null;
+    } catch (error) {
+        logger.debug('[CodexMCP] Error detecting codex version:', error);
+        return null;
+    }
+}
+
 export class CodexMcpClient {
     private client: Client;
     private transport: StdioClientTransport | null = null;
@@ -54,7 +65,7 @@ export class CodexMcpClient {
 
     constructor() {
         this.client = new Client(
-            { name: 'happy-codex-client', version: '1.0.0' },
+            { name: 'aha-codex-client', version: '1.0.0' },
             { capabilities: { tools: {}, elicitation: {} } }
         );
 
@@ -300,7 +311,7 @@ export class CodexMcpClient {
 
         try {
             await this.client.notification({
-                method: 'happy/artifact-update',
+                method: 'aha/artifact-update',
                 params: update
             });
             logger.debug('[CodexMCP] Sent artifact update notification');
@@ -314,7 +325,7 @@ export class CodexMcpClient {
 
         try {
             await this.client.notification({
-                method: 'happy/team-message',
+                method: 'aha/team-message',
                 params: message
             });
             logger.debug('[CodexMCP] Sent team message notification');
@@ -355,9 +366,8 @@ export class CodexMcpClient {
 
         this.transport = null;
         this.connected = false;
-        this.sessionId = null;
-        this.conversationId = null;
-
-        logger.debug('[CodexMCP] Disconnected');
+        // Preserve session/conversation identifiers for potential reconnection / recovery flows.
+        // Only forceCloseSession() should clear them.
+        logger.debug(`[CodexMCP] Disconnected; session ${this.sessionId ?? 'none'} preserved`);
     }
 }

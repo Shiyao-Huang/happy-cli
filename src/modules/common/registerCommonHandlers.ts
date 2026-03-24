@@ -120,13 +120,27 @@ export interface SpawnSessionOptions {
     directory: string;
     sessionId?: string;
     approvedNewDirectoryCreation?: boolean;
-    agent?: 'claude' | 'codex';
+    agent?: 'claude' | 'codex' | 'ralph';
     token?: string;
     sessionTag?: string;
     teamId?: string;
     role?: string;
     sessionName?: string;
     sessionPath?: string;
+    env?: Record<string, string>;
+    // ralph-specific fields
+    prdPath?: string;           // prd.json path (ralph required)
+    maxIterations?: number;     // max loop iterations (ralph, default 10)
+    // session lineage / execution plane
+    parentSessionId?: string;
+    executionPlane?: 'mainline' | 'bypass';
+    specId?: string;
+    /**
+     * Called immediately after the child process is forked (before waiting
+     * for the session-started webhook). Use this to persist the PID for
+     * singleton-style guards that must survive daemon restarts.
+     */
+    onPidKnown?: (pid: number) => void;
 }
 
 export type SpawnSessionResult =

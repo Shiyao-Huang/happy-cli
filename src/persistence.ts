@@ -1,13 +1,15 @@
 /**
- * Minimal persistence functions for happy CLI
- * 
- * Handles settings and private key storage in ~/.happy/ or local .happy/
+ * Minimal persistence functions for aha CLI
+ *
+ * Handles settings and private key storage in ~/.aha/ or local .aha/
  */
 
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { constants } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { configuration } from '@/configuration'
 import * as z from 'zod';
 import { encodeBase64 } from '@/api/encryption';
@@ -18,11 +20,40 @@ interface Settings {
   // All machine operations use this ID
   machineId?: string
   machineIdConfirmedByServer?: boolean
-  daemonAutoStartWhenRunningHappy?: boolean
+  daemonAutoStartWhenRunningAha?: boolean
+  /**
+   * SSH host alias for creating a local tunnel to genome-hub when it's not accessible directly.
+   * Example: "wow" — daemon will run `ssh -f -N -L 3006:localhost:3006 wow` on startup.
+   * Set to null/omit to disable auto-tunnel.
+   */
+  genomeHubSshHost?: string
+  /**
+   * Publish key for authenticating write operations against genome-hub.
+   * Injected into process.env.HUB_PUBLISH_KEY at daemon startup so all spawned
+   * agent sessions inherit it without manual env-var setup.
+   */
+  genomeHubPublishKey?: string
 }
 
 const defaultSettings: Settings = {
   onboardingCompleted: false
+}
+
+function getLegacySettingsFile(): string {
+  return join(homedir(), '.aha', 'settings.json');
+}
+
+async function readSettingsFile(settingsFile: string): Promise<Settings | null> {
+  if (!existsSync(settingsFile)) {
+    return null;
+  }
+
+  try {
+    const content = await readFile(settingsFile, 'utf8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -39,21 +70,36 @@ export interface DaemonLocallyPersistedState {
 }
 
 export async function readSettings(): Promise<Settings> {
-  if (!existsSync(configuration.settingsFile)) {
-    return { ...defaultSettings }
+  const current = await readSettingsFile(configuration.settingsFile) ?? { ...defaultSettings };
+
+  // v3 migration compatibility:
+  // daemon / CLI may run under ~/.aha-v3 while marketplace settings were
+  // previously saved under ~/.aha/settings.json. Preserve only the marketplace
+  // connectivity fields so feedback upload and SSH tunnel setup keep working.
+  const legacySettingsFile = getLegacySettingsFile();
+  if (legacySettingsFile !== configuration.settingsFile) {
+    const legacy = await readSettingsFile(legacySettingsFile);
+    if (legacy) {
+      if (!current.genomeHubSshHost && legacy.genomeHubSshHost) {
+        console.warn(`[settings] genomeHubSshHost missing in ${configuration.settingsFile}, falling back to legacy ~/.aha/settings.json value: "${legacy.genomeHubSshHost}"`);
+      }
+      if (!current.genomeHubPublishKey && legacy.genomeHubPublishKey) {
+        console.warn(`[settings] genomeHubPublishKey missing in ${configuration.settingsFile}, falling back to legacy ~/.aha/settings.json`);
+      }
+      return {
+        ...current,
+        genomeHubSshHost: current.genomeHubSshHost ?? legacy.genomeHubSshHost,
+        genomeHubPublishKey: current.genomeHubPublishKey ?? legacy.genomeHubPublishKey,
+      };
+    }
   }
 
-  try {
-    const content = await readFile(configuration.settingsFile, 'utf8')
-    return JSON.parse(content)
-  } catch {
-    return { ...defaultSettings }
-  }
+  return current;
 }
 
 export async function writeSettings(settings: Settings): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+  if (!existsSync(configuration.ahaHomeDir)) {
+    await mkdir(configuration.ahaHomeDir, { recursive: true })
   }
 
   await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
@@ -114,8 +160,8 @@ export async function updateSettings(
     const updated = await updater(current);
 
     // Ensure directory exists
-    if (!existsSync(configuration.happyHomeDir)) {
-      await mkdir(configuration.happyHomeDir, { recursive: true });
+    if (!existsSync(configuration.ahaHomeDir)) {
+      await mkdir(configuration.ahaHomeDir, { recursive: true });
     }
 
     // Write atomically using rename
@@ -200,8 +246,8 @@ export async function readCredentials(): Promise<Credentials | null> {
 }
 
 export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+  if (!existsSync(configuration.ahaHomeDir)) {
+    await mkdir(configuration.ahaHomeDir, { recursive: true })
   }
   await writeFile(configuration.privateKeyFile, JSON.stringify({
     secret: encodeBase64(credentials.secret),
@@ -210,8 +256,8 @@ export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, 
 }
 
 export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+  if (!existsSync(configuration.ahaHomeDir)) {
+    await mkdir(configuration.ahaHomeDir, { recursive: true })
   }
   await writeFile(configuration.privateKeyFile, JSON.stringify({
     encryption: { publicKey: encodeBase64(credentials.publicKey), machineKey: encodeBase64(credentials.machineKey) },
@@ -220,8 +266,8 @@ export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Arr
 }
 
 export async function writeCredentialsContentSecretKey(credentials: { contentSecretKey: Uint8Array, token: string }): Promise<void> {
-  if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+  if (!existsSync(configuration.ahaHomeDir)) {
+    await mkdir(configuration.ahaHomeDir, { recursive: true })
   }
   await writeFile(configuration.privateKeyFile, JSON.stringify({
     encryption: { contentSecretKey: encodeBase64(credentials.contentSecretKey) },
@@ -345,4 +391,3 @@ export async function releaseDaemonLock(lockHandle: FileHandle): Promise<void> {
     }
   } catch { }
 }
-

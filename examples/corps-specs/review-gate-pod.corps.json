@@ -1,0 +1,93 @@
+{
+  "namespace": "@official",
+  "name": "review-gate-pod",
+  "version": 1,
+  "description": "Verification-focused team for reviewing an existing branch, feature, or artifact without defaulting into redesign.",
+  "tags": [
+    "corps",
+    "team-template",
+    "review",
+    "qa",
+    "acceptance",
+    "audit"
+  ],
+  "category": "corps",
+  "members": [
+    {
+      "genome": "@official/master",
+      "roleAlias": "master",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "authorities": [
+          "user.reply",
+          "message.route",
+          "task.create",
+          "task.assign",
+          "task.update.any",
+          "task.approve",
+          "agent.spawn"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "reviewer",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Act as the primary review gate. Focus on correctness, scope, regressions, and clear approval/rejection outcomes. Stay read-only.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/qa-engineer",
+      "roleAlias": "qa-engineer",
+      "count": 1,
+      "required": true,
+      "overlay": {
+        "promptSuffix": "Act as executable QA. Run validation plans, reproduce bugs, and attach evidence that helps fixes land faster.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    },
+    {
+      "genome": "@official/implementer",
+      "roleAlias": "implementer",
+      "count": 1,
+      "required": false,
+      "overlay": {
+        "promptSuffix": "Only engage when reviewer or QA identifies fixable issues that require code changes. Keep fixes narrowly scoped to findings.",
+        "authorities": [
+          "task.start.self",
+          "task.complete.self"
+        ]
+      }
+    }
+  ],
+  "bootContext": {
+    "teamDescription": "Review and acceptance team for auditing already-existing work before sign-off.",
+    "initialObjective": "Verify the current artifact against acceptance criteria, surface risks clearly, and only spawn fix work if findings require it.",
+    "sharedContext": [
+      "Assume code already exists; default action is verify, not redesign.",
+      "Reviewer owns the decision narrative; QA owns executable evidence and repro quality.",
+      "If a fix is required, master creates a bounded follow-up task instead of expanding review scope inline.",
+      "Approval requires both a scope/correctness read and an evidence-backed validation pass."
+    ],
+    "commandChain": [
+      "user -> master -> reviewer -> qa-engineer -> master -> user",
+      "master -> implementer (optional fixes) -> reviewer/qa-engineer -> master"
+    ],
+    "taskPolicy": {
+      "boardIsSourceOfTruth": true,
+      "requireTaskForExecution": true,
+      "forbidChatOnlyExecution": true,
+      "forbidPeerToPeerRouting": false
+    }
+  }
+}

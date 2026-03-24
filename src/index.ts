@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * CLI entry point for happy command
- * 
+ * CLI entry point for aha command
+ *
  * Simple argument parsing without any CLI framework dependencies
  */
 
@@ -15,9 +15,9 @@ import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './daemon/controlClient'
+import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
-import { killRunawayHappyProcesses } from './daemon/doctor'
+import { killRunawayAhaProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
 import { uninstall } from './daemon/uninstall'
 import { ApiClient } from './api/api'
@@ -25,9 +25,82 @@ import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
-import { spawnHappyCLI } from './utils/spawnHappyCLI'
+import { spawnAhaCLI } from './utils/spawnAhaCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
+
+/**
+ * Show general CLI help
+ * Displays all available commands with descriptions
+ */
+function showGeneralHelp() {
+  const version = packageJson.version
+
+  console.log(`
+${chalk.bold.cyan('Aha CLI')} - Claude Code wrapper with team collaboration
+${chalk.gray(`Version ${version}`)}
+
+${chalk.bold('Usage:')}
+  ${chalk.green('aha')} <command> [options]
+  ${chalk.green('aha')} <command> --help     Show command-specific help
+  ${chalk.green('aha')} --help              Show this help message
+  ${chalk.green('aha')} --version           Show version number
+
+${chalk.bold('Available Commands:')}
+  ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
+  ${chalk.yellow('auth')} [login|logout]      Authentication management
+  ${chalk.yellow('connect')} [list|remove|<vendor>] AI vendor API key management
+  ${chalk.yellow('task(s)')} [list|create|update|delete|start|complete|done] Task management
+  ${chalk.yellow('team(s)')} [list|show|status|create|members|archive|delete|spawn] Team management
+  ${chalk.yellow('agent(s)')} [list|show|create|kill|update|archive|delete|spawn] Agent session management
+  ${chalk.yellow('sessions')} [list|show|archive|delete] Direct session management
+  ${chalk.yellow('trace')} [team|session|task|member|run|errors] Unified trace timeline
+  ${chalk.yellow('usage')} [session|team]      Token usage and cost analysis
+  ${chalk.yellow('role(s)')} [defaults|list|pool|review|team-score] Role pool and public review
+  ${chalk.yellow('codex')}                   Start team collaboration mode
+  ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
+  ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
+  ${chalk.yellow('daemon')} [list|stop]      Background service management
+
+${chalk.bold('Options:')}
+  ${chalk.cyan('-h, --help')}              Show help information
+  ${chalk.cyan('-v, --version')}           Show version number
+  ${chalk.cyan('--debug')}                 Enable debug logging
+
+${chalk.bold('Documentation:')}
+  GitHub: ${chalk.blue.underline('https://github.com/slopus/aha')}
+  Docs:  ${chalk.blue.underline('https://github.com/slopus/aha/blob/main/README.md')}
+
+${chalk.bold('Examples:')}
+  ${chalk.gray('# Diagnose and clean up')}
+  ${chalk.green('aha doctor')}
+  ${chalk.green('aha doctor clean')}
+
+  ${chalk.gray('# Authentication')}
+  ${chalk.green('aha auth login')}
+  ${chalk.green('aha auth logout')}
+
+  ${chalk.gray('# Team collaboration')}
+  ${chalk.green('aha codex')}
+
+  ${chalk.gray('# Team CRUD')}
+  ${chalk.green('aha team create --name \"Sprint Crew\"')}
+  ${chalk.green('aha team status team_123')}
+  ${chalk.green('aha agent list --active')}
+  ${chalk.green('aha task done task_123 --team team_123')}
+  ${chalk.green('aha sessions list --active')}
+
+  ${chalk.gray('# Notifications')}
+  ${chalk.green('aha notify -p "Build complete!"')}
+
+  ${chalk.gray('# Claude Code with custom message')}
+  ${chalk.green('aha')} "Implement a feature" ${chalk.cyan('--message')}
+
+For command-specific help, run:
+  ${chalk.green('aha <command> --help')}
+`)
+  process.exit(0)
+}
 
 
 (async () => {
@@ -35,16 +108,22 @@ import { execFileSync } from 'node:child_process'
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
-    logger.debug('Starting happy CLI with args: ', process.argv)
+    logger.debug('Starting aha CLI with args: ', process.argv)
   }
 
   // Check if first argument is a subcommand
   const subcommand = args[0]
 
+  // Show general help if no arguments or --help
+  if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+    showGeneralHelp();
+    return;
+  }
+
   if (subcommand === 'doctor') {
     // Check for clean subcommand
     if (args[1] === 'clean') {
-      const result = await killRunawayHappyProcesses()
+      const result = await killRunawayAhaProcesses()
       console.log(`Cleaned up ${result.killed} runaway processes`)
       if (result.errors.length > 0) {
         console.log('Errors:', result.errors)
@@ -77,6 +156,105 @@ import { execFileSync } from 'node:child_process'
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'tasks' || subcommand === 'task') {
+    // Handle task management commands
+    try {
+      const { handleTasksCommand } = await import('./commands/tasks');
+      await handleTasksCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'teams' || subcommand === 'team') {
+    // Handle teams management commands
+    try {
+      const { handleTeamsCommand } = await import('./commands/teams');
+      await handleTeamsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'agents' || subcommand === 'agent') {
+    try {
+      const { handleAgentsCommand } = await import('./commands/agents');
+      await handleAgentsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'sessions' || subcommand === 'session') {
+    try {
+      const { handleSessionsCommand } = await import('./commands/sessions');
+      await handleSessionsCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'roles' || subcommand === 'role') {
+    // Handle role pool and review commands
+    try {
+      const { handleRolesCommand } = await import('./commands/roles');
+      await handleRolesCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'trace') {
+    try {
+      const { handleTraceCommand } = await import('./commands/trace');
+      await handleTraceCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'usage') {
+    try {
+      const { handleUsageCommand } = await import('./commands/usage');
+      await handleUsageCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'reflexivity') {
+    try {
+      const { handleReflexivityCommand } = await import('./reflexivity/command');
+      await handleReflexivityCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'codex') {
     // Handle codex command
     try {
@@ -84,17 +262,33 @@ import { execFileSync } from 'node:child_process'
 
       // Parse startedBy argument
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let sessionTag: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--session-tag') {
+          sessionTag = args[++i];
         }
       }
 
       const {
         credentials
       } = await authAndSetupMachineIfNeeded();
-      await runCodex({ credentials, startedBy });
+      await runCodex({ credentials, startedBy, sessionTag });
       // Do not force exit here; allow instrumentation to show lingering handles
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'ralph') {
+    // Handle ralph autonomous loop command
+    try {
+      const { handleRalphCommand } = await import('./ralph/command.js');
+      await handleRalphCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -105,7 +299,7 @@ import { execFileSync } from 'node:child_process'
     return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
-    console.log(chalk.yellow('Note: "happy logout" is deprecated. Use "happy auth logout" instead.\n'));
+    console.log(chalk.yellow('Note: "aha logout" is deprecated. Use "aha auth logout" instead.\n'));
     try {
       await handleAuthCommand(['logout']);
     } catch (error) {
@@ -164,7 +358,7 @@ import { execFileSync } from 'node:child_process'
 
     } else if (daemonSubcommand === 'start') {
       // Spawn detached daemon process
-      const child = spawnHappyCLI(['daemon', 'start-sync'], {
+      const child = spawnAhaCLI(['daemon', 'start-sync'], {
         detached: true,
         stdio: 'ignore',
         env: process.env
@@ -223,27 +417,27 @@ import { execFileSync } from 'node:child_process'
       }
     } else {
       console.log(`
-${chalk.bold('happy daemon')} - Daemon management
+${chalk.bold('aha daemon')} - Daemon management
 
 ${chalk.bold('Usage:')}
-  happy daemon start              Start the daemon (detached)
-  happy daemon stop               Stop the daemon (sessions stay alive)
-  happy daemon status             Show daemon status
-  happy daemon list               List active sessions
+  aha daemon start              Start the daemon (detached)
+  aha daemon stop               Stop the daemon (sessions stay alive)
+  aha daemon status             Show daemon status
+  aha daemon list               List active sessions
 
-  If you want to kill all happy related processes run 
-  ${chalk.cyan('happy doctor clean')}
+  If you want to kill all aha related processes run
+  ${chalk.cyan('aha doctor clean')}
 
 ${chalk.bold('Note:')} The daemon runs in the background and manages Claude sessions.
 
-${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor clean')}
+${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('aha doctor clean')}
 `)
     }
     return;
   } else {
 
-    // If the first argument is claude, remove it
-    if (args.length > 0 && args[0] === 'claude') {
+    // If the first argument is claude or cli, remove it
+    if (args.length > 0 && (args[0] === 'claude' || args[0] === 'cli')) {
       args.shift()
     }
 
@@ -264,7 +458,7 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
         showVersion = true
         // Also pass through to claude (will show after our version)
         unknownArgs.push(arg)
-      } else if (arg === '--happy-starting-mode') {
+      } else if (arg === '--aha-starting-mode') {
         options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
       } else if (arg === '--yolo') {
         // Shortcut for --dangerously-skip-permissions
@@ -292,29 +486,30 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
     // Show help
     if (showHelp) {
       console.log(`
-${chalk.bold('happy')} - Claude Code On the Go
+${chalk.bold('aha')} - Claude Code On the Go
 
 ${chalk.bold('Usage:')}
-  happy [options]         Start Claude with mobile control
-  happy auth              Manage authentication
-  happy codex             Start Codex mode
-  happy connect           Connect AI vendor API keys
-  happy notify            Send push notification
-  happy daemon            Manage background service that allows
+  aha [options]         Start Claude with mobile control
+  aha auth              Manage authentication
+  aha codex             Start Codex mode
+  aha connect           Connect AI vendor API keys
+  aha tasks             Manage team tasks from the CLI
+  aha notify            Send push notification
+  aha daemon            Manage background service that allows
                             to spawn new sessions away from your computer
-  happy doctor            System diagnostics & troubleshooting
+  aha doctor            System diagnostics & troubleshooting
 
 ${chalk.bold('Examples:')}
-  happy                    Start session
-  happy --yolo             Start with bypassing permissions 
-                            happy sugar for --dangerously-skip-permissions
-  happy auth login --force Authenticate
-  happy doctor             Run diagnostics
+  aha                    Start session
+  aha --yolo             Start with bypassing permissions
+                            aha sugar for --dangerously-skip-permissions
+  aha auth login --force Authenticate
+  aha doctor             Run diagnostics
 
-${chalk.bold('Happy supports ALL Claude options!')}
-  Use any claude flag with happy as you would with claude. Our favorite:
+${chalk.bold('Aha supports ALL Claude options!')}
+  Use any claude flag with aha as you would with claude. Our favorite:
 
-  happy --resume
+  aha --resume
 
 ${chalk.gray('─'.repeat(60))}
 ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
@@ -334,7 +529,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 
     // Show version
     if (showVersion) {
-      console.log(`happy version: ${packageJson.version}`)
+      console.log(`aha version: ${packageJson.version}`)
       // Don't exit - continue to pass --version to Claude Code
     }
 
@@ -344,21 +539,26 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     } = await authAndSetupMachineIfNeeded();
 
     // Always auto-start daemon for simplicity
-    logger.debug('Ensuring Happy background service is running & matches our version...');
+    logger.debug('Ensuring Aha background service is running & matches our version...');
 
-    if (!(await isDaemonRunningCurrentlyInstalledHappyVersion())) {
-      logger.debug('Starting Happy background service...');
+    if (!(await isDaemonRunningCurrentlyInstalledAhaVersion())) {
+      logger.debug('Starting Aha background service...');
 
-      // Use the built binary to spawn daemon
-      const daemonProcess = spawnHappyCLI(['daemon', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env
-      })
-      daemonProcess.unref();
+      try {
+        // Use the built binary to spawn daemon
+        const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env
+        })
+        daemonProcess.unref();
 
-      // Give daemon a moment to write PID & port file
-      await new Promise(resolve => setTimeout(resolve, 200));
+        // Give daemon a moment to write PID & port file
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (error) {
+        logger.debug('Failed to start daemon (non-fatal):', error);
+        console.log(chalk.yellow('Warning: Could not start background service. Some features may be limited.'));
+      }
     }
 
     // Start the CLI
@@ -401,34 +601,34 @@ async function handleNotifyCommand(args: string[]): Promise<void> {
 
   if (showHelp) {
     console.log(`
-${chalk.bold('happy notify')} - Send notification
+${chalk.bold('aha notify')} - Send notification
 
 ${chalk.bold('Usage:')}
-  happy notify -p <message> [-t <title>]    Send notification with custom message and optional title
-  happy notify -h, --help                   Show this help
+  aha notify -p <message> [-t <title>]    Send notification with custom message and optional title
+  aha notify -h, --help                   Show this help
 
 ${chalk.bold('Options:')}
   -p <message>    Notification message (required)
-  -t <title>      Notification title (optional, defaults to "Happy")
+  -t <title>      Notification title (optional, defaults to "Aha")
 
 ${chalk.bold('Examples:')}
-  happy notify -p "Deployment complete!"
-  happy notify -p "System update complete" -t "Server Status"
-  happy notify -t "Alert" -p "Database connection restored"
+  aha notify -p "Deployment complete!"
+  aha notify -p "System update complete" -t "Server Status"
+  aha notify -t "Alert" -p "Database connection restored"
 `)
     return
   }
 
   if (!message) {
     console.error(chalk.red('Error: Message is required. Use -p "your message" to specify the notification text.'))
-    console.log(chalk.gray('Run "happy notify --help" for usage information.'))
+    console.log(chalk.gray('Run "aha notify --help" for usage information.'))
     process.exit(1)
   }
 
   // Load credentials
   let credentials = await readCredentials()
   if (!credentials) {
-    console.error(chalk.red('Error: Not authenticated. Please run "happy auth login" first.'))
+    console.error(chalk.red('Error: Not authenticated. Please run "aha auth login" first.'))
     process.exit(1)
   }
 
@@ -438,8 +638,8 @@ ${chalk.bold('Examples:')}
     // Create API client and send push notification
     const api = await ApiClient.create(credentials);
 
-    // Use custom title or default to "Happy"
-    const notificationTitle = title || 'Happy'
+    // Use custom title or default to "Aha"
+    const notificationTitle = title || 'Aha'
 
     // Send the push notification
     api.push().sendToAllDevices(

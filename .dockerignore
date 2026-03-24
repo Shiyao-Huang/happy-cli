@@ -1,0 +1,10 @@
+.git
+.aha
+.claude
+.gstack
+node_modules
+dist
+coverage
+.env
+.env.*
+*.log
