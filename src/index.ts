@@ -56,6 +56,7 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('sessions')} [list|show|archive|delete] Direct session management
   ${chalk.yellow('trace')} [team|session|task|member|run|errors] Unified trace timeline
   ${chalk.yellow('usage')} [session|team]      Token usage and cost analysis
+  ${chalk.yellow('channels')} [status|weixin]  WeChat / IM channel bridge management
   ${chalk.yellow('role(s)')} [defaults|list|pool|review|team-score] Role pool and public review
   ${chalk.yellow('codex')}                   Start team collaboration mode
   ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
@@ -235,6 +236,18 @@ For command-specific help, run:
     try {
       const { handleUsageCommand } = await import('./commands/usage');
       await handleUsageCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'channels' || subcommand === 'channel') {
+    try {
+      const { channelsCommand } = await import('./commands/channels');
+      await channelsCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -493,6 +506,7 @@ ${chalk.bold('Usage:')}
   aha auth              Manage authentication
   aha codex             Start Codex mode
   aha connect           Connect AI vendor API keys
+  aha channels          Manage WeChat / IM channel bridge
   aha tasks             Manage team tasks from the CLI
   aha notify            Send push notification
   aha daemon            Manage background service that allows

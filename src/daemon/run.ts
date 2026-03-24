@@ -30,6 +30,10 @@ import os from 'os';
 import { ApiClient } from '@/api/api';
 import { ApiMachineClient } from '@/api/apiMachine';
 import { AgentHeartbeat, AgentHealthStatus } from '@/claude/team/heartbeat';
+import { ChannelRouter } from '@/channels/router';
+import { PushPolicy } from '@/channels/types';
+import { deleteWeixinCredentials, loadPushPolicy, loadWeixinCredentials, savePushPolicy, setWeixinEnabled } from '@/channels/weixin/config';
+import { WeixinBridge } from '@/channels/weixin/bridge';
 import { MachineMetadata, DaemonState, Machine } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
@@ -262,6 +266,7 @@ export async function startDaemon(): Promise<void> {
     // Ensure auth and machine registration BEFORE anything else
     let { credentials, machineId } = await authAndSetupMachineIfNeeded();
     logger.debug('[DAEMON RUN] Auth and machine setup complete');
+    let api = await ApiClient.create(credentials);
 
     // ── Genome hub access: SSH tunnel + publish key injection ─────────────────
     await ensureGenomeHubAccess();
@@ -357,6 +362,74 @@ export async function startDaemon(): Promise<void> {
     // Helper for control server
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
+    // ── Channel router (WeChat IM) ────────────────────────────────────────────
+    const channelRouter = new ChannelRouter(() => api);
+    let weixinBridge: WeixinBridge | null = null;
+
+    const connectWeixinFromSavedCreds = async (): Promise<{ success: boolean; error?: string }> => {
+      const creds = loadWeixinCredentials();
+      if (!creds) {
+        return { success: false, error: 'No saved WeChat credentials found. Run `aha channels weixin login` first.' };
+      }
+
+      try {
+        if (weixinBridge) {
+          await weixinBridge.disconnect();
+          channelRouter.unregisterChannel('weixin');
+        }
+
+        weixinBridge = new WeixinBridge();
+        channelRouter.registerChannel(weixinBridge);
+        await weixinBridge.connect(creds);
+        setWeixinEnabled(true);
+
+        logger.debug('[DAEMON RUN] WeChat bridge connected from saved credentials');
+        return { success: true };
+      } catch (error) {
+        if (weixinBridge) {
+          channelRouter.unregisterChannel('weixin');
+          weixinBridge = null;
+        }
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+
+    const disconnectWeixinBridge = async (): Promise<{ success: boolean; error?: string }> => {
+      try {
+        if (weixinBridge) {
+          await weixinBridge.disconnect();
+          channelRouter.unregisterChannel('weixin');
+          weixinBridge = null;
+        }
+        deleteWeixinCredentials();
+        setWeixinEnabled(false);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+
+    const setWeixinPushPolicy = async (policy: PushPolicy): Promise<{ success: boolean; error?: string }> => {
+      try {
+        savePushPolicy(policy);
+        setWeixinEnabled(true);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+
+    const getChannelStatus = () => {
+      const creds = loadWeixinCredentials();
+      return {
+        weixin: creds ? {
+          configured: true,
+          connected: Boolean(weixinBridge?.connected),
+          pushPolicy: loadPushPolicy(),
+        } : null,
+      };
+    };
+
     // ── Start control server ───────────────────────────────────────────────────
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
@@ -367,6 +440,11 @@ export async function startDaemon(): Promise<void> {
       onAhaSessionWebhook,
       getTeamPulse,
       requestHelp,
+      getChannelStatus,
+      connectWeixin: connectWeixinFromSavedCreds,
+      disconnectWeixin: disconnectWeixinBridge,
+      setWeixinPushPolicy,
+      onChannelNotify: (event) => channelRouter.pushToIM(event),
       onHeartbeatPing: (sessionId: string, teamId: string, role: string) => {
         const hb = getOrCreateTeamHeartbeat(teamId);
         hb.ping(sessionId, role, []);
@@ -404,10 +482,15 @@ export async function startDaemon(): Promise<void> {
       startedAt: Date.now()
     };
 
-    // Create API client
-    let api = await ApiClient.create(credentials);
     let machine: Machine | null = null;
     let apiMachine: ApiMachineClient | null = null;
+
+    if (loadWeixinCredentials()) {
+      const weixinResult = await connectWeixinFromSavedCreds();
+      if (!weixinResult.success) {
+        logger.warn(`[DAEMON RUN] Failed to auto-connect WeChat bridge: ${weixinResult.error}`);
+      }
+    }
 
     const attachRemoteMachineClient = (registeredMachine: Machine) => {
       const nextApiMachine = api.machineSyncClient(registeredMachine);
@@ -595,6 +678,7 @@ export async function startDaemon(): Promise<void> {
         logger.warn('[DAEMON RUN] Shutting down in LOCAL-ONLY mode — no remote machine client to update or close.');
       }
 
+      await channelRouter.destroy();
       await stopControlServer();
       await cleanupDaemonState();
       await stopCaffeinate();

@@ -12,7 +12,14 @@
 import chalk from 'chalk'
 import { daemonPost } from '@/daemon/controlClient'
 import { loginWithQR } from '@/channels/weixin/auth'
-import { saveWeixinCredentials } from '@/channels/weixin/config'
+import {
+  deleteWeixinCredentials,
+  loadPushPolicy,
+  loadWeixinCredentials,
+  savePushPolicy,
+  saveWeixinCredentials,
+  setWeixinEnabled,
+} from '@/channels/weixin/config'
 
 export async function channelsCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args
@@ -31,13 +38,23 @@ export async function channelsCommand(args: string[]): Promise<void> {
 
 async function channelsStatus(): Promise<void> {
   const res = await daemonPost('/channels/status', {})
+  const savedCreds = loadWeixinCredentials()
+  const savedPolicy = loadPushPolicy()
+
   if (res?.error) {
-    console.error(chalk.red(`❌ ${res.error}`))
+    if (savedCreds) {
+      console.log(chalk.yellow(`WeChat: ○ Configured locally (daemon offline, policy=${savedPolicy})`))
+    } else {
+      console.log(chalk.gray('WeChat: ○ Not configured'))
+    }
     return
   }
+
   const weixin = res?.status?.weixin
   if (weixin?.connected) {
-    console.log(chalk.green('WeChat: ✅ Connected'))
+    console.log(chalk.green(`WeChat: ✅ Connected (${weixin.pushPolicy ?? 'all'})`))
+  } else if (weixin?.configured || savedCreds) {
+    console.log(chalk.yellow(`WeChat: ○ Configured but disconnected (${weixin?.pushPolicy ?? savedPolicy})`))
   } else {
     console.log(chalk.gray('WeChat: ○ Not configured'))
   }
@@ -89,6 +106,7 @@ async function weixinLogin(): Promise<void> {
 
     // Save credentials to disk
     saveWeixinCredentials(creds)
+    setWeixinEnabled(true)
 
     // Notify daemon to connect the WeChat bridge with new credentials
     await daemonPost('/channels/weixin/poll', { qrcode: '__saved__' }).catch(() => { /* daemon may not be running */ })
@@ -102,9 +120,11 @@ async function weixinLogin(): Promise<void> {
 }
 
 async function weixinDisconnect(): Promise<void> {
+  deleteWeixinCredentials()
+  setWeixinEnabled(false)
   const res = await daemonPost('/channels/weixin/disconnect', {})
   if (res?.error) {
-    console.error(chalk.red(`❌ ${res.error}`))
+    console.log(chalk.yellow('微信本地配置已删除，daemon 当前不可达'))
     return
   }
   console.log(chalk.yellow('微信频道已断开'))
@@ -119,9 +139,11 @@ async function weixinPolicy(policy: string | undefined): Promise<void> {
     console.log('  silent    — 停止推送')
     return
   }
+  savePushPolicy(policy as 'all' | 'important' | 'silent')
+  setWeixinEnabled(true)
   const res = await daemonPost('/channels/weixin/policy', { pushPolicy: policy })
   if (res?.error) {
-    console.error(chalk.red(`❌ ${res.error}`))
+    console.log(chalk.yellow(`已保存本地推送策略: ${policy}（daemon 当前不可达）`))
     return
   }
   console.log(chalk.green(`✅ 推送策略已设为: ${policy}`))

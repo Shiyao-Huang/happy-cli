@@ -140,6 +140,97 @@ describe('controlServer /team-pulse', () => {
     });
 });
 
+describe('controlServer /channels', () => {
+    let stopServer: () => Promise<void>;
+    let port: number;
+    const seenEvents: any[] = [];
+    const policyUpdates: string[] = [];
+
+    beforeEach(async () => {
+        seenEvents.length = 0;
+        policyUpdates.length = 0;
+
+        const result = await startDaemonControlServer({
+            getChildren: () => [],
+            stopSession: () => false,
+            spawnSession: async () => ({ type: 'error' as const, error: 'not implemented' }),
+            requestShutdown: () => {},
+            onAhaSessionWebhook: () => {},
+            getChannelStatus: () => ({
+                weixin: {
+                    configured: true,
+                    connected: true,
+                    pushPolicy: 'important',
+                },
+            }),
+            connectWeixin: async () => ({ success: true }),
+            disconnectWeixin: async () => ({ success: true }),
+            setWeixinPushPolicy: async (policy) => {
+                policyUpdates.push(policy);
+                return { success: true };
+            },
+            onChannelNotify: async (event) => {
+                seenEvents.push(event);
+            },
+        });
+
+        port = result.port;
+        stopServer = result.stop;
+    });
+
+    afterEach(async () => {
+        await stopServer();
+    });
+
+    it('reports channel status', async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/channels/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json() as { status: { weixin: { configured: boolean; connected: boolean; pushPolicy: string } } };
+        expect(data.status.weixin).toEqual({
+            configured: true,
+            connected: true,
+            pushPolicy: 'important',
+        });
+    });
+
+    it('accepts channel notify events', async () => {
+        const event = {
+            id: 'msg-1',
+            teamId: 'team-1',
+            content: 'hello',
+            type: 'chat',
+            timestamp: Date.now(),
+            fromRole: 'builder',
+        };
+
+        const response = await fetch(`http://127.0.0.1:${port}/channels/notify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event }),
+        });
+
+        expect(response.ok).toBe(true);
+        expect(seenEvents).toHaveLength(1);
+        expect(seenEvents[0]).toMatchObject(event);
+    });
+
+    it('updates push policy', async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/channels/weixin/policy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pushPolicy: 'silent' }),
+        });
+
+        expect(response.ok).toBe(true);
+        expect(policyUpdates).toEqual(['silent']);
+    });
+});
+
 describe('controlServer /heartbeat-ping', () => {
     let stopServer: () => Promise<void>;
     let port: number;

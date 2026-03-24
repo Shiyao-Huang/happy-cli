@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
 import { Metadata } from '@/api/types';
+import { PushPolicy, TeamMessageEvent } from '@/channels/types';
 import { TrackedSession } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 
@@ -22,6 +23,11 @@ export function startDaemonControlServer({
   getTeamPulse,
   onHeartbeatPing,
   requestHelp,
+  getChannelStatus,
+  connectWeixin,
+  disconnectWeixin,
+  setWeixinPushPolicy,
+  onChannelNotify,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
@@ -46,6 +52,17 @@ export function startDaemonControlServer({
     description: string;
     severity: string;
   }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
+  getChannelStatus?: () => {
+    weixin: null | {
+      configured: boolean;
+      connected: boolean;
+      pushPolicy: PushPolicy;
+    };
+  };
+  connectWeixin?: () => Promise<{ success: boolean; error?: string }>;
+  disconnectWeixin?: () => Promise<{ success: boolean; error?: string }>;
+  setWeixinPushPolicy?: (policy: PushPolicy) => Promise<{ success: boolean; error?: string }> | { success: boolean; error?: string };
+  onChannelNotify?: (event: TeamMessageEvent) => Promise<void> | void;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -160,6 +177,98 @@ export function startDaemonControlServer({
         }));
       logger.debug(`[CONTROL SERVER] list-team-sessions for ${teamId}: ${sessions.length} sessions`);
       return { sessions };
+    });
+
+    typed.post('/channels/status', {
+      schema: {
+        response: {
+          200: z.object({
+            status: z.object({
+              weixin: z.object({
+                configured: z.boolean(),
+                connected: z.boolean(),
+                pushPolicy: z.enum(['all', 'important', 'silent']),
+              }).nullable(),
+            }),
+          }),
+        },
+      },
+    }, async () => {
+      return {
+        status: getChannelStatus ? getChannelStatus() : { weixin: null },
+      };
+    });
+
+    typed.post('/channels/weixin/poll', {
+      schema: {
+        body: z.object({
+          qrcode: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            error: z.string().optional(),
+          }),
+        },
+      },
+    }, async () => {
+      if (!connectWeixin) {
+        return { success: false, error: 'WeChat bridge not supported by this daemon' };
+      }
+      return connectWeixin();
+    });
+
+    typed.post('/channels/weixin/disconnect', {
+      schema: {
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            error: z.string().optional(),
+          }),
+        },
+      },
+    }, async () => {
+      if (!disconnectWeixin) {
+        return { success: false, error: 'WeChat bridge not supported by this daemon' };
+      }
+      return disconnectWeixin();
+    });
+
+    typed.post('/channels/weixin/policy', {
+      schema: {
+        body: z.object({
+          pushPolicy: z.enum(['all', 'important', 'silent']),
+        }),
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            error: z.string().optional(),
+          }),
+        },
+      },
+    }, async (request) => {
+      if (!setWeixinPushPolicy) {
+        return { success: false, error: 'WeChat bridge not supported by this daemon' };
+      }
+      return setWeixinPushPolicy(request.body.pushPolicy);
+    });
+
+    typed.post('/channels/notify', {
+      schema: {
+        body: z.object({
+          event: z.any(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+          }),
+        },
+      },
+    }, async (request) => {
+      if (onChannelNotify) {
+        await onChannelNotify(request.body.event as TeamMessageEvent);
+      }
+      return { ok: true };
     });
 
     // Send a command to a running session (e.g. /compact)

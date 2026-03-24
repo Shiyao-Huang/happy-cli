@@ -26,7 +26,7 @@ function errorMsg(e: unknown): string {
 export class CommandExecutor {
   constructor(
     private readonly state: ChannelState,
-    private readonly api: ApiClient,
+    private readonly getApi: () => ApiClient,
   ) {}
 
   async execute(command: string, args: string[]): Promise<string> {
@@ -55,7 +55,7 @@ export class CommandExecutor {
 
   private async listTeams(): Promise<string> {
     try {
-      const { teams } = await this.api.listTeams()
+      const { teams } = await this.getApi().listTeams()
       if (!teams.length) {
         return '📋 暂无 Team\n\n输入 /new <描述> 创建第一个' + this.state.statusBar()
       }
@@ -74,7 +74,7 @@ export class CommandExecutor {
   private async switchTeam(arg: string | undefined): Promise<string> {
     if (!arg) return '用法: /t <编号或 Team 名称>'
     try {
-      const { teams } = await this.api.listTeams()
+      const { teams } = await this.getApi().listTeams()
       if (!teams.length) return '❌ 暂无 Team'
 
       const idx = parseInt(arg, 10)
@@ -98,7 +98,7 @@ export class CommandExecutor {
     if (!teamId) return '❌ 未选择 Team，输入 /teams 查看'
     try {
       const [teamRes, pulseRes] = await Promise.allSettled([
-        this.api.getTeam(teamId),
+        this.getApi().getTeam(teamId),
         daemonPost('/team-pulse', { teamId }),
       ])
 
@@ -134,7 +134,7 @@ export class CommandExecutor {
     const teamId = this.state.currentTeamId
     if (!teamId) return '❌ 未选择 Team'
     try {
-      const res = await this.api.listTasks(teamId)
+      const res = await this.getApi().listTasks(teamId)
       const tasks = res?.tasks ?? []
       if (!tasks.length) {
         return `📋 ${this.state.currentTeamName} 暂无任务` + this.state.statusBar()
@@ -164,7 +164,7 @@ export class CommandExecutor {
       // Wait briefly then pick up the new team
       await new Promise<void>(r => setTimeout(r, 1500))
       try {
-        const { teams } = await this.api.listTeams()
+        const { teams } = await this.getApi().listTeams()
         const newest = teams[teams.length - 1]
         if (newest) this.state.switchTeam(newest.id, newest.name)
       } catch { /* non-fatal */ }
@@ -250,7 +250,7 @@ export class CommandExecutor {
     const title = args.join(' ')
     if (!title) return '用法: /task <描述>  或  /task <编号> done'
     try {
-      await this.api.createTask(teamId, { title })
+      await this.getApi().createTask(teamId, { title })
       return `✅ 任务已创建: ${title}${this.state.statusBar()}`
     } catch (e) {
       return `❌ 创建任务失败: ${errorMsg(e)}`
@@ -259,11 +259,11 @@ export class CommandExecutor {
 
   private async completeTaskByIndex(teamId: string, idx: number): Promise<string> {
     try {
-      const res = await this.api.listTasks(teamId)
+      const res = await this.getApi().listTasks(teamId)
       const tasks: any[] = res?.tasks ?? []
       const task = tasks[idx - 1]
       if (!task) return `❌ 找不到任务 #${idx}`
-      await this.api.updateTask(task.id, { status: 'done' })
+      await this.getApi().updateTask(task.id, { status: 'done' })
       return `✅ 任务 #${idx} "${task.title}" 已完成${this.state.statusBar()}`
     } catch (e) {
       return `❌ 完成任务失败: ${errorMsg(e)}`
@@ -324,7 +324,7 @@ export class CommandExecutor {
     const teamId = this.state.currentTeamId
     if (!teamId) return '❌ 未选择 Team'
     try {
-      const res = await this.api.getTeamScore(teamId)
+      const res = await this.getApi().getTeamScore(teamId)
       if (!res) return '暂无使用数据'
       return `📊 ${this.state.currentTeamName} 用量:\n${JSON.stringify(res, null, 2).slice(0, 500)}${this.state.statusBar()}`
     } catch (e) {

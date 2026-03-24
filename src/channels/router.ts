@@ -46,10 +46,10 @@ export class ChannelRouter {
   private executor: CommandExecutor
   private activeTeamIds = new Set<string>()
 
-  constructor(api: ApiClient) {
+  constructor(getApi: () => ApiClient) {
     this.state = new ChannelState()
     this.state.load()
-    this.executor = new CommandExecutor(this.state, api)
+    this.executor = new CommandExecutor(this.state, getApi)
     this.throttler = new MessageThrottler((msg, channelName) => {
       const channel = this.channels.get(channelName)
       if (!channel?.connected) return
@@ -193,7 +193,12 @@ export class ChannelRouter {
     }
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
     this.throttler.destroy()
+    const channels = Array.from(this.channels.values())
+    this.channels.clear()
+    await Promise.all(channels.map(channel => channel.disconnect().catch(e =>
+      logger.debug(`[ChannelRouter] disconnect error on ${channel.name}: ${e}`)
+    )))
   }
 }
