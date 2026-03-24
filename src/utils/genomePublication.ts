@@ -19,6 +19,13 @@ export const CORE_TEAM_TOOLS = [
     'request_help',
 ];
 
+export const SPAWN_CAPABLE_TEAM_TOOLS = [
+    'list_available_agents',
+    'create_agent',
+    'list_team_agents',
+    'get_team_config',
+];
+
 const TEAM_PROTOCOL_RULES = [
     'Use the Kanban board as the source of truth: check list_tasks for assigned work, and use start_task / complete_task to keep lifecycle accurate',
     'Follow your genome\\\'s assignment policy before claiming unassigned work. If you require explicit assignment, wait for assignment instead of self-assigning',
@@ -41,6 +48,24 @@ function uniqueStrings(values: unknown[]): string[] {
     }
 
     return result;
+}
+
+type SpawnCapabilitySpec = Pick<GenomeSpec, 'authorities' | 'behavior'> | null | undefined;
+
+function genomeHasSpawnCapability(spec?: SpawnCapabilitySpec): boolean {
+    return spec?.behavior?.canSpawnAgents === true
+        || (Array.isArray(spec?.authorities) && spec.authorities.includes('agent.spawn'));
+}
+
+export function getInjectedAllowedToolsForGenome(
+    spec?: SpawnCapabilitySpec,
+    options?: { spawnCapable?: boolean },
+): string[] {
+    const spawnCapable = options?.spawnCapable ?? genomeHasSpawnCapability(spec);
+    return uniqueStrings([
+        ...CORE_TEAM_TOOLS,
+        ...(spawnCapable ? SPAWN_CAPABLE_TEAM_TOOLS : []),
+    ]);
 }
 
 function hasTaskLifecycleText(values: string[]): boolean {
@@ -79,7 +104,10 @@ export function normalizeGenomeSpecForPublication(input: {
     }
 
     if (Array.isArray(specObj.allowedTools)) {
-        specObj.allowedTools = uniqueStrings([...CORE_TEAM_TOOLS, ...specObj.allowedTools]);
+        specObj.allowedTools = uniqueStrings([
+            ...getInjectedAllowedToolsForGenome(specObj),
+            ...specObj.allowedTools,
+        ]);
     } else if (specObj.allowedTools !== undefined) {
         delete specObj.allowedTools;
         warnings.push(

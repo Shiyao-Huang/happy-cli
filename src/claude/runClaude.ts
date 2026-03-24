@@ -26,6 +26,7 @@ import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import {
     buildAgentHandshakeContent,
+    canSpawnAgents,
     getRolePermissions,
     generateRolePrompt,
     isBootstrapRole,
@@ -44,6 +45,7 @@ import { fetchGenomeSpec, fetchGenomeFeedbackData } from './utils/fetchGenome';
 import { buildGenomeInjection } from './utils/buildGenomeInjection';
 import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
+import { getInjectedAllowedToolsForGenome } from '@/utils/genomePublication';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
@@ -427,28 +429,22 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Tier 3 — 工具访问控制
         // Core team tools that EVERY agent must have — kanban, messaging, help.
         // Without these, agents become isolated islands that can't collaborate.
-        const CORE_TEAM_TOOLS = [
-            // Task lifecycle (kanban)
-            'create_task', 'update_task', 'list_tasks', 'start_task', 'complete_task',
-            'report_blocker', 'resolve_blocker', 'add_task_comment',
-            'create_subtask', 'list_subtasks', 'delete_task',
-            // Team collaboration
-            'send_team_message', 'get_team_info',
-            // Context & self-awareness
-            'get_context_status', 'change_title',
-            // Help lane
-            'request_help',
-        ];
         const ignoreGenomeToolConstraints = isBypassRole(startupRole, _genomeSpec) && startupRole === 'supervisor';
         if (_genomeSpec.allowedTools?.length) {
             if (ignoreGenomeToolConstraints) {
                 logger.debug('[genome] Ignoring genome allowedTools for supervisor so it can inspect raw logs directly');
             } else {
-                // Merge core team tools into the genome's allowedTools whitelist
-                // so agents never lose kanban/messaging/help capabilities
-                const merged = Array.from(new Set([...CORE_TEAM_TOOLS, ..._genomeSpec.allowedTools]));
+                // Merge mandatory team tools into the genome's allowedTools whitelist
+                // so agents never lose kanban/messaging/help, and spawn-capable genomes
+                // keep create_agent/list_available_agents available.
+                const merged = Array.from(new Set([
+                    ...getInjectedAllowedToolsForGenome(_genomeSpec, {
+                        spawnCapable: canSpawnAgents(startupRole, _genomeSpec),
+                    }),
+                    ..._genomeSpec.allowedTools,
+                ]));
                 currentAllowedTools = merged;
-                logger.debug(`[genome] Allowed tools set from genome (${_genomeSpec.allowedTools.length} custom + ${CORE_TEAM_TOOLS.length} core = ${merged.length} total)`);
+                logger.debug(`[genome] Allowed tools set from genome (${_genomeSpec.allowedTools.length} custom + injected team tools = ${merged.length} total)`);
             }
         }
         if (_genomeSpec.disallowedTools?.length) {
