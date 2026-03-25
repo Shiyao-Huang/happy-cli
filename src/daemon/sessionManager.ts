@@ -845,6 +845,7 @@ export const stopSession = (sessionId: string): boolean => {
       // Mark as intentionally stopped to prevent auto-respawn
       session.intentionallyStopped = true;
 
+
       const sendSignal = (signal: NodeJS.Signals) => {
         if (session.startedBy === 'daemon' && session.childProcess) {
           try {
