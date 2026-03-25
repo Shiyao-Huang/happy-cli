@@ -14,6 +14,7 @@ import { open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promise
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { configuration } from '@/configuration';
+import { logger } from '@/ui/logger';
 
 // ── Self-reflexivity types (v2) ────────────────────────────────────────────
 
@@ -151,11 +152,18 @@ function getStatePath(teamId: string): string {
     return join(configuration.ahaHomeDir, 'supervisor', `state-${teamId}.json`);
 }
 
-async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>): Promise<T | null> {
+class SupervisorStateLockTimeoutError extends Error {
+    constructor(teamId: string) {
+        super(`Failed to acquire supervisor state lock for ${teamId}`);
+        this.name = 'SupervisorStateLockTimeoutError';
+    }
+}
+
+async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>): Promise<T> {
     const statePath = getStatePath(teamId);
     const lockPath = `${statePath}.lock`;
-    const maxAttempts = 50;
-    const retryMs = 100;
+    const maxAttempts = parseInt(process.env.AHA_SUPERVISOR_STATE_LOCK_MAX_ATTEMPTS || '50', 10);
+    const retryMs = parseInt(process.env.AHA_SUPERVISOR_STATE_LOCK_RETRY_MS || '100', 10);
     const staleLockTimeoutMs = 10_000;
     let handle: Awaited<ReturnType<typeof open>> | null = null;
 
@@ -184,13 +192,7 @@ async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>):
     }
 
     if (!handle) {
-        try {
-            const { logger } = await import('@/ui/logger');
-            logger.debug(`[SUPERVISOR STATE] Failed to acquire lock for ${teamId} after ${maxAttempts} attempts — skipping this cycle`);
-        } catch {
-            // Logger unavailable, fall through silently
-        }
-        return null;
+        throw new SupervisorStateLockTimeoutError(teamId);
     }
 
     try {
@@ -276,13 +278,24 @@ export function updateSupervisorRun(
 export async function updateSupervisorState(
     teamId: string,
     updater: (state: SupervisorState) => SupervisorState | Promise<SupervisorState>,
-): Promise<SupervisorState | null> {
-    return withSupervisorStateLock(teamId, async () => {
-        const current = await readSupervisorStateUnlocked(teamId);
-        const next = await updater(current);
-        writeSupervisorState(next);
-        return next;
-    });
+): Promise<SupervisorState> {
+    try {
+        return await withSupervisorStateLock(teamId, async () => {
+            const current = await readSupervisorStateUnlocked(teamId);
+            const next = await updater(current);
+            writeSupervisorState(next);
+            return next;
+        });
+    } catch (error) {
+        if (error instanceof SupervisorStateLockTimeoutError) {
+            logger.warn(
+                `[SUPERVISOR STATE] Lock timeout for ${teamId}; skipping this state update instead of crashing the daemon`
+            );
+            return readSupervisorState(teamId);
+        }
+
+        throw error;
+    }
 }
 
 export function listSupervisorStates(): SupervisorState[] {

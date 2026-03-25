@@ -34,6 +34,13 @@ import {
   updateSupervisorState,
 } from './supervisorState';
 
+interface TeamOutstandingWorkSummary {
+  teamId: string;
+  unfinishedTaskCount: number;
+  blockedTaskCount: number;
+  hasOutstandingWork: boolean;
+}
+
 // ── Context type ───────────────────────────────────────────────────────────────
 
 export interface SupervisorContext {
@@ -162,6 +169,82 @@ async function resolveSystemGenomeId(name: string, credentialsToken: string): Pr
   }
 }
 
+function getServerAuthHeaders(credentialsToken: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${credentialsToken}`,
+  };
+}
+
+async function fetchOutstandingWorkSummary(
+  teamId: string,
+  credentialsToken: string,
+): Promise<TeamOutstandingWorkSummary> {
+  try {
+    const res = await axios.get(
+      `${configuration.serverUrl}/v1/teams/${teamId}/tasks`,
+      {
+        headers: getServerAuthHeaders(credentialsToken),
+        timeout: 5000,
+      }
+    );
+
+    const tasks = Array.isArray(res.data?.tasks) ? res.data.tasks : [];
+    const unfinishedTasks = tasks.filter((task: { status?: string }) => task?.status !== 'done');
+    const blockedTaskCount = unfinishedTasks.filter((task: { status?: string }) => task?.status === 'blocked').length;
+
+    return {
+      teamId,
+      unfinishedTaskCount: unfinishedTasks.length,
+      blockedTaskCount,
+      hasOutstandingWork: unfinishedTasks.length > 0,
+    };
+  } catch (error) {
+    logger.debug(
+      `[SUPERVISOR SCHEDULER] Failed to fetch task summary for team ${teamId}: ` +
+      `${error instanceof Error ? error.message : 'unknown error'}`
+    );
+    return {
+      teamId,
+      unfinishedTaskCount: 0,
+      blockedTaskCount: 0,
+      hasOutstandingWork: false,
+    };
+  }
+}
+
+async function listTeamsWithOutstandingWork(credentialsToken: string): Promise<Map<string, TeamOutstandingWorkSummary>> {
+  try {
+    const res = await axios.get(
+      `${configuration.serverUrl}/v1/teams`,
+      {
+        headers: getServerAuthHeaders(credentialsToken),
+        timeout: 5000,
+      }
+    );
+
+    const teams = Array.isArray(res.data?.teams) ? res.data.teams : [];
+    const candidateTeams = teams
+      .filter((team: { id?: string; taskCount?: number }) => typeof team?.id === 'string' && (team.taskCount ?? 0) > 0)
+      .map((team: { id: string }) => team.id);
+
+    const summaries = await Promise.all(
+      candidateTeams.map((teamId: string) => fetchOutstandingWorkSummary(teamId, credentialsToken))
+    );
+
+    return new Map(
+      summaries
+        .filter((summary) => summary.hasOutstandingWork)
+        .map((summary) => [summary.teamId, summary] as const)
+    );
+  } catch (error) {
+    logger.debug(
+      `[SUPERVISOR SCHEDULER] Failed to list teams for outstanding work scan: ` +
+      `${error instanceof Error ? error.message : 'unknown error'}`
+    );
+    return new Map();
+  }
+}
+
 // ── Supervisor cycle ───────────────────────────────────────────────────────────
 
 /**
@@ -187,16 +270,27 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
 
   const liveMainlineSessionIdsByTeam = collectLiveMainlineSessionIdsByTeam(pidToTrackedSession);
   const supervisorStates = listSupervisorStates();
+  const outstandingWorkByKnownTeam = new Map<string, TeamOutstandingWorkSummary>();
   const now = Date.now();
+
+  for (const supervisorState of supervisorStates) {
+    outstandingWorkByKnownTeam.set(
+      supervisorState.teamId,
+      await fetchOutstandingWorkSummary(supervisorState.teamId, credentialsToken)
+    );
+  }
 
   // ── Per-team supervisor state processing ────────────────────────────────────
   for (const supervisorState of supervisorStates) {
     const liveSessionIds = liveMainlineSessionIdsByTeam.get(supervisorState.teamId) ?? new Set<string>();
+    const outstandingWork = outstandingWorkByKnownTeam.get(supervisorState.teamId);
+    const hasOutstandingWork = outstandingWork?.hasOutstandingWork ?? false;
 
     // Auto-terminate if no live sessions and idle timeout has elapsed
     if (
       !supervisorState.terminated &&
       liveSessionIds.size === 0 &&
+      !hasOutstandingWork &&
       supervisorState.lastRunAt > 0 &&
       (now - supervisorState.lastRunAt) > supervisorTerminateIdleMs
     ) {
@@ -210,8 +304,19 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       continue;
     }
 
+    if (supervisorState.terminated && hasOutstandingWork) {
+      await updateSupervisorState(supervisorState.teamId, (state) => ({
+        ...state,
+        terminated: false,
+      }));
+      logger.debug(
+        `[SUPERVISOR SCHEDULER] Revived terminated supervisor state for team ${supervisorState.teamId} ` +
+        `because ${outstandingWork?.unfinishedTaskCount ?? 0} unfinished task(s) remain`
+      );
+    }
+
     // Skip terminated teams or teams without a notify_help pending action
-    if (supervisorState.terminated || supervisorState.pendingAction?.type !== 'notify_help') {
+    if ((supervisorState.terminated && !hasOutstandingWork) || supervisorState.pendingAction?.type !== 'notify_help') {
       continue;
     }
 
@@ -307,18 +412,41 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
   }
 
   // ── Supervisor spawn check (every N heartbeats) ─────────────────────────────
-  if (heartbeatCount % supervisorInterval !== 0 || liveMainlineSessionIdsByTeam.size === 0) {
+  if (heartbeatCount % supervisorInterval !== 0) {
     return;
   }
 
-  const activeTeamIds = new Set<string>(liveMainlineSessionIdsByTeam.keys());
+  const teamsWithOutstandingWork = await listTeamsWithOutstandingWork(credentialsToken);
+  const activeTeamIds = new Set<string>([
+    ...liveMainlineSessionIdsByTeam.keys(),
+    ...teamsWithOutstandingWork.keys(),
+  ]);
+
+  if (activeTeamIds.size === 0) {
+    return;
+  }
 
   for (const teamId of activeTeamIds) {
     const supervisorState = readSupervisorState(teamId);
+    const hasLiveMainlineAgents = (liveMainlineSessionIdsByTeam.get(teamId)?.size ?? 0) > 0;
+    const outstandingWork = teamsWithOutstandingWork.get(teamId)
+      ?? outstandingWorkByKnownTeam.get(teamId)
+      ?? { teamId, unfinishedTaskCount: 0, blockedTaskCount: 0, hasOutstandingWork: false };
 
-    if (supervisorState.terminated) {
+    if (!hasLiveMainlineAgents && !outstandingWork.hasOutstandingWork) {
+      continue;
+    }
+
+    if (supervisorState.terminated && !outstandingWork.hasOutstandingWork) {
       logger.debug(`[SUPERVISOR SCHEDULER] Skipping supervisor for terminated team ${teamId}`);
       continue;
+    }
+
+    if (supervisorState.terminated && outstandingWork.hasOutstandingWork) {
+      await updateSupervisorState(teamId, (state) => ({
+        ...state,
+        terminated: false,
+      }));
     }
 
     // Singleton guard: use persisted PID to detect running supervisor across daemon restarts
@@ -340,16 +468,29 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     // Auto-retire after too many idle runs
     const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6');
     if (supervisorState.idleRuns >= maxIdleRuns) {
-      logger.debug(
-        `[SUPERVISOR SCHEDULER] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`
-      );
-      await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true }));
-      continue;
+      if (outstandingWork.hasOutstandingWork) {
+        await updateSupervisorState(teamId, (state) => ({
+          ...state,
+          idleRuns: 0,
+          terminated: false,
+        }));
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Keeping supervisor eligible for team ${teamId} ` +
+          `because ${outstandingWork.unfinishedTaskCount} unfinished task(s) remain`
+        );
+      } else {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`
+        );
+        await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true }));
+        continue;
+      }
     }
 
     logger.debug(
       `[SUPERVISOR SCHEDULER] Supervisor check triggered (heartbeat #${heartbeatCount}, ` +
-      `team ${teamId}, cursor=${supervisorState.teamLogCursor})`
+      `team ${teamId}, cursor=${supervisorState.teamLogCursor}, ` +
+      `liveMainline=${hasLiveMainlineAgents}, unfinishedTasks=${outstandingWork.unfinishedTaskCount})`
     );
 
     // Detect idle runs: state unchanged since last trigger

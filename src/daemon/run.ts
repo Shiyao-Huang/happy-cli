@@ -63,6 +63,7 @@ import {
   stopTeamSessions,
   requestHelp,
   recoverExistingSessions,
+  onHeartbeatPrunedSession,
 } from './sessionManager';
 
 import { runHeartbeatCycle } from './heartbeat';
@@ -263,9 +264,13 @@ export async function startDaemon(): Promise<void> {
   // 1. Not have a stale daemon state
   // 2. Should not have another daemon process running
 
+  let stopControlServer: (() => Promise<void>) | null = null;
+  let restartOnStaleVersionAndHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let caffeinateStarted = false;
+
   try {
     // Start caffeinate
-    const caffeinateStarted = startCaffeinate();
+    caffeinateStarted = startCaffeinate();
     if (caffeinateStarted) {
       logger.debug('[DAEMON RUN] Sleep prevention enabled');
     }
@@ -286,6 +291,7 @@ export async function startDaemon(): Promise<void> {
       if (!hb) {
         hb = new AgentHeartbeat(90_000, 60_000); // 90s dead, 60s suspect (daemon checks every 60s)
         hb.startMonitoring(30_000);
+
         teamHeartbeats.set(teamId, hb);
         logger.debug(`[DAEMON RUN] Created heartbeat tracker for team ${teamId}`);
       }
@@ -321,6 +327,7 @@ export async function startDaemon(): Promise<void> {
       lastSeenMs: number;
       pid?: number;
       runtimeType?: string;
+      contextUsedPercent?: number;
     }> => {
       const hb = teamHeartbeats.get(teamId);
       const children = Array.from(pidToTrackedSession.values());
@@ -365,6 +372,7 @@ export async function startDaemon(): Promise<void> {
           lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
           pid: c.pid,
           runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+          contextUsedPercent: entry?.contextUsedPercent,
         };
       });
     };
@@ -451,7 +459,7 @@ export async function startDaemon(): Promise<void> {
     };
 
     // ── Start control server ───────────────────────────────────────────────────
-    const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
+    const { port: controlPort, stop: nextStopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
       stopSession,
       stopTeamSessions,
@@ -465,9 +473,9 @@ export async function startDaemon(): Promise<void> {
       disconnectWeixin: disconnectWeixinBridge,
       setWeixinPushPolicy,
       onChannelNotify: (event) => channelRouter.pushToIM(event),
-      onHeartbeatPing: (sessionId: string, teamId: string, role: string) => {
+      onHeartbeatPing: (sessionId: string, teamId: string, role: string, contextUsedPercent?: number) => {
         const hb = getOrCreateTeamHeartbeat(teamId);
-        hb.ping(sessionId, role, []);
+        hb.ping(sessionId, role, [], contextUsedPercent);
       },
       onClaudeLocalSessionFound: (ahaSessionId, claudeLocalSessionId) => {
         for (const [pid, session] of pidToTrackedSession.entries()) {
@@ -479,6 +487,7 @@ export async function startDaemon(): Promise<void> {
         }
       },
     });
+    stopControlServer = nextStopControlServer;
 
     // Read version from disk (not compiled import) to avoid build/publish desync.
     const diskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
@@ -619,7 +628,7 @@ export async function startDaemon(): Promise<void> {
     // Every heartbeatIntervalMs (default 60s):
     //   1. runHeartbeatCycle — prune stale sessions, version check, write state file
     //   2. runSupervisorCycle — pending action retry, supervisor spawn scheduling
-    const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
+    restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
       }
@@ -643,12 +652,7 @@ export async function startDaemon(): Promise<void> {
             }
             apiMachine.reportDeadSessions(ids);
           },
-          requestShutdown: (source, msg) => requestShutdown(source, msg),
-          startupDiskVersion: diskVersion,
-          fileState,
-          controlPort,
-          heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
-          teamHeartbeats,
+          heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat!,
         });
 
         heartbeatCount++;
@@ -703,8 +707,9 @@ export async function startDaemon(): Promise<void> {
         logger.warn('[DAEMON RUN] Shutting down in LOCAL-ONLY mode — no remote machine client to update or close.');
       }
 
-      await channelRouter.destroy();
-      await stopControlServer();
+      if (stopControlServer) {
+        await stopControlServer();
+      }
       await cleanupDaemonState();
       await stopCaffeinate();
       await releaseDaemonLock(daemonLockHandle);

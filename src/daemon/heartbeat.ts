@@ -36,6 +36,11 @@ export interface HeartbeatContext {
   pingHeartbeat: (session: TrackedSession) => void;
   /** Report dead session IDs to the backend */
   reportDeadSessions: (ids: string[]) => void;
+  /**
+   * Called when a stale session is pruned during heartbeat.
+   * Allows sessionManager to trigger respawn and drain the spawn queue.
+   */
+  onSessionDied?: (deadSession: TrackedSession) => void;
   /** Request daemon shutdown on integrity failures */
   requestShutdown: (source: 'aha-app' | 'aha-cli' | 'os-signal' | 'exception', msg?: string) => void;
   /** The on-disk version string recorded at daemon startup (used for drift detection) */
@@ -57,6 +62,62 @@ export interface HeartbeatResult {
   selfRestarted: boolean;
 }
 
+let versionRestartInFlight = false;
+
+function readCurrentDiskVersion(fallbackVersion: string): string {
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(join(projectPath(), 'package.json'), 'utf-8')
+    ) as { version?: unknown };
+
+    if (typeof packageJson.version === 'string' && packageJson.version.trim()) {
+      return packageJson.version;
+    }
+
+    logger.warn('[HEARTBEAT] package.json version missing during heartbeat; using startup version fallback');
+  } catch (error) {
+    logger.warn(
+      '[HEARTBEAT] Failed to read package.json during heartbeat; using startup version fallback',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  return fallbackVersion;
+}
+
+async function waitForReplacementDaemon(params: {
+  currentPid: number;
+  expectedVersion: string;
+  timeoutMs: number;
+  pollIntervalMs: number;
+}): Promise<boolean> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < params.timeoutMs) {
+    const daemonState = await readDaemonState().catch(() => null);
+    const replacementPid = daemonState?.pid;
+
+    if (
+      daemonState &&
+      typeof replacementPid === 'number' &&
+      replacementPid > 0 &&
+      replacementPid !== params.currentPid &&
+      daemonState.startedWithCliVersion === params.expectedVersion
+    ) {
+      try {
+        process.kill(replacementPid, 0);
+        return true;
+      } catch {
+        // Replacement state file exists, but the PID is not healthy yet.
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, params.pollIntervalMs));
+  }
+
+  return false;
+}
+
 // ── Heartbeat cycle ────────────────────────────────────────────────────────────
 
 /**
@@ -75,6 +136,7 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     pidToTrackedSession,
     pingHeartbeat,
     reportDeadSessions,
+    onSessionDied,
     requestShutdown,
     startupDiskVersion,
     fileState,
@@ -93,6 +155,10 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
       pidToTrackedSession.delete(pid);
       if (tracked?.ahaSessionId) {
         deadSessionIds.push(tracked.ahaSessionId);
+      }
+      // Notify sessionManager for potential respawn and queue drain
+      if (tracked) {
+        onSessionDied?.(tracked);
       }
     }
   }
@@ -134,18 +200,18 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     pingHeartbeat(session);
   }
 
-  // ── Step 4: Version drift detection ─────────────────────────────────────────
-  let currentDiskVersion: string;
-  try {
-    currentDiskVersion = JSON.parse(
-      readFileSync(join(projectPath(), 'package.json'), 'utf-8')
-    ).version as string;
-  } catch (error) {
-    logger.debug('[HEARTBEAT] Failed to read package.json for version drift detection, skipping', error);
-    currentDiskVersion = startupDiskVersion;
-  }
+  // ── Step 3: Version drift detection ─────────────────────────────────────────
+  const currentDiskVersion = readCurrentDiskVersion(startupDiskVersion);
   const restartMinUptimeMs = parseInt(
     process.env.AHA_DAEMON_VERSION_RESTART_MIN_UPTIME_MS || '120000',
+    10
+  );
+  const replacementHealthTimeoutMs = parseInt(
+    process.env.AHA_DAEMON_REPLACEMENT_HEALTH_TIMEOUT_MS || '15000',
+    10
+  );
+  const replacementHealthPollMs = parseInt(
+    process.env.AHA_DAEMON_REPLACEMENT_HEALTH_POLL_MS || '500',
     10
   );
 
@@ -156,7 +222,8 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
         `[HEARTBEAT] Version changed on disk (${startupDiskVersion} → ${currentDiskVersion}) ` +
         `but daemon uptime is only ${Math.round(uptimeMs / 1000)}s (< ${Math.round(restartMinUptimeMs / 1000)}s threshold) — skipping restart to avoid loop`
       );
-    } else {
+    } else if (!versionRestartInFlight) {
+      versionRestartInFlight = true;
       logger.debug(
         `[HEARTBEAT] Version changed on disk (${startupDiskVersion} → ${currentDiskVersion}), triggering self-restart`
       );
@@ -167,39 +234,31 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
           stdio: 'ignore',
         });
       } catch (error) {
-        logger.debug('[HEARTBEAT] Failed to spawn new daemon — keeping current daemon alive', error);
-        return;
+        logger.debug('[HEARTBEAT] Failed to spawn new daemon', error);
+        versionRestartInFlight = false;
+        return { deadSessionIds, selfRestarted: false };
       }
 
-      // Poll for new daemon to become healthy (write its own state file with a different PID)
-      const maxWaitMs = 15_000;
-      const pollIntervalMs = 500;
-      const startedAt = Date.now();
-      let newDaemonHealthy = false;
+      const replacementHealthy = await waitForReplacementDaemon({
+        currentPid: process.pid,
+        expectedVersion: currentDiskVersion,
+        timeoutMs: replacementHealthTimeoutMs,
+        pollIntervalMs: replacementHealthPollMs,
+      });
 
-      while (Date.now() - startedAt < maxWaitMs) {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        try {
-          const newState = await readDaemonState();
-          if (newState && newState.pid !== process.pid) {
-            // Verify the new daemon PID is actually alive
-            process.kill(newState.pid, 0);
-            newDaemonHealthy = true;
-            logger.debug(`[HEARTBEAT] New daemon (PID ${newState.pid}) is healthy — old daemon exiting`);
-            break;
-          }
-        } catch {
-          // New daemon not ready yet or PID not alive, keep polling
-        }
+      if (!replacementHealthy) {
+        versionRestartInFlight = false;
+        logger.warn(
+          `[HEARTBEAT] Replacement daemon did not become healthy within ${replacementHealthTimeoutMs}ms; keeping current daemon alive`
+        );
+        return { deadSessionIds, selfRestarted: false };
       }
 
-      if (newDaemonHealthy) {
-        clearInterval(heartbeatIntervalHandle);
-        process.exit(0);
-      } else {
-        logger.debug('[HEARTBEAT] New daemon failed to start within timeout — keeping current daemon alive');
-        return;
-      }
+      clearInterval(heartbeatIntervalHandle);
+      logger.debug('[HEARTBEAT] Replacement daemon is healthy; exiting old daemon process');
+      process.exit(0);
+    } else {
+      logger.debug('[HEARTBEAT] Version restart already in flight; skipping duplicate restart');
     }
   }
 

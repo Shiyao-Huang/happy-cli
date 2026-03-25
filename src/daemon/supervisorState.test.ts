@@ -7,9 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockConfiguration = vi.hoisted(() => ({
     ahaHomeDir: '',
 }));
+const mockLogger = vi.hoisted(() => ({
+    warn: vi.fn(),
+}));
 
 vi.mock('@/configuration', () => ({
     configuration: mockConfiguration,
+}));
+
+vi.mock('@/ui/logger', () => ({
+    logger: mockLogger,
 }));
 
 import {
@@ -117,5 +124,26 @@ describe('supervisorState', () => {
         expect(getPendingActionRetryDelayMs(0, 1_000)).toBe(1_000);
         expect(getPendingActionRetryDelayMs(1, 1_000)).toBe(2_000);
         expect(getPendingActionRetryDelayMs(2, 1_000)).toBe(4_000);
+    });
+
+    it('skips updates gracefully when the supervisor state lock times out', async () => {
+        const lockPath = `${getExpectedStatePath(root, 'team-lock')}.lock`;
+        mkdirSync(join(root, 'supervisor'), { recursive: true });
+        writeFileSync(lockPath, 'locked', 'utf-8');
+
+        process.env.AHA_SUPERVISOR_STATE_LOCK_MAX_ATTEMPTS = '2';
+        process.env.AHA_SUPERVISOR_STATE_LOCK_RETRY_MS = '1';
+
+        const state = await updateSupervisorState('team-lock', (current) => ({
+            ...current,
+            lastConclusion: 'should-not-write',
+        }));
+
+        expect(state.lastConclusion).toBe('');
+        expect(readSupervisorState('team-lock').lastConclusion).toBe('');
+        expect(mockLogger.warn).toHaveBeenCalled();
+
+        delete process.env.AHA_SUPERVISOR_STATE_LOCK_MAX_ATTEMPTS;
+        delete process.env.AHA_SUPERVISOR_STATE_LOCK_RETRY_MS;
     });
 });

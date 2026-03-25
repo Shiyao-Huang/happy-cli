@@ -18,6 +18,8 @@ export interface AgentHeartbeatEntry {
     lastSeen: number;
     status: AgentHealthStatus;
     assignedTasks: string[];
+    /** Last reported context window usage (0-100). Undefined if never reported. */
+    contextUsedPercent?: number;
 }
 
 export interface DeadAgentReport {
@@ -28,12 +30,22 @@ export interface DeadAgentReport {
     deadForMs: number;
 }
 
+/** Emitted when an agent's context usage exceeds a threshold. */
+export interface ContextAlertReport {
+    agentId: string;
+    role: string;
+    contextUsedPercent: number;
+}
+
 export class AgentHeartbeat {
     private agents: Map<string, AgentHeartbeatEntry> = new Map();
     private readonly timeoutMs: number;
     private readonly suspectMs: number;
     private checkInterval: ReturnType<typeof setInterval> | null = null;
     private onDeadAgentCallback: ((report: DeadAgentReport) => void) | null = null;
+    private onContextAlertCallback: ((report: ContextAlertReport) => void) | null = null;
+    /** Track agents that already had a context alert fired this monitoring cycle (avoid spam). */
+    private contextAlertFired: Set<string> = new Set();
 
     /**
      * @param timeoutMs - Time after which an agent is considered dead.
@@ -54,10 +66,21 @@ export class AgentHeartbeat {
     }
 
     /**
+     * Register a callback for when an agent's context exceeds a threshold.
+     * Used to trigger auto-compact for critical roles (e.g., Master).
+     */
+    onContextAlert(callback: (report: ContextAlertReport) => void): void {
+        this.onContextAlertCallback = callback;
+    }
+
+    /**
      * Record a heartbeat ping from an agent.
      * Call this every 30s from each agent.
+     *
+     * @param contextUsedPercent - Optional context window usage (0-100).
+     *   When provided for a 'master' role and >= 70, triggers the contextAlert callback.
      */
-    ping(agentId: string, role: string, assignedTasks: string[] = []): void {
+    ping(agentId: string, role: string, assignedTasks: string[] = [], contextUsedPercent?: number): void {
         const existing = this.agents.get(agentId);
         this.agents.set(agentId, {
             agentId,
@@ -65,8 +88,27 @@ export class AgentHeartbeat {
             lastSeen: Date.now(),
             status: 'alive',
             assignedTasks: assignedTasks.length > 0 ? assignedTasks : (existing?.assignedTasks ?? []),
+            contextUsedPercent,
         });
-        logger.debug(`[Heartbeat] Ping from ${agentId} (${role})`);
+        logger.debug(`[Heartbeat] Ping from ${agentId} (${role})${contextUsedPercent !== undefined ? ` ctx=${contextUsedPercent}%` : ''}`);
+
+        // Auto-compact trigger: fire alert when Master context exceeds 70%
+        const CONTEXT_ALERT_THRESHOLD = parseInt(process.env.AHA_CONTEXT_ALERT_THRESHOLD || '70', 10);
+        if (
+            contextUsedPercent !== undefined &&
+            contextUsedPercent >= CONTEXT_ALERT_THRESHOLD &&
+            role === 'master' &&
+            !this.contextAlertFired.has(agentId) &&
+            this.onContextAlertCallback
+        ) {
+            this.contextAlertFired.add(agentId);
+            this.onContextAlertCallback({ agentId, role, contextUsedPercent });
+        }
+
+        // Reset alert state when context drops below threshold (e.g., after compact)
+        if (contextUsedPercent !== undefined && contextUsedPercent < CONTEXT_ALERT_THRESHOLD) {
+            this.contextAlertFired.delete(agentId);
+        }
     }
 
     /**

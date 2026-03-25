@@ -358,7 +358,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
 
     // Team Pulse — real-time liveness of all agents in the team
     mcp.registerTool('get_team_pulse', {
-        description: 'Get real-time liveness status of all agents in the team. Shows who is alive, suspect (possibly stuck), or dead (no heartbeat). Use this BEFORE reading logs — it tells you which agents need attention. Available to all team members.',
+        description: 'Get real-time liveness status of all agents in the team, enriched with assigned-task counts and board distribution. Shows who is alive, suspect (possibly stuck), or dead (no heartbeat). Use this BEFORE reading logs — it tells you which agents need attention. Available to all team members.',
         title: 'Get Team Pulse',
         inputSchema: {
             teamId: z.string().describe('Team ID to check pulse for'),
@@ -379,16 +379,108 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 body: JSON.stringify({ teamId: args.teamId }),
                 signal: AbortSignal.timeout(5_000),
             });
-            const result = await response.json() as { teamId: string; members: Array<{ sessionId: string; role: string; status: string; lastSeenMs: number; pid?: number; runtimeType?: string }>; summary: string };
+            const result = await response.json() as {
+                teamId: string;
+                members: Array<{
+                    sessionId: string;
+                    role: string;
+                    status: string;
+                    lastSeenMs: number;
+                    pid?: number;
+                    runtimeType?: string;
+                    contextUsedPercent?: number;
+                }>;
+                summary: string;
+            };
+            const tasksResult = await api.listTasks(args.teamId).catch(() => ({ tasks: [], version: 0 }));
+            const tasks = Array.isArray(tasksResult.tasks) ? tasksResult.tasks : [];
+            const boardStats = {
+                todo: 0,
+                inProgress: 0,
+                review: 0,
+                done: 0,
+                blocked: 0,
+            };
+            const taskStatsByAssignee = new Map<string, {
+                total: number;
+                todo: number;
+                inProgress: number;
+                review: number;
+                done: number;
+                blocked: number;
+                taskIds: string[];
+            }>();
+
+            for (const task of tasks) {
+                const status = String(task?.status || 'todo');
+                if (status === 'todo') boardStats.todo += 1;
+                if (status === 'in-progress') boardStats.inProgress += 1;
+                if (status === 'review') boardStats.review += 1;
+                if (status === 'done') boardStats.done += 1;
+                if (status === 'blocked') boardStats.blocked += 1;
+
+                const assigneeId = typeof task?.assigneeId === 'string' ? task.assigneeId : null;
+                if (!assigneeId) continue;
+
+                const entry = taskStatsByAssignee.get(assigneeId) ?? {
+                    total: 0,
+                    todo: 0,
+                    inProgress: 0,
+                    review: 0,
+                    done: 0,
+                    blocked: 0,
+                    taskIds: [],
+                };
+
+                entry.total += 1;
+                if (status === 'todo') entry.todo += 1;
+                if (status === 'in-progress') entry.inProgress += 1;
+                if (status === 'review') entry.review += 1;
+                if (status === 'done') entry.done += 1;
+                if (status === 'blocked') entry.blocked += 1;
+                if (typeof task?.id === 'string') {
+                    entry.taskIds.push(task.id);
+                }
+
+                taskStatsByAssignee.set(assigneeId, entry);
+            }
+
             const mySessionId = client.getMetadata()?.ahaSessionId;
-            const formatted = result.members.map((m: { sessionId: string; role: string; status: string; lastSeenMs: number; runtimeType?: string }) => {
+            const members = result.members.map((member) => ({
+                ...member,
+                taskStats: taskStatsByAssignee.get(member.sessionId) ?? {
+                    total: 0,
+                    todo: 0,
+                    inProgress: 0,
+                    review: 0,
+                    done: 0,
+                    blocked: 0,
+                    taskIds: [],
+                },
+            }));
+            const formatted = members.map((m) => {
                 const isMe = m.sessionId === mySessionId ? ' (YOU)' : '';
                 const statusIcon = m.status === 'alive' ? '🟢' : m.status === 'suspect' ? '🟡' : '🔴';
                 const staleSec = Math.round(m.lastSeenMs / 1000);
-                return `${statusIcon} ${m.role}${isMe}: ${m.status} (last seen ${staleSec}s ago) [${m.runtimeType || 'unknown'}]`;
+                const taskSummary = m.taskStats.total > 0
+                    ? ` tasks=${m.taskStats.total} (todo=${m.taskStats.todo}, in-progress=${m.taskStats.inProgress}, review=${m.taskStats.review}, blocked=${m.taskStats.blocked})`
+                    : ' tasks=0';
+                const contextSummary = typeof m.contextUsedPercent === 'number'
+                    ? ` ctx=${m.contextUsedPercent}%`
+                    : '';
+                return `${statusIcon} ${m.role}${isMe}: ${m.status} (last seen ${staleSec}s ago) [${m.runtimeType || 'unknown'}]${contextSummary}${taskSummary}`;
             }).join('\n');
+            const payload = {
+                teamId: result.teamId,
+                summary: result.summary,
+                boardStats,
+                members,
+            };
             return {
-                content: [{ type: 'text', text: `Team Pulse: ${result.summary}\n\n${formatted}` }],
+                content: [{
+                    type: 'text',
+                    text: `Team Pulse: ${result.summary}\nBoard: todo=${boardStats.todo}, in-progress=${boardStats.inProgress}, review=${boardStats.review}, blocked=${boardStats.blocked}, done=${boardStats.done}\n\n${formatted}\n\n${JSON.stringify(payload, null, 2)}`
+                }],
                 isError: false,
             };
         } catch (error) {

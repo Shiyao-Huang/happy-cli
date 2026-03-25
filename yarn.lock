@@ -2,9 +2,6 @@
 # yarn lockfile v1
 
 
-"@aha/shared-team-config@file:../shared/team-config":
-  version "0.1.0"
-
 "@alcalzone/ansi-tokenize@^0.2.0":
   version "0.2.0"
   resolved "https://registry.npmjs.org/@alcalzone/ansi-tokenize/-/ansi-tokenize-0.2.0.tgz"

@@ -43,8 +43,9 @@ export function startDaemonControlServer({
     lastSeenMs: number;
     pid?: number;
     runtimeType?: string;
+    contextUsedPercent?: number;
   }>;
-  onHeartbeatPing?: (sessionId: string, teamId: string, role: string) => void;
+  onHeartbeatPing?: (sessionId: string, teamId: string, role: string, contextUsedPercent?: number) => void;
   requestHelp?: (params: {
     teamId: string;
     sessionId?: string;
@@ -465,11 +466,12 @@ export function startDaemonControlServer({
           sessionId: z.string(),
           teamId: z.string(),
           role: z.string(),
+          contextUsedPercent: z.number().optional(),
         }),
       }
     }, async (request) => {
-      const { sessionId, teamId, role } = request.body;
-      onHeartbeatPing?.(sessionId, teamId, role);
+      const { sessionId, teamId, role, contextUsedPercent } = request.body;
+      onHeartbeatPing?.(sessionId, teamId, role, contextUsedPercent);
       return { ok: true };
     });
 
@@ -487,6 +489,7 @@ export function startDaemonControlServer({
               lastSeenMs: z.number(),
               pid: z.number().optional(),
               runtimeType: z.string().optional(),
+              contextUsedPercent: z.number().optional(),
             })),
             summary: z.string(),
           })

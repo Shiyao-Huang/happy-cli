@@ -47,6 +47,155 @@ import { execSync } from 'child_process';
 export const pidToTrackedSession = new Map<number, TrackedSession>();
 const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>>();
 
+// ── Spawn concurrency limiter ────────────────────────────────────────────────
+const MAX_CONCURRENT_CLAUDE = parseInt(process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS || '3', 10);
+const MAX_RESPAWN_ATTEMPTS = parseInt(process.env.AHA_MAX_RESPAWN_ATTEMPTS || '3', 10);
+const RESPAWN_BASE_DELAY_MS = parseInt(process.env.AHA_RESPAWN_BASE_DELAY_MS || '5000', 10);
+
+interface QueuedSpawn {
+  options: SpawnSessionOptions;
+  resolve: (result: SpawnSessionResult) => void;
+}
+
+const spawnQueue: QueuedSpawn[] = [];
+
+function normalizeRespawnAgent(runtimeType?: string): SpawnSessionOptions['agent'] | undefined {
+  if (runtimeType === 'codex') return 'codex';
+  if (runtimeType === 'ralph') return 'ralph';
+  if (runtimeType) return 'claude';
+  return undefined;
+}
+
+function resolveProcessWorkingDirectory(pid: number): string | undefined {
+  const commands = [
+    `lsof -a -d cwd -Fn -p ${pid} 2>/dev/null`,
+    `pwdx ${pid} 2>/dev/null`,
+    `readlink /proc/${pid}/cwd 2>/dev/null`,
+  ];
+
+  for (const command of commands) {
+    try {
+      const output = execSync(command, {
+        encoding: 'utf-8',
+        timeout: 5000,
+      }).trim();
+
+      if (!output) continue;
+
+      if (command.startsWith('lsof')) {
+        const pathLine = output.split('\n').find((line) => line.startsWith('n/'));
+        if (pathLine) {
+          return pathLine.slice(1).trim();
+        }
+        continue;
+      }
+
+      if (command.startsWith('pwdx')) {
+        const match = output.match(/^\d+:\s+(.+)$/);
+        if (match?.[1]) {
+          return match[1].trim();
+        }
+        continue;
+      }
+
+      return output;
+    } catch {
+      // Try the next strategy.
+    }
+  }
+
+  return undefined;
+}
+
+function buildRespawnableSpawnOptions(params: {
+  pid: number;
+  teamId?: string;
+  memberId?: string;
+  role?: string;
+  runtimeType?: string;
+  displayName?: string;
+  sessionTag?: string;
+  executionPlane?: string;
+  specId?: string;
+  parentSessionId?: string;
+  customPrompt?: string;
+  metadataPath?: string;
+  base?: Omit<SpawnSessionOptions, 'onPidKnown' | 'token'>;
+}): Omit<SpawnSessionOptions, 'onPidKnown' | 'token'> | undefined {
+  const directory = params.metadataPath || params.base?.directory || resolveProcessWorkingDirectory(params.pid);
+  if (!directory) {
+    return params.base;
+  }
+
+  const env: Record<string, string> = {
+    ...(params.base?.env || {}),
+  };
+
+  if (params.memberId) {
+    env.AHA_TEAM_MEMBER_ID = params.memberId;
+  }
+  if (params.customPrompt) {
+    env.AHA_AGENT_PROMPT = params.customPrompt;
+  }
+
+  return {
+    ...params.base,
+    directory,
+    agent: normalizeRespawnAgent(params.runtimeType) ?? params.base?.agent,
+    sessionTag: params.sessionTag || params.base?.sessionTag,
+    teamId: params.teamId || params.base?.teamId,
+    role: params.role || params.base?.role,
+    sessionName: params.displayName || params.base?.sessionName,
+    sessionPath: params.metadataPath || params.base?.sessionPath || directory,
+    executionPlane: (params.executionPlane as SpawnSessionOptions['executionPlane'] | undefined) || params.base?.executionPlane,
+    specId: params.specId || params.base?.specId,
+    parentSessionId: params.parentSessionId || params.base?.parentSessionId,
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  };
+}
+
+function isClaudeAgent(session: TrackedSession): boolean {
+  if (session.spawnOptions?.agent) {
+    return session.spawnOptions.agent !== 'codex' && session.spawnOptions.agent !== 'ralph';
+  }
+  const flavor = session.ahaSessionMetadataFromLocalWebhook?.flavor;
+  return flavor !== 'codex' && flavor !== 'open-code';
+}
+
+function getActiveClaudeCount(): number {
+  let count = 0;
+  for (const session of pidToTrackedSession.values()) {
+    if (isClaudeAgent(session)) count++;
+  }
+  return count;
+}
+
+/** Process the next queued spawn if a slot is available. */
+function drainSpawnQueue(): void {
+  while (spawnQueue.length > 0 && getActiveClaudeCount() < MAX_CONCURRENT_CLAUDE) {
+    const next = spawnQueue.shift()!;
+    logger.debug(`[SESSION MANAGER] Dequeuing spawn for role=${next.options.role || 'unknown'} (queue remaining: ${spawnQueue.length})`);
+    spawnSessionInternal(next.options).then(next.resolve);
+  }
+}
+
+/**
+ * Called by heartbeat when a session is pruned as stale (process no longer exists).
+ * Heartbeat already removed the session from pidToTrackedSession and collected the
+ * dead session ID — this function handles respawn + queue drain only.
+ */
+export function onHeartbeatPrunedSession(deadSession: TrackedSession): void {
+  // Auto-stash uncommitted changes to prevent code loss
+  if (!deadSession.intentionallyStopped) {
+    tryAutoStash(deadSession);
+  }
+
+  if (isRespawnEligible(deadSession)) {
+    scheduleRespawn(deadSession);
+  }
+  drainSpawnQueue();
+}
+
 /**
  * Recover already-running aha sessions after daemon restart.
  * Scans OS processes for `--session-tag team:TEAMID:member:MEMBERID` pattern,
@@ -64,7 +213,7 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
   try {
     // ── Phase 1: Discover PIDs ──────────────────────────────────────────────
     const psOutput = execSync('ps -eo pid,args 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
-    const tagPattern = /^\s*(\d+)\s+.*--session-tag\s+team:([a-f0-9-]+):member:([a-f0-9-]+)/;
+    const tagPattern = /^\s*(\d+)\s+.*--session-tag\s+team:([^\s:]+):member:([^\s:]+)(?:\s|$)/;
 
     // Collect discovered processes grouped by teamId
     const discovered: Array<{ pid: number; teamId: string; memberId: string }> = [];
@@ -111,6 +260,9 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
         runtimeType?: string;
         displayName?: string;
         sessionTag?: string;
+        specId?: string;
+        parentSessionId?: string;
+        customPrompt?: string;
       }> = [];
 
       if (api) {
@@ -147,6 +299,20 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
           startedBy: 'recovered after daemon restart',
           pid,
         };
+
+        trackedSession.spawnOptions = buildRespawnableSpawnOptions({
+          pid,
+          teamId,
+          memberId,
+          role: rosterMember?.roleId,
+          runtimeType: rosterMember?.runtimeType,
+          displayName: rosterMember?.displayName,
+          sessionTag: rosterMember?.sessionTag,
+          executionPlane: rosterMember?.executionPlane,
+          specId: rosterMember?.specId,
+          parentSessionId: rosterMember?.parentSessionId,
+          customPrompt: rosterMember?.customPrompt,
+        });
 
         if (rosterMember?.sessionId) {
           // Successfully resolved — use real session identity
@@ -273,6 +439,18 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
     // Update daemon-spawned session with reported data
     existingSession.ahaSessionId = sessionId;
     existingSession.ahaSessionMetadataFromLocalWebhook = sessionMetadata;
+    existingSession.spawnOptions = buildRespawnableSpawnOptions({
+      pid,
+      teamId: sessionMetadata.teamId || sessionMetadata.roomId,
+      memberId: sessionMetadata.memberId,
+      role: sessionMetadata.role,
+      runtimeType: sessionMetadata.flavor,
+      displayName: sessionMetadata.name,
+      sessionTag: sessionMetadata.sessionTag,
+      executionPlane: sessionMetadata.executionPlane,
+      metadataPath: sessionMetadata.path,
+      base: existingSession.spawnOptions,
+    });
     logger.debug(`[SESSION MANAGER] Updated daemon-spawned session ${sessionId} with metadata`);
     pingHeartbeatIfAvailable(existingSession);
 
@@ -303,6 +481,18 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
     const previousId = existingSession.ahaSessionId;
     existingSession.ahaSessionId = sessionId;
     existingSession.ahaSessionMetadataFromLocalWebhook = sessionMetadata;
+    existingSession.spawnOptions = buildRespawnableSpawnOptions({
+      pid,
+      teamId: sessionMetadata.teamId || sessionMetadata.roomId,
+      memberId: sessionMetadata.memberId,
+      role: sessionMetadata.role,
+      runtimeType: sessionMetadata.flavor,
+      displayName: sessionMetadata.name,
+      sessionTag: sessionMetadata.sessionTag,
+      executionPlane: sessionMetadata.executionPlane,
+      metadataPath: sessionMetadata.path,
+      base: existingSession.spawnOptions,
+    });
     existingSession.startedBy = 'daemon'; // Normalize so future webhooks follow the standard path
     logger.debug(
       `[SESSION MANAGER] Self-healed recovered session: ${previousId || '(unresolved)'} → ${sessionId} ` +
@@ -326,10 +516,31 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
 // ── Session spawning ───────────────────────────────────────────────────────────
 
 /**
- * Spawn a new aha/codex/ralph child process and track it.
- * Awaits the session-started webhook for up to 15 seconds before timing out.
+ * Public entry point: spawn a new agent session with concurrency control.
+ * Claude agents are limited to MAX_CONCURRENT_CLAUDE concurrent sessions.
+ * Excess spawns are queued and drained as slots free up.
  */
 export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+  const isClaude = options.agent !== 'codex' && options.agent !== 'ralph';
+
+  if (isClaude && getActiveClaudeCount() >= MAX_CONCURRENT_CLAUDE) {
+    logger.debug(
+      `[SESSION MANAGER] Claude concurrency limit reached (${getActiveClaudeCount()}/${MAX_CONCURRENT_CLAUDE}). ` +
+      `Queuing spawn for role=${options.role || 'unknown'} (queue depth: ${spawnQueue.length + 1})`
+    );
+    return new Promise<SpawnSessionResult>((resolve) => {
+      spawnQueue.push({ options, resolve });
+    });
+  }
+
+  return spawnSessionInternal(options);
+};
+
+/**
+ * Internal spawn: creates the child process and tracks it.
+ * Awaits the session-started webhook for up to 15 seconds before timing out.
+ */
+const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
   logger.debugLargeJson('[SESSION MANAGER] Spawning session', options);
 
   // Trace: spawn_started
@@ -547,6 +758,9 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
     // Notify caller immediately with the PID (before webhook arrives)
     options.onPidKnown?.(ahaProcess.pid);
 
+    // Store spawn options (without sensitive fields) for potential respawn
+    const { onPidKnown: _opk, token: _tok, ...respawnableOptions } = options;
+
     const trackedSession: TrackedSession = {
       startedBy: 'daemon',
       pid: ahaProcess.pid,
@@ -555,6 +769,8 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
       message: directoryCreated
         ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.`
         : undefined,
+      spawnOptions: respawnableOptions,
+      respawnCount: parseInt(options.env?.AHA_RESPAWN_COUNT || '0', 10),
     };
 
     pidToTrackedSession.set(ahaProcess.pid, trackedSession);
@@ -626,6 +842,9 @@ export const stopSession = (sessionId: string): boolean => {
       session.ahaSessionId === sessionId ||
       (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))
     ) {
+      // Mark as intentionally stopped to prevent auto-respawn
+      session.intentionallyStopped = true;
+
       const sendSignal = (signal: NodeJS.Signals) => {
         if (session.startedBy === 'daemon' && session.childProcess) {
           try {
@@ -692,6 +911,9 @@ export const stopTeamSessions = (teamId: string): { stopped: number; errors: str
     if (sessionTeamId === teamId) {
       const sessionId = session.ahaSessionId || `PID-${pid}`;
       logger.debug(`[SESSION MANAGER] Stopping team session ${sessionId} (PID: ${pid})`);
+
+      // Mark as intentionally stopped to prevent auto-respawn
+      session.intentionallyStopped = true;
 
       try {
         if (session.startedBy === 'daemon' && session.childProcess) {
@@ -818,18 +1040,166 @@ export const requestHelp = async (params: {
   }
 };
 
+// ── Auto-stash on agent death ────────────────────────────────────────────────
+
+/**
+ * Attempt to git stash uncommitted changes in an agent's working directory.
+ * Called when a daemon-spawned agent exits unexpectedly (not intentionally stopped).
+ * This prevents code loss when agents die mid-work.
+ *
+ * Runs asynchronously — never blocks the main exit handler.
+ */
+function tryAutoStash(session: TrackedSession): void {
+  const directory = session.spawnOptions?.directory;
+  if (!directory) return;
+  if (session.intentionallyStopped) return;
+
+  const role = session.spawnOptions?.role || 'unknown';
+  const sessionId = session.ahaSessionId || 'unknown';
+
+  try {
+    // Quick check: does the directory have a .git folder?
+    const gitCheck = execSync('git rev-parse --is-inside-work-tree 2>/dev/null', {
+      cwd: directory,
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+
+    if (gitCheck !== 'true') return;
+
+    // Check for uncommitted changes
+    const status = execSync('git status --porcelain 2>/dev/null', {
+      cwd: directory,
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+
+    if (!status) {
+      logger.debug(`[SESSION MANAGER] No uncommitted changes in ${directory} for ${role} (${sessionId})`);
+      return;
+    }
+
+    const changedFiles = status.split('\n').length;
+    logger.debug(
+      `[SESSION MANAGER] Auto-stashing ${changedFiles} uncommitted changes in ${directory} ` +
+      `for crashed agent ${role} (${sessionId})`
+    );
+
+    // Stage all changes and stash with descriptive message
+    const stashMessage = `auto-stash: agent ${role} (${sessionId}) crashed at ${new Date().toISOString()}`;
+    execSync(`git add -A && git stash push -m "${stashMessage}" 2>/dev/null`, {
+      cwd: directory,
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+
+    logger.debug(`[SESSION MANAGER] Auto-stash successful: "${stashMessage}"`);
+  } catch (error) {
+    logger.debug(
+      `[SESSION MANAGER] Auto-stash failed for ${directory}: ` +
+      `${error instanceof Error ? error.message : 'unknown'}`
+    );
+  }
+}
+
 // ── Child exit handler ─────────────────────────────────────────────────────────
 
 /**
+ * Determine if an exited session is eligible for automatic respawn.
+ *
+ * Eligible sessions must:
+ * - Have stored spawnOptions (daemon-spawned with known config)
+ * - Not have been intentionally stopped
+ * - Be a mainline agent (not supervisor, help-agent, or bypass plane)
+ * - Be under the max respawn attempt limit
+ */
+function isRespawnEligible(session: TrackedSession): boolean {
+  if (!session.spawnOptions) return false;
+  if (session.intentionallyStopped) return false;
+  if (session.startedBy !== 'daemon') return false;
+
+  const role = session.spawnOptions.role || session.ahaSessionMetadataFromLocalWebhook?.role;
+  if (role === 'supervisor' || role === 'help-agent') return false;
+
+  const plane = session.spawnOptions.executionPlane || session.ahaSessionMetadataFromLocalWebhook?.executionPlane;
+  if (plane === 'bypass') return false;
+
+  const respawnCount = session.respawnCount ?? 0;
+  if (respawnCount >= MAX_RESPAWN_ATTEMPTS) return false;
+
+  return true;
+}
+
+/**
+ * Schedule a respawn with exponential backoff.
+ * Master agents get priority: RESPAWN_BASE_DELAY_MS / 2 base delay.
+ * Other agents: RESPAWN_BASE_DELAY_MS * 2^respawnCount (5s, 10s, 20s by default).
+ */
+function scheduleRespawn(session: TrackedSession): void {
+  const respawnCount = (session.respawnCount ?? 0) + 1;
+  const role = session.spawnOptions!.role || 'unknown';
+  const teamId = session.spawnOptions!.teamId || 'unknown';
+  const isMaster = role === 'master';
+  const baseDelay = isMaster ? Math.max(2000, Math.floor(RESPAWN_BASE_DELAY_MS / 2)) : RESPAWN_BASE_DELAY_MS;
+  const delayMs = baseDelay * Math.pow(2, respawnCount - 1);
+
+  logger.debug(
+    `[SESSION MANAGER] Scheduling respawn #${respawnCount}/${MAX_RESPAWN_ATTEMPTS} ` +
+    `for role=${role} team=${teamId} in ${delayMs}ms`
+  );
+
+  setTimeout(async () => {
+    try {
+      const respawnOptions: SpawnSessionOptions = {
+        ...session.spawnOptions!,
+        sessionId: undefined, // New session, don't recover the old one
+        env: {
+          ...session.spawnOptions!.env,
+          AHA_RESPAWN_COUNT: String(respawnCount),
+        },
+      };
+
+      const result = await spawnSession(respawnOptions);
+      if (result.type === 'success') {
+        logger.debug(
+          `[SESSION MANAGER] Respawn #${respawnCount} succeeded for role=${role} ` +
+          `team=${teamId} → session=${result.sessionId}`
+        );
+      } else {
+        const errorMsg = result.type === 'error' ? result.errorMessage : 'unknown error';
+        logger.debug(
+          `[SESSION MANAGER] Respawn #${respawnCount} failed for role=${role} ` +
+          `team=${teamId}: ${errorMsg}`
+        );
+      }
+    } catch (error) {
+      logger.debug(
+        `[SESSION MANAGER] Respawn #${respawnCount} threw for role=${role} ` +
+        `team=${teamId}: ${error instanceof Error ? error.message : 'unknown'}`
+      );
+    }
+  }, delayMs);
+}
+
+/**
  * Called from the child process 'exit' event.
- * Removes the exited PID from the tracking map.
+ * Removes the exited PID from the tracking map and triggers respawn if eligible.
  */
 export const onChildExited = (pid: number): void => {
-  const tracked = pidToTrackedSession.get(pid);
+  const session = pidToTrackedSession.get(pid);
   logger.debug(`[SESSION MANAGER] Removing exited process PID ${pid} from tracking`);
   pidToTrackedSession.delete(pid);
 
-  if (tracked?.ahaSessionId && _onSessionDead) {
-    _onSessionDead([tracked.ahaSessionId]);
+  // Auto-stash uncommitted changes before respawn to prevent code loss
+  if (session && !session.intentionallyStopped) {
+    tryAutoStash(session);
   }
+
+  // Attempt auto-respawn for unexpectedly crashed agents
+  if (session && isRespawnEligible(session)) {
+    scheduleRespawn(session);
+  }
+
+  // Drain the spawn queue — a slot may have opened up
+  drainSpawnQueue();
 };

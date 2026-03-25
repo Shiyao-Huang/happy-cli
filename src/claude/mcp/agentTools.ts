@@ -380,7 +380,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
     // List Team Agents - Lists current team members/agents
     mcp.registerTool('list_team_agents', {
-        description: 'List all agents currently in the team, including their roles, session IDs, and status.',
+        description: 'List all agents currently in the team, including their roles, session IDs, status, runtime metadata, and assigned-task summary.',
         title: 'List Team Agents',
         inputSchema: {},
     }, async () => {
@@ -423,6 +423,45 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 ...boardMembers.map((m: any) => m.sessionId)
             ]);
             const daemonTrackedSessionIds = await getDaemonTrackedSessionIds().catch(() => new Set<string>());
+            const tasksResult = await api.listTasks(teamId).catch(() => ({ tasks: [], version: 0 }));
+            const tasks = Array.isArray(tasksResult.tasks) ? tasksResult.tasks : [];
+            const taskStatsByAssignee = new Map<string, {
+                total: number;
+                todo: number;
+                inProgress: number;
+                review: number;
+                done: number;
+                blocked: number;
+                taskIds: string[];
+            }>();
+
+            for (const task of tasks) {
+                const assigneeId = typeof task?.assigneeId === 'string' ? task.assigneeId : null;
+                if (!assigneeId) continue;
+
+                const status = String(task?.status || 'todo');
+                const entry = taskStatsByAssignee.get(assigneeId) ?? {
+                    total: 0,
+                    todo: 0,
+                    inProgress: 0,
+                    review: 0,
+                    done: 0,
+                    blocked: 0,
+                    taskIds: [],
+                };
+
+                entry.total += 1;
+                if (status === 'todo') entry.todo += 1;
+                if (status === 'in-progress') entry.inProgress += 1;
+                if (status === 'review') entry.review += 1;
+                if (status === 'done') entry.done += 1;
+                if (status === 'blocked') entry.blocked += 1;
+                if (typeof task?.id === 'string') {
+                    entry.taskIds.push(task.id);
+                }
+
+                taskStatsByAssignee.set(assigneeId, entry);
+            }
             const sessionSnapshots = await Promise.all(
                 Array.from(allSessionIds).map(async (sessionId: string) => {
                     try {
@@ -463,6 +502,15 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         (BYPASS_ROLES.includes(roleId) ? 'bypass' : 'mainline'),
                     runtimeType: member?.runtimeType || sessionSnapshot?.metadata?.flavor || 'claude',
                     lifecycleState: lifecycleState || 'running',
+                    taskStats: taskStatsByAssignee.get(sessionId) ?? {
+                        total: 0,
+                        todo: 0,
+                        inProgress: 0,
+                        review: 0,
+                        done: 0,
+                        blocked: 0,
+                        taskIds: [],
+                    },
                 }];
             });
 

@@ -73,4 +73,21 @@ describe('normalizeGenomeSpecForPublication', () => {
             ]),
         );
     });
+
+    it('drops empty mutation notes instead of serializing null', () => {
+        const result = normalizeGenomeSpecForPublication({
+            namespace: '@public',
+            mutationNote: '',
+            specJson: JSON.stringify({
+                provenance: {
+                    parentId: 'parent-1',
+                    mutationNote: 'old note',
+                },
+            }),
+        });
+
+        expect(result.spec.provenance).toEqual({
+            parentId: 'parent-1',
+        });
+    });
 });
