@@ -576,6 +576,145 @@ export class ApiClient {
     }
   }
 
+  async getChannelStatus(): Promise<{
+    weixin: {
+      connected: boolean;
+      pushPolicy: 'all' | 'important' | 'silent';
+      boundAt?: boolean;
+    } | null;
+  }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/channels/status`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+          },
+          timeout: 10000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to get channel status:`, error);
+      throw new Error(`Failed to get channel status: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async requestWeixinQRCode(): Promise<{ qrcode: string; displayUrl: string }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/channels/weixin/qr`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 15000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to request Weixin QR code:`, error);
+      throw new Error(`Failed to request Weixin QR code: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async pollWeixinQRCode(qrcode: string): Promise<{
+    status: 'wait' | 'scaned' | 'confirmed' | 'expired' | string;
+    token?: string;
+    baseUrl?: string;
+    weixinUserId?: string;
+    accountId?: string;
+  }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/channels/weixin/poll`,
+        { qrcode },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 40000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to poll Weixin QR code:`, error);
+      throw new Error(`Failed to poll Weixin QR code: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async bindWeixinChannel(payload: {
+    token: string;
+    baseUrl: string;
+    weixinUserId?: string;
+    accountId?: string;
+  }): Promise<{ ok: boolean }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/channels/weixin/bind`,
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 15000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to bind Weixin channel:`, error);
+      throw new Error(`Failed to bind Weixin channel: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async disconnectWeixinChannel(): Promise<{ ok: boolean }> {
+    try {
+      const response = await axios.delete(
+        `${configuration.serverUrl}/v1/channels/weixin`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+          },
+          timeout: 10000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to disconnect Weixin channel:`, error);
+      throw new Error(`Failed to disconnect Weixin channel: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async updateWeixinChannelPolicy(pushPolicy: 'all' | 'important' | 'silent'): Promise<{ ok: boolean }> {
+    try {
+      const response = await axios.patch(
+        `${configuration.serverUrl}/v1/channels/weixin/policy`,
+        { pushPolicy },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to update Weixin channel policy:`, error);
+      throw new Error(`Failed to update Weixin channel policy: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   /**
    * List stored vendor API tokens for the current user.
    */

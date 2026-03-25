@@ -32,7 +32,7 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { configuration } from '@/configuration';
-import { writeScore } from '@/claude/utils/scoreStorage';
+import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorGenomeFeedback';
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
@@ -55,6 +55,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         getDaemonTrackedSessionIds,
         parseBoardFromArtifact,
         triggerHelpLane,
+        getTaskStateManager,
     } = ctx;
 
     const resolveInspectionSubject = async (requestedSessionId?: string): Promise<{
@@ -307,6 +308,44 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 } catch { teamSummary = 'Could not reach daemon for pulse'; }
             }
 
+            // My Tasks
+            let myTaskLines: string[] = [];
+            let peerTaskLines: string[] = [];
+            try {
+                const taskManager = getTaskStateManager();
+                if (taskManager) {
+                    const kanbanCtx = await taskManager.getFilteredContext();
+                    for (const task of (kanbanCtx.myTasks || []).slice(0, 5)) {
+                        const icon = task.status === 'in-progress' ? '🔨' : task.status === 'review' ? '👀' : '📋';
+                        myTaskLines.push(`  ${icon} [${task.status}] ${task.title} (${task.id})`);
+                    }
+                    // Peer Activity — in-progress tasks from other agents
+                    const board = await taskManager.getBoard();
+                    const otherInProgress = (board.tasks || []).filter(
+                        (t: any) => t.status === 'in-progress' && t.assigneeId && t.assigneeId !== sessionId
+                    );
+                    for (const task of otherInProgress.slice(0, 5)) {
+                        const peer = teamPulse.find(m => m.sessionId === task.assigneeId);
+                        const peerRole = (peer?.role as string) || 'unknown';
+                        peerTaskLines.push(`  ${peerRole}: ${task.title}`);
+                    }
+                }
+            } catch { /* non-critical */ }
+
+            // Score History
+            let scoreLines: string[] = [];
+            try {
+                const scores = readScores();
+                const myScores = scores.scores
+                    .filter(s => s.sessionId === sessionId)
+                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .slice(0, 3);
+                for (const score of myScores) {
+                    const date = new Date(score.timestamp).toLocaleTimeString();
+                    scoreLines.push(`  ${score.overall}/100 (${date}) ${score.action || ''}`);
+                }
+            } catch { /* non-critical */ }
+
             // Format
             const lines: string[] = [
                 `═══ SELF VIEW ═══`,
@@ -332,6 +371,26 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 const icon = member.status === 'alive' ? '🟢' : member.status === 'suspect' ? '🟡' : '🔴';
                 const staleSec = Math.round((member.lastSeenMs as number || 0) / 1000);
                 lines.push(`  ${icon} ${member.role}${isMe}: ${member.status} (${staleSec}s ago) [${member.runtimeType || '?'}]`);
+            }
+
+            // My Tasks section
+            if (myTaskLines.length > 0) {
+                lines.push('', '[My Tasks]');
+                lines.push(...myTaskLines);
+            } else {
+                lines.push('', '[My Tasks]', '  No tasks assigned');
+            }
+
+            // Score History section
+            if (scoreLines.length > 0) {
+                lines.push('', '[Score History]');
+                lines.push(...scoreLines);
+            }
+
+            // Peer Activity section
+            if (peerTaskLines.length > 0) {
+                lines.push('', '[Peer Activity]');
+                lines.push(...peerTaskLines);
             }
 
             return {

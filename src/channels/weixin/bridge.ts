@@ -120,7 +120,7 @@ export class WeixinBridge implements IMChannel {
   // ── Inbound message handling ────────────────────────────────────────────────
 
   private async handleInbound(raw: any): Promise<void> {
-    if (raw.message_type !== 1) return // only user messages
+    if (raw.message_type === 2) return // skip bot outbound replies
     const senderId: string = raw.from_user_id
     if (!senderId) return
 

@@ -50,6 +50,7 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
   ${chalk.yellow('auth')} [login|logout]      Authentication management
   ${chalk.yellow('connect')} [list|remove|<vendor>] AI vendor API key management
+  ${chalk.yellow('channels')} [status|weixin] WeChat channel management
   ${chalk.yellow('task(s)')} [list|create|update|delete|start|complete|done] Task management
   ${chalk.yellow('team(s)')} [list|show|status|create|members|archive|delete|spawn] Team management
   ${chalk.yellow('agent(s)')} [list|show|create|kill|update|archive|delete|spawn] Agent session management
@@ -80,6 +81,10 @@ ${chalk.bold('Examples:')}
   ${chalk.gray('# Authentication')}
   ${chalk.green('aha auth login')}
   ${chalk.green('aha auth logout')}
+
+  ${chalk.gray('# WeChat channel')}
+  ${chalk.green('aha channels status')}
+  ${chalk.green('aha channels weixin login')}
 
   ${chalk.gray('# Team collaboration')}
   ${chalk.green('aha codex')}
@@ -149,6 +154,18 @@ For command-specific help, run:
     // Handle connect subcommands
     try {
       await handleConnectCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'channels' || subcommand === 'channel') {
+    try {
+      const { handleChannelsCommand } = await import('./commands/channels');
+      await handleChannelsCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {

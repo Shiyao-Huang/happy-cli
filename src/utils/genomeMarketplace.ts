@@ -147,6 +147,31 @@ export function searchMatchesRole(genome: MarketplaceGenomeRecord, roleNames: st
     });
 }
 
+function keepLatestGenomeVersion(genomes: MarketplaceGenomeRecord[]): MarketplaceGenomeRecord[] {
+    const latestByLineage = new Map<string, MarketplaceGenomeRecord>();
+
+    for (const genome of genomes) {
+        const lineageKey = genome.namespace && genome.name
+            ? `${genome.namespace}/${genome.name}`
+            : genome.id;
+        const existing = latestByLineage.get(lineageKey);
+
+        if (!existing) {
+            latestByLineage.set(lineageKey, genome);
+            continue;
+        }
+
+        const existingVersion = typeof existing.version === 'number' ? existing.version : Number.NEGATIVE_INFINITY;
+        const nextVersion = typeof genome.version === 'number' ? genome.version : Number.NEGATIVE_INFINITY;
+
+        if (nextVersion > existingVersion) {
+            latestByLineage.set(lineageKey, genome);
+        }
+    }
+
+    return Array.from(latestByLineage.values());
+}
+
 export function selectBestRatedGenomeCandidate(
     genomes: MarketplaceGenomeRecord[],
     roleNames: string[],
@@ -155,7 +180,7 @@ export function selectBestRatedGenomeCandidate(
     const minScore = options?.minScore ?? 60;
     const minEvaluationCount = options?.minEvaluationCount ?? 3;
 
-    const candidates = genomes
+    const candidates = keepLatestGenomeVersion(genomes)
         .filter((genome) => searchMatchesRole(genome, roleNames))
         .filter((genome) => {
             const feedback = parseMarketplaceFeedbackData(genome.feedbackData);

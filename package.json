@@ -14,7 +14,9 @@
     "aha-v4": "./bin/aha.mjs",
     "aha-v4-mcp": "./bin/aha-mcp.mjs",
     "kanban-v3": "./bin/aha.mjs",
-    "kanban-v3-mcp": "./bin/aha-mcp.mjs"
+    "kanban-v3-mcp": "./bin/aha-mcp.mjs",
+    "aha-v5": "./bin/aha.mjs",
+    "aha-v5-mcp": "./bin/aha-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",

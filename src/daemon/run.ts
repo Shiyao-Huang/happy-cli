@@ -345,10 +345,23 @@ export async function startDaemon(): Promise<void> {
 
       return teamChildren.map(c => {
         const entry = agentMap.get(c.ahaSessionId!);
+        let status: AgentHealthStatus = entry?.status ?? 'alive';
+
+        // PID-aware override: if heartbeat says "dead" but process is still alive,
+        // the agent is idle (no MCP tool calls), not actually dead.
+        if (status === 'dead' && c.pid) {
+          try {
+            process.kill(c.pid, 0); // signal 0 = liveness probe, no-op if alive
+            status = 'suspect'; // Alive process + stale heartbeat = idle, not dead
+          } catch {
+            // PID gone — confirmed dead
+          }
+        }
+
         return {
           sessionId: c.ahaSessionId!,
           role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
-          status: entry?.status ?? 'alive',
+          status,
           lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
           pid: c.pid,
           runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,

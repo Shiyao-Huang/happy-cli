@@ -1,6 +1,6 @@
 /**
  * @module commands/channels
- * @description CLI commands for managing IM channel bridge (WeChat etc.)
+ * @description CLI commands for managing server-backed IM channels (WeChat etc.)
  *
  * Usage:
  *   aha channels status
@@ -10,18 +10,20 @@
  */
 
 import chalk from 'chalk'
-import { daemonPost } from '@/daemon/controlClient'
-import { loginWithQR } from '@/channels/weixin/auth'
-import {
-  deleteWeixinCredentials,
-  loadPushPolicy,
-  loadWeixinCredentials,
-  savePushPolicy,
-  saveWeixinCredentials,
-  setWeixinEnabled,
-} from '@/channels/weixin/config'
+import { pollQRStatus } from '@/channels/weixin/auth'
+import { createApiClient } from './output'
 
-export async function channelsCommand(args: string[]): Promise<void> {
+const QR_REFRESH_MS = 2_000
+const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+
+interface WeixinLoginCredentials {
+  token: string
+  baseUrl: string
+  weixinUserId?: string
+  accountId?: string
+}
+
+export async function handleChannelsCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args
 
   switch (sub) {
@@ -37,26 +39,20 @@ export async function channelsCommand(args: string[]): Promise<void> {
 // ── status ────────────────────────────────────────────────────────────────────
 
 async function channelsStatus(): Promise<void> {
-  const res = await daemonPost('/channels/status', {})
-  const savedCreds = loadWeixinCredentials()
-  const savedPolicy = loadPushPolicy()
-
-  if (res?.error) {
-    if (savedCreds) {
-      console.log(chalk.yellow(`WeChat: ○ Configured locally (daemon offline, policy=${savedPolicy})`))
-    } else {
-      console.log(chalk.gray('WeChat: ○ Not configured'))
-    }
+  const api = await createApiClient()
+  const res = await api.getChannelStatus()
+  const weixin = res?.weixin
+  if (weixin?.connected) {
+    console.log(chalk.green('WeChat: ✅ 已连接'))
+    console.log(chalk.gray(`推送策略: ${weixin.pushPolicy}`))
     return
   }
 
-  const weixin = res?.status?.weixin
-  if (weixin?.connected) {
-    console.log(chalk.green(`WeChat: ✅ Connected (${weixin.pushPolicy ?? 'all'})`))
-  } else if (weixin?.configured || savedCreds) {
-    console.log(chalk.yellow(`WeChat: ○ Configured but disconnected (${weixin?.pushPolicy ?? savedPolicy})`))
+  if (weixin) {
+    console.log(chalk.yellow('WeChat: ⚠️ 已绑定，但当前未建立活动桥接'))
+    console.log(chalk.gray(`推送策略: ${weixin.pushPolicy}`))
   } else {
-    console.log(chalk.gray('WeChat: ○ Not configured'))
+    console.log(chalk.gray('WeChat: ○ 未配置'))
   }
 }
 
@@ -74,59 +70,98 @@ async function weixinCommand(args: string[]): Promise<void> {
 }
 
 async function weixinLogin(): Promise<void> {
+  const api = await createApiClient()
   console.log(chalk.cyan('Starting WeChat QR login...'))
   console.log(chalk.gray('Scan the QR code with your WeChat app'))
   console.log()
 
   try {
-    // Try to use qrcode-terminal for inline display
-    let qrTerminal: any
-    try { qrTerminal = (await import('qrcode-terminal' as any)).default } catch { /* optional dep */ }
-
+    const { default: qrTerminal } = await import('qrcode-terminal')
+    let currentQr = await api.requestWeixinQRCode()
     let qrCount = 0
-    const creds = await loginWithQR(
-      (info) => {
-        if (qrCount > 0) {
-          console.log(chalk.yellow('\n🔄 二维码已刷新，请重新扫码'))
-        }
-        qrCount++
-        if (qrTerminal) {
-          qrTerminal.generate(info.displayUrl, { small: true })
-          console.log()
-          console.log(chalk.gray(`或在微信中打开: ${info.displayUrl}`))
-        } else {
-          console.log(chalk.yellow('在微信中打开以下链接:'))
-          console.log(chalk.cyan(info.displayUrl))
-        }
-        console.log()
-        console.log(chalk.gray('⚠️  必须用微信 iOS 8.0.70+ → 我 → 设置 → 插件 → ClawBot'))
-        console.log(chalk.gray('等待扫码 (二维码约 60 秒后自动刷新)...'))
+    let lastStatus = 'wait'
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS
+
+    while (Date.now() < deadline) {
+      if (qrCount > 0) {
+        console.log(chalk.yellow('\n🔄 二维码已刷新，请重新扫码'))
       }
-    )
+      qrCount++
+      renderQrCode(qrTerminal, currentQr.displayUrl)
+      console.log()
+      console.log(chalk.gray(`或在微信中打开: ${currentQr.displayUrl}`))
+      console.log()
+      console.log(chalk.gray('⚠️  必须用微信 iOS 8.0.70+ → 我 → 设置 → 插件 → ClawBot'))
+      console.log(chalk.gray('等待扫码 (二维码约 60 秒后自动刷新)...'))
 
-    // Save credentials to disk
-    saveWeixinCredentials(creds)
-    setWeixinEnabled(true)
+      while (Date.now() < deadline) {
+        await sleep(QR_REFRESH_MS)
+        const poll = await api.pollWeixinQRCode(currentQr.qrcode)
+        const status = poll.status ?? 'wait'
 
-    // Notify daemon to connect the WeChat bridge with new credentials
-    await daemonPost('/channels/weixin/poll', { qrcode: '__saved__' }).catch(() => { /* daemon may not be running */ })
+        if (status !== lastStatus && status === 'scaned') {
+          console.log(chalk.cyan('\n👀 已扫码，请在微信中确认登录'))
+        }
+        lastStatus = status
 
-    console.log(chalk.green('\n✅ 微信已连接！'))
-    console.log(chalk.gray('在微信给 Bot 发一条消息以激活推送。'))
+        if (status === 'confirmed') {
+          const creds = poll.token && poll.baseUrl
+            ? {
+                token: poll.token,
+                baseUrl: poll.baseUrl,
+                weixinUserId: poll.weixinUserId,
+                accountId: poll.accountId,
+              }
+            : await resolveConfirmedCredentials(currentQr.qrcode)
+
+          await api.bindWeixinChannel(creds)
+          console.log(chalk.green('\n✅ 微信已连接！'))
+          console.log(chalk.gray('后续消息将通过 server 侧微信桥接统一处理。'))
+          return
+        }
+
+        if (status === 'expired') {
+          currentQr = await api.requestWeixinQRCode()
+          break
+        }
+      }
+    }
+
+    throw new Error('Login timed out after 5 minutes')
   } catch (e) {
     console.error(chalk.red(`\n❌ 登录失败: ${e instanceof Error ? e.message : String(e)}`))
     process.exit(1)
   }
 }
 
-async function weixinDisconnect(): Promise<void> {
-  deleteWeixinCredentials()
-  setWeixinEnabled(false)
-  const res = await daemonPost('/channels/weixin/disconnect', {})
-  if (res?.error) {
-    console.log(chalk.yellow('微信本地配置已删除，daemon 当前不可达'))
-    return
+function renderQrCode(
+  qrTerminal: { generate: (text: string, options?: { small?: boolean }) => void },
+  displayUrl: string,
+): void {
+  qrTerminal.generate(displayUrl, { small: true })
+}
+
+async function resolveConfirmedCredentials(qrcode: string): Promise<WeixinLoginCredentials> {
+  const result = await pollQRStatus(qrcode)
+  if (result.status === 'confirmed' && result.credentials) {
+    return {
+      token: result.credentials.token,
+      baseUrl: result.credentials.baseUrl,
+      weixinUserId: result.credentials.userId,
+      accountId: result.credentials.accountId,
+    }
   }
+
+  throw new Error('二维码已确认，但 server /poll 尚未返回绑定凭据，且直连 iLink 补取失败')
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function weixinDisconnect(): Promise<void> {
+  const api = await createApiClient()
+  await api.disconnectWeixinChannel()
   console.log(chalk.yellow('微信频道已断开'))
 }
 
@@ -139,15 +174,13 @@ async function weixinPolicy(policy: string | undefined): Promise<void> {
     console.log('  silent    — 停止推送')
     return
   }
-  savePushPolicy(policy as 'all' | 'important' | 'silent')
-  setWeixinEnabled(true)
-  const res = await daemonPost('/channels/weixin/policy', { pushPolicy: policy })
-  if (res?.error) {
-    console.log(chalk.yellow(`已保存本地推送策略: ${policy}（daemon 当前不可达）`))
-    return
-  }
+
+  const api = await createApiClient()
+  await api.updateWeixinChannelPolicy(policy as 'all' | 'important' | 'silent')
   console.log(chalk.green(`✅ 推送策略已设为: ${policy}`))
 }
+
+export const channelsCommand = handleChannelsCommand
 
 // ── help ──────────────────────────────────────────────────────────────────────
 
