@@ -986,6 +986,7 @@ You are NOT limited to MCP tools for logs. If a log tool is wrong, incomplete, 4
    → Any 🔴 dead or 🟡 suspect agents? They need attention in Phase 2 regardless of log content.
 1a. Call \`read_team_log\` with \`fromCursor: ${teamLogCursor}\`
 1b. Call \`list_team_agents\` to check if there are active agents
+1c. Call \`list_tasks\` with \`showAll: true\` to build the org mirror: todo / in-progress / review / blocked / done, and identify unfinished tasks whose owner is missing or unhealthy
 
 **If \`hasNewContent\` is FALSE AND no active agents exist:**
 ${pendingAction ? `→ There IS a pending action. Execute it now:
@@ -997,6 +998,11 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    - If you want to retire after this idle cycle, emit \`<AHA_LIFECYCLE action="retire" reason="supervisor_idle_complete" />\` on its own line
    - If you want to remain alive and silent, emit \`<AHA_LIFECYCLE action="standby" reason="supervisor_waiting" />\` or emit nothing`}
 
+**If \`hasNewContent\` is FALSE AND no active agents exist BUT unfinished tasks still exist on the board:**
+→ This is NOT an idle team. It is a staffing / death / routing failure.
+   - Proceed to Phase 2
+   - Treat missing owners as a system condition that requires intervention, not as "nothing to do"
+
 **If \`hasNewContent\` is TRUE → proceed to Phase 2.**
 **If \`hasNewContent\` is FALSE BUT active agents exist → proceed to Phase 2.**
 (Agents may be working without producing team messages. Check their CC/Codex logs to verify they are alive and productive.)
@@ -1006,8 +1012,10 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
 ## 🔍 PHASE 2 — FULL ANALYSIS (only when there is new content)
 
 1b. Call \`get_team_pulse\` with your teamId FIRST — this tells you who is alive, suspect, or dead BEFORE reading any logs. Focus log analysis on agents that show 🟡 suspect or 🔴 dead.
-2. Call \`list_team_agents\` first to map each active \`sessionId\` to its \`specId\`
-2b. **READ EACH AGENT'S GENOME SPEC** — For each agent with a specId, call \`list_available_agents\` with query=specId to retrieve the genome spec. Read its \`responsibilities\`, \`protocol\`, \`evalCriteria\`, \`capabilities\`, and \`scopeOfResponsibility\`. These define WHAT THE AGENT SHOULD DO. You cannot evaluate performance without knowing the job description. If no genome spec exists, note this and use the role name as a rough guide.
+2. Call \`list_tasks\` with \`showAll: true\` to build the organization mirror BEFORE reading detailed logs
+2a. For every unfinished task that is blocked, in-progress, or review, call \`get_task(taskId)\` when you need the full handoff / blocker / execution history
+2b. Call \`list_team_agents\` to map each active \`sessionId\` to its \`specId\` and assigned-task summary
+2c. **READ EACH AGENT'S GENOME SPEC** — For each agent with a specId, call \`list_available_agents\` with query=specId to retrieve the genome spec. Read its \`responsibilities\`, \`protocol\`, \`evalCriteria\`, \`capabilities\`, and \`scopeOfResponsibility\`. These define WHAT THE AGENT SHOULD DO. You cannot evaluate performance without knowing the job description. If no genome spec exists, note this and use the role name as a rough guide.
 3. Call \`list_team_runtime_logs\` with the teamId
 4. Treat \`list_team_runtime_logs\` as a helper, not a gate. If it works, use it to map runtime log IDs:
    - Claude → use \`readSessionId\` / \`claudeLocalSessionId\` with \`read_runtime_log(runtimeType:"claude", sessionId:<claudeLocalSessionId>)\`

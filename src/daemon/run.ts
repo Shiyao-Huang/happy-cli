@@ -58,10 +58,11 @@ import {
   stopTeamSessions,
   requestHelp,
   recoverExistingSessions,
+  onHeartbeatPrunedSession,
 } from './sessionManager';
 
 import { runHeartbeatCycle } from './heartbeat';
-import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
+import { runSupervisorCycle } from './supervisorScheduler';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
 // instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
@@ -204,6 +205,11 @@ export async function startDaemon(): Promise<void> {
     requestShutdown('os-signal');
   });
 
+  process.on('SIGHUP', () => {
+    logger.debug('[DAEMON RUN] Received SIGHUP');
+    requestShutdown('os-signal');
+  });
+
   process.on('uncaughtException', (error) => {
     logger.debug('[DAEMON RUN] FATAL: Uncaught exception', error);
     logger.debug(`[DAEMON RUN] Stack trace: ${error.stack}`);
@@ -252,9 +258,13 @@ export async function startDaemon(): Promise<void> {
   // 1. Not have a stale daemon state
   // 2. Should not have another daemon process running
 
+  let stopControlServer: (() => Promise<void>) | null = null;
+  let restartOnStaleVersionAndHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let caffeinateStarted = false;
+
   try {
     // Start caffeinate
-    const caffeinateStarted = startCaffeinate();
+    caffeinateStarted = startCaffeinate();
     if (caffeinateStarted) {
       logger.debug('[DAEMON RUN] Sleep prevention enabled');
     }
@@ -274,6 +284,7 @@ export async function startDaemon(): Promise<void> {
       if (!hb) {
         hb = new AgentHeartbeat(90_000, 60_000); // 90s dead, 60s suspect (daemon checks every 60s)
         hb.startMonitoring(30_000);
+
         teamHeartbeats.set(teamId, hb);
         logger.debug(`[DAEMON RUN] Created heartbeat tracker for team ${teamId}`);
       }
@@ -316,6 +327,7 @@ export async function startDaemon(): Promise<void> {
       lastSeenMs: number;
       pid?: number;
       runtimeType?: string;
+      contextUsedPercent?: number;
     }> => {
       const hb = teamHeartbeats.get(teamId);
       const children = Array.from(pidToTrackedSession.values());
@@ -347,6 +359,7 @@ export async function startDaemon(): Promise<void> {
           lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
           pid: c.pid,
           runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+          contextUsedPercent: entry?.contextUsedPercent,
         };
       });
     };
@@ -358,7 +371,7 @@ export async function startDaemon(): Promise<void> {
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
     // ── Start control server ───────────────────────────────────────────────────
-    const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
+    const { port: controlPort, stop: nextStopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
       stopSession,
       stopTeamSessions,
@@ -367,9 +380,9 @@ export async function startDaemon(): Promise<void> {
       onAhaSessionWebhook,
       getTeamPulse,
       requestHelp,
-      onHeartbeatPing: (sessionId: string, teamId: string, role: string) => {
+      onHeartbeatPing: (sessionId: string, teamId: string, role: string, contextUsedPercent?: number) => {
         const hb = getOrCreateTeamHeartbeat(teamId);
-        hb.ping(sessionId, role, []);
+        hb.ping(sessionId, role, [], contextUsedPercent);
       },
       onClaudeLocalSessionFound: (ahaSessionId, claudeLocalSessionId) => {
         for (const [pid, session] of pidToTrackedSession.entries()) {
@@ -381,6 +394,7 @@ export async function startDaemon(): Promise<void> {
         }
       },
     });
+    stopControlServer = nextStopControlServer;
 
     // Read version from disk (not compiled import) to avoid build/publish desync.
     const diskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
@@ -516,51 +530,59 @@ export async function startDaemon(): Promise<void> {
     // Every heartbeatIntervalMs (default 60s):
     //   1. runHeartbeatCycle — prune stale sessions, version check, write state file
     //   2. runSupervisorCycle — pending action retry, supervisor spawn scheduling
-    const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
+    restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
       }
       heartbeatRunning = true;
 
-      if (process.env.DEBUG) {
-        logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
+      try {
+        if (process.env.DEBUG) {
+          logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
+        }
+
+        if (!machine || !apiMachine) {
+          await tryRegisterMachine('heartbeat');
+        }
+
+        await runHeartbeatCycle({
+          pidToTrackedSession,
+          pingHeartbeat,
+          reportDeadSessions: (ids) => {
+            if (!apiMachine) {
+              return;
+            }
+            apiMachine.reportDeadSessions(ids);
+          },
+          onSessionDied: onHeartbeatPrunedSession,
+          requestShutdown: (source, msg) => requestShutdown(source, msg),
+          startupDiskVersion: diskVersion,
+          fileState,
+          controlPort,
+          heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat!,
+        });
+
+        heartbeatCount++;
+
+        await runSupervisorCycle({
+          pidToTrackedSession,
+          heartbeatCount,
+          supervisorInterval,
+          supervisorTerminateIdleMs,
+          pendingActionBaseRetryMs,
+          heartbeatIntervalMs,
+          credentialsToken: credentials.token,
+          spawnSession,
+          requestHelp,
+        });
+      } catch (error) {
+        logger.warn(
+          '[DAEMON RUN] Heartbeat cycle failed; keeping daemon alive and retrying on the next interval',
+          error instanceof Error ? error.stack || error.message : String(error)
+        );
+      } finally {
+        heartbeatRunning = false;
       }
-
-      if (!machine || !apiMachine) {
-        await tryRegisterMachine('heartbeat');
-      }
-
-      await runHeartbeatCycle({
-        pidToTrackedSession,
-        pingHeartbeat,
-        reportDeadSessions: (ids) => {
-          if (!apiMachine) {
-            return;
-          }
-          apiMachine.reportDeadSessions(ids);
-        },
-        requestShutdown: (source, msg) => requestShutdown(source, msg),
-        startupDiskVersion: diskVersion,
-        fileState,
-        controlPort,
-        heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
-      });
-
-      heartbeatCount++;
-
-      await runSupervisorCycle({
-        pidToTrackedSession,
-        heartbeatCount,
-        supervisorInterval,
-        supervisorTerminateIdleMs,
-        pendingActionBaseRetryMs,
-        heartbeatIntervalMs,
-        credentialsToken: credentials.token,
-        spawnSession,
-        requestHelp,
-      });
-
-      heartbeatRunning = false;
     }, heartbeatIntervalMs);
 
     // ── Cleanup + shutdown ─────────────────────────────────────────────────────
@@ -595,7 +617,9 @@ export async function startDaemon(): Promise<void> {
         logger.warn('[DAEMON RUN] Shutting down in LOCAL-ONLY mode — no remote machine client to update or close.');
       }
 
-      await stopControlServer();
+      if (stopControlServer) {
+        await stopControlServer();
+      }
       await cleanupDaemonState();
       await stopCaffeinate();
       await releaseDaemonLock(daemonLockHandle);
@@ -618,6 +642,29 @@ export async function startDaemon(): Promise<void> {
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
+    if (shutdownForceExitTimer) {
+      clearTimeout(shutdownForceExitTimer);
+      shutdownForceExitTimer = null;
+    }
+    if (restartOnStaleVersionAndHeartbeat) {
+      clearInterval(restartOnStaleVersionAndHeartbeat);
+    }
+    if (stopControlServer) {
+      await stopControlServer().catch((cleanupError) => {
+        logger.debug('[DAEMON RUN][FATAL] Failed to stop control server during startup cleanup', cleanupError);
+      });
+    }
+    await cleanupDaemonState().catch((cleanupError) => {
+      logger.debug('[DAEMON RUN][FATAL] Failed to cleanup daemon state during startup cleanup', cleanupError);
+    });
+    if (caffeinateStarted) {
+      await stopCaffeinate().catch((cleanupError) => {
+        logger.debug('[DAEMON RUN][FATAL] Failed to stop caffeinate during startup cleanup', cleanupError);
+      });
+    }
+    await releaseDaemonLock(daemonLockHandle).catch((cleanupError) => {
+      logger.debug('[DAEMON RUN][FATAL] Failed to release daemon lock during startup cleanup', cleanupError);
+    });
     process.exit(1);
   }
 }

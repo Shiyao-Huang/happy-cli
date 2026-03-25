@@ -144,14 +144,21 @@ export function normalizeGenomeSpecForPublication(input: {
 
     if (input.parentId || input.mutationNote || input.origin) {
         const existingProvenance = specObj.provenance && typeof specObj.provenance === 'object'
-            ? specObj.provenance as Record<string, unknown>
+            ? specObj.provenance as (NonNullable<GenomeSpec['provenance']> & Record<string, unknown>)
             : {};
-        specObj.provenance = {
+        const nextProvenance: NonNullable<GenomeSpec['provenance']> & Record<string, unknown> = {
             ...existingProvenance,
-            ...(input.origin ? { origin: input.origin } : {}),
-            ...(input.parentId ? { parentId: input.parentId } : {}),
-            ...(input.mutationNote !== undefined ? { mutationNote: input.mutationNote || null } : {}),
         };
+        if (input.origin) nextProvenance.origin = input.origin;
+        if (input.parentId) nextProvenance.parentId = input.parentId;
+        if (input.mutationNote !== undefined) {
+            if (input.mutationNote) {
+                nextProvenance.mutationNote = input.mutationNote;
+            } else {
+                delete nextProvenance.mutationNote;
+            }
+        }
+        specObj.provenance = nextProvenance;
     }
 
     return {
