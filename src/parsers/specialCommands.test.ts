@@ -1,31 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCompact, parseClear, parseSpecialCommand } from './specialCommands';
-
-describe('parseCompact', () => {
-    it('should parse /compact command with argument', () => {
-        const result = parseCompact('/compact optimize the code');
-        expect(result.isCompact).toBe(true);
-        expect(result.originalMessage).toBe('/compact optimize the code');
-    });
-
-    it('should parse /compact command without argument', () => {
-        const result = parseCompact('/compact');
-        expect(result.isCompact).toBe(true);
-        expect(result.originalMessage).toBe('/compact');
-    });
-
-    it('should not parse regular messages', () => {
-        const result = parseCompact('hello world');
-        expect(result.isCompact).toBe(false);
-        expect(result.originalMessage).toBe('hello world');
-    });
-
-    it('should not parse messages that contain compact but do not start with /compact', () => {
-        const result = parseCompact('please /compact this');
-        expect(result.isCompact).toBe(false);
-        expect(result.originalMessage).toBe('please /compact this');
-    });
-});
+import { parseClear, parseSpecialCommand } from './specialCommands';
 
 describe('parseClear', () => {
     it('should parse /clear command exactly', () => {
@@ -50,12 +24,6 @@ describe('parseClear', () => {
 });
 
 describe('parseSpecialCommand', () => {
-    it('should detect compact command', () => {
-        const result = parseSpecialCommand('/compact optimize');
-        expect(result.type).toBe('compact');
-        expect(result.originalMessage).toBe('/compact optimize');
-    });
-
     it('should detect clear command', () => {
         const result = parseSpecialCommand('/clear');
         expect(result.type).toBe('clear');
@@ -70,12 +38,9 @@ describe('parseSpecialCommand', () => {
 
     it('should handle edge cases correctly', () => {
         // Test with extra whitespace
-        expect(parseSpecialCommand('  /compact test  ').type).toBe('compact');
         expect(parseSpecialCommand('  /clear  ').type).toBe('clear');
-        
+
         // Test partial matches should not trigger
-        expect(parseSpecialCommand('some /compact text').type).toBeNull();
-        expect(parseSpecialCommand('/compactor').type).toBeNull();
         expect(parseSpecialCommand('/clearing').type).toBeNull();
     });
 });

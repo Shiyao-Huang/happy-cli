@@ -97,16 +97,6 @@ export async function claudeRemote(opts: {
         return;
     }
 
-    // Handle /compact command
-    let isCompactCommand = false;
-    if (specialCommand.type === 'compact') {
-        logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
-        isCompactCommand = true;
-        if (opts.onCompletionEvent) {
-            opts.onCompletionEvent('Compaction started');
-        }
-    }
-
     // Prepare SDK options
     let mode = initial.mode;
     const sdkOptions: Options = {
@@ -190,15 +180,6 @@ export async function claudeRemote(opts: {
             if (message.type === 'result') {
                 updateThinking(false);
                 logger.debug('[claudeRemote] Result received, exiting claudeRemote');
-
-                // Send completion messages
-                if (isCompactCommand) {
-                    logger.debug('[claudeRemote] Compaction completed');
-                    if (opts.onCompletionEvent) {
-                        opts.onCompletionEvent('Compaction completed');
-                    }
-                    isCompactCommand = false;
-                }
 
                 // Send ready event
                 opts.onReady();

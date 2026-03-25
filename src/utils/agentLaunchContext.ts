@@ -90,7 +90,6 @@ export function buildAgentLaunchContext(options: {
             ? '- Help lane: if blocked, call `request_help` with evidence or mention `@help` in team chat with what you tried and what you need.'
             : '- Help lane: if blocked, call `request_help` with evidence instead of waiting silently.',
         '- Context mirror: call `get_context_status` at task start, after loading large context, and before long summaries.',
-        '- Compact rule: if `usedPercent >= 70`, plan `/compact` after the current subtask; if `usedPercent >= 85`, output `/compact` immediately.',
     ];
 
     const existingPrompt = options.existingPrompt?.trim();

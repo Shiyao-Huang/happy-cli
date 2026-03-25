@@ -173,10 +173,15 @@ function formatMessagingBehavior(spec: GenomeSpec): string {
     const authorities = (spec as any).authorities as string[] | undefined;
 
     const hasMessaging = messaging && (messaging.listenFrom !== undefined || messaging.replyMode !== undefined || messaging.receiveUserMessages !== undefined);
-    const hasOnIdle = behavior?.onIdle !== undefined;
+    const hasBehavior = behavior && (
+        behavior.onIdle !== undefined ||
+        behavior.onBlocked !== undefined ||
+        behavior.canSpawnAgents !== undefined ||
+        behavior.requireExplicitAssignment !== undefined
+    );
     const hasAuthorities = Array.isArray(authorities) && authorities.length > 0;
 
-    if (!hasMessaging && !hasOnIdle && !hasAuthorities) return '';
+    if (!hasMessaging && !hasBehavior && !hasAuthorities) return '';
 
     const payload: Record<string, unknown> = {};
     if (hasMessaging) {
@@ -186,8 +191,13 @@ function formatMessagingBehavior(spec: GenomeSpec): string {
             ...(messaging!.receiveUserMessages !== undefined ? { receiveUserMessages: messaging!.receiveUserMessages } : {}),
         };
     }
-    if (hasOnIdle) {
-        payload.behavior = { onIdle: behavior!.onIdle };
+    if (hasBehavior) {
+        payload.behavior = {
+            ...(behavior!.onIdle !== undefined ? { onIdle: behavior!.onIdle } : {}),
+            ...(behavior!.onBlocked !== undefined ? { onBlocked: behavior!.onBlocked } : {}),
+            ...(behavior!.canSpawnAgents !== undefined ? { canSpawnAgents: behavior!.canSpawnAgents } : {}),
+            ...(behavior!.requireExplicitAssignment !== undefined ? { requireExplicitAssignment: behavior!.requireExplicitAssignment } : {}),
+        };
     }
     if (hasAuthorities) {
         payload.authorities = authorities;

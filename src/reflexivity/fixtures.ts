@@ -193,7 +193,6 @@ export function parseSpawnBoundaryContext(text: string): BoundarySnapshot {
         readOnlyDocs: splitCsvLike(extractBulletValue(block, 'Guidance docs are read-only context unless explicitly assigned:'), ','),
         helpLane: inferHelpLaneTokens(extractBulletValue(block, 'Help lane:')),
         contextMirrorRule: extractBulletValue(block, 'Context mirror:'),
-        compactRule: extractBulletValue(block, 'Compact rule:'),
         rawSpawnContext: block || null,
     })
 

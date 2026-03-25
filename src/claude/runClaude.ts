@@ -1104,7 +1104,7 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
      → request_help is supposed to spawn a live help-agent that intervenes directly — verify that it actually happened by checking the team log or roster delta
      → If no help-agent appears, record that as a system failure in your conclusion and set a pending action or take the direct safe intervention path yourself
    - If situation is healthy or improving and all score-triggered interventions are already handled → set pendingAction to null
-   - If situation is critical (agent crashed, blocking the whole team) → call \`compact_agent\`, \`kill_agent\`, or \`replace_agent\` now
+   - If situation is critical (agent crashed, blocking the whole team) → call \`kill_agent\` or \`replace_agent\` now
 11. Call \`save_supervisor_state\` with:
    - updated \`teamLogCursor\`
    - updated \`ccLogCursors\` keyed by \`claudeLocalSessionId\`
@@ -1161,7 +1161,7 @@ When the cycle is complete, choose your own lifecycle explicitly:
 - NEVER pass a Claude Aha sessionId directly to \`read_cc_log\` or \`read_runtime_log(runtimeType:"claude")\`; resolve the \`claudeLocalSessionId\` first
 - NEVER rewind cursors unless a file rotated or truncated; if that happens, mention it explicitly in the conclusion
 - Phase 1 is diff-only and cheap
-- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`compact_agent\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`, \`create_corps\`
+- Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`, \`create_corps\`
 
 </Supervisor_Instructions>`;
                     if (_genomeSpec?.systemPromptSuffix) {
@@ -1193,8 +1193,7 @@ You respond to a specific help request, fix it, then decide whether to retire or
    - If runtime mapping fails, inspect raw log files directly; \`read_cc_log\` is Claude-only compatibility fallback and still requires the Claude local session id, never the Aha session id
 4. Optionally read \`read_team_log\` for the recent coordination context around the help request
 5. Decide intervention:
-   - context_overflow → call \`compact_agent\`
-   - stuck → send guidance or \`compact_agent\`
+   - stuck → send guidance via team message (exception to silence for direct help)
    - error → analyze and suggest fix via team message (exception to silence for direct help)
 6. When you consider the repair complete, emit an explicit lifecycle directive if you want to retire or standby
 
@@ -1395,7 +1394,7 @@ Treat these overrides as team-level additions on top of your default genome/role
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You have been assigned to this team with role: ${role}.
 
-💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. If usage > 85%, output /compact before starting. Your context limit is ${Math.round((resolveContextWindowTokens(currentModel) ?? DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS) / 1000)}K tokens.
+💡 CONTEXT WINDOW: Call \`get_context_status\` at the start of any large task to check how much context you have remaining. Your context limit is ${Math.round((resolveContextWindowTokens(currentModel) ?? DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS) / 1000)}K tokens.
 
 ${teamBootContextSection}
 ${teamOverlaySection}
@@ -1595,28 +1594,6 @@ ${instructions}
 
         const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _genomeSpec ?? undefined, _genomeFeedbackData);
 
-        if (specialCommand.type === 'compact') {
-            logger.debug('[start] Detected /compact command');
-            const enhancedMode: EnhancedMode = {
-                permissionMode: effectivePermissionMode,
-                model: messageModel,
-                fallbackModel: messageFallbackModel,
-                customSystemPrompt: messageCustomSystemPrompt,
-                appendSystemPrompt: composeAppendSystemPrompt(messageAppendSystemPrompt, rolePrompt),
-                allowedTools: messageAllowedTools,
-                disallowedTools: [...(messageDisallowedTools || []), ...roleDisallowedTools]
-            };
-
-            let text = specialCommand.originalMessage || message.content.text;
-            if (currentRole) {
-                text = `[Role: ${currentRole}]\n${text}`;
-            }
-
-            messageQueue.pushIsolateAndClear(text, enhancedMode);
-            logger.debugLargeJson('[start] /compact command pushed to queue:', message);
-            return;
-        }
-
         if (specialCommand.type === 'clear') {
             logger.debug('[start] Detected /clear command');
             const enhancedMode: EnhancedMode = {
@@ -1635,7 +1612,7 @@ ${instructions}
             }
 
             messageQueue.pushIsolateAndClear(text, enhancedMode);
-            logger.debugLargeJson('[start] /compact command pushed to queue:', message);
+            logger.debugLargeJson('[start] /clear command pushed to queue:', message);
             return;
         }
 

@@ -267,7 +267,6 @@ export async function startAhaServer(
             'update_genome_feedback',
             'evolve_genome',
             'update_team_feedback',
-            'compact_agent',
             'kill_agent',
             'archive_session',
             'recover_session',

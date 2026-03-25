@@ -94,6 +94,15 @@ export interface SupervisorState {
     codexSessionCursors: Record<string, number>;
     /** Plain-text summary of last supervisor assessment */
     lastConclusion: string;
+    /** Structured findings from the last supervisor cycle (agent-specific observations) */
+    lastFindings?: Array<{
+        agentSessionId: string;
+        role: string;
+        finding: string;
+        severity: 'low' | 'medium' | 'high';
+    }>;
+    /** Actionable recommendations from the last supervisor cycle */
+    lastRecommendations?: string[];
     /** Session ID of the last supervisor run (for --resume) */
     lastSessionId: string | null;
     /** Whether the team is considered terminated (no new supervisor spawns) */
@@ -142,7 +151,7 @@ function getStatePath(teamId: string): string {
     return join(configuration.ahaHomeDir, 'supervisor', `state-${teamId}.json`);
 }
 
-async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>): Promise<T> {
+async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>): Promise<T | null> {
     const statePath = getStatePath(teamId);
     const lockPath = `${statePath}.lock`;
     const maxAttempts = 50;
@@ -175,7 +184,13 @@ async function withSupervisorStateLock<T>(teamId: string, fn: () => Promise<T>):
     }
 
     if (!handle) {
-        throw new Error(`Failed to acquire supervisor state lock for ${teamId}`);
+        try {
+            const { logger } = await import('@/ui/logger');
+            logger.debug(`[SUPERVISOR STATE] Failed to acquire lock for ${teamId} after ${maxAttempts} attempts — skipping this cycle`);
+        } catch {
+            // Logger unavailable, fall through silently
+        }
+        return null;
     }
 
     try {
@@ -249,8 +264,8 @@ export function markTeamTerminated(teamId: string): void {
 
 export function updateSupervisorRun(
     teamId: string,
-    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'pendingActionMeta' | 'predictions' | 'calibration'>>
-): Promise<SupervisorState> {
+    patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastFindings' | 'lastRecommendations' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'pendingActionMeta' | 'predictions' | 'calibration'>>
+): Promise<SupervisorState | null> {
     return updateSupervisorState(teamId, (state) => ({
         ...state,
         ...patch,
@@ -261,7 +276,7 @@ export function updateSupervisorRun(
 export async function updateSupervisorState(
     teamId: string,
     updater: (state: SupervisorState) => SupervisorState | Promise<SupervisorState>,
-): Promise<SupervisorState> {
+): Promise<SupervisorState | null> {
     return withSupervisorStateLock(teamId, async () => {
         const current = await readSupervisorStateUnlocked(teamId);
         const next = await updater(current);

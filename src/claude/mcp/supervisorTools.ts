@@ -16,7 +16,7 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
  * ## Tools registered
  * - read_team_log, get_context_status, get_self_view, read_cc_log,
  *   score_agent, update_genome_feedback, evolve_genome, update_team_feedback,
- *   compact_agent, kill_agent, archive_session, recover_session,
+ *   kill_agent, archive_session, recover_session,
  *   list_team_runtime_logs, read_runtime_log, list_team_cc_logs,
  *   save_supervisor_state, score_supervisor_self,
  *   tsc_check, restart_daemon, git_diff_summary,
@@ -221,7 +221,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             'Check your own current context window usage and remaining capacity.',
             'Returns real token counts from your CC log (same data ccusage reads).',
             'Call this when starting a large task, or when you suspect you may be approaching the limit.',
-            'If context > 150K, consider outputting /compact to preserve performance.',
         ].join(' '),
         title: 'Get Context Status',
         inputSchema: {
@@ -1925,6 +1924,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             codexHistoryCursor: z.number().optional().describe('Line cursor into ~/.codex/history.jsonl after the last inspected entry'),
             codexSessionCursors: z.record(z.string(), z.number()).optional().describe('Map of Codex session id → next byte offset in ~/.codex/sessions/... transcript files'),
             conclusion: z.string().describe('2-4 sentence plain-text summary of this supervisor cycle findings'),
+            findings: z.array(z.object({
+                agentSessionId: z.string().describe('Session ID of the agent this finding is about'),
+                role: z.string().describe('Role of the agent'),
+                finding: z.string().describe('What was observed'),
+                severity: z.enum(['low', 'medium', 'high']).describe('Impact severity'),
+            })).optional().describe('Structured findings from this cycle (agent-specific observations, persisted for next cycle)'),
+            recommendations: z.array(z.string()).optional().describe('Actionable recommendations from this cycle (persisted for next cycle)'),
             sessionId: z.string().optional().describe('This supervisor session ID (for potential --resume on next run)'),
             teamTerminated: z.boolean().default(false).describe('Set true if the team appears fully done and no further supervision is needed'),
             pendingAction: z.union([
@@ -1981,6 +1987,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     codexHistoryCursor: args.codexHistoryCursor ?? state.codexHistoryCursor,
                     codexSessionCursors: args.codexSessionCursors ?? state.codexSessionCursors,
                     lastConclusion: args.conclusion,
+                    lastFindings: args.findings ?? state.lastFindings,
+                    lastRecommendations: args.recommendations ?? state.lastRecommendations,
                     lastSessionId: args.sessionId ?? state.lastSessionId,
                     terminated: args.teamTerminated,
                     idleRuns: 0,

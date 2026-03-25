@@ -161,20 +161,45 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
         `[HEARTBEAT] Version changed on disk (${startupDiskVersion} → ${currentDiskVersion}), triggering self-restart`
       );
 
-      clearInterval(heartbeatIntervalHandle);
-
       try {
         spawnAhaCLI(['daemon', 'start'], {
           detached: true,
           stdio: 'ignore',
         });
       } catch (error) {
-        logger.debug('[HEARTBEAT] Failed to spawn new daemon', error);
+        logger.debug('[HEARTBEAT] Failed to spawn new daemon — keeping current daemon alive', error);
+        return;
       }
 
-      logger.debug('[HEARTBEAT] Hanging for a bit - waiting for CLI to kill us');
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
-      process.exit(0);
+      // Poll for new daemon to become healthy (write its own state file with a different PID)
+      const maxWaitMs = 15_000;
+      const pollIntervalMs = 500;
+      const startedAt = Date.now();
+      let newDaemonHealthy = false;
+
+      while (Date.now() - startedAt < maxWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        try {
+          const newState = await readDaemonState();
+          if (newState && newState.pid !== process.pid) {
+            // Verify the new daemon PID is actually alive
+            process.kill(newState.pid, 0);
+            newDaemonHealthy = true;
+            logger.debug(`[HEARTBEAT] New daemon (PID ${newState.pid}) is healthy — old daemon exiting`);
+            break;
+          }
+        } catch {
+          // New daemon not ready yet or PID not alive, keep polling
+        }
+      }
+
+      if (newDaemonHealthy) {
+        clearInterval(heartbeatIntervalHandle);
+        process.exit(0);
+      } else {
+        logger.debug('[HEARTBEAT] New daemon failed to start within timeout — keeping current daemon alive');
+        return;
+      }
     }
   }
 

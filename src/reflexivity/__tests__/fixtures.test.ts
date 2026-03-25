@@ -29,7 +29,7 @@ describe('reflexivity fixtures', () => {
     })
 
     it('parses spawn-time boundary context', () => {
-        const parsed = parseSpawnBoundaryContext(`foo\n## Spawn-Time Boundary Context\n- Read first: /repo/SYSTEM.md ; /repo/AGENTS.md\n- Primary write scope: /repo/**\n- Avoid sibling project trees unless explicitly assigned: aha-cli/**, benchmark/**\n- Guidance docs are read-only context unless explicitly assigned: SYSTEM.md, AGENTS.md\n- Help lane: if blocked, call request_help or mention @help in team chat\n- Context mirror: call get_context_status\n- Compact rule: if usedPercent >= 70 then compact`) 
+        const parsed = parseSpawnBoundaryContext(`foo\n## Spawn-Time Boundary Context\n- Read first: /repo/SYSTEM.md ; /repo/AGENTS.md\n- Primary write scope: /repo/**\n- Avoid sibling project trees unless explicitly assigned: aha-cli/**, benchmark/**\n- Guidance docs are read-only context unless explicitly assigned: SYSTEM.md, AGENTS.md\n- Help lane: if blocked, call request_help or mention @help in team chat\n- Context mirror: call get_context_status`)
 
         expect(parsed.readFirst).toEqual(['/repo/SYSTEM.md', '/repo/AGENTS.md'])
         expect(parsed.primaryWriteScope).toBe('/repo/**')
@@ -37,7 +37,6 @@ describe('reflexivity fixtures', () => {
         expect(parsed.readOnlyDocs).toEqual(['SYSTEM.md', 'AGENTS.md'])
         expect(parsed.helpLane).toEqual(['request_help', '@help', 'send_team_message'])
         expect(parsed.contextMirrorRule).toContain('get_context_status')
-        expect(parsed.compactRule).toContain('usedPercent')
     })
 
     it('classifies tool states consistently', () => {

@@ -1,43 +1,12 @@
 /**
  * Supervisor intervention functions for daemon session management.
- * Provides compaction, resume, kill, and health-check capabilities
+ * Provides resume, kill, and health-check capabilities
  * used by the daemon and supervisor MCP tools.
  */
 
 import { logger } from '@/ui/logger';
 import { TrackedSession } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
-
-/**
- * Compact an agent's context by sending /compact command through daemon RPC.
- * For Claude: injects /compact into the session's message queue
- * For Codex: sends /compact through the session's stdin/RPC
- */
-export async function compactAgent(
-    pid: number,
-    session: TrackedSession,
-    daemonHttpPort: number
-): Promise<{ success: boolean; error?: string }> {
-    // POST to http://127.0.0.1:{daemonHttpPort}/session-command
-    // body: { sessionId: session.ahaSessionId, command: '/compact' }
-    // This is a NEW endpoint we'll need on controlServer.
-    // For now, just implement the client side.
-    try {
-        const response = await fetch(`http://127.0.0.1:${daemonHttpPort}/session-command`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                sessionId: session.ahaSessionId,
-                command: '/compact'
-            }),
-            signal: AbortSignal.timeout(10_000),
-        });
-        const result = await response.json() as { success?: boolean; error?: string };
-        return { success: result.success ?? false, error: result.error };
-    } catch (error) {
-        return { success: false, error: String(error) };
-    }
-}
 
 /**
  * Resume a Claude Code agent by killing and restarting with --resume flag.
@@ -189,7 +158,6 @@ export function checkSessionHealth(
         }
 
         // Future: check last activity time from metadata
-        // Future: check session file size for context overflow
     }
 
     return issues;

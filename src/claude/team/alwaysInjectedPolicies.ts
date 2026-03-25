@@ -116,16 +116,6 @@ function buildRuntimeBoundaryAndContextMirrorRules(): SharedOperatingRule[] {
     }
 
     rules.push({
-        title: 'Context Mirror',
-        body: [
-            'Call `get_context_status` when you start a large task, after loading many files/logs, and before long summaries.',
-            'If `usedPercent >= 70`, finish the current subtask and then `/compact`.',
-            'If `usedPercent >= 85`, output `/compact` immediately to preserve performance.',
-            'If a `/context-mirror` skill is available in your runtime, prefer it instead of reinventing the workflow.',
-        ],
-    });
-
-    rules.push({
         title: 'Lifecycle Control',
         body: [
             'You control your own lifecycle. The runtime must not retire you just because you casually mention a completion word.',

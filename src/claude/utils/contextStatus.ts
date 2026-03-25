@@ -30,15 +30,15 @@ function classifyStatus(usedPercent: number | null): { status: string; recommend
 
     if (usedPercent >= 85) {
         return {
-            status: '🔴 CRITICAL — compact now',
-            recommendation: 'Output /compact immediately to avoid context overflow',
+            status: '🔴 CRITICAL — context usage very high',
+            recommendation: 'Context usage is very high — consider wrapping up current task',
         };
     }
 
     if (usedPercent >= 70) {
         return {
-            status: '🟡 HIGH — consider /compact soon',
-            recommendation: 'Plan to /compact after finishing current subtask',
+            status: '🟡 HIGH — monitor context usage',
+            recommendation: 'Context usage is elevated — be mindful of remaining capacity',
         };
     }
 

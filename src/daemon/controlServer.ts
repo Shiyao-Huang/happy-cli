@@ -271,7 +271,7 @@ export function startDaemonControlServer({
       return { ok: true };
     });
 
-    // Send a command to a running session (e.g. /compact)
+    // Send a command to a running session via stdin
     typed.post('/session-command', {
       schema: {
         body: z.object({

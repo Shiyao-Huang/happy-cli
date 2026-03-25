@@ -210,6 +210,11 @@ export async function startDaemon(): Promise<void> {
     requestShutdown('os-signal');
   });
 
+  process.on('SIGHUP', () => {
+    logger.debug('[DAEMON RUN] Received SIGHUP (terminal closed)');
+    requestShutdown('os-signal');
+  });
+
   process.on('uncaughtException', (error) => {
     logger.debug('[DAEMON RUN] FATAL: Uncaught exception', error);
     logger.debug(`[DAEMON RUN] Stack trace: ${error.stack}`);
@@ -607,46 +612,50 @@ export async function startDaemon(): Promise<void> {
       }
       heartbeatRunning = true;
 
-      if (process.env.DEBUG) {
-        logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
+      try {
+        if (process.env.DEBUG) {
+          logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
+        }
+
+        if (!machine || !apiMachine) {
+          await tryRegisterMachine('heartbeat');
+        }
+
+        await runHeartbeatCycle({
+          pidToTrackedSession,
+          pingHeartbeat,
+          reportDeadSessions: (ids) => {
+            if (!apiMachine) {
+              return;
+            }
+            apiMachine.reportDeadSessions(ids);
+          },
+          requestShutdown: (source, msg) => requestShutdown(source, msg),
+          startupDiskVersion: diskVersion,
+          fileState,
+          controlPort,
+          heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
+          teamHeartbeats,
+        });
+
+        heartbeatCount++;
+
+        await runSupervisorCycle({
+          pidToTrackedSession,
+          heartbeatCount,
+          supervisorInterval,
+          supervisorTerminateIdleMs,
+          pendingActionBaseRetryMs,
+          heartbeatIntervalMs,
+          credentialsToken: credentials.token,
+          spawnSession,
+          requestHelp,
+        });
+      } catch (error) {
+        logger.debug('[DAEMON RUN] Error in heartbeat cycle (non-fatal, will retry next tick)', error);
+      } finally {
+        heartbeatRunning = false;
       }
-
-      if (!machine || !apiMachine) {
-        await tryRegisterMachine('heartbeat');
-      }
-
-      await runHeartbeatCycle({
-        pidToTrackedSession,
-        pingHeartbeat,
-        reportDeadSessions: (ids) => {
-          if (!apiMachine) {
-            return;
-          }
-          apiMachine.reportDeadSessions(ids);
-        },
-        requestShutdown: (source, msg) => requestShutdown(source, msg),
-        startupDiskVersion: diskVersion,
-        fileState,
-        controlPort,
-        heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
-        teamHeartbeats,
-      });
-
-      heartbeatCount++;
-
-      await runSupervisorCycle({
-        pidToTrackedSession,
-        heartbeatCount,
-        supervisorInterval,
-        supervisorTerminateIdleMs,
-        pendingActionBaseRetryMs,
-        heartbeatIntervalMs,
-        credentialsToken: credentials.token,
-        spawnSession,
-        requestHelp,
-      });
-
-      heartbeatRunning = false;
     }, heartbeatIntervalMs);
 
     // ── Cleanup + shutdown ─────────────────────────────────────────────────────
@@ -705,6 +714,10 @@ export async function startDaemon(): Promise<void> {
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
+    // Best-effort cleanup so lock/state/caffeinate are not orphaned
+    try { await cleanupDaemonState(); } catch { /* ignore */ }
+    try { await stopCaffeinate(); } catch { /* ignore */ }
+    try { await releaseDaemonLock(daemonLockHandle); } catch { /* ignore */ }
     process.exit(1);
   }
 }

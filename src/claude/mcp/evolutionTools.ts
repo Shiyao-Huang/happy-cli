@@ -47,7 +47,7 @@ The help request will be logged and may trigger a help-agent to assist you. Comm
 - Your context window is getting full (you notice degraded performance)
 - You need a role/skill that doesn't exist on the team yet
 
-The supervisor will see your request and may: send you guidance, compact your context, restart your session, or spawn a helper agent.`,
+The supervisor will see your request and may: send you guidance, restart your session, or spawn a helper agent.`,
         title: 'Request Help',
         inputSchema: {
             type: z.enum(['stuck', 'context_overflow', 'need_collaborator', 'error', 'custom']).describe('Type of help needed'),

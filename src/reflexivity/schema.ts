@@ -215,7 +215,6 @@ export const boundarySnapshotSchema = z.object({
     readOnlyDocs: z.array(z.string()).default([]),
     helpLane: z.array(z.string()).default([]),
     contextMirrorRule: z.string().nullable().default(null),
-    compactRule: z.string().nullable().default(null),
     rawSpawnContext: z.string().nullable().default(null),
 })
 export type BoundarySnapshot = z.infer<typeof boundarySnapshotSchema>
