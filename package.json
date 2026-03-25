@@ -72,7 +72,7 @@
   ],
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started aha",
-    "typecheck": "node --max-old-space-size=8192 ./node_modules/.bin/tsc --noEmit --incremental --tsBuildInfoFile .tsbuildinfo",
+    "typecheck": "node --max-old-space-size=16384 ./node_modules/.bin/tsc --noEmit --skipLibCheck --incremental --tsBuildInfoFile .tsbuildinfo",
     "build": "shx rm -rf dist && pkgroll",
     "build:strict": "yarn typecheck && yarn build",
     "test": "yarn build && tsx --env-file .env.integration-test node_modules/.bin/vitest run",
