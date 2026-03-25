@@ -21,6 +21,7 @@ export class Session {
     sessionId: string | null;
     mode: 'local' | 'remote' = 'local';
     thinking: boolean = false;
+    private _keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 
     constructor(opts: {
         api: ApiClient,
@@ -55,9 +56,19 @@ export class Session {
 
         // Start keep alive
         this.client.keepAlive(this.thinking, this.mode);
-        setInterval(() => {
+        this._keepAliveInterval = setInterval(() => {
             this.client.keepAlive(this.thinking, this.mode);
         }, 2000);
+    }
+
+    /**
+     * Stop the keep-alive interval. Call when the session is no longer needed.
+     */
+    dispose = (): void => {
+        if (this._keepAliveInterval) {
+            clearInterval(this._keepAliveInterval);
+            this._keepAliveInterval = null;
+        }
     }
 
     onThinkingChange = (thinking: boolean) => {

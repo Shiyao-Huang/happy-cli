@@ -27,7 +27,7 @@ import {
   notifyDaemonSessionStarted, 
   stopDaemon
 } from '@/daemon/controlClient';
-import { readDaemonState, clearDaemonState } from '@/persistence';
+import { readDaemonState, clearDaemonState, readDaemonStateRaw } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { getLatestDaemonLog } from '@/ui/logger';
@@ -184,8 +184,11 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   it('should handle daemon stop request gracefully', async () => {    
     await stopDaemonHttp();
 
-    // Verify metadata file is cleaned up
-    await waitFor(async () => !existsSync(configuration.daemonStateFile), 1000);
+    // Verify metadata file is preserved with stopped state (no longer deleted)
+    await waitFor(async () => {
+      const raw = await readDaemonStateRaw();
+      return raw?.state === 'stopped';
+    }, 1000);
   });
 
   it('should track both daemon-spawned and terminal sessions', async () => {

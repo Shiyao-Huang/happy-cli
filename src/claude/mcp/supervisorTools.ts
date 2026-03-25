@@ -52,7 +52,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         api,
         client,
         genomeSpecRef,
-        pingDaemonHeartbeat,
         getDaemonTrackedSessionIds,
         parseBoardFromArtifact,
         triggerHelpLane,
@@ -229,7 +228,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             sessionId: z.string().optional().describe('Session ID to check. Omit to check yourself (uses list_team_cc_logs to find your log).'),
         },
     }, async (args) => {
-        pingDaemonHeartbeat();
+        // pingDaemonHeartbeat() now called automatically via registerTool wrapper in index.ts
         try {
             const report = getContextStatusReport({
                 homeDir: process.env.HOME || '/tmp',
@@ -261,7 +260,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         title: 'Self View (Mirror)',
         inputSchema: {},
     }, async () => {
-        pingDaemonHeartbeat();
+        // pingDaemonHeartbeat() now called automatically via registerTool wrapper in index.ts
         try {
             const meta = client.getMetadata();
             const teamId = meta?.teamId || meta?.roomId;
@@ -637,8 +636,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can score agents.' }], isError: true };
+        // Allow supervisor, help-agent, and master/coordinator roles to score agents.
+        // Master needs this to close the scoring feedback loop when no supervisor
+        // is available (e.g., master cannot spawn supervisor due to genome constraints).
+        // Without this, the entire scoring pipeline is blocked.
+        const scoringAllowedRoles = ['supervisor', 'help-agent', 'master', 'orchestrator', 'org-manager'];
+        if (!role || !scoringAllowedRoles.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor, help-agent, or coordinator roles can score agents.' }], isError: true };
         }
 
         // ── Trace: score_started ────────────────────────────────────
@@ -1212,6 +1216,360 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Network error during promote: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ── Genome Mutation Engine: mutate_genome ─────────────────────────────
+    mcp.registerTool('mutate_genome', {
+        description: [
+            'Apply targeted mutations to a genome spec, creating a new version with origin="mutated".',
+            'Unlike evolve_genome which only merges learnings, this tool can mutate actual behavioral fields:',
+            'protocol, responsibilities, systemPromptSuffix, evalCriteria, etc.',
+            '',
+            'Mutation strategies:',
+            '- conservative: Only modify memory.learnings and systemPromptSuffix. Safe for high-performers.',
+            '- moderate: Can modify protocol[], responsibilities[], evalCriteria[] entries. For average performers.',
+            '- radical: Can rewrite systemPrompt sections, add/remove capabilities. For underperformers needing overhaul.',
+            '',
+            'Each mutation targets a specific field and action (append/replace/remove/rewrite).',
+            'The tool validates mutations against the strategy before applying them.',
+            'Supervisor only.',
+        ].join(' '),
+        title: 'Mutate Genome',
+        inputSchema: {
+            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
+            genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
+            strategy: z.enum(['conservative', 'moderate', 'radical']).describe(
+                'Mutation strategy: conservative (learnings+suffix only), moderate (protocol/responsibilities), radical (full rewrite).'
+            ),
+            mutations: z.array(z.object({
+                field: z.string().describe("Spec field to mutate, e.g. 'protocol', 'responsibilities', 'systemPromptSuffix'."),
+                action: z.enum(['append', 'replace', 'remove', 'rewrite']).describe('Mutation action type.'),
+                index: z.number().optional().describe('For replace/remove: array index to target.'),
+                value: z.string().optional().describe('New value for append/replace/rewrite.'),
+                reason: z.string().describe('Reason for this mutation (traceability).'),
+            })).min(1).max(20).describe('List of targeted mutations to apply.'),
+            newLearnings: z.array(z.string().max(300)).max(10).optional().describe(
+                'Additional learnings to merge into memory.learnings.'
+            ),
+            mutationNote: z.string().max(500).describe('Brief description of what changed and why.'),
+            dryRun: z.boolean().optional().describe('If true, show the mutated spec without persisting.'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can mutate genomes.' }], isError: true };
+        }
+
+        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+
+        // 1. Fetch current genome
+        let genomeRecord: { genome?: { id?: string; spec: string; version?: number; feedbackData?: string | null } };
+        try {
+            const res = await fetch(
+                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
+                { signal: AbortSignal.timeout(5_000) }
+            );
+            if (!res.ok) {
+                return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} not found: ${res.status}` }], isError: true };
+            }
+            genomeRecord = await res.json() as typeof genomeRecord;
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error fetching genome: ${String(error)}` }], isError: true };
+        }
+
+        if (!genomeRecord.genome) {
+            return { content: [{ type: 'text', text: 'Unexpected response from genome-hub.' }], isError: true };
+        }
+
+        let currentSpec: Record<string, unknown>;
+        try {
+            currentSpec = JSON.parse(genomeRecord.genome.spec) as Record<string, unknown>;
+        } catch {
+            return { content: [{ type: 'text', text: 'Failed to parse current genome spec JSON.' }], isError: true };
+        }
+
+        // 2. Validate mutations against strategy
+        const conservativeFields = new Set(['memory', 'systemPromptSuffix']);
+        const moderateFields = new Set([
+            ...conservativeFields, 'protocol', 'responsibilities', 'evalCriteria',
+            'handoffProtocol', 'capabilities',
+        ]);
+        // radical: all fields allowed
+
+        const validationErrors: string[] = [];
+        for (const mutation of args.mutations) {
+            if (args.strategy === 'conservative' && !conservativeFields.has(mutation.field)) {
+                validationErrors.push(
+                    `conservative strategy cannot mutate '${mutation.field}' (allowed: ${[...conservativeFields].join(', ')})`
+                );
+            }
+            if (args.strategy === 'moderate' && !moderateFields.has(mutation.field)) {
+                validationErrors.push(
+                    `moderate strategy cannot mutate '${mutation.field}' (allowed: ${[...moderateFields].join(', ')})`
+                );
+            }
+            if ((mutation.action === 'replace' || mutation.action === 'remove') && mutation.index === undefined) {
+                validationErrors.push(
+                    `mutation on '${mutation.field}' with action '${mutation.action}' requires an index`
+                );
+            }
+            if ((mutation.action === 'append' || mutation.action === 'replace' || mutation.action === 'rewrite') && !mutation.value) {
+                validationErrors.push(
+                    `mutation on '${mutation.field}' with action '${mutation.action}' requires a value`
+                );
+            }
+        }
+
+        if (validationErrors.length > 0) {
+            return {
+                content: [{ type: 'text', text: `Mutation validation failed:\n${validationErrors.join('\n')}` }],
+                isError: true,
+            };
+        }
+
+        // 3. Apply mutations to spec (immutable — create new object)
+        let mutatedSpec = { ...currentSpec };
+
+        for (const mutation of args.mutations) {
+            const fieldValue = mutatedSpec[mutation.field];
+
+            if (mutation.action === 'rewrite') {
+                // Replace the entire field value
+                mutatedSpec = { ...mutatedSpec, [mutation.field]: mutation.value };
+            } else if (Array.isArray(fieldValue)) {
+                const arr = [...fieldValue] as string[];
+                if (mutation.action === 'append' && mutation.value) {
+                    arr.push(mutation.value);
+                } else if (mutation.action === 'replace' && mutation.index !== undefined && mutation.value) {
+                    if (mutation.index >= 0 && mutation.index < arr.length) {
+                        arr[mutation.index] = mutation.value;
+                    }
+                } else if (mutation.action === 'remove' && mutation.index !== undefined) {
+                    if (mutation.index >= 0 && mutation.index < arr.length) {
+                        arr.splice(mutation.index, 1);
+                    }
+                }
+                mutatedSpec = { ...mutatedSpec, [mutation.field]: arr };
+            } else if (typeof fieldValue === 'string' || fieldValue === undefined) {
+                // Scalar string field (like systemPromptSuffix)
+                if (mutation.action === 'append' && mutation.value) {
+                    mutatedSpec = { ...mutatedSpec, [mutation.field]: (fieldValue ?? '') + '\n' + mutation.value };
+                } else if (mutation.action === 'replace' && mutation.value) {
+                    mutatedSpec = { ...mutatedSpec, [mutation.field]: mutation.value };
+                }
+            }
+        }
+
+        // 4. Merge new learnings if provided
+        if (args.newLearnings && args.newLearnings.length > 0) {
+            const existingMemory = (mutatedSpec.memory ?? {}) as Record<string, unknown>;
+            const existingLearnings: string[] = Array.isArray(existingMemory.learnings)
+                ? existingMemory.learnings as string[]
+                : [];
+            const mergedLearnings = Array.from(new Set([...existingLearnings, ...args.newLearnings]));
+            mutatedSpec = {
+                ...mutatedSpec,
+                memory: { ...existingMemory, learnings: mergedLearnings },
+            };
+        }
+
+        // 5. Add mutation metadata to memory
+        const memory = (mutatedSpec.memory ?? {}) as Record<string, unknown>;
+        const iterationGuide = (memory.iterationGuide ?? {}) as Record<string, unknown>;
+        const recentChanges: string[] = Array.isArray(iterationGuide.recentChanges)
+            ? [...iterationGuide.recentChanges as string[]]
+            : [];
+        recentChanges.push(`[${args.strategy}] ${args.mutationNote}`);
+        // Keep only last 10 changes
+        const trimmedChanges = recentChanges.slice(-10);
+        mutatedSpec = {
+            ...mutatedSpec,
+            memory: {
+                ...memory,
+                iterationGuide: { ...iterationGuide, recentChanges: trimmedChanges },
+            },
+        };
+
+        if (args.dryRun) {
+            const mutationSummary = args.mutations.map(m =>
+                `  ${m.action} ${m.field}${m.index !== undefined ? `[${m.index}]` : ''}: ${m.reason}`
+            ).join('\n');
+            return {
+                content: [{
+                    type: 'text',
+                    text: [
+                        `DRY RUN — mutate ${args.genomeNamespace}/${args.genomeName} (${args.strategy})`,
+                        `Mutations applied:`,
+                        mutationSummary,
+                        `Note: ${args.mutationNote}`,
+                        `Mutated spec preview (first 2000 chars):`,
+                        JSON.stringify(mutatedSpec, null, 2).slice(0, 2000),
+                    ].join('\n'),
+                }],
+                isError: false,
+            };
+        }
+
+        // 6. Create mutated genome version via genome-hub
+        try {
+            const res = await fetch(`${hubUrl}/genomes`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
+                },
+                body: JSON.stringify({
+                    namespace: args.genomeNamespace,
+                    name: `${args.genomeName}-mutation-${Date.now()}`,
+                    version: 1,
+                    description: `Mutated from ${args.genomeNamespace}/${args.genomeName}: ${args.mutationNote}`,
+                    spec: JSON.stringify(mutatedSpec),
+                    isPublic: true,
+                    category: 'mutated',
+                    tags: JSON.stringify(['mutated', args.strategy, args.genomeName]),
+                }),
+                signal: AbortSignal.timeout(10_000),
+            });
+
+            if (!res.ok) {
+                const errBody = await res.text();
+                return { content: [{ type: 'text', text: `Failed to create mutated genome: ${res.status} ${errBody}` }], isError: true };
+            }
+
+            const result = await res.json() as { genome?: { id?: string; name?: string; version?: number } };
+            return {
+                content: [{
+                    type: 'text',
+                    text: [
+                        `✅ Mutated ${args.genomeNamespace}/${args.genomeName} (${args.strategy} strategy)`,
+                        `New genome: ${result.genome?.name ?? '?'} v${result.genome?.version ?? '?'}`,
+                        `ID: ${result.genome?.id ?? '?'}`,
+                        `Mutations: ${args.mutations.length} applied`,
+                        `Note: ${args.mutationNote}`,
+                    ].join('\n'),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error creating mutated genome: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ── Version Comparison: compare_genome_versions ───────────────────────
+    mcp.registerTool('compare_genome_versions', {
+        description: [
+            'Compare two versions of a genome to determine which performs better.',
+            'Fetches feedbackData for both versions and computes score deltas across all dimensions.',
+            'Returns a recommendation: keep_newer, rollback_older, or insufficient_data.',
+            'Use this after evolve_genome or mutate_genome to validate that the new version improves performance.',
+            'Supervisor only.',
+        ].join(' '),
+        title: 'Compare Genome Versions',
+        inputSchema: {
+            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
+            genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
+            olderVersion: z.number().optional().describe('Older version number. Defaults to second-to-last.'),
+            newerVersion: z.number().optional().describe('Newer version number. Defaults to latest.'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can compare genome versions.' }], isError: true };
+        }
+
+        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+
+        try {
+            const queryParams = new URLSearchParams();
+            if (args.olderVersion !== undefined) queryParams.set('older', String(args.olderVersion));
+            if (args.newerVersion !== undefined) queryParams.set('newer', String(args.newerVersion));
+
+            const res = await fetch(
+                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/compare?${queryParams.toString()}`,
+                { signal: AbortSignal.timeout(5_000) }
+            );
+
+            if (!res.ok) {
+                const errBody = await res.text();
+                return { content: [{ type: 'text', text: `Compare failed: ${res.status} ${errBody}` }], isError: true };
+            }
+
+            const result = await res.json() as { comparison: Record<string, unknown> };
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify(result.comparison, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error during compare: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ── Rollback: rollback_genome ─────────────────────────────────────────
+    mcp.registerTool('rollback_genome', {
+        description: [
+            'Rollback a genome to a previous version by creating a new version with the older spec.',
+            'Use this when compare_genome_versions shows that a newer version performs worse.',
+            'Creates vN+1 with the spec from the target version, preserving evolution history.',
+            'Adds a rollback learning to memory.learnings for traceability.',
+            'Supervisor only.',
+        ].join(' '),
+        title: 'Rollback Genome',
+        inputSchema: {
+            genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
+            genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
+            targetVersion: z.number().int().min(1).describe('Version number to rollback to.'),
+            reason: z.string().max(256).describe('Reason for the rollback.'),
+        },
+    }, async (args) => {
+        const callerRole = client.getMetadata()?.role;
+        if (callerRole !== 'supervisor') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor can rollback genomes.' }], isError: true };
+        }
+
+        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+
+        try {
+            const res = await fetch(
+                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/rollback`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
+                    },
+                    body: JSON.stringify({
+                        targetVersion: args.targetVersion,
+                        reason: args.reason,
+                    }),
+                    signal: AbortSignal.timeout(10_000),
+                }
+            );
+
+            if (!res.ok) {
+                const errBody = await res.text();
+                return { content: [{ type: 'text', text: `Rollback failed: ${res.status} ${errBody}` }], isError: true };
+            }
+
+            const result = await res.json() as { genome?: { version?: number }; rollback?: Record<string, unknown> };
+            return {
+                content: [{
+                    type: 'text',
+                    text: [
+                        `✅ Rolled back ${args.genomeNamespace}/${args.genomeName}`,
+                        `Restored from v${args.targetVersion} → new v${result.genome?.version ?? '?'}`,
+                        `Reason: ${args.reason}`,
+                    ].join('\n'),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Network error during rollback: ${String(error)}` }], isError: true };
         }
     });
 

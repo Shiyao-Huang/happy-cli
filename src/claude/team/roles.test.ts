@@ -104,19 +104,19 @@ describe('Role Permissions System', () => {
             expect(canSpawnAgents('supervisor', supervisorGenome)).toBe(true);
         });
 
-        it('regression: master with canSpawnAgents=false but authorities=[task.create] can create tasks', () => {
-            // Regression for the @official/master bug:
-            // master has canSpawnAgents:false (correct — spawning is org-manager's job)
-            // but MUST still be able to create tasks via explicit authority.
-            // Without authorities, canCreateTeamTasks() hits the canSpawnAgents proxy and
-            // returns false, blocking master entirely. This test pins the fix.
+        it('regression: master with canSpawnAgents=false but authorities=[task.create] can create tasks AND spawn agents', () => {
+            // Regression fix: master is a coordinator role and MUST be able to spawn agents
+            // to manage team topology (e.g., spawn supervisor for scoring cycle).
+            // Phase 1-3 proved that blocking master from spawning broke the entire
+            // scoring pipeline — no supervisor could be created, scoring data was frozen.
+            // Coordinator roles now always get canSpawnAgents=true regardless of genome flag.
             const masterGenome = {
                 behavior: { canSpawnAgents: false },
                 authorities: ['task.create', 'task.assign', 'task.update.any'],
             } as any;
 
             expect(canCreateTeamTasks('master', masterGenome)).toBe(true);
-            expect(canSpawnAgents('master', masterGenome)).toBe(false);
+            expect(canSpawnAgents('master', masterGenome)).toBe(true);
         });
 
         it('regression: master with no genome at all falls back to coordinator role check', () => {

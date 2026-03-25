@@ -369,15 +369,16 @@ export function query(config: {
     process.on('exit', cleanup)
 
     // Handle process exit
-    const processExitPromise = new Promise<void>((resolve) => {
+    const processExitPromise = new Promise<void>((resolve, reject) => {
         child.on('close', (code) => {
             if (config.options?.abort?.aborted) {
                 query.setError(new AbortError('Claude Code process aborted by user'))
-            }
-            if (code !== 0) {
+                reject(new AbortError('Claude Code process aborted by user'))
+            } else if (code !== 0) {
                 const errMsg = `Claude Code process exited with code ${code}. stderr: ${stderrBuffer.trim().substring(0, 1000) || '(empty)'}`;
                 logger.debug(`[SDK] ${errMsg}`);
                 query.setError(new Error(errMsg))
+                reject(new Error(errMsg))
             } else {
                 resolve()
             }
@@ -396,10 +397,12 @@ export function query(config: {
         }
     })
 
-    // Cleanup on exit
-    processExitPromise.finally(() => {
+    // Cleanup on exit — catch rejection to avoid unhandled promise warning
+    // (errors are already surfaced via query.setError above)
+    processExitPromise.catch(() => {}).finally(() => {
         cleanup()
         config.options?.abort?.removeEventListener('abort', cleanup)
+        process.removeListener('exit', cleanup)
         if (process.env.CLAUDE_SDK_MCP_SERVERS) {
             delete process.env.CLAUDE_SDK_MCP_SERVERS
         }

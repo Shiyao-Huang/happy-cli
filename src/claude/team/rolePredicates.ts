@@ -58,11 +58,15 @@ export function isBootstrapRole(role: string | undefined, genome?: { executionPl
 
 export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
     if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('agent.spawn')) return true;
+    // Coordinator roles (master, orchestrator) must always be able to spawn agents
+    // to manage team topology — genome canSpawnAgents:false should not block them.
+    // This fixes the permission chain where master could not spawn supervisor.
+    if (isCoordinatorRole(role)) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
     // agent-builder genome defines canSpawnAgents:true; add hardcoded fallback for solo/no-genome sessions
     // (genome spec is authoritative when loaded, this fallback covers local dev and direct-chat solo sessions)
     if (role === 'agent-builder') return true;
-    return isBootstrapRole(role) || isCoordinatorRole(role);
+    return isBootstrapRole(role);
 }
 
 export function canCreateTeamTasks(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {

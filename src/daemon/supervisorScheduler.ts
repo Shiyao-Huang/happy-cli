@@ -23,6 +23,7 @@ import axios from 'axios';
 
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
+import { getContextStatusReport } from '@/claude/utils/contextStatus';
 import { TrackedSession } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import {
@@ -33,6 +34,13 @@ import {
   updateSupervisorRun,
   updateSupervisorState,
 } from './supervisorState';
+
+// ── Auto-compact rate limiting ────────────────────────────────────────────────
+
+/** Tracks when each session was last auto-compacted to avoid spamming /compact */
+const autoCompactLastSentAt = new Map<string, number>();
+const AUTO_COMPACT_COOLDOWN_MS = parseInt(process.env.AHA_AUTO_COMPACT_COOLDOWN_MS || '300000', 10);
+const AUTO_COMPACT_THRESHOLD = parseInt(process.env.AHA_AUTO_COMPACT_THRESHOLD || '85', 10);
 
 // ── Context type ───────────────────────────────────────────────────────────────
 
@@ -304,6 +312,68 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       `[SUPERVISOR SCHEDULER] pendingAction retry ${nextRetryCount}/${SUPERVISOR_PENDING_ACTION_MAX_RETRIES} ` +
       `failed for team ${supervisorState.teamId}: ${result.error || 'unknown error'}`
     );
+  }
+
+  // ── Auto-compact: check context usage for tracked sessions ──────────────────
+  // Runs every heartbeat tick. For each non-bypass session with a readable log,
+  // if context usage >= threshold (default 85%), send /compact via stdin.
+  // Rate-limited per session (default 5 min cooldown).
+  {
+    // Clean up stale rate-limit entries for sessions no longer tracked
+    const liveSessionIds = new Set(
+      Array.from(pidToTrackedSession.values())
+        .filter(s => s.ahaSessionId)
+        .map(s => s.ahaSessionId!)
+    );
+    for (const sessionId of autoCompactLastSentAt.keys()) {
+      if (!liveSessionIds.has(sessionId)) {
+        autoCompactLastSentAt.delete(sessionId);
+      }
+    }
+
+    for (const session of pidToTrackedSession.values()) {
+      const meta = session.ahaSessionMetadataFromLocalWebhook;
+      // Skip bypass sessions (supervisor, help-agent handle their own compaction)
+      if (meta?.executionPlane === 'bypass') continue;
+      if (!session.ahaSessionId) {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Auto-compact skipped: session PID ${session.pid} has no ahaSessionId ` +
+          `(role=${meta?.role || 'unknown'}, startedBy=${session.startedBy || 'unknown'})`
+        );
+        continue;
+      }
+      // Skip sessions without writable stdin (externally started)
+      if (!session.childProcess?.stdin || session.childProcess.stdin.destroyed) {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Auto-compact skipped: session ${session.ahaSessionId} has no writable stdin ` +
+          `(role=${meta?.role || 'unknown'}, externally started — cannot send /compact)`
+        );
+        continue;
+      }
+
+      // Rate limit: skip if compacted within cooldown window
+      const lastSent = autoCompactLastSentAt.get(session.ahaSessionId) ?? 0;
+      if (now - lastSent < AUTO_COMPACT_COOLDOWN_MS) continue;
+
+      try {
+        const report = getContextStatusReport({
+          ahaSessionId: session.ahaSessionId,
+          requestedSessionId: session.claudeLocalSessionId,
+          metadata: meta,
+        });
+
+        if (report.usedPercent !== null && report.usedPercent >= AUTO_COMPACT_THRESHOLD) {
+          session.childProcess.stdin.write('/compact\n');
+          autoCompactLastSentAt.set(session.ahaSessionId, now);
+          logger.debug(
+            `[SUPERVISOR SCHEDULER] Auto-compact triggered for session ${session.ahaSessionId} ` +
+            `(role=${meta?.role || 'unknown'}, context ${report.usedPercent}%)`
+          );
+        }
+      } catch {
+        // Log file not found or unreadable — skip silently
+      }
+    }
   }
 
   // ── Supervisor spawn check (every N heartbeats) ─────────────────────────────

@@ -25,6 +25,7 @@ import { writeDaemonState, readDaemonState, DaemonLocallyPersistedState } from '
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { projectPath } from '@/projectPath';
 import { TrackedSession } from './types';
+import { AgentHeartbeat } from '@/claude/team/heartbeat';
 
 // ── Context type ───────────────────────────────────────────────────────────────
 
@@ -45,6 +46,8 @@ export interface HeartbeatContext {
   controlPort: number;
   /** Reference to the setInterval handle so we can clearInterval on self-restart */
   heartbeatIntervalHandle: ReturnType<typeof setInterval>;
+  /** MCP-layer heartbeat trackers per team (for cross-checking zombie sessions) */
+  teamHeartbeats?: Map<string, AgentHeartbeat>;
 }
 
 export interface HeartbeatResult {
@@ -61,10 +64,11 @@ export interface HeartbeatResult {
  *
  * Steps:
  * 1. Prune stale sessions (send signal 0, remove dead PIDs, report to backend)
- * 2. Ping liveness heartbeat for alive sessions
- * 3. Detect disk-version upgrade → spawn new daemon and exit
- * 4. Verify we still own the daemon state file (PID check)
- * 5. Write updated heartbeat timestamp to daemon state file
+ * 2. Cross-check MCP-layer heartbeat for zombie sessions (PID alive but MCP silent)
+ * 3. Ping liveness heartbeat for alive sessions
+ * 4. Detect disk-version upgrade → spawn new daemon and exit
+ * 5. Verify we still own the daemon state file (PID check)
+ * 6. Write updated heartbeat timestamp to daemon state file
  */
 export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<HeartbeatResult> {
   const {
@@ -96,15 +100,50 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     reportDeadSessions(deadSessionIds);
   }
 
-  // ── Step 2: Ping alive sessions ─────────────────────────────────────────────
+  // ── Step 2: Cross-check MCP-layer heartbeat for zombie sessions ────────────
+  // A "zombie" is a session whose PID is alive but Claude has stopped making
+  // MCP tool calls (e.g., context exhausted, session frozen). The MCP-layer
+  // AgentHeartbeat marks these as "dead" after 90s of silence, but previously
+  // this information was never propagated to the backend.
+  const mcpDeadSessionIds: string[] = [];
+  if (ctx.teamHeartbeats) {
+    const alivePids = new Set(
+      Array.from(pidToTrackedSession.values())
+        .filter(s => s.ahaSessionId)
+        .map(s => s.ahaSessionId!)
+    );
+    for (const [, hb] of ctx.teamHeartbeats) {
+      for (const dead of hb.getDeadAgents()) {
+        // Only report if the PID is still alive (true zombie — PID alive, MCP dead)
+        if (alivePids.has(dead.agentId) && !deadSessionIds.includes(dead.agentId)) {
+          mcpDeadSessionIds.push(dead.agentId);
+          logger.debug(
+            `[HEARTBEAT] MCP-layer zombie detected: session ${dead.agentId} (role=${dead.role}) ` +
+            `— PID alive but no MCP activity for ${Math.round(dead.deadForMs / 1000)}s`
+          );
+        }
+      }
+    }
+  }
+  if (mcpDeadSessionIds.length > 0) {
+    reportDeadSessions(mcpDeadSessionIds);
+  }
+
+  // ── Step 3: Ping alive sessions ─────────────────────────────────────────────
   for (const session of pidToTrackedSession.values()) {
     pingHeartbeat(session);
   }
 
-  // ── Step 3: Version drift detection ─────────────────────────────────────────
-  const currentDiskVersion = JSON.parse(
-    readFileSync(join(projectPath(), 'package.json'), 'utf-8')
-  ).version as string;
+  // ── Step 4: Version drift detection ─────────────────────────────────────────
+  let currentDiskVersion: string;
+  try {
+    currentDiskVersion = JSON.parse(
+      readFileSync(join(projectPath(), 'package.json'), 'utf-8')
+    ).version as string;
+  } catch (error) {
+    logger.debug('[HEARTBEAT] Failed to read package.json for version drift detection, skipping', error);
+    currentDiskVersion = startupDiskVersion;
+  }
   const restartMinUptimeMs = parseInt(
     process.env.AHA_DAEMON_VERSION_RESTART_MIN_UPTIME_MS || '120000',
     10
@@ -139,14 +178,14 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     }
   }
 
-  // ── Step 4: PID integrity check ──────────────────────────────────────────────
+  // ── Step 5: PID integrity check ──────────────────────────────────────────────
   const daemonState = await readDaemonState();
   if (daemonState && daemonState.pid !== process.pid) {
     logger.debug('[HEARTBEAT] Somehow a different daemon was started without killing us. We should kill ourselves.');
     requestShutdown('exception', 'A different daemon was started without killing us. We should kill ourselves.');
   }
 
-  // ── Step 5: Write heartbeat timestamp ───────────────────────────────────────
+  // ── Step 6: Write heartbeat timestamp ───────────────────────────────────────
   try {
     const updatedState: DaemonLocallyPersistedState = {
       pid: process.pid,

@@ -34,7 +34,6 @@ export function registerTeamTools(ctx: McpToolContext): void {
         mcp,
         api,
         client,
-        pingDaemonHeartbeat,
         parseVoteDecision,
         containsHelpMention,
         toHelpSeverity,
@@ -365,7 +364,7 @@ Use the \`send_team_message\` tool to communicate with your team members.
             teamId: z.string().describe('Team ID to check pulse for'),
         },
     }, async (args) => {
-        pingDaemonHeartbeat();
+        // pingDaemonHeartbeat() now called automatically via registerTool wrapper in index.ts
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
             return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
         }

@@ -401,6 +401,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // without starting a new session. Only reset parent chain when session ID
         // actually changes (e.g., new session started or /clear command used).
         // See: https://github.com/anthropics/aha-cli/issues/143
+        const MAX_RETRIES = 5;
+        const BASE_BACKOFF_MS = 1000;
+        let retryCount = 0;
+
         let previousSessionId: string | null = null;
         while (!exitReason) {
             logger.debug('[remote]: launch');
@@ -504,7 +508,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                 
                 // Consume one-time Claude flags after spawn
                 session.consumeOneTimeFlags();
-                
+
+                // Normal completion — reset retry count
+                retryCount = 0;
+
                 if (!exitReason && abortController.signal.aborted) {
                     session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 }
@@ -513,8 +520,21 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     ? { message: e.message, name: e.name, stack: e.stack?.split('\n').slice(0, 3).join('\n') }
                     : JSON.stringify(e);
                 logger.debug('[remote]: launch error', errorDetail);
+
+                retryCount++;
                 if (!exitReason) {
                     session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+
+                    if (retryCount >= MAX_RETRIES) {
+                        logger.debug(`[remote]: Max retries (${MAX_RETRIES}) reached after launch errors. Giving up.`);
+                        session.client.sendSessionEvent({ type: 'message', message: `Process failed after ${MAX_RETRIES} retries` });
+                        exitReason = 'exit';
+                        break;
+                    }
+
+                    const backoffMs = BASE_BACKOFF_MS * Math.pow(2, retryCount - 1);
+                    logger.debug(`[remote]: Waiting ${backoffMs}ms before retry ${retryCount}/${MAX_RETRIES}`);
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
                     continue;
                 }
             } finally {

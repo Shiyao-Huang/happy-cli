@@ -56,6 +56,7 @@ import { TrackedSession } from './types';
 import {
   pidToTrackedSession,
   initSessionManagerHeartbeat,
+  initSessionManagerDeadCallback,
   onAhaSessionWebhook,
   spawnSession,
   stopSession,
@@ -66,6 +67,7 @@ import {
 
 import { runHeartbeatCycle } from './heartbeat';
 import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
+import { shouldUsePidHeartbeat } from './heartbeatPolicy';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
 // instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
@@ -287,27 +289,20 @@ export async function startDaemon(): Promise<void> {
 
     /** Ping heartbeat for a session if it belongs to a team.
      *
-     * For established Claude sessions (claudeLocalSessionId is known), we intentionally
-     * skip the daemon-side PID-based ping. Their heartbeat is driven exclusively by MCP
-     * tool calls (via /heartbeat-ping endpoint), which reflects actual Claude activity.
+     * Default behavior is stability-first: PID heartbeat stays enabled even after a
+     * Claude local session is established. The strict MCP-only mode caused active Claude
+     * agents to be declared dead during long reasoning / non-tool phases because many
+     * legitimate execution paths exceed the 90s MCP silence threshold.
      *
-     * Without this guard, zombie sessions — where the Claude session has ended (e.g.
-     * context exhausted) but the wrapper process is still alive — appear permanently
-     * "alive" in get_team_pulse, misleading agents and users. (System constraint #7/#8)
-     *
-     * Codex / open-code sessions have no MCP tool ping, so they keep the PID-based ping.
+     * If we want to experiment with strict zombie detection again, gate it behind
+     * AHA_STRICT_CLAUDE_MCP_HEARTBEAT=true instead of making it the default.
      */
     const pingHeartbeat = (session: TrackedSession) => {
       const meta = session.ahaSessionMetadataFromLocalWebhook;
       const teamId = meta?.teamId || meta?.roomId;
       if (!teamId || !session.ahaSessionId) return;
 
-      // Established Claude sessions: MCP tool calls are the sole heartbeat source.
-      const flavor = meta?.flavor;
-      const isClaude = flavor !== 'codex' && flavor !== 'open-code';
-      if (isClaude && session.claudeLocalSessionId) {
-        return; // Do not mask zombie sessions with PID-alive pings
-      }
+      if (!shouldUsePidHeartbeat(session)) return;
 
       const hb = getOrCreateTeamHeartbeat(teamId);
       hb.ping(session.ahaSessionId, meta?.role || 'unknown', []);
@@ -358,6 +353,13 @@ export async function startDaemon(): Promise<void> {
 
     // Wire heartbeat ping into sessionManager
     initSessionManagerHeartbeat(pingHeartbeat);
+
+    // Wire dead session reporting so onChildExited can notify the backend immediately
+    initSessionManagerDeadCallback((ids) => {
+      if (apiMachine) {
+        apiMachine.reportDeadSessions(ids);
+      }
+    });
 
     // Helper for control server
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
@@ -627,6 +629,7 @@ export async function startDaemon(): Promise<void> {
         fileState,
         controlPort,
         heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat,
+        teamHeartbeats,
       });
 
       heartbeatCount++;

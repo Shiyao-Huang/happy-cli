@@ -252,10 +252,12 @@ function extractText(msg: any): string {
   const parts: string[] = []
   for (const item of items) {
     if (item.type === 1 && item.text_item?.text) parts.push(item.text_item.text)
-    else if (item.type === 2) parts.push('(图片)')
-    else if (item.type === 3) parts.push(item.voice_item?.text ?? '(语音)')
-    else if (item.type === 4) parts.push(`(文件: ${item.file_item?.file_name ?? 'unknown'})`)
-    else if (item.type === 5) parts.push('(视频)')
+    else if (item.type === 2) parts.push(`[图片] ${item.image_item?.url ?? item.image_item?.pic_url ?? '(图片)'}`)
+    else if (item.type === 3) parts.push(item.voice_item?.text ?? item.voice_item?.recognition ?? '(语音)')
+    else if (item.type === 4) parts.push(`[文件] ${item.file_item?.file_name ?? 'unknown'} ${item.file_item?.url ?? ''}`)
+    else if (item.type === 5) parts.push(`[视频] ${item.video_item?.url ?? item.video_item?.thumb_url ?? '(视频)'}`)
+    else if (item.type === 6 || item.link_item) parts.push(`[链接] ${item.link_item?.title ?? ''} ${item.link_item?.url ?? item.link_item?.link ?? ''}`)
+    else if (item.type === 49 || item.app_item) parts.push(`[链接] ${item.app_item?.title ?? item.title ?? ''} ${item.app_item?.url ?? item.url ?? ''}`)
   }
   return parts.join('\n') || '(空消息)'
 }

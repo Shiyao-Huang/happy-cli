@@ -92,6 +92,17 @@ export async function startAhaServer(
             description: "Aha CLI MCP server with chat session management tools",
         });
 
+        // Wrap registerTool to auto-fire heartbeat ping on every MCP tool invocation.
+        // Previously only 3 tools called pingDaemonHeartbeat(), causing agents to appear
+        // "dead" when busy with other tools (send_team_message, score_agent, etc.).
+        const originalRegisterTool = mcp.registerTool.bind(mcp);
+        mcp.registerTool = (name: string, config: any, handler: any) => {
+            return originalRegisterTool(name, config, async (...args: any[]) => {
+                pingDaemonHeartbeat(); // fire-and-forget, debounced 10s
+                return handler(...args);
+            });
+        };
+
         // Build shared helpers from the outer closure variables
         const helpers = buildMcpHelpers(api, client, genomeSpecRef);
 
@@ -261,6 +272,9 @@ export async function startAhaServer(
             'archive_session',
             'recover_session',
             'save_supervisor_state',
+            'restart_daemon',
+            'tsc_check',
+            'git_diff_summary',
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');

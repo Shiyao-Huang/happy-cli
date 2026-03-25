@@ -236,6 +236,19 @@ function pingHeartbeatIfAvailable(session: TrackedSession): void {
   _pingHeartbeat?.(session);
 }
 
+// ── Dead session callback ────────────────────────────────────────────────────
+// Injected from run.ts so onChildExited can report dead sessions immediately
+// rather than waiting for the next heartbeat cycle.
+let _onSessionDead: ((sessionIds: string[]) => void) | null = null;
+
+/**
+ * Wire up the dead session reporting callback from run.ts.
+ * Called once during daemon startup.
+ */
+export function initSessionManagerDeadCallback(fn: (sessionIds: string[]) => void): void {
+  _onSessionDead = fn;
+}
+
 // ── Webhook handler ────────────────────────────────────────────────────────────
 
 /**
@@ -598,8 +611,11 @@ export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnS
 
 // ── Session termination ────────────────────────────────────────────────────────
 
+const SIGKILL_ESCALATION_MS = 5000;
+
 /**
  * Stop a session by its ahaSessionId (or PID-<n> fallback).
+ * Sends SIGTERM first, then escalates to SIGKILL after a timeout.
  * Returns true if found and killed, false if not found.
  */
 export const stopSession = (sessionId: string): boolean => {
@@ -610,22 +626,43 @@ export const stopSession = (sessionId: string): boolean => {
       session.ahaSessionId === sessionId ||
       (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))
     ) {
-      if (session.startedBy === 'daemon' && session.childProcess) {
-        try {
-          session.childProcess.kill('SIGTERM');
-          logger.debug(`[SESSION MANAGER] Sent SIGTERM to daemon-spawned session ${sessionId}`);
-        } catch (error) {
-          logger.debug(`[SESSION MANAGER] Failed to kill session ${sessionId}:`, error);
+      const sendSignal = (signal: NodeJS.Signals) => {
+        if (session.startedBy === 'daemon' && session.childProcess) {
+          try {
+            session.childProcess.kill(signal);
+            logger.debug(`[SESSION MANAGER] Sent ${signal} to daemon-spawned session ${sessionId}`);
+          } catch (error) {
+            logger.debug(`[SESSION MANAGER] Failed to send ${signal} to session ${sessionId}:`, error);
+          }
+        } else {
+          try {
+            process.kill(pid, signal);
+            logger.debug(`[SESSION MANAGER] Sent ${signal} to external session PID ${pid}`);
+          } catch (error) {
+            logger.debug(`[SESSION MANAGER] Failed to send ${signal} to PID ${pid}:`, error);
+          }
         }
-      } else {
-        try {
-          process.kill(pid, 'SIGTERM');
-          logger.debug(`[SESSION MANAGER] Sent SIGTERM to external session PID ${pid}`);
-        } catch (error) {
-          logger.debug(`[SESSION MANAGER] Failed to kill external session PID ${pid}:`, error);
-        }
-      }
+      };
 
+      sendSignal('SIGTERM');
+
+      // Escalate to SIGKILL if process is still alive after timeout
+      setTimeout(() => {
+        try {
+          process.kill(pid, 0); // Check if process is still alive
+          logger.debug(`[SESSION MANAGER] Session ${sessionId} (PID ${pid}) still alive after SIGTERM, sending SIGKILL`);
+          sendSignal('SIGKILL');
+        } catch {
+          // Process already exited — no escalation needed
+        }
+      }, SIGKILL_ESCALATION_MS);
+
+      // Snapshot and report death BEFORE deleting tracking, so the backend
+      // learns about the kill immediately. onChildExited will no-op since
+      // the tracking entry is already gone by the time the 'exit' event fires.
+      if (session.ahaSessionId && _onSessionDead) {
+        _onSessionDead([session.ahaSessionId]);
+      }
       pidToTrackedSession.delete(pid);
       logger.debug(`[SESSION MANAGER] Removed session ${sessionId} from tracking`);
       return true;
@@ -646,6 +683,8 @@ export const stopTeamSessions = (teamId: string): { stopped: number; errors: str
   const errors: string[] = [];
   let stopped = 0;
 
+  const deadSessionIds: string[] = [];
+
   for (const [pid, session] of pidToTrackedSession.entries()) {
     const metadata = session.ahaSessionMetadataFromLocalWebhook;
     const sessionTeamId = metadata?.teamId || metadata?.roomId;
@@ -660,6 +699,9 @@ export const stopTeamSessions = (teamId: string): { stopped: number; errors: str
         } else {
           process.kill(pid, 'SIGTERM');
         }
+        if (session.ahaSessionId) {
+          deadSessionIds.push(session.ahaSessionId);
+        }
         pidToTrackedSession.delete(pid);
         stopped++;
         logger.debug(`[SESSION MANAGER] Stopped team session ${sessionId}`);
@@ -669,6 +711,10 @@ export const stopTeamSessions = (teamId: string): { stopped: number; errors: str
         errors.push(errorMsg);
       }
     }
+  }
+
+  if (deadSessionIds.length > 0 && _onSessionDead) {
+    _onSessionDead(deadSessionIds);
   }
 
   logger.debug(`[SESSION MANAGER] Stopped ${stopped} sessions for team ${teamId}, errors: ${errors.length}`);
@@ -779,6 +825,11 @@ export const requestHelp = async (params: {
  * Removes the exited PID from the tracking map.
  */
 export const onChildExited = (pid: number): void => {
+  const tracked = pidToTrackedSession.get(pid);
   logger.debug(`[SESSION MANAGER] Removing exited process PID ${pid} from tracking`);
   pidToTrackedSession.delete(pid);
+
+  if (tracked?.ahaSessionId && _onSessionDead) {
+    _onSessionDead([tracked.ahaSessionId]);
+  }
 };

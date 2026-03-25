@@ -82,6 +82,10 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         }
 
         // Run local mode
+        const MAX_RETRIES = 5;
+        const BASE_BACKOFF_MS = 1000;
+        let retryCount = 0;
+
         while (true) {
             // If we already have an exit reason, return it
             if (exitReason) {
@@ -111,6 +115,18 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     logger.debug(`[local]: Process exited with code ${exitCode} while resuming session ${session.sessionId}. Clearing session and retrying.`);
                     session.clearSessionId();
                     session.consumeOneTimeFlags();
+
+                    retryCount++;
+                    if (retryCount >= MAX_RETRIES) {
+                        logger.debug(`[local]: Max retries (${MAX_RETRIES}) reached after error exits. Giving up.`);
+                        session.client.sendSessionEvent({ type: 'message', message: `Process failed after ${MAX_RETRIES} retries` });
+                        exitReason = 'exit';
+                        break;
+                    }
+
+                    const backoffMs = BASE_BACKOFF_MS * Math.pow(2, retryCount - 1);
+                    logger.debug(`[local]: Waiting ${backoffMs}ms before retry ${retryCount}/${MAX_RETRIES}`);
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
                     continue;
                 }
 
@@ -118,15 +134,29 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 // For example we don't want to pass --resume flag after first spawn
                 session.consumeOneTimeFlags();
 
-                // Normal exit
+                // Normal exit — reset retry count
+                retryCount = 0;
                 if (!exitReason) {
                     exitReason = 'exit';
                     break;
                 }
             } catch (e) {
                 logger.debug('[local]: launch error', e);
+
+                retryCount++;
                 if (!exitReason) {
                     session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+
+                    if (retryCount >= MAX_RETRIES) {
+                        logger.debug(`[local]: Max retries (${MAX_RETRIES}) reached after launch errors. Giving up.`);
+                        session.client.sendSessionEvent({ type: 'message', message: `Process failed after ${MAX_RETRIES} retries` });
+                        exitReason = 'exit';
+                        break;
+                    }
+
+                    const backoffMs = BASE_BACKOFF_MS * Math.pow(2, retryCount - 1);
+                    logger.debug(`[local]: Waiting ${backoffMs}ms before retry ${retryCount}/${MAX_RETRIES}`);
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
                     continue;
                 } else {
                     break;
@@ -145,6 +175,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         session.queue.setOnMessage(null);
 
         // Cleanup
+        session.dispose();
         await scanner.cleanup();
     }
 

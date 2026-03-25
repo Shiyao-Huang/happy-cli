@@ -67,6 +67,9 @@ export interface DaemonLocallyPersistedState {
   startedWithCliVersion: string;
   lastHeartbeat?: string;
   daemonLogPath?: string;
+  state?: 'running' | 'stopped';
+  stateReason?: string;
+  stoppedAt?: string;
 }
 
 export async function readSettings(): Promise<Settings> {
@@ -297,10 +300,32 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
       return null;
     }
     const content = await readFile(configuration.daemonStateFile, 'utf-8');
-    return JSON.parse(content) as DaemonLocallyPersistedState;
+    const state = JSON.parse(content) as DaemonLocallyPersistedState;
+    // A stopped daemon state is functionally equivalent to no daemon running
+    if (state.state === 'stopped') {
+      return null;
+    }
+    return state;
   } catch (error) {
     // State corrupted somehow :(
     console.error(`[PERSISTENCE] Daemon state file corrupted: ${configuration.daemonStateFile}`, error);
+    return null;
+  }
+}
+
+/**
+ * Read raw daemon state including stopped state.
+ * Unlike readDaemonState, does not filter out stopped daemons.
+ * Used by doctor/diagnostics to see previous daemon state.
+ */
+export async function readDaemonStateRaw(): Promise<DaemonLocallyPersistedState | null> {
+  try {
+    if (!existsSync(configuration.daemonStateFile)) {
+      return null;
+    }
+    const content = await readFile(configuration.daemonStateFile, 'utf-8');
+    return JSON.parse(content) as DaemonLocallyPersistedState;
+  } catch {
     return null;
   }
 }
@@ -313,11 +338,26 @@ export function writeDaemonState(state: DaemonLocallyPersistedState): void {
 }
 
 /**
- * Clean up daemon state file and lock file
+ * Clean up daemon state file and lock file.
+ * Preserves the state file with a 'stopped' marker and reason instead of deleting,
+ * so doctor and cleanup tools can see previous daemon state.
  */
-export async function clearDaemonState(): Promise<void> {
+export async function clearDaemonState(reason?: string): Promise<void> {
   if (existsSync(configuration.daemonStateFile)) {
-    await unlink(configuration.daemonStateFile);
+    try {
+      const content = await readFile(configuration.daemonStateFile, 'utf-8');
+      const previousState = JSON.parse(content) as DaemonLocallyPersistedState;
+      const stoppedState = {
+        ...previousState,
+        state: 'stopped' as const,
+        stateReason: reason || 'graceful_shutdown',
+        stoppedAt: new Date().toISOString(),
+      };
+      writeFileSync(configuration.daemonStateFile, JSON.stringify(stoppedState, null, 2), 'utf-8');
+    } catch {
+      // If state file is corrupted, just remove it
+      await unlink(configuration.daemonStateFile);
+    }
   }
   // Also clean up lock file if it exists (for stale cleanup)
   if (existsSync(configuration.daemonLockFile)) {
