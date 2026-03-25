@@ -200,7 +200,7 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     pingHeartbeat(session);
   }
 
-  // ── Step 3: Version drift detection ─────────────────────────────────────────
+  // ── Step 4: Version drift detection ─────────────────────────────────────────
   const currentDiskVersion = readCurrentDiskVersion(startupDiskVersion);
   const restartMinUptimeMs = parseInt(
     process.env.AHA_DAEMON_VERSION_RESTART_MIN_UPTIME_MS || '120000',

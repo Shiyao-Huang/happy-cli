@@ -142,7 +142,7 @@ export function normalizeGenomeSpecForPublication(input: {
         : [];
     specObj.capabilities = uniqueStrings([...capabilities, ...TEAM_CAPABILITIES]);
 
-    if (input.parentId || input.mutationNote || input.origin) {
+    if (input.parentId !== undefined || input.mutationNote !== undefined || input.origin !== undefined) {
         const existingProvenance = specObj.provenance && typeof specObj.provenance === 'object'
             ? specObj.provenance as (NonNullable<GenomeSpec['provenance']> & Record<string, unknown>)
             : {};

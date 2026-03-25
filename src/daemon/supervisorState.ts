@@ -267,7 +267,7 @@ export function markTeamTerminated(teamId: string): void {
 export function updateSupervisorRun(
     teamId: string,
     patch: Partial<Pick<SupervisorState, 'teamLogCursor' | 'ccLogCursors' | 'codexHistoryCursor' | 'codexSessionCursors' | 'lastConclusion' | 'lastFindings' | 'lastRecommendations' | 'lastSessionId' | 'idleRuns' | 'lastSupervisorPid' | 'pendingAction' | 'pendingActionMeta' | 'predictions' | 'calibration'>>
-): Promise<SupervisorState | null> {
+): Promise<SupervisorState> {
     return updateSupervisorState(teamId, (state) => ({
         ...state,
         ...patch,

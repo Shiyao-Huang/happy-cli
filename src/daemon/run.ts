@@ -67,7 +67,7 @@ import {
 } from './sessionManager';
 
 import { runHeartbeatCycle } from './heartbeat';
-import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
+import { runSupervisorCycle } from './supervisorScheduler';
 import { shouldUsePidHeartbeat } from './heartbeatPolicy';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
@@ -267,6 +267,7 @@ export async function startDaemon(): Promise<void> {
   let stopControlServer: (() => Promise<void>) | null = null;
   let restartOnStaleVersionAndHeartbeat: ReturnType<typeof setInterval> | null = null;
   let caffeinateStarted = false;
+  let channelRouter: ChannelRouter | null = null;
 
   try {
     // Start caffeinate
@@ -391,7 +392,7 @@ export async function startDaemon(): Promise<void> {
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
     // ── Channel router (WeChat IM) ────────────────────────────────────────────
-    const channelRouter = new ChannelRouter(() => api);
+    channelRouter = new ChannelRouter(() => api);
     let weixinBridge: WeixinBridge | null = null;
 
     const connectWeixinFromSavedCreds = async (): Promise<{ success: boolean; error?: string }> => {
@@ -652,7 +653,13 @@ export async function startDaemon(): Promise<void> {
             }
             apiMachine.reportDeadSessions(ids);
           },
+          onSessionDied: onHeartbeatPrunedSession,
+          requestShutdown: (source, msg) => requestShutdown(source, msg),
+          startupDiskVersion: diskVersion,
+          fileState,
+          controlPort,
           heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat!,
+          teamHeartbeats,
         });
 
         heartbeatCount++;
@@ -669,7 +676,10 @@ export async function startDaemon(): Promise<void> {
           requestHelp,
         });
       } catch (error) {
-        logger.debug('[DAEMON RUN] Error in heartbeat cycle (non-fatal, will retry next tick)', error);
+        logger.warn(
+          '[DAEMON RUN] Heartbeat cycle failed; keeping daemon alive and retrying on the next interval',
+          error instanceof Error ? error.stack || error.message : String(error)
+        );
       } finally {
         heartbeatRunning = false;
       }
@@ -707,6 +717,7 @@ export async function startDaemon(): Promise<void> {
         logger.warn('[DAEMON RUN] Shutting down in LOCAL-ONLY mode — no remote machine client to update or close.');
       }
 
+      await channelRouter.destroy();
       if (stopControlServer) {
         await stopControlServer();
       }
@@ -732,10 +743,34 @@ export async function startDaemon(): Promise<void> {
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
-    // Best-effort cleanup so lock/state/caffeinate are not orphaned
-    try { await cleanupDaemonState(); } catch { /* ignore */ }
-    try { await stopCaffeinate(); } catch { /* ignore */ }
-    try { await releaseDaemonLock(daemonLockHandle); } catch { /* ignore */ }
+    if (shutdownForceExitTimer) {
+      clearTimeout(shutdownForceExitTimer);
+      shutdownForceExitTimer = null;
+    }
+    if (restartOnStaleVersionAndHeartbeat) {
+      clearInterval(restartOnStaleVersionAndHeartbeat);
+    }
+    if (stopControlServer) {
+      await stopControlServer().catch((cleanupError) => {
+        logger.debug('[DAEMON RUN][FATAL] Failed to stop control server during startup cleanup', cleanupError);
+      });
+    }
+    if (channelRouter) {
+      await channelRouter.destroy().catch((cleanupError) => {
+        logger.debug('[DAEMON RUN][FATAL] Failed to destroy channel router during startup cleanup', cleanupError);
+      });
+    }
+    await cleanupDaemonState().catch((cleanupError) => {
+      logger.debug('[DAEMON RUN][FATAL] Failed to cleanup daemon state during startup cleanup', cleanupError);
+    });
+    if (caffeinateStarted) {
+      await stopCaffeinate().catch((cleanupError) => {
+        logger.debug('[DAEMON RUN][FATAL] Failed to stop caffeinate during startup cleanup', cleanupError);
+      });
+    }
+    await releaseDaemonLock(daemonLockHandle).catch((cleanupError) => {
+      logger.debug('[DAEMON RUN][FATAL] Failed to release daemon lock during startup cleanup', cleanupError);
+    });
     process.exit(1);
   }
 }

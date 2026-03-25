@@ -1186,18 +1186,22 @@ function scheduleRespawn(session: TrackedSession): void {
  * Removes the exited PID from the tracking map and triggers respawn if eligible.
  */
 export const onChildExited = (pid: number): void => {
-  const session = pidToTrackedSession.get(pid);
+  const tracked = pidToTrackedSession.get(pid);
   logger.debug(`[SESSION MANAGER] Removing exited process PID ${pid} from tracking`);
   pidToTrackedSession.delete(pid);
 
+  if (tracked?.ahaSessionId && _onSessionDead) {
+    _onSessionDead([tracked.ahaSessionId]);
+  }
+
   // Auto-stash uncommitted changes before respawn to prevent code loss
-  if (session && !session.intentionallyStopped) {
-    tryAutoStash(session);
+  if (tracked && !tracked.intentionallyStopped) {
+    tryAutoStash(tracked);
   }
 
   // Attempt auto-respawn for unexpectedly crashed agents
-  if (session && isRespawnEligible(session)) {
-    scheduleRespawn(session);
+  if (tracked && isRespawnEligible(tracked)) {
+    scheduleRespawn(tracked);
   }
 
   // Drain the spawn queue — a slot may have opened up
