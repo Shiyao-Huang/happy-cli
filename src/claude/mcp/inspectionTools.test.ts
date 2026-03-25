@@ -74,6 +74,37 @@ describe('buildEffectivePermissionsReport', () => {
             ]),
         );
     });
+
+    it('grants agent.spawn to legacy @official/master v2 via the compatibility shim', () => {
+        const report = buildEffectivePermissionsReport({
+            sessionId: 'sess-legacy-master',
+            role: 'master',
+            teamId: 'team-legacy',
+            specId: 'cmn2x7oj00003atpevpyhp45k',
+            permissionMode: 'plan',
+            allowedTools: ['list_tasks', 'create_task', 'create_agent'],
+            deniedTools: ['spawn_session'],
+            genomeSpec: {
+                namespace: '@official',
+                name: 'master',
+                baseRoleId: 'master',
+                version: 2,
+                behavior: { canSpawnAgents: false },
+                authorities: ['task.create', 'task.assign', 'task.update.any'],
+            } as any,
+            memberAuthorities: [],
+            teamOverlayAuthorities: [],
+        });
+
+        expect(report.grantedCapabilities).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    capability: 'agent.spawn',
+                    source: 'rolePredicates.canSpawnAgents(master)=true',
+                }),
+            ]),
+        );
+    });
 });
 
 describe('extractTeamConfigSnapshot', () => {

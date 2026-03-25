@@ -125,6 +125,19 @@ describe('Role Permissions System', () => {
             expect(canCreateTeamTasks('master', undefined)).toBe(true);
         });
 
+        it('allows legacy @official/master v2 to keep spawning while teams migrate to the fixed genome', () => {
+            const legacyMasterGenome = {
+                namespace: '@official',
+                name: 'master',
+                baseRoleId: 'master',
+                version: 2,
+                behavior: { canSpawnAgents: false },
+                authorities: ['task.create', 'task.assign', 'task.update.any'],
+            } as any;
+
+            expect(canSpawnAgents('master', legacyMasterGenome)).toBe(true);
+        });
+
         it('should inject live system state steps into the org-manager prompt', () => {
             const prompt = generateRolePrompt({
                 teamId: 'team-123',

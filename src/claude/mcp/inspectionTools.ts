@@ -213,6 +213,17 @@ function buildAgentSpawnDecision(
     }
 
     if (effectiveGenome?.behavior?.canSpawnAgents === false) {
+        if (canSpawnAgents(role, effectiveGenome)) {
+            return {
+                granted: true,
+                decision: {
+                    capability: 'agent.spawn',
+                    source: `rolePredicates.canSpawnAgents(${role})=true`,
+                    reason: 'Granted by legacy compatibility handling in the role predicate.',
+                },
+            };
+        }
+
         return {
             granted: false,
             decision: {

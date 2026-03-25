@@ -70,8 +70,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
         const { effectiveGenome } = teamId
             ? await getCurrentTeamMemberContext(teamId)
             : { effectiveGenome: genomeSpecRef?.current ?? null };
-        const genomeAllows = effectiveGenome?.behavior?.canSpawnAgents;
-        const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role, effectiveGenome);
+        const allowed = canSpawnAgents(role, effectiveGenome);
         if (!allowed) {
             return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent marketplace.' }], isError: true };
         }
@@ -195,9 +194,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 ? await getCurrentTeamMemberContext(teamId)
                 : { effectiveGenome: genomeSpecRef?.current ?? null };
 
-            // Genome spec is authoritative: behavior.canSpawnAgents overrides hardcode.
-            const genomeAllows = effectiveGenome?.behavior?.canSpawnAgents;
-            const allowed = genomeAllows !== undefined ? genomeAllows : canSpawnAgents(role, effectiveGenome);
+            // Centralize spawn permission logic in canSpawnAgents() so legacy
+            // compatibility shims and explicit authorities stay consistent.
+            const allowed = canSpawnAgents(role, effectiveGenome);
             if (!allowed) {
                 return {
                     content: [{

@@ -65,6 +65,29 @@ describe('genomeMarketplace helpers', () => {
         expect(selected?.id).toBe('r2');
     });
 
+    it('ignores stale higher-rated versions from the same lineage and keeps the latest version only', () => {
+        const selected = selectBestRatedGenomeCandidate([
+            {
+                id: 'master-v2',
+                namespace: '@official',
+                name: 'master',
+                version: 2,
+                feedbackData: '{"avgScore":91,"evaluationCount":12}',
+                spawnCount: 20,
+            },
+            {
+                id: 'master-v3',
+                namespace: '@official',
+                name: 'master',
+                version: 3,
+                feedbackData: '{"avgScore":0,"evaluationCount":0}',
+                spawnCount: 0,
+            },
+        ], ['master']);
+
+        expect(selected).toBeNull();
+    });
+
     it('builds corps specs by aggregating duplicate members into counts', () => {
         const corps = buildPublishedCorpsSpec({
             name: 'delivery-squad',

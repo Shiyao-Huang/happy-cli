@@ -26,6 +26,33 @@ import {
     getRoleCollaborators,
 } from './roleConstants';
 
+function isLegacyOfficialMasterSpawnBugGenome(
+    role: string | undefined,
+    genome?: {
+        namespace?: string;
+        name?: string;
+        baseRoleId?: string;
+        version?: number;
+        behavior?: { canSpawnAgents?: boolean };
+    } | null,
+): boolean {
+    if (role !== 'master' && role !== 'orchestrator') {
+        return false;
+    }
+    if (genome?.behavior?.canSpawnAgents !== false) {
+        return false;
+    }
+
+    const namespace = genome?.namespace;
+    const canonicalName = genome?.name ?? genome?.baseRoleId;
+    const version = genome?.version;
+
+    return namespace === '@official'
+        && canonicalName === 'master'
+        && typeof version === 'number'
+        && version <= 2;
+}
+
 // ── Genome-first role classification ─────────────────────────────────────────
 // GenomeSpec is the authority. These hardcoded lists are fallbacks for when
 // no genome is loaded (local dev, legacy agent.json, etc.)
@@ -56,9 +83,29 @@ export function isBootstrapRole(role: string | undefined, genome?: { executionPl
     return false;
 }
 
-export function canSpawnAgents(role: string | undefined, genome?: { behavior?: { canSpawnAgents?: boolean }; authorities?: string[] } | null): boolean {
+export function canSpawnAgents(
+    role: string | undefined,
+    genome?: {
+        namespace?: string;
+        name?: string;
+        baseRoleId?: string;
+        version?: number;
+        behavior?: { canSpawnAgents?: boolean };
+        authorities?: string[];
+    } | null,
+): boolean {
     if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('agent.spawn')) return true;
-    if (genome?.behavior?.canSpawnAgents !== undefined) return genome.behavior.canSpawnAgents;
+    if (genome?.behavior?.canSpawnAgents !== undefined) {
+        if (genome.behavior.canSpawnAgents) {
+            return true;
+        }
+        // Compatibility shim for the bad @official/master v2 seed. Older teams
+        // still carry that spec, but Master is expected to remain spawn-capable.
+        if (isLegacyOfficialMasterSpawnBugGenome(role, genome)) {
+            return true;
+        }
+        return false;
+    }
     // agent-builder genome defines canSpawnAgents:true; add hardcoded fallback for solo/no-genome sessions
     // (genome spec is authoritative when loaded, this fallback covers local dev and direct-chat solo sessions)
     if (role === 'agent-builder') return true;
