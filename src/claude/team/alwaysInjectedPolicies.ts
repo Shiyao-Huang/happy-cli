@@ -232,6 +232,8 @@ export function buildSharedOperatingRulesSection(
     ];
 
     if (orgRules.masterFailover.enabled) {
+        const supervisorOverrideMinutes = orgRules.masterFailover.supervisorOverrideTimeoutMinutes;
+        const bypassRoles = orgRules.delegation.bypassRoleIds;
         rules.push({
             title: 'Master Failover',
             body: [
@@ -242,6 +244,10 @@ export function buildSharedOperatingRulesSection(
                 orgRules.masterFailover.notifyOnFailover
                     ? 'When failover triggers, send a visible team message so everyone sees who is taking temporary coordination responsibility.'
                     : 'Failover does not require an announcement, but you still need to leave evidence in task comments or chat.',
+                `If Master has been silent for ${supervisorOverrideMinutes}+ minutes, Supervisor MUST take control: override pending approvals, unblock agents, and resume team coordination without waiting for Master.`,
+                bypassRoles.length > 0
+                    ? `Roles that may bypass normal approval gates during Master absence: ${bypassRoles.join(', ')}.`
+                    : 'No bypass roles configured — all agents must wait for an available coordinator.',
             ],
         });
     }

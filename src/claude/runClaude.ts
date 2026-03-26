@@ -300,6 +300,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         controlledByUser: options.startingMode !== 'remote'
     }));
 
+    let currentLoopMode: 'local' | 'remote' = options.startingMode ?? 'local';
+    session.keepAlive(false, currentLoopMode);
+    const keepAliveInterval = setInterval(() => {
+        session.keepAlive(false, currentLoopMode);
+    }, 2000);
+
     // Start caffeinate to prevent sleep on macOS
     const caffeinateStarted = startCaffeinate();
     if (caffeinateStarted) {
@@ -1653,6 +1659,7 @@ ${instructions}
         try {
             // Update lifecycle state to archived before closing
             if (session) {
+                clearInterval(keepAliveInterval);
                 session.updateMetadata((currentMetadata) => ({
                     ...currentMetadata,
                     lifecycleState: 'archived',
@@ -1762,6 +1769,8 @@ ${instructions}
             messageQueue,
             api,
             onModeChange: (newMode) => {
+                currentLoopMode = newMode;
+                session.keepAlive(false, currentLoopMode);
                 session.sendSessionEvent({ type: 'switch', mode: newMode });
                 session.updateAgentState((currentState) => ({
                     ...currentState,
@@ -1779,6 +1788,7 @@ ${instructions}
             maxTurns: _maxTurns,
         });
     } finally {
+        clearInterval(keepAliveInterval);
         // Workspace directories are permanent; no cleanup needed.
     }
 

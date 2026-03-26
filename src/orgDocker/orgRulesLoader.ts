@@ -37,6 +37,12 @@ export interface DelegationConfig {
     coordinatorRoles: string[]
     /** Require Master approval before any new task can be started (default: false) */
     requireMasterApprovalForNewTasks: boolean
+    /**
+     * Roles that may bypass normal approval/permission gates when Master is unresponsive.
+     * These roles can act without waiting for Master sign-off during failover scenarios.
+     * (default: ["supervisor", "org-manager"])
+     */
+    bypassRoleIds: string[]
 }
 
 export interface HelpLaneConfig {
@@ -62,6 +68,13 @@ export interface MasterFailoverConfig {
     enabled: boolean
     /** Minutes of Master silence before failover triggers (default: 30) */
     silenceThresholdMinutes: number
+    /**
+     * Minutes of Master silence before Supervisor MUST auto-override and take control.
+     * Sprint 0325 learning: Master was silent 2h+, 13 agents waited 113 min with no
+     * auto-intervention. Set this lower than silenceThresholdMinutes + recovery time.
+     * (default: 60)
+     */
+    supervisorOverrideTimeoutMinutes: number
     /**
      * Action on failover:
      * - "create-continuation-tasks": agents create tasks to unblock themselves
@@ -105,6 +118,7 @@ export const DEFAULT_ORG_RULES: Readonly<OrgRules> = Object.freeze({
         anyAgentCanCreateContinuationTasks: true,
         coordinatorRoles: ['orchestrator', 'master', 'supervisor', 'org-manager'],
         requireMasterApprovalForNewTasks: false,
+        bypassRoleIds: ['supervisor', 'org-manager'],
     }),
     helpLane: Object.freeze({
         autoSpawnHelpAgent: true,
@@ -119,6 +133,7 @@ export const DEFAULT_ORG_RULES: Readonly<OrgRules> = Object.freeze({
     masterFailover: Object.freeze({
         enabled: true,
         silenceThresholdMinutes: 30,
+        supervisorOverrideTimeoutMinutes: 60,
         failoverAction: 'create-continuation-tasks',
         notifyOnFailover: true,
     }),
