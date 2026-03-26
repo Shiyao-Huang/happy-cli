@@ -668,6 +668,23 @@ export async function startDaemon(): Promise<void> {
           spawnSession,
           requestHelp,
         });
+
+        // Step 3: scan all active teams for @help mentions and auto-spawn help-agents
+        const allActiveTeamIds = Array.from(
+          new Set(
+            Array.from(pidToTrackedSession.values())
+              .map(s => s.ahaSessionMetadataFromLocalWebhook?.teamId ?? s.ahaSessionMetadataFromLocalWebhook?.roomId)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        if (allActiveTeamIds.length > 0) {
+          await checkHelpAutoSpawn({
+            activeTeamIds: allActiveTeamIds,
+            sessions: pidToTrackedSession.values(),
+            state: helpAutoSpawnState,
+            requestHelp,
+          });
+        }
       } catch (error) {
         logger.debug('[DAEMON RUN] Error in heartbeat cycle (non-fatal, will retry next tick)', error);
       } finally {
