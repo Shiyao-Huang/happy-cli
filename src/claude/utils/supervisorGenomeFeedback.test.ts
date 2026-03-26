@@ -66,24 +66,10 @@ describe('supervisorGenomeFeedback', () => {
         });
     });
 
-    it('resolves supervisor feedback target via role fallback', () => {
+    it('returns null when only role is provided and fallback is disabled', () => {
         expect(resolveFeedbackUploadTarget({
             role: 'supervisor',
-        })).toEqual({
-            namespace: '@official',
-            name: 'supervisor',
-            source: 'role-fallback',
-        });
-    });
-
-    it('resolves help-agent feedback target via role fallback', () => {
-        expect(resolveFeedbackUploadTarget({
-            role: 'help-agent',
-        })).toEqual({
-            namespace: '@official',
-            name: 'help-agent',
-            source: 'role-fallback',
-        });
+        })).toBeNull();
     });
 
     it('prefers exact scored genome identity when available', () => {
@@ -100,65 +86,47 @@ describe('supervisorGenomeFeedback', () => {
         });
     });
 
-    it('falls back to canonical official role genome when older scores lack spec identity', () => {
+    it('accepts explicit namespace/name when the caller intentionally specifies a target', () => {
         expect(resolveFeedbackUploadTarget({
             role: 'org-manager',
+            specNamespace: '@official',
+            specName: 'org-manager',
         })).toEqual({
             namespace: '@official',
             name: 'org-manager',
-            source: 'role-fallback',
+            source: 'explicit-target',
         });
     });
 
-    it('falls back to canonical official role genome when a spec id exists but namespace/name could not be resolved', () => {
+    it('returns null when spec id exists but namespace/name are unresolved', () => {
         expect(resolveFeedbackUploadTarget({
             role: 'QA Engineer',
             specId: 'genome-qa-1',
-        })).toEqual({
-            namespace: '@official',
-            name: 'qa-engineer',
-            source: 'role-fallback',
-        });
+        })).toBeNull();
     });
 
-    it('normalizes track suffixes and maps scout/builder aliases onto canonical genomes', () => {
-        expect(resolveFeedbackUploadTarget({
-            role: 'researcher (Track A)',
-        })).toEqual({
-            namespace: '@official',
-            name: 'researcher',
-            source: 'role-fallback',
+    it('matches only explicit namespace/name scores when the target has no genome id', () => {
+        const target = resolveFeedbackUploadTarget({
+            role: 'solution-architect',
+            specNamespace: '@official',
+            specName: 'architect',
         });
-        expect(resolveFeedbackUploadTarget({
-            role: 'Framer',
-        })).toEqual({
-            namespace: '@official',
-            name: 'implementer',
-            source: 'role-fallback',
-        });
-    });
-
-    it('matches legacy role-only scores against canonical feedback targets', () => {
-        const target = resolveFeedbackUploadTarget({ role: 'solution-architect' });
         expect(target).not.toBeNull();
-        expect(scoreMatchesFeedbackTarget(
-            makeScore({ role: 'solution-architect' }),
-            target!,
-            'solution-architect',
-        )).toBe(true);
         expect(scoreMatchesFeedbackTarget(
             makeScore({ role: 'architect', specNamespace: '@official', specName: 'architect' }),
             target!,
-            'solution-architect',
         )).toBe(true);
+        expect(scoreMatchesFeedbackTarget(
+            makeScore({ role: 'solution-architect' }),
+            target!,
+        )).toBe(false);
         expect(scoreMatchesFeedbackTarget(
             makeScore({ role: 'master' }),
             target!,
-            'solution-architect',
         )).toBe(false);
     });
 
-    it('keeps counting legacy official-role scores after newer sessions gain explicit spec ids', () => {
+    it('matches only the exact genome id when target is specimen-bound', () => {
         const target = resolveFeedbackUploadTarget({
             role: 'org-manager',
             specId: 'genome-org-manager',
@@ -167,19 +135,16 @@ describe('supervisorGenomeFeedback', () => {
         });
         expect(target).not.toBeNull();
         expect(scoreMatchesFeedbackTarget(
-            makeScore({ role: 'org-manager' }),
-            target!,
-            'org-manager',
-        )).toBe(true);
-        expect(scoreMatchesFeedbackTarget(
             makeScore({ role: 'org-manager', specId: 'genome-org-manager' }),
             target!,
-            'org-manager',
         )).toBe(true);
+        expect(scoreMatchesFeedbackTarget(
+            makeScore({ role: 'org-manager', specNamespace: '@official', specName: 'org-manager' }),
+            target!,
+        )).toBe(false);
         expect(scoreMatchesFeedbackTarget(
             makeScore({ role: 'master' }),
             target!,
-            'org-manager',
         )).toBe(false);
     });
 });

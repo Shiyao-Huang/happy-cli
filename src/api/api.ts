@@ -1601,7 +1601,7 @@ export class ApiClient {
 
   /**
    * Add a member to a team.
-   * Supports M1 extended fields: specId, parentSessionId, executionPlane, runtimeType.
+   * Supports M1 extended fields: candidateId, specId, parentSessionId, executionPlane, runtimeType.
    */
   async addTeamMember(
     teamId: string,
@@ -1611,6 +1611,7 @@ export class ApiClient {
     opts?: {
       memberId?: string;
       sessionTag?: string;
+      candidateId?: string;
       specId?: string;
       parentSessionId?: string;
       executionPlane?: string;
@@ -1620,12 +1621,14 @@ export class ApiClient {
     }
   ): Promise<{ success: boolean; member: any }> {
     try {
+      const candidateId = opts?.candidateId ?? (opts?.specId ? `spec:${opts.specId}` : undefined);
       const body: Record<string, unknown> = {
         sessionId,
         roleId: roleId || 'member',
         displayName,
         ...(opts?.memberId !== undefined && { memberId: opts.memberId }),
         ...(opts?.sessionTag !== undefined && { sessionTag: opts.sessionTag }),
+        ...(candidateId !== undefined && { candidateId }),
         ...(opts?.specId !== undefined && { specId: opts.specId }),
         ...(opts?.parentSessionId !== undefined && { parentSessionId: opts.parentSessionId }),
         ...(opts?.executionPlane !== undefined && { executionPlane: opts.executionPlane }),

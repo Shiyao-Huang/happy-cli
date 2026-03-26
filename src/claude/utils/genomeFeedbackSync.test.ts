@@ -36,7 +36,7 @@ function makeTarget(overrides: Partial<FeedbackUploadTarget> = {}): FeedbackUplo
     return {
         namespace: overrides.namespace ?? '@official',
         name: overrides.name ?? 'implementer',
-        source: overrides.source ?? 'role-fallback',
+        source: overrides.source ?? 'explicit-target',
         ...(overrides.genomeId ? { genomeId: overrides.genomeId } : {}),
     };
 }

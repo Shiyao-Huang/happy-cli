@@ -1,10 +1,13 @@
 import type { GenomeSpec } from '@/api/types/genome';
+import { loadOrgRules, type OrgRules } from '@/orgDocker/orgRulesLoader';
 
 type SharedOperatingRulesOptions = {
     roleKey: string;
     isCoordinator: boolean;
     isBypass: boolean;
     genomeSpec?: GenomeSpec | null;
+    /** Optional org-rules override; if omitted, loaded from ~/.aha/org-rules.json */
+    orgRules?: OrgRules;
 };
 
 type SharedOperatingRule = {
@@ -132,9 +135,47 @@ function buildRuntimeBoundaryAndContextMirrorRules(): SharedOperatingRule[] {
 export function buildSharedOperatingRulesSection(
     options: SharedOperatingRulesOptions
 ): string {
+    const orgRules = options.orgRules ?? loadOrgRules();
+    const blockMinutes = orgRules.escalation.blockThresholdMinutes;
+    const masterSilenceMinutes = orgRules.masterFailover.silenceThresholdMinutes;
     const replacementInstruction = options.isCoordinator || options.isBypass
         ? 'If the team decides to replace an owner, call `replace_agent` to hot-swap the session. You may switch runtime between `claude` and `codex`, and the tool will carry unfinished tasks forward.'
         : 'If the team decides a peer should be replaced, recommend it via `challenge` / `vote`, then wait for Master, Supervisor, or Help Agent to execute `replace_agent`.';
+    const helpLaneBehavior = orgRules.helpLane.autoSpawnHelpAgent
+        ? `Use \`@help\` in team chat when you need live intervention; it is the same escalation lane as \`request_help\`, auto-triggers help-agent spawn, and should include the blocker plus what you already tried. The help lane may reuse up to ${orgRules.helpLane.helpAgentMaxInstances} pooled help-agent instance(s) before spawning more.`
+        : 'Use `@help` in team chat when you need live intervention; it routes into the same escalation lane as `request_help`, but your org currently does not auto-spawn help-agents from chat mentions. Include the blocker plus what you already tried so a coordinator can intervene quickly.';
+    const coordinatorRolesLine = orgRules.delegation.coordinatorRoles.length > 0
+        ? `Coordinator roles for this org: ${orgRules.delegation.coordinatorRoles.join(', ')}.`
+        : null;
+    const taskDelegationLines = [
+        orgRules.delegation.anyAgentCanCreateContinuationTasks
+            ? 'If you unblock yourself by discovering clear continuation work, you may create the follow-up task without waiting for Master to notice.'
+            : 'Do not create continuation tasks on your own; propose them in chat or comments and wait for a coordinator to create them.',
+        orgRules.delegation.requireMasterApprovalForNewTasks
+            ? 'New tasks require Master approval before work starts unless the user explicitly overrides that rule.'
+            : 'New tasks do not require advance Master approval when the need is obvious and evidence-backed.',
+        ...(coordinatorRolesLine ? [coordinatorRolesLine] : []),
+    ];
+    const replacementLines = [
+        replacementInstruction,
+        `Scores below ${orgRules.replacement.autoReplaceThreshold} should trigger an automatic replacement vote or intervention. Scores above ${orgRules.replacement.voteRequiredAboveThreshold} require a visible evidence-backed vote before replacement.`,
+        'Replacement is for bad ownership, repeated blockage, or wrong runtime fit. Keep the scope focused: replace the owner, not the whole plan.',
+    ];
+    const endOfRoundBody = [
+        'After calling `complete_task` or finishing any unit of work, ALWAYS call `list_tasks` immediately to check for new or updated tasks.',
+        'Required workflow: `complete_task` → `list_tasks` → read available tasks → call `get_task(taskId)` on any task you plan to start → `start_task`.',
+        '`list_tasks` only shows the last 20 comments per task. Use `get_task(taskId)` to read the full comment history before starting work on a task with many comments.',
+        'Do not assume you have seen all context — always fetch fresh board state before claiming the next task.',
+    ];
+    if (orgRules.taskGovernance.requireStartBeforeWork) {
+        endOfRoundBody.unshift('Before you begin execution on any assigned task, call `start_task` first so ownership and timing are visible to the team.');
+    }
+    if (orgRules.taskGovernance.lockBeforeBroadcast) {
+        endOfRoundBody.unshift('When you assign or pick up work, lock the task with `start_task` before broadcasting progress so parallel agents do not collide.');
+    }
+    if (orgRules.taskGovernance.endOfRoundChecklistEnabled) {
+        endOfRoundBody.push('This checklist is enforced by org policy; treat it as mandatory, not a suggestion.');
+    }
 
     const rules: SharedOperatingRule[] = [
         {
@@ -150,13 +191,17 @@ export function buildSharedOperatingRulesSection(
                     'Use `get_team_info` and `list_tasks` as your first source of truth before inferring work from files or chat.',
                     'If a task is assigned to you, move it through the task lifecycle visibly instead of working only in discussion threads.',
                     'When you review, hand off, reject, or send work back for rework, leave a task comment so the task carries memory across agents.',
+                    ...taskDelegationLines,
                 ],
         },
         {
             title: 'Help Lane',
             body: [
-                'If you are blocked for roughly 30 minutes, or you hit environment, team-state, routing, connection, or ownership problems, call `request_help` immediately with concrete evidence.',
-                'Use `@help` in team chat when you need live intervention; it is the same escalation lane as `request_help`, auto-triggers help-agent spawn, and should include the blocker plus what you already tried.',
+                `If you are blocked for roughly ${blockMinutes} minutes, or you hit environment, team-state, routing, connection, or ownership problems, call \`request_help\` immediately with concrete evidence.`,
+                helpLaneBehavior,
+                orgRules.helpLane.reuseIdleHelpAgents
+                    ? 'Expect the help lane to prefer reusing an idle help-agent before adding more sessions; keep your report crisp so pooled responders can pick it up fast.'
+                    : 'Your org allows fresh help-agent sessions even when older helpers are idle, so include enough context for a brand-new responder to take over.',
                 'Treat user `@help`, supervisor escalation, and teammate help requests as the same help lane: describe what is broken, what you already tried, and what outcome you need.',
             ],
         },
@@ -176,19 +221,7 @@ export function buildSharedOperatingRulesSection(
         },
         {
             title: 'Replacement Lane',
-            body: [
-                replacementInstruction,
-                'Replacement is for bad ownership, repeated blockage, or wrong runtime fit. Keep the scope focused: replace the owner, not the whole plan.',
-            ],
-        },
-        {
-            title: 'End-of-Round Checklist',
-            body: [
-                'After calling `complete_task` or finishing any unit of work, ALWAYS call `list_tasks` immediately to check for new or updated tasks.',
-                'Required workflow: `complete_task` → `list_tasks` → read available tasks → call `get_task(taskId)` on any task you plan to start → `start_task`.',
-                '`list_tasks` only shows the last 20 comments per task. Use `get_task(taskId)` to read the full comment history before starting work on a task with many comments.',
-                'Do not assume you have seen all context — always fetch fresh board state before claiming the next task.',
-            ],
+            body: replacementLines,
         },
         {
             title: 'Shared File Broadcast',
@@ -197,6 +230,28 @@ export function buildSharedOperatingRulesSection(
             ],
         },
     ];
+
+    if (orgRules.masterFailover.enabled) {
+        rules.push({
+            title: 'Master Failover',
+            body: [
+                `If Master stays silent for roughly ${masterSilenceMinutes} minutes while the board is stalled, treat it as a failover condition.`,
+                orgRules.masterFailover.failoverAction === 'create-continuation-tasks'
+                    ? 'In failover, coordinators should create continuation tasks or explicit recovery tasks instead of waiting in silence.'
+                    : 'In failover, notify the team and surface the blockage clearly instead of silently inventing new work.',
+                orgRules.masterFailover.notifyOnFailover
+                    ? 'When failover triggers, send a visible team message so everyone sees who is taking temporary coordination responsibility.'
+                    : 'Failover does not require an announcement, but you still need to leave evidence in task comments or chat.',
+            ],
+        });
+    }
+
+    if (orgRules.taskGovernance.endOfRoundChecklistEnabled) {
+        rules.push({
+            title: 'End-of-Round Checklist',
+            body: endOfRoundBody,
+        });
+    }
 
     // Inject behavior DNA from genome (Tier 7)
     const behaviorRules = buildBehaviorDnaRules(options.genomeSpec);

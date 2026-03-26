@@ -1,4 +1,5 @@
 import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver'
+import type { RunEnvelope } from '@/daemon/runEnvelope'
 /**
  * @module supervisorTools
  * @description MCP tool registrations for supervisor-only monitoring, scoring, and evolution.
@@ -36,6 +37,7 @@ import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorGenomeFeedback';
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
+import { projectSelfMirrorIdentity } from '../utils/runEnvelopeMirror';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
 import { getContextStatusReport } from '../utils/contextStatus';
 import { fetchGenomeSpec } from '../utils/fetchGenome';
@@ -340,19 +342,30 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const role = meta?.role || 'unknown';
             const sessionId = meta?.ahaSessionId || client.sessionId;
             const specId = meta?.specId || process.env.AHA_SPEC_ID || null;
+            let envelope: RunEnvelope | null = null;
+            try {
+                const { readRunEnvelope } = await import('@/daemon/runEnvelope');
+                envelope = await readRunEnvelope(sessionId);
+            } catch { /* non-fatal */ }
 
             // ── WHO AM I ──────────────────────────────────────────────────
             const genomeSpec = genomeSpecRef?.current;
-            const identity = {
+            const projectedIdentity = projectSelfMirrorIdentity({
                 sessionId,
                 role,
-                candidateId: meta?.candidateId || (specId ? `spec:${specId}` : null),
-                specId,
+                metaCandidateId: meta?.candidateId || null,
+                metaSpecId: specId,
+                metaMemberId: meta?.memberId || null,
+                metaExecutionPlane: genomeSpec?.executionPlane || meta?.executionPlane || 'mainline',
+                metaRuntimeType: meta?.flavor || null,
+                envelope,
+            });
+            const identity = {
+                ...projectedIdentity,
                 genomeName: genomeSpec?.displayName || genomeSpec?.name || role,
                 genomeDescription: genomeSpec?.description || 'No genome loaded',
                 responsibilities: genomeSpec?.responsibilities || [],
                 capabilities: genomeSpec?.capabilities || [],
-                executionPlane: genomeSpec?.executionPlane || meta?.executionPlane || 'mainline',
             };
 
             // Behavior & messaging DNA
@@ -376,10 +389,10 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
             // ── HOW AM I DOING (genome-hub feedback) ──────────────────────
             let performanceSection: string[] = [];
-            if (specId) {
+            if (identity.specId) {
                 try {
                     const { fetchGenomeFeedbackData } = await import('@/claude/utils/fetchGenome');
-                    const feedbackRaw = await fetchGenomeFeedbackData(client.getAuthToken(), specId);
+                    const feedbackRaw = await fetchGenomeFeedbackData(client.getAuthToken(), identity.specId);
                     if (feedbackRaw) {
                         const feedback = JSON.parse(feedbackRaw) as {
                             avgScore?: number;
@@ -483,7 +496,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 `  Description: ${identity.genomeDescription}`,
                 identity.candidateId ? `  Candidate: ${identity.candidateId}` : '',
                 identity.specId ? `  Spec ID: ${identity.specId}` : '',
+                identity.memberId ? `  Member ID: ${identity.memberId}` : '',
+                identity.runId ? `  Run ID: ${identity.runId}` : '',
+                identity.runStatus ? `  Run Status: ${identity.runStatus}` : '',
+                identity.runtimeType ? `  Runtime: ${identity.runtimeType}` : '',
                 `  Execution Plane: ${identity.executionPlane}`,
+                identity.spawnedAt ? `  Spawned At: ${identity.spawnedAt}` : '',
                 identity.responsibilities.length > 0 ? `  Responsibilities: ${identity.responsibilities.join('; ')}` : '',
                 identity.capabilities.length > 0 ? `  Capabilities: ${identity.capabilities.join(', ')}` : '',
                 `  Session: ${identity.sessionId}`,

@@ -47,6 +47,7 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
     specId?: string
 }): Promise<{ registered: boolean; alreadyPresent: boolean }> {
     const { api, teamId, sessionId, role, metadata, taskStateManager, specId } = opts
+    const candidateId = metadata.candidateId || process.env.AHA_CANDIDATE_ID || (specId || process.env.AHA_SPEC_ID ? `spec:${specId || process.env.AHA_SPEC_ID}` : undefined)
 
     if (!teamId || !sessionId || !role) {
         return { registered: false, alreadyPresent: false }
@@ -77,6 +78,7 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
             {
                 memberId: metadata.memberId,
                 sessionTag: metadata.sessionTag,
+                candidateId,
                 specId: specId || process.env.AHA_SPEC_ID || undefined,
                 executionPlane: metadata.executionPlane,
                 runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',

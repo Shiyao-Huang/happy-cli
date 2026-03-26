@@ -1,7 +1,6 @@
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { AggregatedFeedback } from './feedbackPrivacy';
 import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
-import { getCanonicalGenomeTargetForRole } from './supervisorGenomeFeedback';
 import { configuration } from '@/configuration';
 
 type FetchResponseLike = {
@@ -160,13 +159,12 @@ export function normalizeFeedbackProxyBaseUrl(serverUrl: string): string {
     }
 }
 
-function canAutoCreateOfficialTarget(target: FeedbackUploadTarget, role: string): boolean {
-    const canonical = getCanonicalGenomeTargetForRole(role);
-    if (!canonical) {
+function canAutoCreateOfficialTarget(target: FeedbackUploadTarget): boolean {
+    if (target.namespace !== '@official') {
         return false;
     }
 
-    return canonical.namespace === target.namespace && canonical.name === target.name;
+    return ROLE_PLACEHOLDERS.has(target.name);
 }
 
 function buildPlaceholderGenomeBody(target: FeedbackUploadTarget, role: string): string {
@@ -317,7 +315,7 @@ export async function syncGenomeFeedbackToMarketplace(args: {
         };
     }
 
-    if (response.status !== 404 || !canAutoCreateOfficialTarget(args.target, args.role)) {
+    if (response.status !== 404 || !canAutoCreateOfficialTarget(args.target)) {
         return {
             ok: false,
             status: response.status,

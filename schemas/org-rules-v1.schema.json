@@ -1,0 +1,168 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://aha.engineering/schemas/org-rules-v1",
+  "title": "OrgRules",
+  "description": "L2 Org Docker config — team-level escalation, delegation, and governance policies. JSON config-driven = LLM-evolvable via evolve_genome.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version",
+      "default": "1"
+    },
+    "escalation": {
+      "type": "object",
+      "description": "Escalation thresholds",
+      "properties": {
+        "masterSilenceThresholdMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480,
+          "default": 30,
+          "description": "Minutes of Master silence before lower-layer agents MUST act (observer trap prevention)"
+        },
+        "blockThresholdMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480,
+          "default": 30,
+          "description": "Minutes blocked before an agent MUST call request_help"
+        },
+        "approvalTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 60,
+          "description": "Minutes before a stale approval request is escalated"
+        },
+        "autoEscalateOnIdleBoard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-escalate when board is empty and agents appear idle"
+        }
+      },
+      "additionalProperties": false
+    },
+    "delegation": {
+      "type": "object",
+      "description": "Task delegation rules",
+      "properties": {
+        "anyAgentCanCreateContinuationTasks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Any agent can create continuation tasks without Master approval (Master auto-continuation rule)"
+        },
+        "coordinatorRoles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["orchestrator", "master", "supervisor", "org-manager"],
+          "description": "Roles treated as coordinators with elevated task management permissions"
+        },
+        "requireMasterApprovalForNewTasks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require Master approval before any new task can be started"
+        }
+      },
+      "additionalProperties": false
+    },
+    "helpLane": {
+      "type": "object",
+      "description": "Help lane configuration",
+      "properties": {
+        "autoSpawnHelpAgent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically spawn help-agent on @help mention"
+        },
+        "helpAgentMaxInstances": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2,
+          "description": "Max concurrent help-agent instances (pool size)"
+        },
+        "reuseIdleHelpAgents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse idle help-agents instead of spawning new ones (prevents help-agent bloat)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "taskGovernance": {
+      "type": "object",
+      "description": "Kanban task lifecycle governance",
+      "properties": {
+        "lockBeforeBroadcast": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lock task via start_task before broadcasting assignment to agents (prevents double-execution)"
+        },
+        "requireStartBeforeWork": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require start_task call before any work begins"
+        },
+        "endOfRoundChecklistEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enforce end-of-round checklist (list_tasks after complete_task)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "masterFailover": {
+      "type": "object",
+      "description": "Master failover detection and recovery",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic Master failover detection"
+        },
+        "silenceThresholdMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 480,
+          "default": 30,
+          "description": "Minutes of Master silence before failover triggers"
+        },
+        "failoverAction": {
+          "type": "string",
+          "enum": ["create-continuation-tasks", "notify-only"],
+          "default": "create-continuation-tasks",
+          "description": "Action on failover: create continuation tasks or just notify"
+        },
+        "notifyOnFailover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify the team when failover is triggered"
+        }
+      },
+      "additionalProperties": false
+    },
+    "replacement": {
+      "type": "object",
+      "description": "Agent replacement thresholds",
+      "properties": {
+        "autoReplaceThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 60,
+          "description": "Score below this triggers automatic replacement vote"
+        },
+        "voteRequiredAboveThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 40,
+          "description": "Score above this requires team vote before replacement"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

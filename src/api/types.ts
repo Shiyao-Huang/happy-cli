@@ -449,6 +449,7 @@ export type Metadata = {
   role?: string,
   memberId?: string,
   sessionTag?: string,
+  candidateId?: string,
   executionPlane?: 'mainline' | 'bypass',
   teamId?: string,  // Team artifact ID if this session is part of a team
   roomId?: string,

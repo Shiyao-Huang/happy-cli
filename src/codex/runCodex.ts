@@ -667,6 +667,9 @@ export async function runCodex(opts: {
     if (process.env.AHA_AGENT_ROLE) {
         metadata.role = process.env.AHA_AGENT_ROLE;
     }
+    if (process.env.AHA_CANDIDATE_ID) {
+        metadata.candidateId = process.env.AHA_CANDIDATE_ID;
+    }
     if (process.env.AHA_ROOM_ID) {
         metadata.teamId = process.env.AHA_ROOM_ID;
         metadata.roomId = process.env.AHA_ROOM_ID;

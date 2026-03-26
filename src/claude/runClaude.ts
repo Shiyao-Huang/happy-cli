@@ -200,6 +200,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         metadata.role = process.env.AHA_AGENT_ROLE;
         logger.debug(`[runClaude] Setting metadata.role from env: ${process.env.AHA_AGENT_ROLE}`);
     }
+    if (process.env.AHA_CANDIDATE_ID) {
+        metadata.candidateId = process.env.AHA_CANDIDATE_ID;
+        logger.debug(`[runClaude] Setting metadata.candidateId from env: ${process.env.AHA_CANDIDATE_ID}`);
+    }
     const roomIdFromEnv = process.env.AHA_ROOM_ID;
     if (roomIdFromEnv) {
         metadata.teamId = roomIdFromEnv;
@@ -769,7 +773,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (isNewJoin) {
                 logger.debug(`[runClaude] Performing handshake and context injection for team ${teamId}`);
 
-                // 1. Send Handshake - Dynamic from GenomeSpec + role fallback + @help
+                // 1. Send Handshake - Dynamic from GenomeSpec + explicit role context + @help
                 try {
                     const roleDef = DEFAULT_ROLES[role!];
                     const roleTitle = _genomeSpec?.displayName || roleDef?.name || role;
@@ -1092,14 +1096,8 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
       - \`mutate\` → create an explicit improvement loop in the same run: call \`request_help\` with a concrete mutation brief, and when genome evolution is appropriate use \`create_genome\` with \`origin:"mutated"\`, \`parentId\`, and \`mutationNote\`
       - when publishing reusable team templates / CorpsSpec payloads, use \`create_corps\` instead of \`create_genome\`
       - \`keep\` / \`keep_with_guardrails\` → keep the current genome/session alive, then continue toward \`update_genome_feedback\` when score volume is sufficient
-9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using the genome identity from \`specId\` / \`list_team_agents\`. If older team members are missing \`specId\`, still close the loop for canonical official roles by using the role fallback:
-   - \`master -> @official/master\`
-   - \`org-manager -> @official/org-manager\`
-   - \`researcher -> @official/researcher\`
-   - \`architect\` / \`solution-architect -> @official/architect\`
-   - \`implementer -> @official/implementer\`
-   - \`qa\` / \`qa-engineer -> @official/qa-engineer\`
-   Skip upload only when no canonical genome exists for that role. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
+9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using exact specimen identity from \`specId\` / \`list_team_agents\` / explicit namespace+name.
+   If specimen identity is missing, do NOT guess and do NOT fallback by role. Leave the feedback unpublished and record the cycle for audit instead. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
 9b. **Upload team feedback to server**: After you finish the whole-team judgment, call \`update_team_feedback\` once for the current team with:
    - a 1-5 \`rating\` for overall team collaboration quality
    - optional \`codeScore\` / \`qualityScore\`

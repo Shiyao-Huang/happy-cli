@@ -4,7 +4,7 @@ export interface FeedbackUploadTarget {
     genomeId?: string;
     namespace: string;
     name: string;
-    source: 'score-spec' | 'role-fallback';
+    source: 'score-spec' | 'explicit-target';
 }
 
 const ROLE_TO_CANONICAL_GENOME = new Map<string, { namespace: string; name: string }>([
@@ -53,42 +53,23 @@ export function resolveFeedbackUploadTarget(args: {
         };
     }
 
-    const canonical = getCanonicalGenomeTargetForRole(args.role);
-    if (!canonical) {
-        return null;
+    if (args.specNamespace && args.specName) {
+        return {
+            namespace: args.specNamespace,
+            name: args.specName,
+            source: 'explicit-target',
+        };
     }
-
-    return {
-        namespace: canonical.namespace,
-        name: canonical.name,
-        source: 'role-fallback',
-    };
+    return null;
 }
 
-export function scoreMatchesFeedbackTarget(score: AgentScore, target: FeedbackUploadTarget, role: string): boolean {
+export function scoreMatchesFeedbackTarget(score: AgentScore, target: FeedbackUploadTarget): boolean {
     if (target.genomeId) {
-        if (score.specId === target.genomeId) {
-            return true;
-        }
-
-        const canonicalRoleTarget = getCanonicalGenomeTargetForRole(role);
-        const canUseLegacyRoleFallback = canonicalRoleTarget
-            && canonicalRoleTarget.namespace === target.namespace
-            && canonicalRoleTarget.name === target.name;
-
-        if (!canUseLegacyRoleFallback) {
-            return false;
-        }
+        return score.specId === target.genomeId;
     }
 
     if (score.specNamespace && score.specName) {
         return score.specNamespace === target.namespace && score.specName === target.name;
     }
-
-    const scoreCanonical = getCanonicalGenomeTargetForRole(score.role);
-    if (scoreCanonical) {
-        return scoreCanonical.namespace === target.namespace && scoreCanonical.name === target.name;
-    }
-
-    return normalizeRole(score.role) === normalizeRole(role);
+    return false;
 }

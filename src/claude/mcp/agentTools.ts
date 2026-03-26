@@ -29,6 +29,7 @@ import { logger } from "@/ui/logger";
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
+import { projectTeamAgentMirror } from '../utils/runEnvelopeMirror';
 import { readDaemonState } from '@/persistence';
 import { extractTeamConfigSnapshot } from './inspectionTools';
 import {
@@ -324,6 +325,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         {
                             memberId,
                             sessionTag,
+                            ...(resolvedSpecId ? { candidateId: `spec:${resolvedSpecId}` } : {}),
                             specId: resolvedSpecId,
                             parentSessionId,
                             executionPlane: args.executionPlane || 'mainline',
@@ -472,6 +474,17 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 })
             );
             const sessionSnapshotMap = new Map(sessionSnapshots);
+            const envelopeEntries = await Promise.all(
+                Array.from(allSessionIds).map(async (sessionId: string) => {
+                    try {
+                        const { readRunEnvelope } = await import('@/daemon/runEnvelope');
+                        return [sessionId, await readRunEnvelope(sessionId)] as const;
+                    } catch {
+                        return [sessionId, null] as const;
+                    }
+                })
+            );
+            const envelopeMap = new Map(envelopeEntries);
 
             // Role definitions — from DEFAULT_ROLES fallback (genome is primary)
             const roleDefinitions: Record<string, any> = {};
@@ -482,6 +495,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const agents = Array.from(allSessionIds).flatMap((sessionId: string) => {
                 const member = memberMap.get(sessionId) as Record<string, any> | undefined;
                 const sessionSnapshot = sessionSnapshotMap.get(sessionId);
+                const envelope = envelopeMap.get(sessionId);
                 const lifecycleState = sessionSnapshot?.metadata?.lifecycleState;
                 const isActive = daemonTrackedSessionIds.has(sessionId)
                     || !!(sessionSnapshot && sessionSnapshot.active !== false && lifecycleState !== 'archived');
@@ -492,15 +506,27 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
                 const roleId = member?.roleId || member?.role || '';
                 const roleDef = roleDefinitions[roleId];
+                const projectedMirror = projectTeamAgentMirror({
+                    sessionId,
+                    member,
+                    sessionSnapshot,
+                    envelope,
+                    defaultExecutionPlane: BYPASS_ROLES.includes(roleId) ? 'bypass' : 'mainline',
+                    defaultRuntimeType: 'claude',
+                });
                 return [{
                     sessionId,
                     role: roleDef?.title || roleId || 'unknown',
                     roleId,
                     displayName: member?.displayName || sessionId?.substring(0, 8),
-                    specId: member?.specId || null,
-                    executionPlane: member?.executionPlane ||
-                        (BYPASS_ROLES.includes(roleId) ? 'bypass' : 'mainline'),
-                    runtimeType: member?.runtimeType || sessionSnapshot?.metadata?.flavor || 'claude',
+                    candidateId: projectedMirror.candidateId,
+                    specId: projectedMirror.specId,
+                    memberId: projectedMirror.memberId,
+                    runId: projectedMirror.runId,
+                    runStatus: projectedMirror.runStatus,
+                    spawnedAt: projectedMirror.spawnedAt,
+                    executionPlane: projectedMirror.executionPlane,
+                    runtimeType: projectedMirror.runtimeType,
                     lifecycleState: lifecycleState || 'running',
                     taskStats: taskStatsByAssignee.get(sessionId) ?? {
                         total: 0,
