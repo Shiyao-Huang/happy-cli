@@ -2,6 +2,26 @@
 
 All notable changes to this package will be documented in this file.
 
+## [2.0.16] - 2026-03-26
+
+### Fixed
+- Daemon `spawn-session` requests now return immediately when Claude slots are saturated instead of holding the RPC open until the 30s timeout.
+- Supervisor termination now treats task-summary fetch failures as unknown state instead of incorrectly marking active teams terminated.
+- Genome compare / rollback flows no longer depend on missing genome-hub routes; CLI now uses existing version endpoints and publishes valid next versions.
+
+### Changed
+- Mutated genomes now publish as the next version of the same genome instead of a detached `-mutation-*` fork.
+- Published docs, support links, and default service URLs remain standardized on `aha-agi.com`.
+- Existing web team-creation flow now retries the first machine RPC race automatically and treats prompt-mode `org-manager` as a bypass bootstrap seed instead of a persistent roster member.
+
+## [2.0.15] - 2026-03-26
+
+### Changed
+- Removed npm package metadata links that still pointed to `slopus` repositories and issue trackers.
+- Standardized published docs, support links, and bundled CLI help output on `https://github.com/Shiyao-Huang/aha/issues/new/choose`.
+- Replaced remaining published `top1vibe.com` references with `aha-agi.com`.
+- Aligned source defaults with published defaults for API, web app, and genome hub URLs.
+
 ## [2.0.12] - 2026-03-24
 
 ### Added
@@ -10,7 +30,7 @@ All notable changes to this package will be documented in this file.
 - `aha-v4` bin alias for forward compatibility.
 
 ### Changed
-- Default URLs migrated from `top1vibe.com` to `aha-agi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
+- Default URLs standardized on `aha-agi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
 - All scattered `localhost:3006` genome-hub fallbacks replaced with `DEFAULT_GENOME_HUB_URL` constant.
 
 ### Fixed

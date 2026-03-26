@@ -56,7 +56,7 @@ export async function resumeClaudeAgent(
             },
         });
 
-        if (result.type === 'success') {
+        if (result.type === 'success' || result.type === 'queued') {
             return { success: true, newSessionId: result.sessionId };
         }
         return {
@@ -105,7 +105,7 @@ export async function resumeCodexAgent(
             },
         });
 
-        if (result.type === 'success') {
+        if (result.type === 'success' || result.type === 'queued') {
             return { success: true, newSessionId: result.sessionId };
         }
         return {

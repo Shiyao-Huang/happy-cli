@@ -140,6 +140,67 @@ describe('controlServer /team-pulse', () => {
     });
 });
 
+describe('controlServer /list', () => {
+    let stopServer: () => Promise<void>;
+    let port: number;
+    const trackedSessions: TrackedSession[] = [];
+
+    beforeEach(async () => {
+        trackedSessions.length = 0;
+
+        const result = await startDaemonControlServer({
+            getChildren: () => trackedSessions,
+            stopSession: () => false,
+            spawnSession: async () => ({ type: 'error' as const, error: 'not implemented' }),
+            requestShutdown: () => {},
+            onAhaSessionWebhook: () => {},
+        });
+
+        port = result.port;
+        stopServer = result.stop;
+    });
+
+    afterEach(async () => {
+        await stopServer();
+    });
+
+    it('returns PID fallbacks for recovered sessions that have not self-healed yet', async () => {
+        trackedSessions.push({
+            startedBy: 'recovered after daemon restart',
+            pid: 12345,
+        });
+        trackedSessions.push({
+            startedBy: 'daemon',
+            ahaSessionId: 'session-2',
+            pid: 12346,
+        });
+
+        const response = await fetch(`http://127.0.0.1:${port}/list`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json() as {
+            children: Array<{ startedBy: string; ahaSessionId: string; pid: number }>;
+        };
+
+        expect(data.children).toEqual([
+            {
+                startedBy: 'recovered after daemon restart',
+                ahaSessionId: 'PID-12345',
+                pid: 12345,
+            },
+            {
+                startedBy: 'daemon',
+                ahaSessionId: 'session-2',
+                pid: 12346,
+            },
+        ]);
+    });
+});
+
 describe('controlServer /channels', () => {
     let stopServer: () => Promise<void>;
     let port: number;

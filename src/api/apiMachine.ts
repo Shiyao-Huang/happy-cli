@@ -156,6 +156,16 @@ export class ApiMachineClient {
                     logger.debug(`[API MACHINE] Spawned session ${result.sessionId}`);
                     return { type: 'success', sessionId: result.sessionId };
 
+                case 'queued':
+                    logger.debug(
+                        `[API MACHINE] Queued session ${result.sessionId} at position ${result.queuePosition}`
+                    );
+                    return {
+                        type: 'queued',
+                        sessionId: result.sessionId,
+                        queuePosition: result.queuePosition,
+                    };
+
                 case 'requestToApproveDirectoryCreation':
                     logger.debug(`[API MACHINE] Requesting directory creation approval for: ${result.directory}`);
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory };

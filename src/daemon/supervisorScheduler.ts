@@ -38,7 +38,7 @@ interface TeamOutstandingWorkSummary {
   teamId: string;
   unfinishedTaskCount: number;
   blockedTaskCount: number;
-  hasOutstandingWork: boolean;
+  status: 'has_work' | 'no_work' | 'unknown';
 }
 
 // ── Context type ───────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ async function fetchOutstandingWorkSummary(
       teamId,
       unfinishedTaskCount: unfinishedTasks.length,
       blockedTaskCount,
-      hasOutstandingWork: unfinishedTasks.length > 0,
+      status: unfinishedTasks.length > 0 ? 'has_work' : 'no_work',
     };
   } catch (error) {
     logger.debug(
@@ -207,7 +207,7 @@ async function fetchOutstandingWorkSummary(
       teamId,
       unfinishedTaskCount: 0,
       blockedTaskCount: 0,
-      hasOutstandingWork: false,
+      status: 'unknown',
     };
   }
 }
@@ -233,7 +233,7 @@ async function listTeamsWithOutstandingWork(credentialsToken: string): Promise<M
 
     return new Map(
       summaries
-        .filter((summary) => summary.hasOutstandingWork)
+        .filter((summary) => summary.status === 'has_work')
         .map((summary) => [summary.teamId, summary] as const)
     );
   } catch (error) {
@@ -284,13 +284,14 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
   for (const supervisorState of supervisorStates) {
     const liveSessionIds = liveMainlineSessionIdsByTeam.get(supervisorState.teamId) ?? new Set<string>();
     const outstandingWork = outstandingWorkByKnownTeam.get(supervisorState.teamId);
-    const hasOutstandingWork = outstandingWork?.hasOutstandingWork ?? false;
+    const workStatus = outstandingWork?.status ?? 'unknown';
+    const hasOutstandingWork = workStatus === 'has_work';
 
     // Auto-terminate if no live sessions and idle timeout has elapsed
     if (
       !supervisorState.terminated &&
       liveSessionIds.size === 0 &&
-      !hasOutstandingWork &&
+      workStatus === 'no_work' &&
       supervisorState.lastRunAt > 0 &&
       (now - supervisorState.lastRunAt) > supervisorTerminateIdleMs
     ) {
@@ -316,7 +317,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     }
 
     // Skip terminated teams or teams without a notify_help pending action
-    if ((supervisorState.terminated && !hasOutstandingWork) || supervisorState.pendingAction?.type !== 'notify_help') {
+    if ((supervisorState.terminated && workStatus !== 'has_work') || supervisorState.pendingAction?.type !== 'notify_help') {
       continue;
     }
 
@@ -431,18 +432,19 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     const hasLiveMainlineAgents = (liveMainlineSessionIdsByTeam.get(teamId)?.size ?? 0) > 0;
     const outstandingWork = teamsWithOutstandingWork.get(teamId)
       ?? outstandingWorkByKnownTeam.get(teamId)
-      ?? { teamId, unfinishedTaskCount: 0, blockedTaskCount: 0, hasOutstandingWork: false };
+      ?? { teamId, unfinishedTaskCount: 0, blockedTaskCount: 0, status: 'unknown' as const };
+    const workStatus = outstandingWork.status;
 
-    if (!hasLiveMainlineAgents && !outstandingWork.hasOutstandingWork) {
+    if (!hasLiveMainlineAgents && workStatus !== 'has_work') {
       continue;
     }
 
-    if (supervisorState.terminated && !outstandingWork.hasOutstandingWork) {
+    if (supervisorState.terminated && workStatus !== 'has_work') {
       logger.debug(`[SUPERVISOR SCHEDULER] Skipping supervisor for terminated team ${teamId}`);
       continue;
     }
 
-    if (supervisorState.terminated && outstandingWork.hasOutstandingWork) {
+    if (supervisorState.terminated && workStatus === 'has_work') {
       await updateSupervisorState(teamId, (state) => ({
         ...state,
         terminated: false,
@@ -468,7 +470,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     // Auto-retire after too many idle runs
     const maxIdleRuns = parseInt(process.env.AHA_SUPERVISOR_MAX_IDLE || '6');
     if (supervisorState.idleRuns >= maxIdleRuns) {
-      if (outstandingWork.hasOutstandingWork) {
+      if (workStatus === 'has_work') {
         await updateSupervisorState(teamId, (state) => ({
           ...state,
           idleRuns: 0,
@@ -478,6 +480,12 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
           `[SUPERVISOR SCHEDULER] Keeping supervisor eligible for team ${teamId} ` +
           `because ${outstandingWork.unfinishedTaskCount} unfinished task(s) remain`
         );
+      } else if (workStatus === 'unknown') {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Not terminating supervisor for team ${teamId} ` +
+          `because outstanding work state is unknown`
+        );
+        continue;
       } else {
         logger.debug(
           `[SUPERVISOR SCHEDULER] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`
@@ -563,8 +571,11 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         },
       });
 
-      if (supervisorResult.type === 'success') {
-        logger.debug(`[SUPERVISOR SCHEDULER] Supervisor agent spawned: ${supervisorResult.sessionId}`);
+      if (supervisorResult.type === 'success' || supervisorResult.type === 'queued') {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Supervisor agent accepted: ${supervisorResult.sessionId}` +
+          (supervisorResult.type === 'queued' ? ` (queued at position ${supervisorResult.queuePosition})` : '')
+        );
       }
     } catch (e) {
       logger.debug(`[SUPERVISOR SCHEDULER] Failed to spawn supervisor: ${e}`);

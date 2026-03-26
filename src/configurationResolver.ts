@@ -4,9 +4,9 @@ import { join } from 'node:path'
 import packageJson from '../package.json'
 import { z } from 'zod'
 
-export const DEFAULT_SERVER_URL = 'http://localhost:3005'
-export const DEFAULT_WEBAPP_URL = 'http://localhost:8081'
-export const DEFAULT_GENOME_HUB_URL = 'http://localhost:3006'
+export const DEFAULT_SERVER_URL = 'https://aha-agi.com/api'
+export const DEFAULT_WEBAPP_URL = 'https://aha-agi.com/webappv3'
+export const DEFAULT_GENOME_HUB_URL = 'https://aha-agi.com/genome'
 
 const persistentCliConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
@@ -69,5 +69,20 @@ export function resolveServerConfig(
   return {
     serverUrl: env.AHA_SERVER_URL || persistentConfig.serverUrl || DEFAULT_SERVER_URL,
     webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL
+  }
+}
+
+/**
+ * Read genomeHubPublishKey from the aha settings file (~/.aha/settings.json).
+ * Returns empty string if the file is missing or the key is not set.
+ */
+export function readPublishKeyFromSettings(settingsFile: string): string {
+  try {
+    if (!existsSync(settingsFile)) return ''
+    const raw = readFileSync(settingsFile, 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    return typeof parsed.genomeHubPublishKey === 'string' ? parsed.genomeHubPublishKey : ''
+  } catch {
+    return ''
   }
 }

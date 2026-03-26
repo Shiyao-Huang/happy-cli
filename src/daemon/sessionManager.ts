@@ -37,6 +37,8 @@ import { buildAgentLaunchContext } from '@/utils/agentLaunchContext';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { execSync } from 'child_process';
+import { ulid } from 'ulid';
+import { deriveCandidateId, finalizeRunEnvelopeFromWebhook, writeDraftRunEnvelope } from './runEnvelope';
 
 // ── Central shared state ───────────────────────────────────────────────────────
 /**
@@ -48,13 +50,11 @@ export const pidToTrackedSession = new Map<number, TrackedSession>();
 const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>>();
 
 // ── Spawn concurrency limiter ────────────────────────────────────────────────
-const MAX_CONCURRENT_CLAUDE = parseInt(process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS || '3', 10);
 const MAX_RESPAWN_ATTEMPTS = parseInt(process.env.AHA_MAX_RESPAWN_ATTEMPTS || '3', 10);
 const RESPAWN_BASE_DELAY_MS = parseInt(process.env.AHA_RESPAWN_BASE_DELAY_MS || '5000', 10);
 
 interface QueuedSpawn {
   options: SpawnSessionOptions;
-  resolve: (result: SpawnSessionResult) => void;
 }
 
 const spawnQueue: QueuedSpawn[] = [];
@@ -64,6 +64,14 @@ function normalizeRespawnAgent(runtimeType?: string): SpawnSessionOptions['agent
   if (runtimeType === 'ralph') return 'ralph';
   if (runtimeType) return 'claude';
   return undefined;
+}
+
+function inferRuntimeTypeFromProcessArgs(commandLine: string): SpawnSessionOptions['agent'] | undefined {
+  const runtimeMatch = commandLine.match(/(?:^|\s)(claude|codex|ralph)(?=\s|$)/);
+  if (!runtimeMatch) {
+    return undefined;
+  }
+  return normalizeRespawnAgent(runtimeMatch[1]);
 }
 
 function resolveProcessWorkingDirectory(pid: number): string | undefined {
@@ -170,13 +178,37 @@ function getActiveClaudeCount(): number {
   return count;
 }
 
+function getMaxConcurrentClaude(): number {
+  const raw = process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS;
+  if (raw == null || raw.trim() === '') {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return parsed;
+}
+
 /** Process the next queued spawn if a slot is available. */
 function drainSpawnQueue(): void {
-  while (spawnQueue.length > 0 && getActiveClaudeCount() < MAX_CONCURRENT_CLAUDE) {
+  while (spawnQueue.length > 0 && getActiveClaudeCount() < getMaxConcurrentClaude()) {
     const next = spawnQueue.shift()!;
     logger.debug(`[SESSION MANAGER] Dequeuing spawn for role=${next.options.role || 'unknown'} (queue remaining: ${spawnQueue.length})`);
-    spawnSessionInternal(next.options).then(next.resolve);
+    void spawnSessionInternal(next.options).then((result) => {
+      if (result.type === 'error') {
+        logger.debug(
+          `[SESSION MANAGER] Queued spawn failed for role=${next.options.role || 'unknown'}: ${result.errorMessage}`
+        );
+      }
+    });
   }
+}
+
+function reserveQueuedSessionId(existingSessionId?: string): string {
+  return existingSessionId || `queued-${ulid().toLowerCase()}`;
 }
 
 /**
@@ -216,7 +248,12 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
     const tagPattern = /^\s*(\d+)\s+.*--session-tag\s+team:([^\s:]+):member:([^\s:]+)(?:\s|$)/;
 
     // Collect discovered processes grouped by teamId
-    const discovered: Array<{ pid: number; teamId: string; memberId: string }> = [];
+    const discovered: Array<{
+      pid: number;
+      teamId: string;
+      memberId: string;
+      runtimeType?: SpawnSessionOptions['agent'];
+    }> = [];
 
     for (const line of psOutput.split('\n')) {
       const match = line.match(tagPattern);
@@ -236,7 +273,12 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
         continue; // Process already dead
       }
 
-      discovered.push({ pid, teamId, memberId });
+      discovered.push({
+        pid,
+        teamId,
+        memberId,
+        runtimeType: inferRuntimeTypeFromProcessArgs(line),
+      });
     }
 
     if (discovered.length === 0) return 0;
@@ -277,9 +319,10 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
         }
       }
 
-      for (const { pid, memberId } of entries) {
+      for (const { pid, memberId, runtimeType } of entries) {
         // Try to find this member in the team roster
         const rosterMember = teamMembers.find(m => m.memberId === memberId);
+        const resolvedRuntimeType = rosterMember?.runtimeType || runtimeType;
 
         // Defense-in-depth: if the server marks this member as archived or
         // archiveRequested, kill the orphaned process and skip recovery.
@@ -305,7 +348,7 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
           teamId,
           memberId,
           role: rosterMember?.roleId,
-          runtimeType: rosterMember?.runtimeType,
+          runtimeType: resolvedRuntimeType,
           displayName: rosterMember?.displayName,
           sessionTag: rosterMember?.sessionTag,
           executionPlane: rosterMember?.executionPlane,
@@ -323,7 +366,7 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
             hostPid: pid,
             role: rosterMember.roleId,
             executionPlane: rosterMember.executionPlane as 'mainline' | 'bypass' | undefined,
-            flavor: rosterMember.runtimeType,
+            flavor: resolvedRuntimeType,
             memberId,
             sessionTag: rosterMember.sessionTag,
             name: rosterMember.displayName,
@@ -341,6 +384,7 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
             teamId,
             roomId: teamId,
             hostPid: pid,
+            flavor: resolvedRuntimeType,
             memberId,
           } as Metadata;
           logger.debug(
@@ -415,6 +459,15 @@ export function initSessionManagerDeadCallback(fn: (sessionIds: string[]) => voi
   _onSessionDead = fn;
 }
 
+export function resetSessionManagerForTests(): void {
+  pidToTrackedSession.clear();
+  inFlightHelpRequestsByTeam.clear();
+  spawnQueue.length = 0;
+  pidToAwaiter.clear();
+  _pingHeartbeat = null;
+  _onSessionDead = null;
+}
+
 // ── Webhook handler ────────────────────────────────────────────────────────────
 
 /**
@@ -452,6 +505,14 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
       base: existingSession.spawnOptions,
     });
     logger.debug(`[SESSION MANAGER] Updated daemon-spawned session ${sessionId} with metadata`);
+    void finalizeRunEnvelopeFromWebhook({
+      pid,
+      sessionId,
+      metadata: sessionMetadata,
+      spawnOptions: existingSession.spawnOptions,
+    }).catch((error) => {
+      logger.debug(`[SESSION MANAGER] Failed to finalize run envelope for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
     pingHeartbeatIfAvailable(existingSession);
 
     // Trace: session_registered
@@ -498,6 +559,14 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
       `[SESSION MANAGER] Self-healed recovered session: ${previousId || '(unresolved)'} → ${sessionId} ` +
       `(PID: ${pid}, role: ${sessionMetadata.role || 'unknown'})`
     );
+    void finalizeRunEnvelopeFromWebhook({
+      pid,
+      sessionId,
+      metadata: sessionMetadata,
+      spawnOptions: existingSession.spawnOptions,
+    }).catch((error) => {
+      logger.debug(`[SESSION MANAGER] Failed to finalize recovered run envelope for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
     pingHeartbeatIfAvailable(existingSession);
   } else if (!existingSession) {
     // New session started externally (user ran aha directly)
@@ -508,6 +577,14 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
       pid,
     };
     pidToTrackedSession.set(pid, trackedSession);
+    void finalizeRunEnvelopeFromWebhook({
+      pid,
+      sessionId,
+      metadata: sessionMetadata,
+      spawnOptions: trackedSession.spawnOptions,
+    }).catch((error) => {
+      logger.debug(`[SESSION MANAGER] Failed to create external run envelope for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
     logger.debug(`[SESSION MANAGER] Registered externally-started session ${sessionId}`);
     pingHeartbeatIfAvailable(trackedSession);
   }
@@ -522,15 +599,26 @@ export const onAhaSessionWebhook = (sessionId: string, sessionMetadata: Metadata
  */
 export const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
   const isClaude = options.agent !== 'codex' && options.agent !== 'ralph';
+  const activeClaudeCount = getActiveClaudeCount();
+  const maxConcurrentClaude = getMaxConcurrentClaude();
 
-  if (isClaude && getActiveClaudeCount() >= MAX_CONCURRENT_CLAUDE) {
+  if (isClaude && Number.isFinite(maxConcurrentClaude) && activeClaudeCount >= maxConcurrentClaude) {
+    const reservedSessionId = reserveQueuedSessionId(options.sessionId);
+    const queuedOptions = {
+      ...options,
+      sessionId: reservedSessionId,
+    };
+    const queuePosition = spawnQueue.length + 1;
     logger.debug(
-      `[SESSION MANAGER] Claude concurrency limit reached (${getActiveClaudeCount()}/${MAX_CONCURRENT_CLAUDE}). ` +
-      `Queuing spawn for role=${options.role || 'unknown'} (queue depth: ${spawnQueue.length + 1})`
+      `[SESSION MANAGER] Claude concurrency limit reached (${activeClaudeCount}/${maxConcurrentClaude}). ` +
+      `Queuing spawn for role=${options.role || 'unknown'} as ${reservedSessionId} (queue depth: ${queuePosition})`
     );
-    return new Promise<SpawnSessionResult>((resolve) => {
-      spawnQueue.push({ options, resolve });
-    });
+    spawnQueue.push({ options: queuedOptions });
+    return {
+      type: 'queued',
+      sessionId: reservedSessionId,
+      queuePosition,
+    };
   }
 
   return spawnSessionInternal(options);
@@ -660,6 +748,14 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       extraEnv.AHA_SPEC_ID = options.specId;
       logger.debug(`[SESSION MANAGER] Setting AHA_SPEC_ID=${options.specId}`);
     }
+    extraEnv.AHA_CANDIDATE_ID = deriveCandidateId({
+      specId: options.specId,
+      role: options.role,
+      runtimeType: options.agent,
+      executionPlane: options.executionPlane,
+      prompt: options.env?.AHA_AGENT_PROMPT,
+    });
+    logger.debug(`[SESSION MANAGER] Setting AHA_CANDIDATE_ID=${extraEnv.AHA_CANDIDATE_ID}`);
     if (options.executionPlane) {
       extraEnv.AHA_EXECUTION_PLANE = options.executionPlane;
       logger.debug(`[SESSION MANAGER] Setting AHA_EXECUTION_PLANE=${options.executionPlane}`);
@@ -774,6 +870,12 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
     };
 
     pidToTrackedSession.set(ahaProcess.pid, trackedSession);
+    void writeDraftRunEnvelope({
+      pid: ahaProcess.pid,
+      options: respawnableOptions,
+    }).catch((error) => {
+      logger.debug(`[SESSION MANAGER] Failed to write draft run envelope for PID ${ahaProcess.pid}: ${error instanceof Error ? error.message : String(error)}`);
+    });
 
     ahaProcess.on('exit', (code, signal) => {
       logger.debug(`[SESSION MANAGER] Child PID ${ahaProcess.pid} exited with code ${code}, signal ${signal}`);
@@ -1018,7 +1120,7 @@ export const requestHelp = async (params: {
         },
       });
 
-      if (result.type === 'success') {
+      if (result.type === 'success' || result.type === 'queued') {
         return { success: true, helpAgentSessionId: result.sessionId };
       }
 
@@ -1161,10 +1263,10 @@ function scheduleRespawn(session: TrackedSession): void {
       };
 
       const result = await spawnSession(respawnOptions);
-      if (result.type === 'success') {
+      if (result.type === 'success' || result.type === 'queued') {
         logger.debug(
-          `[SESSION MANAGER] Respawn #${respawnCount} succeeded for role=${role} ` +
-          `team=${teamId} → session=${result.sessionId}`
+          `[SESSION MANAGER] Respawn #${respawnCount} accepted for role=${role} ` +
+          `team=${teamId} → session=${result.sessionId}${result.type === 'queued' ? ` (queued at position ${result.queuePosition})` : ''}`
         );
       } else {
         const errorMsg = result.type === 'error' ? result.errorMessage : 'unknown error';

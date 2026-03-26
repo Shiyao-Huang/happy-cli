@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   readPersistentCliConfig,
+  readPublishKeyFromSettings,
   resolveAhaHomeDir,
   resolvePersistentConfigFile,
   resolveServerConfig
@@ -56,6 +57,33 @@ describe('configurationResolver', () => {
     })).toEqual({
       serverUrl: 'http://localhost:3005',
       webappUrl: 'http://localhost:8081'
+    })
+  })
+
+  it('uses aha-agi production defaults when nothing is configured', () => {
+    expect(resolveServerConfig({}, {})).toEqual({
+      serverUrl: 'https://aha-agi.com/api',
+      webappUrl: 'https://aha-agi.com/webappv3'
+    })
+  })
+
+  describe('readPublishKeyFromSettings', () => {
+    it('returns the genomeHubPublishKey from settings.json', () => {
+      tempDir = mkdtempSync(join(process.cwd(), 'tmp-settings-'))
+      const settingsFile = join(tempDir, 'settings.json')
+      writeFileSync(settingsFile, JSON.stringify({ genomeHubPublishKey: 'aha-official-2026' }))
+      expect(readPublishKeyFromSettings(settingsFile)).toBe('aha-official-2026')
+    })
+
+    it('returns empty string when settings.json is missing', () => {
+      expect(readPublishKeyFromSettings('/nonexistent/path/settings.json')).toBe('')
+    })
+
+    it('returns empty string when genomeHubPublishKey is absent', () => {
+      tempDir = mkdtempSync(join(process.cwd(), 'tmp-settings-'))
+      const settingsFile = join(tempDir, 'settings.json')
+      writeFileSync(settingsFile, JSON.stringify({ onboardingCompleted: false }))
+      expect(readPublishKeyFromSettings(settingsFile)).toBe('')
     })
   })
 })

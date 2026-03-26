@@ -1,13 +1,16 @@
 {
   "name": "cc-aha-cli-v3",
-  "version": "2.0.13",
+  "version": "2.0.16",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/slopus/aha-cli",
-  "bugs": "https://github.com/slopus/aha-cli/issues",
-  "repository": "slopus/aha-cli",
+  "homepage": "https://github.com/Shiyao-Huang/aha",
+  "bugs": "https://github.com/Shiyao-Huang/aha/issues/new/choose",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shiyao-Huang/aha.git"
+  },
   "bin": {
     "aha-v3": "./bin/aha.mjs",
     "aha-v3-mcp": "./bin/aha-mcp.mjs",

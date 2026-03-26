@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver'
 /**
  * @module supervisorTools
  * @description MCP tool registrations for supervisor-only monitoring, scoring, and evolution.
@@ -116,6 +116,78 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             memberAuthorities: Array.isArray(member?.authorities) ? member.authorities : [],
             teamOverlayAuthorities: Array.isArray(member?.teamOverlay?.authorities) ? member.teamOverlay.authorities : [],
         };
+    };
+
+    type MarketplaceGenome = {
+        id?: string;
+        namespace?: string | null;
+        name: string;
+        version: number;
+        description?: string | null;
+        spec: string;
+        tags?: string | null;
+        category?: string | null;
+        isPublic?: boolean;
+        feedbackData?: string | null;
+    };
+
+    type MarketplaceGenomeFeedback = {
+        evaluationCount?: number;
+        avgScore?: number;
+        dimensions?: Record<string, number>;
+        latestAction?: string;
+        updatedAt?: string;
+    };
+
+    const parseFeedbackData = (feedbackData?: string | null): MarketplaceGenomeFeedback | null => {
+        if (!feedbackData) return null;
+        try {
+            return JSON.parse(feedbackData) as MarketplaceGenomeFeedback;
+        } catch {
+            return null;
+        }
+    };
+
+    const parseTags = (tags?: string | null): string[] => {
+        if (!tags) return [];
+        try {
+            const parsed = JSON.parse(tags);
+            return Array.isArray(parsed) ? parsed.map(String) : [String(tags)];
+        } catch {
+            return [String(tags)];
+        }
+    };
+
+    const fetchGenomeVersions = async (hubUrl: string, namespace: string, name: string): Promise<MarketplaceGenome[]> => {
+        const res = await fetch(
+            `${hubUrl}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/versions`,
+            { signal: AbortSignal.timeout(5_000) }
+        );
+        if (!res.ok) {
+            throw new Error(`Failed to fetch versions: HTTP ${res.status}`);
+        }
+        const data = await res.json() as { versions?: MarketplaceGenome[] };
+        return Array.isArray(data.versions) ? data.versions : [];
+    };
+
+    const fetchPinnedGenomeVersion = async (
+        hubUrl: string,
+        namespace: string,
+        name: string,
+        version: number,
+    ): Promise<MarketplaceGenome> => {
+        const res = await fetch(
+            `${hubUrl}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${version}`,
+            { signal: AbortSignal.timeout(5_000) }
+        );
+        if (!res.ok) {
+            throw new Error(`Failed to fetch version v${version}: HTTP ${res.status}`);
+        }
+        const data = await res.json() as { genome?: MarketplaceGenome };
+        if (!data.genome) {
+            throw new Error(`Genome version v${version} not found`);
+        }
+        return data.genome;
     };
 
     mcp.registerTool('read_team_log', {
@@ -267,13 +339,14 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const teamId = meta?.teamId || meta?.roomId;
             const role = meta?.role || 'unknown';
             const sessionId = meta?.ahaSessionId || client.sessionId;
-            const specId = meta?.specId || null;
+            const specId = meta?.specId || process.env.AHA_SPEC_ID || null;
 
             // ── WHO AM I ──────────────────────────────────────────────────
             const genomeSpec = genomeSpecRef?.current;
             const identity = {
                 sessionId,
                 role,
+                candidateId: meta?.candidateId || (specId ? `spec:${specId}` : null),
                 specId,
                 genomeName: genomeSpec?.displayName || genomeSpec?.name || role,
                 genomeDescription: genomeSpec?.description || 'No genome loaded',
@@ -408,6 +481,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 `  Role: ${identity.role}`,
                 `  Genome: ${identity.genomeName}`,
                 `  Description: ${identity.genomeDescription}`,
+                identity.candidateId ? `  Candidate: ${identity.candidateId}` : '',
                 identity.specId ? `  Spec ID: ${identity.specId}` : '',
                 `  Execution Plane: ${identity.executionPlane}`,
                 identity.responsibilities.length > 0 ? `  Responsibilities: ${identity.responsibilities.join('; ')}` : '',
@@ -998,7 +1072,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 const { readScores } = await import('@/claude/utils/scoreStorage');
                 const { scores: allScores } = readScores();
                 const genomeScores = allScores.filter((score) =>
-                    scoreMatchesFeedbackTarget(score, feedbackTarget, args.role)
+                    scoreMatchesFeedbackTarget(score, feedbackTarget)
                 );
                 if (genomeScores.length >= 3) {
                     const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
@@ -1104,8 +1178,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         inputSchema: {
             genomeNamespace: z.string().optional().describe("Genome namespace, e.g. '@official'. Optional when genomeId is provided."),
             genomeName: z.string().optional().describe("Genome name, e.g. 'implementer'. Optional when genomeId is provided."),
-            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, the tool auto-resolves namespace/name from genome-hub and falls back to the canonical role genome if needed.'),
-            role: z.string().describe('Role name used as fallback filter when specId not recorded on older scores'),
+            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, the tool auto-resolves namespace/name from genome-hub.'),
+            role: z.string().describe('Role label used only for reporting text. It is NOT a fallback identity key.'),
             dryRun: z.boolean().optional().describe('If true, show what would be sent without uploading'),
         },
     }, async (args) => {
@@ -1129,7 +1203,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     resolvedName = resolvedName ?? data.genome?.name;
                 }
             } catch {
-                // Fall through to canonical role fallback below.
+                // Fall through to explicit namespace/name validation below.
             }
         }
 
@@ -1143,7 +1217,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return {
                 content: [{
                     type: 'text',
-                    text: `Could not resolve a marketplace feedback target for role '${args.role}'. Provide genomeId or explicit genomeNamespace/genomeName, or use a canonical official role.`,
+                    text: `Could not resolve a marketplace feedback target for role '${args.role}'. Provide exact genomeId or explicit genomeNamespace/genomeName. Role fallback is disabled.`,
                 }],
                 isError: true,
             };
@@ -1152,15 +1226,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         resolvedNamespace = feedbackTarget.namespace;
         resolvedName = feedbackTarget.name;
 
-        // Read local scores — prefer resolved genome identity, fall back to canonical role matching
+        // Read local scores — specimen identity only. No role fallback.
         const { readScores } = await import('@/claude/utils/scoreStorage');
         const { scores } = readScores();
         const roleScores = scores.filter((score) =>
-            scoreMatchesFeedbackTarget(score, feedbackTarget, args.role)
+            scoreMatchesFeedbackTarget(score, feedbackTarget)
         );
 
         if (roleScores.length === 0) {
-            return { content: [{ type: 'text', text: `No scores found for role '${args.role}'. Score agents first with score_agent tool.` }], isError: false };
+            return { content: [{ type: 'text', text: `No specimen-bound scores found for role '${args.role}'. Score agents with explicit spec identity first; role fallback is disabled.` }], isError: false };
         }
 
         if (roleScores.length < 3) {
@@ -1249,12 +1323,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can evolve genomes.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can evolve genomes.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         // 1. Fetch current genome (spec + feedbackData)
         let genomeRecord: { genome?: { spec: string; feedbackData?: string | null } };
@@ -1293,7 +1367,11 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const minScore = args.minPromoteScore ?? 60;
-        if (avgScore < minScore) {
+        // Supervisors and org-managers are the evaluators — requiring them to be evaluated
+        // before they can evolve breaks the evolution chain (circular dependency).
+        // Skip the score gate for these trusted roles.
+        const skipScoreGate = callerRole === 'supervisor' || callerRole === 'org-manager';
+        if (!skipScoreGate && avgScore < minScore) {
             return {
                 content: [{ type: 'text', text: `Cannot evolve: avgScore=${Math.round(avgScore)} < minPromoteScore=${minScore}. Accumulate more evaluations via score_agent + update_genome_feedback first.` }],
                 isError: true,
@@ -1331,36 +1409,41 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         // 4. Call promote endpoint
         try {
-            const promoteRes = await fetch(
-                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/promote`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
-                    },
-                    body: JSON.stringify({
-                        spec: JSON.stringify(evolvedSpec),
-                        minAvgScore: minScore,
-                        isPublic: true,
-                    }),
-                    signal: AbortSignal.timeout(10_000),
-                }
-            );
+            const { promoteGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
+            const promoteResult = await promoteGenomeViaMarketplace({
+                target: {
+                    namespace: args.genomeNamespace,
+                    name: args.genomeName,
+                },
+                payload: {
+                    spec: JSON.stringify(evolvedSpec),
+                    minAvgScore: minScore,
+                    isPublic: true,
+                },
+                hubUrl,
+                hubPublishKey: publishKey,
+                serverUrl: configuration.serverUrl,
+                authToken: client.getAuthToken(),
+            });
 
-            if (!promoteRes.ok) {
-                const errBody = await promoteRes.text();
-                return { content: [{ type: 'text', text: `Promote failed: ${promoteRes.status} ${errBody}` }], isError: true };
+            if (!promoteResult.ok) {
+                return { content: [{ type: 'text', text: `Promote failed: ${promoteResult.status} ${promoteResult.body}` }], isError: true };
             }
 
-            const promoted = await promoteRes.json() as { genome?: { version?: number; id?: string } };
+            let promoted: { genome?: { version?: number; id?: string } } = {};
+            try {
+                promoted = JSON.parse(promoteResult.body) as { genome?: { version?: number; id?: string } };
+            } catch {
+                return { content: [{ type: 'text', text: `Promote returned invalid JSON: ${promoteResult.body}` }], isError: true };
+            }
+
             const newVersion = promoted.genome?.version ?? '?';
             const addedCount = args.newLearnings.filter(l => !existingLearnings.includes(l)).length;
 
             return {
                 content: [{
                     type: 'text',
-                    text: `✅ Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion}. Added ${addedCount} new learnings (total: ${mergedLearnings.length}).`,
+                    text: `✅ Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion}${promoteResult.transport === 'server-proxy' ? ' (via happy-server proxy)' : ''}. Added ${addedCount} new learnings (total: ${mergedLearnings.length}).`,
                 }],
                 isError: false,
             };
@@ -1407,15 +1490,26 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can mutate genomes.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can mutate genomes.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         // 1. Fetch current genome
-        let genomeRecord: { genome?: { id?: string; spec: string; version?: number; feedbackData?: string | null } };
+        let genomeRecord: {
+            genome?: {
+                id?: string;
+                spec: string;
+                version?: number;
+                feedbackData?: string | null;
+                description?: string | null;
+                tags?: string | null;
+                category?: string | null;
+                isPublic?: boolean;
+            };
+        };
         try {
             const res = await fetch(
                 `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
@@ -1572,13 +1666,21 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 },
                 body: JSON.stringify({
                     namespace: args.genomeNamespace,
-                    name: `${args.genomeName}-mutation-${Date.now()}`,
-                    version: 1,
+                    name: args.genomeName,
+                    version: (genomeRecord.genome?.version ?? 0) + 1,
                     description: `Mutated from ${args.genomeNamespace}/${args.genomeName}: ${args.mutationNote}`,
                     spec: JSON.stringify(mutatedSpec),
-                    isPublic: true,
-                    category: 'mutated',
-                    tags: JSON.stringify(['mutated', args.strategy, args.genomeName]),
+                    isPublic: genomeRecord.genome?.isPublic ?? true,
+                    category: genomeRecord.genome?.category ?? (typeof currentSpec.category === 'string' ? currentSpec.category : undefined),
+                    tags: JSON.stringify(
+                        Array.from(
+                            new Set([
+                                ...parseTags(genomeRecord.genome?.tags),
+                                'mutated',
+                                args.strategy,
+                            ])
+                        )
+                    ),
                 }),
                 signal: AbortSignal.timeout(10_000),
             });
@@ -1594,7 +1696,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     type: 'text',
                     text: [
                         `✅ Mutated ${args.genomeNamespace}/${args.genomeName} (${args.strategy} strategy)`,
-                        `New genome: ${result.genome?.name ?? '?'} v${result.genome?.version ?? '?'}`,
+                        `New version: ${result.genome?.name ?? args.genomeName} v${result.genome?.version ?? '?'}`,
                         `ID: ${result.genome?.id ?? '?'}`,
                         `Mutations: ${args.mutations.length} applied`,
                         `Note: ${args.mutationNote}`,
@@ -1625,32 +1727,97 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can compare genome versions.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can compare genome versions.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
 
         try {
-            const queryParams = new URLSearchParams();
-            if (args.olderVersion !== undefined) queryParams.set('older', String(args.olderVersion));
-            if (args.newerVersion !== undefined) queryParams.set('newer', String(args.newerVersion));
+            const versions = (await fetchGenomeVersions(hubUrl, args.genomeNamespace, args.genomeName))
+                .sort((a, b) => a.version - b.version);
 
-            const res = await fetch(
-                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/compare?${queryParams.toString()}`,
-                { signal: AbortSignal.timeout(5_000) }
-            );
-
-            if (!res.ok) {
-                const errBody = await res.text();
-                return { content: [{ type: 'text', text: `Compare failed: ${res.status} ${errBody}` }], isError: true };
+            if (versions.length < 2) {
+                return {
+                    content: [{ type: 'text', text: 'insufficient_data: need at least two published versions to compare.' }],
+                    isError: false,
+                };
             }
 
-            const result = await res.json() as { comparison: Record<string, unknown> };
+            const older = args.olderVersion !== undefined
+                ? versions.find((version) => version.version === args.olderVersion)
+                : versions[versions.length - 2];
+            const newer = args.newerVersion !== undefined
+                ? versions.find((version) => version.version === args.newerVersion)
+                : versions[versions.length - 1];
+
+            if (!older || !newer) {
+                return {
+                    content: [{ type: 'text', text: 'insufficient_data: requested versions were not found.' }],
+                    isError: false,
+                };
+            }
+
+            const olderFeedback = parseFeedbackData(older.feedbackData);
+            const newerFeedback = parseFeedbackData(newer.feedbackData);
+
+            if (!olderFeedback?.evaluationCount || !newerFeedback?.evaluationCount) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            recommendation: 'insufficient_data',
+                            olderVersion: older.version,
+                            newerVersion: newer.version,
+                            reason: 'One or both versions have no aggregated feedbackData/evaluations yet.',
+                        }, null, 2),
+                    }],
+                    isError: false,
+                };
+            }
+
+            const olderAvg = olderFeedback.avgScore ?? 0;
+            const newerAvg = newerFeedback.avgScore ?? 0;
+            const avgScoreDelta = Math.round((newerAvg - olderAvg) * 10) / 10;
+
+            const dimensionKeys = Array.from(new Set([
+                ...Object.keys(olderFeedback.dimensions ?? {}),
+                ...Object.keys(newerFeedback.dimensions ?? {}),
+            ]));
+            const dimensionDeltas = Object.fromEntries(
+                dimensionKeys.map((key) => [
+                    key,
+                    Math.round((((newerFeedback.dimensions?.[key] ?? 0) - (olderFeedback.dimensions?.[key] ?? 0)) * 10)) / 10,
+                ])
+            );
+
+            const recommendation = avgScoreDelta >= 3
+                ? 'keep_newer'
+                : avgScoreDelta <= -3
+                    ? 'rollback_older'
+                    : 'insufficient_data';
+
+            const comparison = {
+                recommendation,
+                olderVersion: {
+                    version: older.version,
+                    avgScore: olderAvg,
+                    evaluationCount: olderFeedback.evaluationCount,
+                    latestAction: olderFeedback.latestAction ?? null,
+                },
+                newerVersion: {
+                    version: newer.version,
+                    avgScore: newerAvg,
+                    evaluationCount: newerFeedback.evaluationCount,
+                    latestAction: newerFeedback.latestAction ?? null,
+                },
+                avgScoreDelta,
+                dimensionDeltas,
+            };
             return {
                 content: [{
                     type: 'text',
-                    text: JSON.stringify(result.comparison, null, 2),
+                    text: JSON.stringify(comparison, null, 2),
                 }],
                 isError: false,
             };
@@ -1677,42 +1844,51 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can rollback genomes.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can rollback genomes.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY ?? '';
+        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         try {
-            const res = await fetch(
-                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}/rollback`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
-                    },
-                    body: JSON.stringify({
-                        targetVersion: args.targetVersion,
-                        reason: args.reason,
-                    }),
-                    signal: AbortSignal.timeout(10_000),
-                }
-            );
+            const [targetGenome, versions] = await Promise.all([
+                fetchPinnedGenomeVersion(hubUrl, args.genomeNamespace, args.genomeName, args.targetVersion),
+                fetchGenomeVersions(hubUrl, args.genomeNamespace, args.genomeName),
+            ]);
+            const latestVersion = versions.reduce((max, genome) => Math.max(max, genome.version), 0);
+
+            const res = await fetch(`${hubUrl}/genomes`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
+                },
+                body: JSON.stringify({
+                    namespace: args.genomeNamespace,
+                    name: args.genomeName,
+                    version: latestVersion + 1,
+                    description: `Rollback to v${args.targetVersion}: ${args.reason}`,
+                    spec: targetGenome.spec,
+                    tags: targetGenome.tags ?? undefined,
+                    category: targetGenome.category ?? undefined,
+                    isPublic: targetGenome.isPublic ?? true,
+                }),
+                signal: AbortSignal.timeout(10_000),
+            });
 
             if (!res.ok) {
                 const errBody = await res.text();
                 return { content: [{ type: 'text', text: `Rollback failed: ${res.status} ${errBody}` }], isError: true };
             }
 
-            const result = await res.json() as { genome?: { version?: number }; rollback?: Record<string, unknown> };
+            const result = await res.json() as { genome?: { version?: number } };
             return {
                 content: [{
                     type: 'text',
                     text: [
                         `✅ Rolled back ${args.genomeNamespace}/${args.genomeName}`,
-                        `Restored from v${args.targetVersion} → new v${result.genome?.version ?? '?'}`,
+                        `Restored spec from v${args.targetVersion} → published v${result.genome?.version ?? latestVersion + 1}`,
                         `Reason: ${args.reason}`,
                     ].join('\n'),
                 }],

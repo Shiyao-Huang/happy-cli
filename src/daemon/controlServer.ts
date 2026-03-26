@@ -135,10 +135,9 @@ export function startDaemonControlServer({
       logger.debug(`[CONTROL SERVER] Listing ${children.length} sessions`);
       return {
         children: children
-          .filter(child => child.ahaSessionId != null)
           .map(child => ({
             startedBy: child.startedBy,
-            ahaSessionId: child.ahaSessionId!,
+            ahaSessionId: child.ahaSessionId ?? `PID-${child.pid}`,
             pid: child.pid
           }))
       }
@@ -384,7 +383,9 @@ export function startDaemonControlServer({
           200: z.object({
             success: z.boolean(),
             sessionId: z.string().optional(),
-            approvedNewDirectoryCreation: z.boolean().optional()
+            approvedNewDirectoryCreation: z.boolean().optional(),
+            queued: z.boolean().optional(),
+            queuePosition: z.number().optional(),
           }),
           409: z.object({
             success: z.boolean(),
@@ -418,6 +419,15 @@ export function startDaemonControlServer({
             success: true,
             sessionId: result.sessionId,
             approvedNewDirectoryCreation: true
+          };
+
+        case 'queued':
+          return {
+            success: true,
+            sessionId: result.sessionId,
+            approvedNewDirectoryCreation: true,
+            queued: true,
+            queuePosition: result.queuePosition,
           };
         
         case 'requestToApproveDirectoryCreation':

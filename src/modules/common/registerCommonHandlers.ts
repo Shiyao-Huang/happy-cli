@@ -145,6 +145,7 @@ export interface SpawnSessionOptions {
 
 export type SpawnSessionResult =
     | { type: 'success'; sessionId: string }
+    | { type: 'queued'; sessionId: string; queuePosition: number }
     | { type: 'requestToApproveDirectoryCreation'; directory: string }
     | { type: 'error'; errorMessage: string };
 

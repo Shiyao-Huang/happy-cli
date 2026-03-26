@@ -126,4 +126,43 @@ describe('supervisorScheduler', () => {
             })
         );
     });
+
+    it('does not terminate a team when task summary lookup fails', async () => {
+        const staleState = {
+            teamId: 'team-1',
+            lastRunAt: Date.now() - 120_000,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: null,
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: null,
+            pendingActionMeta: null,
+        };
+
+        mockListSupervisorStates.mockReturnValue([staleState]);
+        mockReadSupervisorState.mockReturnValue(staleState);
+        mockAxiosGet.mockRejectedValue(new Error('tasks api unavailable'));
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map(),
+            heartbeatCount: 1,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession: vi.fn(),
+            requestHelp: vi.fn(),
+        });
+
+        expect(mockUpdateSupervisorState).not.toHaveBeenCalledWith(
+            'team-1',
+            expect.any(Function),
+        );
+    });
 });

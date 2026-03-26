@@ -44,10 +44,13 @@ vi.mock('@/trace/traceTypes', () => ({
 
 import {
     initSessionManagerHeartbeat,
+    onHeartbeatPrunedSession,
     onAhaSessionWebhook,
     onChildExited,
     pidToTrackedSession,
+    resetSessionManagerForTests,
     recoverExistingSessions,
+    spawnSession,
 } from './sessionManager';
 
 describe('sessionManager recovered session self-heal', () => {
@@ -55,7 +58,7 @@ describe('sessionManager recovered session self-heal', () => {
     let killSpy: ReturnType<typeof vi.spyOn> | null = null;
 
     beforeEach(() => {
-        pidToTrackedSession.clear();
+        resetSessionManagerForTests();
         pingHeartbeat.mockReset();
         initSessionManagerHeartbeat(pingHeartbeat);
         mockExecSync.mockReset();
@@ -63,6 +66,7 @@ describe('sessionManager recovered session self-heal', () => {
         killSpy?.mockRestore();
         killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as any);
         process.env.AHA_SESSION_WEBHOOK_TIMEOUT_MS = '10000';
+        delete process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS;
 
         mockExecSync.mockImplementation((command: string) => {
             if (command.startsWith('git rev-parse')) return 'true\n';
@@ -222,6 +226,150 @@ describe('sessionManager recovered session self-heal', () => {
                 AHA_TEAM_MEMBER_ID: 'member-1',
             },
         });
+    });
+
+    it('infers recovered codex runtimes from process args so they do not consume Claude slots', async () => {
+        process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS = '3';
+        mockExecSync.mockImplementation((command: string) => {
+            if (command.startsWith('ps -eo pid,args')) {
+                return [
+                    '2112 node /cli/index.mjs claude --aha-starting-mode remote --started-by daemon --session-tag team:team-1:member:member-1',
+                    '3655 node /cli/index.mjs codex --aha-starting-mode remote --started-by daemon --session-tag team:team-1:member:member-2',
+                    '3674 node /cli/index.mjs codex --aha-starting-mode remote --started-by daemon --session-tag team:team-1:member:member-3',
+                    '4620 node /cli/index.mjs codex --aha-starting-mode remote --started-by daemon --session-tag team:team-1:member:member-4',
+                ].join('\n');
+            }
+            if (command.startsWith('lsof -a -d cwd -Fn -p ')) {
+                return 'p12345\nn/Users/copizza/Desktop/happyhere/recovered-project\n';
+            }
+            if (command.startsWith('git rev-parse')) return 'true\n';
+            if (command.startsWith('git status --porcelain')) return '';
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 54321,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+        });
+
+        const api = {
+            getTeam: vi.fn().mockResolvedValue({
+                team: {
+                    members: [],
+                },
+            }),
+        };
+
+        const recovered = await recoverExistingSessions(api as any);
+
+        expect(recovered).toBe(4);
+        expect(pidToTrackedSession.get(3655)?.spawnOptions?.agent).toBe('codex');
+        expect(pidToTrackedSession.get(3655)?.ahaSessionMetadataFromLocalWebhook?.flavor).toBe('codex');
+        expect(pidToTrackedSession.get(2112)?.spawnOptions?.agent).toBe('claude');
+
+        const spawnPromise = spawnSession({
+            directory: process.cwd(),
+            agent: 'claude',
+            teamId: 'team-2',
+            role: 'builder',
+            sessionName: 'Builder 2',
+            sessionTag: 'team:team-2:member:member-5',
+            sessionPath: process.cwd(),
+            env: {
+                AHA_TEAM_MEMBER_ID: 'member-5',
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSpawnAhaCLI).toHaveBeenCalledTimes(1);
+        });
+
+        onAhaSessionWebhook('cmn-new-session', {
+            path: process.cwd(),
+            host: 'test-host',
+            homeDir: '/Users/copizza',
+            ahaHomeDir: '/Users/copizza/.aha',
+            ahaLibDir: '/Users/copizza/Desktop/happyhere/aha-cli-bug-fix-0324',
+            ahaToolsDir: '/Users/copizza/Desktop/happyhere/aha-cli-bug-fix-0324/tools/unpacked',
+            hostPid: 54321,
+            teamId: 'team-2',
+            roomId: 'team-2',
+            role: 'builder',
+            executionPlane: 'mainline',
+            memberId: 'member-5',
+            sessionTag: 'team:team-2:member:member-5',
+            flavor: 'claude',
+            name: 'Builder 2',
+        } as any);
+
+        await expect(spawnPromise).resolves.toEqual({
+            type: 'success',
+            sessionId: 'cmn-new-session',
+        });
+    });
+
+    it('returns queued immediately with a reserved session id when Claude capacity is full', async () => {
+        process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS = '3';
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 65432,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+        });
+
+        pidToTrackedSession.set(1001, {
+            startedBy: 'daemon',
+            pid: 1001,
+            ahaSessionId: 'cmn-claude-1',
+            spawnOptions: { directory: process.cwd(), agent: 'claude' },
+        });
+        pidToTrackedSession.set(1002, {
+            startedBy: 'daemon',
+            pid: 1002,
+            ahaSessionId: 'cmn-claude-2',
+            spawnOptions: { directory: process.cwd(), agent: 'claude' },
+        });
+        pidToTrackedSession.set(1003, {
+            startedBy: 'daemon',
+            pid: 1003,
+            ahaSessionId: 'cmn-claude-3',
+            spawnOptions: { directory: process.cwd(), agent: 'claude' },
+        });
+
+        const queued = await spawnSession({
+            directory: process.cwd(),
+            agent: 'claude',
+            teamId: 'team-queue',
+            role: 'builder',
+            sessionName: 'Queued Builder',
+            sessionTag: 'team:team-queue:member:member-queued',
+            sessionPath: process.cwd(),
+            env: {
+                AHA_TEAM_MEMBER_ID: 'member-queued',
+            },
+        });
+
+        expect(queued.type).toBe('queued');
+        expect(queued.sessionId).toMatch(/^queued-/);
+        expect(queued.queuePosition).toBe(1);
+        expect(mockSpawnAhaCLI).not.toHaveBeenCalled();
+
+        pidToTrackedSession.delete(1001);
+        onHeartbeatPrunedSession({
+            startedBy: 'daemon',
+            pid: 1001,
+            ahaSessionId: 'cmn-claude-1',
+            intentionallyStopped: true,
+            spawnOptions: { directory: process.cwd(), agent: 'claude' },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSpawnAhaCLI).toHaveBeenCalledTimes(1);
+        });
+        const spawnArgs = mockSpawnAhaCLI.mock.calls[0][1];
+        expect(spawnArgs.env.AHA_RECOVER_SESSION_ID).toBe(queued.sessionId);
     });
 
     it('respawns automatically after abnormal exit once respawn options are available', async () => {
