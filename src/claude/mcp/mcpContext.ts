@@ -436,6 +436,7 @@ export function buildMcpHelpers(
                 {
                     memberId,
                     sessionTag,
+                    ...(resolvedSpec.specId ? { candidateId: `spec:${resolvedSpec.specId}` } : {}),
                     specId: resolvedSpec.specId ?? undefined,
                     parentSessionId: params.parentSessionId || params.targetSessionId,
                     executionPlane: params.executionPlane,
