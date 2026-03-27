@@ -38,6 +38,8 @@ import { registerTaskTools } from './taskTools';
 import { registerAgentTools } from './agentTools';
 import { registerSupervisorTools } from './supervisorTools';
 import { registerEvolutionTools } from './evolutionTools';
+import { registerReflexivityTools } from './reflexivityTools';
+import { registerMirrorTools } from './mirrorTools';
 
 export async function startAhaServer(
     api: any,
@@ -178,6 +180,8 @@ export async function startAhaServer(
         registerAgentTools(ctx);
         registerSupervisorTools(ctx);
         registerEvolutionTools(ctx);
+        registerReflexivityTools(ctx);
+        registerMirrorTools(ctx);
 
         return mcp;
     };
@@ -274,6 +278,15 @@ export async function startAhaServer(
             'restart_daemon',
             'tsc_check',
             'git_diff_summary',
+            'read_unified_log',
+            // Reflexivity self-assessment tools
+            'reflexivity_list_cases',
+            'reflexivity_build_fixture',
+            'reflexivity_score_case',
+            // Mirror analysis tools
+            'mirror_analyze',
+            'mirror_check_convergence',
+            'mirror_format_report',
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');
