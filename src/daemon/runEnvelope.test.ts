@@ -126,7 +126,9 @@ describe('runEnvelope', () => {
     rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
     const workspaceRoot = join(rootDir, 'workspace')
     await import('fs/promises').then(async ({ mkdir, writeFile }) => {
+      await mkdir(join(workspaceRoot, '.claude'), { recursive: true })
       await mkdir(join(workspaceRoot, '.genome'), { recursive: true })
+      await writeFile(join(workspaceRoot, '.claude', 'settings.json'), '{}', 'utf-8')
       await writeFile(join(workspaceRoot, '.genome', 'spec.json'), JSON.stringify({
         displayName: 'Genome Analyst',
         namespace: '@official',
@@ -157,6 +159,9 @@ describe('runEnvelope', () => {
         agent: 'claude',
         role: 'researcher',
         executionPlane: 'mainline',
+        env: {
+          AHA_SETTINGS_PATH: join(workspaceRoot, '.claude', 'settings.json'),
+        },
       },
     })
 
@@ -178,5 +183,94 @@ describe('runEnvelope', () => {
         mutationNote: 'narrowed scoring scope',
       },
     })
+  })
+
+  it('prefers runtime-reported candidate identity over spawn-time fallback during finalize', async () => {
+    rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
+
+    await writeDraftRunEnvelope({
+      pid: 6262,
+      rootDir,
+      options: {
+        directory: '/repo',
+        agent: 'claude',
+        teamId: 'team-6',
+        role: 'researcher',
+        sessionPath: '/repo',
+        executionPlane: 'mainline',
+      },
+    })
+
+    const finalized = await finalizeRunEnvelopeFromWebhook({
+      pid: 6262,
+      sessionId: 'cmn-runtime-identity',
+      rootDir,
+      metadata: {
+        path: '/repo',
+        host: 'host',
+        homeDir: '/home',
+        ahaHomeDir: '/aha',
+        ahaLibDir: '/lib',
+        ahaToolsDir: '/tools',
+        hostPid: 6262,
+        startedBy: 'daemon',
+        role: 'researcher',
+        teamId: 'team-6',
+        executionPlane: 'mainline',
+        flavor: 'claude',
+        specId: '@official/researcher:7',
+        candidateIdentity: {
+          candidateId: 'spec:@official/researcher:7',
+          specId: '@official/researcher:7',
+          basis: 'spec',
+        },
+      } as any,
+      spawnOptions: {
+        directory: '/repo',
+        agent: 'claude',
+        teamId: 'team-6',
+        role: 'researcher',
+        sessionPath: '/repo',
+        executionPlane: 'mainline',
+      },
+    })
+
+    expect(finalized.candidateId).toBe('spec:@official/researcher:7')
+    expect(finalized.specId).toBe('@official/researcher:7')
+    expect(finalized.candidateIdentity.basis).toBe('spec')
+  })
+
+  it('does not read stray .genome snapshots from an untrusted workspace without materialized settings', async () => {
+    rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
+    const workspaceRoot = join(rootDir, 'shared-repo')
+    await import('fs/promises').then(async ({ mkdir, writeFile }) => {
+      await mkdir(join(workspaceRoot, '.genome'), { recursive: true })
+      await writeFile(join(workspaceRoot, '.genome', 'spec.json'), JSON.stringify({
+        displayName: 'Leaked Genome',
+        namespace: '@official',
+        version: 9,
+      }, null, 2))
+      await writeFile(join(workspaceRoot, '.genome', 'lineage.json'), JSON.stringify({
+        specId: '@official/leaked-genome:9',
+        namespace: '@official',
+        version: 9,
+      }, null, 2))
+    })
+
+    const envelope = await writeDraftRunEnvelope({
+      pid: 7373,
+      rootDir,
+      options: {
+        directory: workspaceRoot,
+        sessionPath: workspaceRoot,
+        agent: 'claude',
+        role: 'help-agent',
+        executionPlane: 'bypass',
+      },
+    })
+
+    expect(envelope.candidateIdentity.basis).toBe('derived')
+    expect(envelope.specId).toBeNull()
+    expect(envelope.candidateId.startsWith('derived:')).toBe(true)
   })
 })

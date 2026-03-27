@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
 
 import { configuration } from '@/configuration'
 import { Metadata } from '@/api/types'
@@ -60,6 +60,14 @@ export interface CandidateIdentity {
   } | null
 }
 
+type CandidateIdentityInput = {
+  candidateId?: unknown
+  specId?: unknown
+  basis?: unknown
+  fullSpec?: unknown
+  diff?: unknown
+}
+
 function runsDir(root = configuration.ahaHomeDir): string {
   return join(root, 'runs')
 }
@@ -113,15 +121,22 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function readMaterializedGenomeSnapshot(workspacePath?: string | null): {
+function resolveMaterializedWorkspaceRoot(settingsPath?: string | null): string | null {
+  if (!settingsPath || !existsSync(settingsPath)) return null
+  const settingsDir = dirname(settingsPath)
+  if (basename(settingsDir) !== '.claude') return null
+  return dirname(settingsDir)
+}
+
+function readMaterializedGenomeSnapshot(workspaceRoot?: string | null): {
   spec: Record<string, unknown> | null
   lineage: Record<string, unknown> | null
 } {
-  if (!workspacePath) {
+  if (!workspaceRoot) {
     return { spec: null, lineage: null }
   }
 
-  const genomeDir = join(workspacePath, '.genome')
+  const genomeDir = join(workspaceRoot, '.genome')
   return {
     spec: readJsonFileMaybe(join(genomeDir, 'spec.json')),
     lineage: readJsonFileMaybe(join(genomeDir, 'lineage.json')),
@@ -156,23 +171,65 @@ function candidateBasisRank(basis: CandidateIdentityBasis): number {
   return 1
 }
 
+function normalizeCandidateIdentityBasis(candidateId: string, specId: string | null, basis?: unknown): CandidateIdentityBasis {
+  if (basis === 'spec' || basis === 'materialized' || basis === 'derived') {
+    return basis
+  }
+  if (specId || candidateId.startsWith('spec:')) return 'spec'
+  if (candidateId.startsWith('materialized:')) return 'materialized'
+  return 'derived'
+}
+
+function normalizeCandidateIdentity(
+  input: CandidateIdentityInput | null | undefined,
+  fallbackSpecId?: string | null,
+): CandidateIdentity | null {
+  const candidateId = asString(input?.candidateId)
+  if (!candidateId) return null
+
+  const specId = asString(input?.specId) ?? fallbackSpecId ?? null
+  const fullSpec = input?.fullSpec && typeof input.fullSpec === 'object'
+    ? input.fullSpec as CandidateIdentity['fullSpec']
+    : null
+  const diff = input?.diff && typeof input.diff === 'object'
+    ? input.diff as CandidateIdentity['diff']
+    : null
+
+  return {
+    candidateId,
+    specId,
+    basis: normalizeCandidateIdentityBasis(candidateId, specId, input?.basis),
+    fullSpec,
+    diff,
+  }
+}
+
 export function resolveCandidateIdentity(params: {
   specId?: string | null
   role?: string
   runtimeType?: string
   executionPlane?: string
   prompt?: string
-  workspacePath?: string | null
+  materializedSettingsPath?: string | null
+  runtimeCandidateIdentity?: CandidateIdentityInput | null
   existing?: CandidateIdentity | null
 }): CandidateIdentity {
-  const snapshot = readMaterializedGenomeSnapshot(params.workspacePath)
+  const normalizedRuntimeIdentity = normalizeCandidateIdentity(params.runtimeCandidateIdentity, params.specId ?? null)
+  const materializedWorkspaceRoot = resolveMaterializedWorkspaceRoot(params.materializedSettingsPath)
+  const snapshot = readMaterializedGenomeSnapshot(materializedWorkspaceRoot)
   const specIdFromSnapshot = asString(snapshot.lineage?.specId)
-  const specId = params.specId ?? specIdFromSnapshot ?? null
+  const specId = normalizedRuntimeIdentity?.specId ?? params.specId ?? specIdFromSnapshot ?? null
   const fullSpec = buildFullSpecSnapshot(snapshot.spec, snapshot.lineage)
   const diff = buildDiffSnapshot(snapshot.lineage)
 
   let resolved: CandidateIdentity
-  if (specId) {
+  if (normalizedRuntimeIdentity) {
+    resolved = {
+      ...normalizedRuntimeIdentity,
+      fullSpec: normalizedRuntimeIdentity.fullSpec ?? fullSpec,
+      diff: normalizedRuntimeIdentity.diff ?? diff,
+    }
+  } else if (specId) {
     resolved = {
       candidateId: `spec:${specId}`,
       specId,
@@ -267,7 +324,7 @@ export async function writeDraftRunEnvelope(params: {
     runtimeType: params.options.agent,
     executionPlane: params.options.executionPlane,
     prompt: params.options.env?.AHA_AGENT_PROMPT,
-    workspacePath: params.options.sessionPath ?? params.options.directory ?? null,
+    materializedSettingsPath: params.options.env?.AHA_SETTINGS_PATH ?? null,
   })
   const envelope: RunEnvelope = {
     runId,
@@ -317,12 +374,13 @@ export async function finalizeRunEnvelopeFromWebhook(params: {
   const runtimeType = params.metadata.flavor || params.spawnOptions?.agent || 'claude'
   const executionPlane = params.metadata.executionPlane || params.spawnOptions?.executionPlane || null
   const candidateIdentity = resolveCandidateIdentity({
-    specId: params.spawnOptions?.specId ?? null,
+    specId: params.metadata.specId ?? params.spawnOptions?.specId ?? existing?.specId ?? null,
     role: role ?? undefined,
     runtimeType,
     executionPlane: executionPlane ?? undefined,
     prompt: params.spawnOptions?.env?.AHA_AGENT_PROMPT,
-    workspacePath: params.metadata.path ?? params.spawnOptions?.sessionPath ?? params.spawnOptions?.directory ?? null,
+    materializedSettingsPath: params.spawnOptions?.env?.AHA_SETTINGS_PATH ?? null,
+    runtimeCandidateIdentity: params.metadata.candidateIdentity ?? null,
     existing: existing?.candidateIdentity ?? null,
   })
 
