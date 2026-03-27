@@ -2,6 +2,23 @@
 
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Supervisor ops now include `read_unified_log`, which aggregates team messages, supervisor score logs, help-request events, and trace events into one ordered stream for faster incident debugging.
+- Added a hardened `restart_daemon` flow with graceful shutdown, SIGKILL fallback, health recheck, and dedicated regression tests.
+- Added API/session reconnect regression coverage so websocket reconnect lifecycle remains protected by tests.
+
+### Changed
+- Pre-commit now serializes `prerecommit` runs and is pinned to `Node 22` with a `10GB` heap allocation to avoid multi-agent `tsc` OOM failures on shared machines.
+- Updated the bundled Claude Code SDK to `2.1.85` and aligned the Codex bridge compatibility target documentation to `codex-cli 0.117.0`.
+
+### Fixed
+- Run-envelope identity resolution now prefers runtime-reported candidate identity and runtime fallback metadata before local derivation.
+- Candidate identity no longer trusts stray `.genome` snapshots from an arbitrary shared repo/workspace; only trusted materialized workspaces may contribute specimen identity.
+- Help-lane retries no longer treat saturated help-agent reuse as delivered work; pending actions now stay open until acceptance/activation is observable.
+- Context status now derives Claude 1M window size from `resolvedModel` instead of stale persisted session metadata.
+
 ## [2.0.16] - 2026-03-26
 
 ### Fixed
