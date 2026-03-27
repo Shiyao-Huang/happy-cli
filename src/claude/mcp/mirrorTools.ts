@@ -145,7 +145,7 @@ export function registerMirrorTools(ctx: McpToolContext): void {
                         type: 'text' as const,
                         text: JSON.stringify({
                             converged: convergence.converged,
-                            reason: convergence.convergenceReason ?? null,
+                            convergenceReason: convergence.convergenceReason ?? undefined,
                             depth: convergence.depth,
                             maxDepth: convergence.maxDepth,
                             scoreHistory: convergence.scoreHistory,

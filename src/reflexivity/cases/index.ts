@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { reflexivityCaseSchema, type ReflexivityCase } from '../schema'
+import { projectPath } from '../../projectPath'
 
 export const REFLEXIVITY_CASE_IDS = [
     'RFX-SELF-001',
@@ -21,21 +22,29 @@ function fileExists(filePath: string): boolean {
     }
 }
 
-export function resolveReflexivityCasesPath(startDir = process.cwd()): string {
+function walkUpForBenchmark(startDir: string): string | null {
     let current = path.resolve(startDir)
-
     while (true) {
         const candidate = path.join(current, 'benchmark', 'reflexivity-cases-v1.jsonl')
-        if (fileExists(candidate)) {
-            return candidate
-        }
-
+        if (fileExists(candidate)) return candidate
         const parent = path.dirname(current)
-        if (parent === current) {
-            throw new Error('Could not locate benchmark/reflexivity-cases-v1.jsonl from current working directory.')
-        }
+        if (parent === current) return null
         current = parent
     }
+}
+
+export function resolveReflexivityCasesPath(startDir?: string): string {
+    // Try explicit startDir or CWD first
+    const fromCwd = walkUpForBenchmark(startDir ?? process.cwd())
+    if (fromCwd) return fromCwd
+
+    // Fallback: resolve from package root (handles daemon CWD != package root)
+    const fromPackage = walkUpForBenchmark(projectPath())
+    if (fromPackage) return fromPackage
+
+    throw new Error(
+        'Could not locate benchmark/reflexivity-cases-v1.jsonl from CWD or package root.',
+    )
 }
 
 export function parseReflexivityCasesJsonl(content: string): ReflexivityCase[] {
