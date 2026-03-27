@@ -165,4 +165,85 @@ describe('supervisorScheduler', () => {
             expect.any(Function),
         );
     });
+
+    it('keeps pendingAction when help reuse is saturated and schedules another retry', async () => {
+        const now = Date.now();
+        const pendingState = {
+            teamId: 'team-1',
+            lastRunAt: now - 120_000,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: null,
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: {
+                type: 'notify_help',
+                message: 'help needed',
+                requestType: 'error',
+                severity: 'high',
+                description: 'builder is blocked',
+                targetSessionId: 'session-1',
+            },
+            pendingActionMeta: {
+                retryCount: 0,
+                lastAttemptAt: 0,
+                nextRetryAt: 0,
+                lastError: null,
+            },
+        };
+
+        mockListSupervisorStates.mockReturnValue([pendingState]);
+        mockReadSupervisorState.mockReturnValue(pendingState);
+        mockAxiosGet.mockRejectedValue(new Error('tasks api unavailable'));
+
+        const requestHelp = vi.fn().mockResolvedValue({
+            success: true,
+            helpAgentSessionId: 'help-1',
+            reused: true,
+            saturated: true,
+        });
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map([
+                [11, {
+                    pid: 11,
+                    ahaSessionId: 'session-1',
+                    ahaSessionMetadataFromLocalWebhook: {
+                        teamId: 'team-1',
+                        role: 'builder',
+                        path: '/repo',
+                        host: 'h',
+                        homeDir: '/home',
+                        ahaHomeDir: '/aha',
+                        ahaLibDir: '/lib',
+                        ahaToolsDir: '/tools',
+                    },
+                } as any],
+            ]),
+            heartbeatCount: 1,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession: vi.fn(),
+            requestHelp,
+        });
+
+        expect(requestHelp).toHaveBeenCalledTimes(1);
+        expect(mockUpdateSupervisorState).toHaveBeenCalledWith(
+            'team-1',
+            expect.any(Function),
+        );
+
+        const updater = mockUpdateSupervisorState.mock.calls.at(-1)?.[1];
+        const nextState = updater ? updater(pendingState) : null;
+        expect(nextState?.pendingAction).toEqual(pendingState.pendingAction);
+        expect(nextState?.pendingActionMeta?.retryCount).toBe(1);
+        expect(nextState?.pendingActionMeta?.lastError).toContain('saturated');
+    });
 });
