@@ -240,6 +240,43 @@ describe('runEnvelope', () => {
     expect(finalized.candidateIdentity.basis).toBe('spec')
   })
 
+  it('uses runtime metadata candidateId when candidateIdentity JSON is absent', async () => {
+    rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
+
+    const finalized = await finalizeRunEnvelopeFromWebhook({
+      pid: 8484,
+      sessionId: 'cmn-runtime-candidate-id',
+      rootDir,
+      metadata: {
+        path: '/repo',
+        host: 'host',
+        homeDir: '/home',
+        ahaHomeDir: '/aha',
+        ahaLibDir: '/lib',
+        ahaToolsDir: '/tools',
+        hostPid: 8484,
+        startedBy: 'daemon',
+        role: 'researcher',
+        teamId: 'team-8',
+        executionPlane: 'mainline',
+        flavor: 'claude',
+        candidateId: 'materialized:runtime-candidate-1',
+      } as any,
+      spawnOptions: {
+        directory: '/repo',
+        agent: 'claude',
+        teamId: 'team-8',
+        role: 'researcher',
+        sessionPath: '/repo',
+        executionPlane: 'mainline',
+      },
+    })
+
+    expect(finalized.candidateId).toBe('materialized:runtime-candidate-1')
+    expect(finalized.candidateIdentity.candidateId).toBe('materialized:runtime-candidate-1')
+    expect(finalized.candidateIdentity.basis).toBe('materialized')
+  })
+
   it('does not read stray .genome snapshots from an untrusted workspace without materialized settings', async () => {
     rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
     const workspaceRoot = join(rootDir, 'shared-repo')

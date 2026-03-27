@@ -206,6 +206,7 @@ function normalizeCandidateIdentity(
 
 export function resolveCandidateIdentity(params: {
   specId?: string | null
+  candidateId?: string | null
   role?: string
   runtimeType?: string
   executionPlane?: string
@@ -214,7 +215,13 @@ export function resolveCandidateIdentity(params: {
   runtimeCandidateIdentity?: CandidateIdentityInput | null
   existing?: CandidateIdentity | null
 }): CandidateIdentity {
-  const normalizedRuntimeIdentity = normalizeCandidateIdentity(params.runtimeCandidateIdentity, params.specId ?? null)
+  const normalizedRuntimeIdentity = normalizeCandidateIdentity(
+    params.runtimeCandidateIdentity ?? (params.candidateId ? {
+      candidateId: params.candidateId,
+      specId: params.specId ?? null,
+    } : null),
+    params.specId ?? null,
+  )
   const materializedWorkspaceRoot = resolveMaterializedWorkspaceRoot(params.materializedSettingsPath)
   const snapshot = readMaterializedGenomeSnapshot(materializedWorkspaceRoot)
   const specIdFromSnapshot = asString(snapshot.lineage?.specId)
@@ -320,6 +327,7 @@ export async function writeDraftRunEnvelope(params: {
   const now = new Date().toISOString()
   const candidateIdentity = resolveCandidateIdentity({
     specId: params.options.specId ?? null,
+    candidateId: null,
     role: params.options.role,
     runtimeType: params.options.agent,
     executionPlane: params.options.executionPlane,
@@ -375,6 +383,7 @@ export async function finalizeRunEnvelopeFromWebhook(params: {
   const executionPlane = params.metadata.executionPlane || params.spawnOptions?.executionPlane || null
   const candidateIdentity = resolveCandidateIdentity({
     specId: params.metadata.specId ?? params.spawnOptions?.specId ?? existing?.specId ?? null,
+    candidateId: params.metadata.candidateId ?? existing?.candidateId ?? null,
     role: role ?? undefined,
     runtimeType,
     executionPlane: executionPlane ?? undefined,
