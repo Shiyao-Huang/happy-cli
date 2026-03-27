@@ -52,7 +52,7 @@ export function startDaemonControlServer({
     type: string;
     description: string;
     severity: string;
-  }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
+  }) => Promise<{ success: boolean; helpAgentSessionId?: string; reused?: boolean; saturated?: boolean; error?: string }>;
   getChannelStatus?: () => {
     weixin: null | {
       configured: boolean;
@@ -538,7 +538,12 @@ export function startDaemonControlServer({
         if (requestHelp) {
           const result = await requestHelp({ teamId, sessionId, type, description, severity });
           if (result.success) {
-            return { success: true, helpAgentSessionId: result.helpAgentSessionId };
+            return {
+              success: true,
+              helpAgentSessionId: result.helpAgentSessionId,
+              reused: result.reused,
+              saturated: result.saturated,
+            };
           }
           return { success: false, error: result.error || 'Failed to spawn help-agent' };
         }

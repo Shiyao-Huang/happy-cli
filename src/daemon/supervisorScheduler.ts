@@ -67,7 +67,7 @@ export interface SupervisorContext {
     type: string;
     description: string;
     severity: string;
-  }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
+  }) => Promise<{ success: boolean; helpAgentSessionId?: string; reused?: boolean; saturated?: boolean; error?: string }>;
 }
 
 // ── Shared helper ──────────────────────────────────────────────────────────────
@@ -373,7 +373,9 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       severity: pendingAction.severity || 'high',
     });
 
-    if (result.success) {
+    const unresolvedSaturatedReuse = result.success && result.reused && result.saturated;
+
+    if (result.success && !unresolvedSaturatedReuse) {
       await updateSupervisorState(supervisorState.teamId, (state) => ({
         ...state,
         pendingAction: null,
@@ -392,7 +394,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       }));
       logger.debug(
         `[SUPERVISOR SCHEDULER] pendingAction retries exhausted for team ${supervisorState.teamId}: ` +
-        `${result.error || 'unknown error'}`
+        `${unresolvedSaturatedReuse ? 'help-agent reuse remained saturated' : result.error || 'unknown error'}`
       );
       continue;
     }
@@ -403,12 +405,14 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         retryCount: nextRetryCount,
         lastAttemptAt: now,
         nextRetryAt: now + getPendingActionRetryDelayMs(nextRetryCount, pendingActionBaseRetryMs),
-        lastError: result.error || 'unknown error',
+        lastError: unresolvedSaturatedReuse
+          ? `help-agent ${result.helpAgentSessionId ?? 'unknown'} reused but saturated`
+          : result.error || 'unknown error',
       },
     }));
     logger.debug(
       `[SUPERVISOR SCHEDULER] pendingAction retry ${nextRetryCount}/${SUPERVISOR_PENDING_ACTION_MAX_RETRIES} ` +
-      `failed for team ${supervisorState.teamId}: ${result.error || 'unknown error'}`
+      `failed for team ${supervisorState.teamId}: ${unresolvedSaturatedReuse ? 'help-agent reuse remained saturated' : result.error || 'unknown error'}`
     );
   }
 

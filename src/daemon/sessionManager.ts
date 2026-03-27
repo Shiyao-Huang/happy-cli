@@ -778,7 +778,7 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       runtimeType: options.agent,
       executionPlane: options.executionPlane,
       prompt: options.env?.AHA_AGENT_PROMPT,
-      workspacePath: options.sessionPath ?? options.directory ?? null,
+      materializedSettingsPath: options.env?.AHA_SETTINGS_PATH ?? null,
     });
     if (candidateIdentity.specId) {
       extraEnv.AHA_SPEC_ID = candidateIdentity.specId;

@@ -604,6 +604,53 @@ export function buildMcpHelpers(
                     const helpAgentSessionId = typeof helpResult.helpAgentSessionId === 'string'
                         ? helpResult.helpAgentSessionId
                         : undefined;
+                    const reusedExistingHelpAgent = Boolean(helpResult.reused);
+
+                    if (reusedExistingHelpAgent && helpAgentSessionId) {
+                        try {
+                            await api.sendTeamMessage(teamId, {
+                                id: randomUUID(),
+                                teamId,
+                                content: `🛠️ Reusing help-agent ${helpAgentSessionId} for ${sessionId}. Handle ${type} (${severity}). Root issue: ${description}`,
+                                shortContent: `🛠️ Reusing help-agent: ${type} (${severity})`,
+                                type: 'notification',
+                                timestamp: Date.now(),
+                                fromSessionId: sessionId,
+                                fromRole: role,
+                                mentions: [helpAgentSessionId],
+                                metadata: {
+                                    helpType: type,
+                                    severity,
+                                    taskId,
+                                    helpAgentSessionId,
+                                    reused: true,
+                                    saturated: Boolean(helpResult.saturated),
+                                },
+                            });
+                        } catch (error) {
+                            logger.debug('[help-lane] Failed to notify reused help-agent (non-fatal)', error);
+                        }
+
+                        if (helpResult.saturated) {
+                            lastError = `help-agent ${helpAgentSessionId} reused but still saturated; awaiting acceptance before clearing pendingAction`;
+                            logger.debug(`[help-lane] Saturated help-agent reuse remains unresolved on attempt ${attempt}: ${lastError}`);
+                            break;
+                        }
+
+                        try {
+                            const { updateSupervisorRun } = await import('@/daemon/supervisorState');
+                            await updateSupervisorRun(teamId, {
+                                pendingAction: null,
+                                pendingActionMeta: null,
+                            });
+                        } catch (error) {
+                            logger.debug('[help-lane] Failed to clear pendingAction after help-agent reuse (non-fatal)', error);
+                        }
+
+                        logger.debug(`[help-lane] Reused existing help-agent ${helpAgentSessionId} via daemon on attempt ${attempt}: ${JSON.stringify(helpResult)}`);
+                        return { helpSpawned: true };
+                    }
+
                     const confirmed = await waitForHelpAgentActivation(teamId, helpAgentSessionId);
 
                     if (confirmed) {
