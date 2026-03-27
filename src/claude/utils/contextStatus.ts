@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { Metadata } from '@/api/types';
 import { findClaudeLogFile, findCodexTranscriptFile } from './runtimeLogReader';
-import { DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
+import { DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS, resolveContextWindowTokens } from '@/utils/modelContextWindows';
 
 type ContextStatusReport = {
     runtimeType: 'claude' | 'codex';
@@ -63,6 +63,17 @@ function safeReadLines(filePath: string): string[] {
     return fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
 }
 
+function resolveClaudeContextLimitTokens(metadata?: Metadata | null): number {
+    const persistedLimitTokens = typeof (metadata as any)?.contextWindowTokens === 'number'
+        ? (metadata as any).contextWindowTokens
+        : undefined;
+    const resolvedModelLimitTokens = resolveContextWindowTokens((metadata as any)?.resolvedModel);
+
+    return resolvedModelLimitTokens
+        ?? persistedLimitTokens
+        ?? DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS;
+}
+
 function buildClaudeContextStatus(filePath: string, contextLimitTokens?: number): ContextStatusReport {
     const lines = safeReadLines(filePath);
     let lastUsage: Record<string, number> | null = null;
@@ -93,11 +104,7 @@ function buildClaudeContextStatus(filePath: string, contextLimitTokens?: number)
         (lastUsage.input_tokens || 0) +
         (lastUsage.cache_creation_input_tokens || 0) +
         (lastUsage.cache_read_input_tokens || 0);
-    const contextLimitK = roundK(
-        typeof contextLimitTokens === 'number'
-            ? contextLimitTokens
-            : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
-    );
+    const contextLimitK = roundK(contextLimitTokens ?? DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS);
     const usedPercent = contextLimitK
         ? Math.round((roundK(currentContextTokens) / contextLimitK) * 100)
         : null;
@@ -192,7 +199,7 @@ export function getContextStatusReport(options: {
 
     const explicitClaudeFile = requestedSessionId ? findClaudeLogFile(homeDir, requestedSessionId) : null;
     if (explicitClaudeFile) {
-        return buildClaudeContextStatus(explicitClaudeFile, (metadata as any)?.contextWindowTokens);
+        return buildClaudeContextStatus(explicitClaudeFile, resolveClaudeContextLimitTokens(metadata));
     }
 
     const explicitCodexFile = requestedSessionId ? findCodexTranscriptFile(homeDir, requestedSessionId) : null;
@@ -217,5 +224,5 @@ export function getContextStatusReport(options: {
     if (!claudeFile) {
         throw new Error('Claude log not found. Cannot determine context status.');
     }
-    return buildClaudeContextStatus(claudeFile, (metadata as any)?.contextWindowTokens);
+    return buildClaudeContextStatus(claudeFile, resolveClaudeContextLimitTokens(metadata));
 }

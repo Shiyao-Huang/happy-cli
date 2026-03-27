@@ -29,8 +29,32 @@ set -eu
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT_DIR"
 
+# Serialize concurrent tsc runs to avoid multi-agent prerecommit OOM on shared machines.
+LOCK_DIR="/tmp/aha-tsc-lock"
+LOCK_TIMEOUT=180
+elapsed=0
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+  if [ $elapsed -ge $LOCK_TIMEOUT ]; then
+    echo "[aha-cli] Timeout waiting for tsc lock after \${LOCK_TIMEOUT}s. Another pre-commit hook may be hung. Delete /tmp/aha-tsc-lock to reset." >&2
+    exit 1
+  fi
+  sleep 3
+  elapsed=$((elapsed + 3))
+done
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM HUP
+
+NODE_VERSION="$(cat .node-version 2>/dev/null || echo 22)"
+NODE_OPTIONS_VALUE="--max-old-space-size=10240"
+
 if command -v yarn >/dev/null 2>&1; then
-  exec yarn prerecommit
+  if command -v fnm >/dev/null 2>&1; then
+    SHELL_BIN="$(command -v zsh || command -v bash || command -v sh)"
+    "$SHELL_BIN" -lc "eval \"\$(fnm env)\" && fnm use \${NODE_VERSION} --silent-if-unchanged >/dev/null && NODE_OPTIONS=\"\${NODE_OPTIONS_VALUE}\" yarn prerecommit"
+    exit $?
+  fi
+
+  NODE_OPTIONS="\${NODE_OPTIONS_VALUE}" yarn prerecommit
+  exit $?
 fi
 
 echo "[aha-cli] yarn is required to run prerecommit." >&2

@@ -90,4 +90,40 @@ describe('getContextStatusReport', () => {
         expect(report.status).toContain('MODERATE');
         expect(report.rateLimits).toBeDefined();
     });
+
+    it('prefers resolvedModel context window over stale session metadata for Claude', () => {
+        const homeDir = mkdtempSync(join(tmpdir(), 'aha-context-claude-resolved-model-'));
+        const projectsDir = join(homeDir, '.claude', 'projects', 'repo');
+        mkdirSync(projectsDir, { recursive: true });
+
+        const filePath = join(projectsDir, 'claude-local-2.jsonl');
+        writeFileSync(filePath, [
+            JSON.stringify({
+                type: 'assistant',
+                message: {
+                    usage: {
+                        input_tokens: 100000,
+                        output_tokens: 2000,
+                        cache_creation_input_tokens: 10000,
+                        cache_read_input_tokens: 20000,
+                    },
+                },
+            }),
+        ].join('\n'), 'utf-8');
+
+        const report = getContextStatusReport({
+            homeDir,
+            ahaSessionId: 'aha-session-3',
+            metadata: {
+                claudeSessionId: 'claude-local-2',
+                flavor: 'claude',
+                resolvedModel: 'claude-sonnet-4-6',
+                contextWindowTokens: 200000,
+            } as any,
+        });
+
+        expect(report.contextLimitK).toBe(1000);
+        expect(report.usedPercent).toBe(13);
+        expect(report.status).toContain('LOW');
+    });
 });
