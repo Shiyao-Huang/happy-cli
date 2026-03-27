@@ -111,7 +111,7 @@ type MachineRpcHandlers = {
         type: string;
         description: string;
         severity: string;
-    }) => Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>;
+    }) => Promise<{ success: boolean; helpAgentSessionId?: string; reused?: boolean; saturated?: boolean; error?: string }>;
     requestShutdown: () => void;
 }
 

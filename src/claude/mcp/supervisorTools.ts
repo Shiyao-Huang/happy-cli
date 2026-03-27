@@ -44,6 +44,7 @@ import { fetchGenomeSpec } from '../utils/fetchGenome';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
+import { restartDaemonFlow } from '@/daemon/restartDaemon';
 import { getAllowedTools, getDeniedTools, getPermissionMode } from '@/claude/team/permissions';
 import { buildEffectivePermissionsReport } from './inspectionTools';
 import { McpToolContext } from './mcpContext';
@@ -2461,55 +2462,59 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
                 return { content: [{ type: 'text', text: 'Daemon not running (no state file or port).' }], isError: true };
             }
 
-            // Step 1: Send stop signal
-            const stopResp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: AbortSignal.timeout(5_000),
+            const result = await restartDaemonFlow(daemonState, {
+                sendStopRequest: async (httpPort) => {
+                    const response = await fetch(`http://127.0.0.1:${httpPort}/stop`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: AbortSignal.timeout(5_000),
+                    });
+                    if (!response.ok) {
+                        throw new Error(`Stop request failed with HTTP ${response.status}`);
+                    }
+                },
+                isProcessAlive: (pid) => {
+                    try {
+                        process.kill(pid, 0);
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                },
+                forceKill: async (pid) => {
+                    process.kill(pid, 'SIGKILL');
+                },
+                spawnDaemon: async () => {
+                    const { spawnAhaCLI } = await import('@/utils/spawnAhaCLI');
+                    const child = spawnAhaCLI(['daemon', 'start-sync'], {
+                        detached: true,
+                        stdio: 'ignore',
+                    });
+                    child.unref();
+                },
+                readDaemonState,
+                healthCheck: async (httpPort) => {
+                    try {
+                        const response = await fetch(`http://127.0.0.1:${httpPort}/list`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            signal: AbortSignal.timeout(3_000),
+                        });
+                        return response.ok;
+                    } catch {
+                        return false;
+                    }
+                },
             });
-            const stopResult = await stopResp.json() as { status: string };
 
-            // Step 2: Wait for daemon process to exit (poll PID)
-            const pid = daemonState.pid;
-            let exited = false;
-            for (let i = 0; i < 30; i++) {
-                try {
-                    process.kill(pid, 0); // Check if process exists
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                } catch {
-                    exited = true;
-                    break;
-                }
-            }
-
-            if (!exited) {
-                return { content: [{ type: 'text', text: `Daemon PID ${pid} did not exit within 15s after /stop. May need manual kill.` }], isError: true };
-            }
-
-            // Step 3: Spawn new daemon
-            const { spawnAhaCLI } = await import('@/utils/spawnAhaCLI');
-            const child = spawnAhaCLI(['daemon', 'start-sync'], {
-                detached: true,
-                stdio: 'ignore',
-            });
-            child.unref();
-
-            // Step 4: Wait for new daemon to come up (poll state file)
-            let newPort: number | null = null;
-            for (let i = 0; i < 20; i++) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                const newState = await readDaemonState();
-                if (newState?.httpPort && newState.pid !== pid) {
-                    newPort = newState.httpPort;
-                    break;
-                }
-            }
-
-            if (newPort) {
-                return { content: [{ type: 'text', text: `Daemon restarted. Old PID: ${pid}, new port: ${newPort}. Code changes are now active.` }], isError: false };
-            } else {
-                return { content: [{ type: 'text', text: `Old daemon stopped (PID ${pid}). New daemon spawned but state not yet detected. Check with 'aha daemon status'.` }], isError: false };
-            }
+            const forceKillSuffix = result.forcedKill ? ' Used SIGKILL fallback.' : '';
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Daemon restarted. Old PID: ${result.oldPid}, new PID: ${result.newPid}, new port: ${result.newPort}.${forceKillSuffix} Code changes are now active.`,
+                }],
+                isError: false,
+            };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error restarting daemon: ${String(error)}` }], isError: true };
         }
@@ -2616,6 +2621,42 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('read_unified_log', {
+        description: 'Aggregate team messages, supervisor scores, help requests, and trace events into a single time-ordered stream. Use this for fast cross-source debugging without manually calling multiple log tools. Supervisor/help-agent only.',
+        title: 'Read Unified Log',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to read unified log for'),
+            limit: z.number().default(200).describe('Max total entries across all sources'),
+            fromTs: z.number().default(0).describe('Unix ms timestamp to start from. 0 = all time.'),
+            sources: z.array(z.enum(['team', 'supervisor', 'help', 'trace'])).default(['team', 'supervisor', 'help']).describe('Log sources to include. trace queries trace.db and is slower.'),
+            roles: z.array(z.string()).optional().describe('Optional role filter for team message entries'),
+        },
+    }, async (args) => {
+        const role = client.getMetadata()?.role;
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read unified logs.' }], isError: true };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
+            return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
+        }
+
+        try {
+            const { readUnifiedLog } = await import('@/claude/utils/unifiedLogReader');
+            const result = readUnifiedLog({
+                teamId: args.teamId,
+                cwd: process.cwd(),
+                ahaHomeDir: configuration.ahaHomeDir,
+                limit: args.limit,
+                fromTs: args.fromTs,
+                sources: args.sources as Array<'team' | 'supervisor' | 'help' | 'trace'>,
+                roles: args.roles,
+            });
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error reading unified log: ${String(error)}` }], isError: true };
         }
     });
 }

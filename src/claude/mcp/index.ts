@@ -274,6 +274,7 @@ export async function startAhaServer(
             'restart_daemon',
             'tsc_check',
             'git_diff_summary',
+            'read_unified_log',
         ],
         stop: () => {
             logger.debug('[ahaMCP] Stopping server');
