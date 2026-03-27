@@ -90,7 +90,7 @@
     "prerecommit": "yarn typecheck && yarn test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.47",
+    "@anthropic-ai/claude-code": "2.1.85",
     "@anthropic-ai/sdk": "0.76.0",
     "@modelcontextprotocol/sdk": "^1.15.1",
     "@stablelib/base64": "^2.0.1",

@@ -586,7 +586,7 @@ async function buildKanbanInstructionBlock(opts: {
  * Main entry point for the codex command with ink UI
  *
  * Codex bridge compatibility target:
- * - codex-cli 0.115.0
+ * - codex-cli 0.117.0
  *
  * The current bridge work is anchored to the event model observed from that version,
  * especially these high-value families:

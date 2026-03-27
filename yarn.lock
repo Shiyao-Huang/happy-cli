@@ -10,10 +10,10 @@
     ansi-styles "^6.2.1"
     is-fullwidth-code-point "^5.0.0"
 
-"@anthropic-ai/claude-code@2.1.47":
-  version "2.1.47"
-  resolved "https://registry.yarnpkg.com/@anthropic-ai/claude-code/-/claude-code-2.1.47.tgz#7e2b1e5a513f854d872ff304817e80f6fb4d74f1"
-  integrity sha512-RuVCBdSad+tsYsSt8W2s1BICHfulLnj73YqexH8gHgFlOP7mNZOtlGod5UEdrPotedYwiDzKx3L0BiB39YNWPg==
+"@anthropic-ai/claude-code@2.1.85":
+  version "2.1.85"
+  resolved "https://registry.yarnpkg.com/@anthropic-ai/claude-code/-/claude-code-2.1.85.tgz#0e8304f8753acc42f28a6b7305af3a8cfde60899"
+  integrity sha512-3/q3xTpk9EnBfQ/XsHGkOZniOgQx4sqD95CDKw1mvN1Qw5+9IZTp6ILdds02d7vOM6YuLL0G0zhqsMSAFVse4w==
   optionalDependencies:
     "@img/sharp-darwin-arm64" "^0.34.2"
     "@img/sharp-darwin-x64" "^0.34.2"

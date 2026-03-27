@@ -149,7 +149,7 @@ Mutable effective config must be per-agent.
 ### Codex Bridge Compatibility
 
 - `aha-cli` does **not** embed Codex. It invokes the system-installed `codex` CLI.
-- Current bridge compatibility target: `codex-cli 0.115.0`
+- Current bridge compatibility target: `codex-cli 0.117.0`
 - Treat Codex bridge issues as **event-model compatibility** problems first, not RPC problems first.
 - The current version-specific event families to watch are:
   - `item_started`
