@@ -884,10 +884,9 @@ export async function runCodex(opts: {
             }
 
             abortController.abort();
-            messageQueue.reset();
-            permissionHandler.reset();
+            // NOTE: Do NOT call messageQueue.reset() here — it would drop queued user messages.
+            // permissionHandler/reasoningProcessor/diffProcessor are reset in the finally block.
             reasoningProcessor.abort();
-            diffProcessor.reset();
             logger.debug('[Codex] Abort completed - session remains active');
         } catch (error) {
             logger.debug('[Codex] Error during abort:', error);
@@ -922,6 +921,13 @@ export async function runCodex(opts: {
                 session.sendSessionDeath();
                 await session.flush();
                 await session.close();
+            }
+
+            // Force close Codex MCP transport so the codex subprocess doesn't linger
+            try {
+                await client.forceCloseSession();
+            } catch (e) {
+                logger.debug('[Codex] Error while force closing Codex session during termination', e);
             }
 
             // Stop caffeinate
@@ -1107,9 +1113,9 @@ export async function runCodex(opts: {
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
-            // Use accumulated delta text when available (newer SDK); fall back to msg.message (older SDK)
+            // NOTE: Do NOT clear agentMessageDeltaBuffer here — it is read and cleared
+            // in the session send block below to avoid double-read/premature clear.
             const fullText = agentMessageDeltaBuffer || msg.message;
-            agentMessageDeltaBuffer = '';
             messageBuffer.addMessage(fullText, 'assistant');
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
@@ -1736,9 +1742,9 @@ Always reflect progress on the board and call these tools whenever you start or 
         } catch (e) {
             logger.debug('[codex]: Error while closing session', e);
         }
-        logger.debug('[codex]: client.disconnect begin');
-        await client.disconnect();
-        logger.debug('[codex]: client.disconnect done');
+        logger.debug('[codex]: client.forceCloseSession begin');
+        await client.forceCloseSession();
+        logger.debug('[codex]: client.forceCloseSession done');
         // Stop Aha MCP server
         logger.debug('[codex]: ahaServer.stop');
         ahaServer.stop();

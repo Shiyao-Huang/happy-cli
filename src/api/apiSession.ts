@@ -281,6 +281,10 @@ export class ApiSessionClient extends EventEmitter {
         };
         logger.debugLargeJson('[SOCKET] Sending codex message through socket:', content);
         const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
+        // Check if socket is connected before sending
+        if (!this.socket.connected) {
+            logger.debug('[API] Socket not connected, cannot send message. Message will be lost:', { type: body.type });
+        }
         this.socket.emit('message', {
             sid: this.sessionId,
             message: encrypted
