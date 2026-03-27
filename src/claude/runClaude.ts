@@ -204,6 +204,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         metadata.candidateId = process.env.AHA_CANDIDATE_ID;
         logger.debug(`[runClaude] Setting metadata.candidateId from env: ${process.env.AHA_CANDIDATE_ID}`);
     }
+    if (process.env.AHA_SPEC_ID) {
+        metadata.specId = process.env.AHA_SPEC_ID;
+    }
+    if (process.env.AHA_CANDIDATE_IDENTITY_JSON) {
+        try {
+            metadata.candidateIdentity = JSON.parse(process.env.AHA_CANDIDATE_IDENTITY_JSON);
+        } catch {
+            // Non-fatal: candidateId remains the compatibility field.
+        }
+    }
     const roomIdFromEnv = process.env.AHA_ROOM_ID;
     if (roomIdFromEnv) {
         metadata.teamId = roomIdFromEnv;

@@ -47,7 +47,20 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
     specId?: string
 }): Promise<{ registered: boolean; alreadyPresent: boolean }> {
     const { api, teamId, sessionId, role, metadata, taskStateManager, specId } = opts
-    const candidateId = metadata.candidateId || process.env.AHA_CANDIDATE_ID || (specId || process.env.AHA_SPEC_ID ? `spec:${specId || process.env.AHA_SPEC_ID}` : undefined)
+    let parsedIdentity: { candidateId?: string; specId?: string | null } | null = null
+    if (process.env.AHA_CANDIDATE_IDENTITY_JSON) {
+        try {
+            parsedIdentity = JSON.parse(process.env.AHA_CANDIDATE_IDENTITY_JSON) as { candidateId?: string; specId?: string | null }
+        } catch {
+            parsedIdentity = null
+        }
+    }
+
+    const resolvedSpecId = specId || metadata.specId || parsedIdentity?.specId || process.env.AHA_SPEC_ID || undefined
+    const candidateId = metadata.candidateId
+        || parsedIdentity?.candidateId
+        || process.env.AHA_CANDIDATE_ID
+        || (resolvedSpecId ? `spec:${resolvedSpecId}` : undefined)
 
     if (!teamId || !sessionId || !role) {
         return { registered: false, alreadyPresent: false }
@@ -79,7 +92,7 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
                 memberId: metadata.memberId,
                 sessionTag: metadata.sessionTag,
                 candidateId,
-                specId: specId || process.env.AHA_SPEC_ID || undefined,
+                specId: resolvedSpecId,
                 executionPlane: metadata.executionPlane,
                 runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',
             }

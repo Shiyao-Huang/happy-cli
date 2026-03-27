@@ -450,6 +450,14 @@ export type Metadata = {
   memberId?: string,
   sessionTag?: string,
   candidateId?: string,
+  specId?: string,
+  candidateIdentity?: {
+    candidateId: string,
+    specId?: string | null,
+    basis?: 'spec' | 'materialized' | 'derived',
+    fullSpec?: Record<string, unknown> | null,
+    diff?: Record<string, unknown> | null,
+  },
   executionPlane?: 'mainline' | 'bypass',
   teamId?: string,  // Team artifact ID if this session is part of a team
   roomId?: string,

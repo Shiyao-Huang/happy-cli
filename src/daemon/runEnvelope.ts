@@ -1,5 +1,5 @@
 import fs from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 import { configuration } from '@/configuration'
@@ -21,6 +21,7 @@ export interface RunEnvelope {
   executionPlane: string | null
   candidateId: string
   specId: string | null
+  candidateIdentity: CandidateIdentity
   sessionTag: string | null
   parentSessionId: string | null
   sessionPath: string | null
@@ -37,6 +38,26 @@ export interface RunEnvelope {
   }
   spawnedAt: string
   updatedAt: string
+}
+
+export type CandidateIdentityBasis = 'spec' | 'materialized' | 'derived'
+
+export interface CandidateIdentity {
+  candidateId: string
+  specId: string | null
+  basis: CandidateIdentityBasis
+  fullSpec: {
+    namespace: string | null
+    name: string | null
+    displayName: string | null
+    version: number | null
+    runtimeType: string | null
+  } | null
+  diff: {
+    origin: string | null
+    parentId: string | null
+    mutationNote: string | null
+  } | null
 }
 
 function runsDir(root = configuration.ahaHomeDir): string {
@@ -75,6 +96,136 @@ export function deriveCandidateId(params: {
   return `derived:${digest.slice(0, 24)}`
 }
 
+function readJsonFileMaybe(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function readMaterializedGenomeSnapshot(workspacePath?: string | null): {
+  spec: Record<string, unknown> | null
+  lineage: Record<string, unknown> | null
+} {
+  if (!workspacePath) {
+    return { spec: null, lineage: null }
+  }
+
+  const genomeDir = join(workspacePath, '.genome')
+  return {
+    spec: readJsonFileMaybe(join(genomeDir, 'spec.json')),
+    lineage: readJsonFileMaybe(join(genomeDir, 'lineage.json')),
+  }
+}
+
+function buildFullSpecSnapshot(spec: Record<string, unknown> | null, lineage: Record<string, unknown> | null): CandidateIdentity['fullSpec'] {
+  if (!spec && !lineage) return null
+
+  return {
+    namespace: asString(lineage?.namespace) ?? asString(spec?.namespace),
+    name: asString(spec?.name) ?? asString(spec?.baseRoleId) ?? asString(spec?.teamRole),
+    displayName: asString(spec?.displayName),
+    version: asNumber(lineage?.version) ?? asNumber(spec?.version),
+    runtimeType: asString(spec?.runtimeType),
+  }
+}
+
+function buildDiffSnapshot(lineage: Record<string, unknown> | null): CandidateIdentity['diff'] {
+  if (!lineage) return null
+
+  return {
+    origin: asString(lineage.origin),
+    parentId: asString(lineage.parentId),
+    mutationNote: asString(lineage.mutationNote),
+  }
+}
+
+function candidateBasisRank(basis: CandidateIdentityBasis): number {
+  if (basis === 'spec') return 3
+  if (basis === 'materialized') return 2
+  return 1
+}
+
+export function resolveCandidateIdentity(params: {
+  specId?: string | null
+  role?: string
+  runtimeType?: string
+  executionPlane?: string
+  prompt?: string
+  workspacePath?: string | null
+  existing?: CandidateIdentity | null
+}): CandidateIdentity {
+  const snapshot = readMaterializedGenomeSnapshot(params.workspacePath)
+  const specIdFromSnapshot = asString(snapshot.lineage?.specId)
+  const specId = params.specId ?? specIdFromSnapshot ?? null
+  const fullSpec = buildFullSpecSnapshot(snapshot.spec, snapshot.lineage)
+  const diff = buildDiffSnapshot(snapshot.lineage)
+
+  let resolved: CandidateIdentity
+  if (specId) {
+    resolved = {
+      candidateId: `spec:${specId}`,
+      specId,
+      basis: 'spec',
+      fullSpec,
+      diff,
+    }
+  } else if (fullSpec || diff) {
+    const digest = hashObject({
+      fullSpec,
+      diff,
+      role: params.role ?? null,
+      runtimeType: params.runtimeType ?? null,
+      executionPlane: params.executionPlane ?? null,
+    })
+    resolved = {
+      candidateId: `materialized:${digest.slice(0, 24)}`,
+      specId: null,
+      basis: 'materialized',
+      fullSpec,
+      diff,
+    }
+  } else {
+    resolved = {
+      candidateId: deriveCandidateId({
+        specId: null,
+        role: params.role,
+        runtimeType: params.runtimeType,
+        executionPlane: params.executionPlane,
+        prompt: params.prompt,
+      }),
+      specId: null,
+      basis: 'derived',
+      fullSpec: null,
+      diff: null,
+    }
+  }
+
+  if (!params.existing) {
+    return resolved
+  }
+
+  if (candidateBasisRank(resolved.basis) >= candidateBasisRank(params.existing.basis)) {
+    return resolved
+  }
+
+  return {
+    ...params.existing,
+    fullSpec: params.existing.fullSpec ?? resolved.fullSpec,
+    diff: params.existing.diff ?? resolved.diff,
+  }
+}
+
 async function ensureRunsDir(root = configuration.ahaHomeDir): Promise<void> {
   await fs.mkdir(runsDir(root), { recursive: true })
 }
@@ -110,6 +261,14 @@ export async function writeDraftRunEnvelope(params: {
 }): Promise<RunEnvelope> {
   const runId = buildPendingRunId(params.pid, params.options.sessionId)
   const now = new Date().toISOString()
+  const candidateIdentity = resolveCandidateIdentity({
+    specId: params.options.specId ?? null,
+    role: params.options.role,
+    runtimeType: params.options.agent,
+    executionPlane: params.options.executionPlane,
+    prompt: params.options.env?.AHA_AGENT_PROMPT,
+    workspacePath: params.options.sessionPath ?? params.options.directory ?? null,
+  })
   const envelope: RunEnvelope = {
     runId,
     sessionId: params.options.sessionId ?? null,
@@ -120,14 +279,9 @@ export async function writeDraftRunEnvelope(params: {
     role: params.options.role ?? null,
     runtimeType: params.options.agent ?? 'claude',
     executionPlane: params.options.executionPlane ?? null,
-    candidateId: deriveCandidateId({
-      specId: params.options.specId,
-      role: params.options.role,
-      runtimeType: params.options.agent,
-      executionPlane: params.options.executionPlane,
-      prompt: params.options.env?.AHA_AGENT_PROMPT,
-    }),
-    specId: params.options.specId ?? null,
+    candidateId: candidateIdentity.candidateId,
+    specId: candidateIdentity.specId,
+    candidateIdentity,
     sessionTag: params.options.sessionTag ?? null,
     parentSessionId: params.options.parentSessionId ?? null,
     sessionPath: params.options.sessionPath ?? params.options.directory ?? null,
@@ -162,7 +316,15 @@ export async function finalizeRunEnvelopeFromWebhook(params: {
   const role = params.metadata.role || params.spawnOptions?.role || null
   const runtimeType = params.metadata.flavor || params.spawnOptions?.agent || 'claude'
   const executionPlane = params.metadata.executionPlane || params.spawnOptions?.executionPlane || null
-  const specId = params.spawnOptions?.specId ?? null
+  const candidateIdentity = resolveCandidateIdentity({
+    specId: params.spawnOptions?.specId ?? null,
+    role: role ?? undefined,
+    runtimeType,
+    executionPlane: executionPlane ?? undefined,
+    prompt: params.spawnOptions?.env?.AHA_AGENT_PROMPT,
+    workspacePath: params.metadata.path ?? params.spawnOptions?.sessionPath ?? params.spawnOptions?.directory ?? null,
+    existing: existing?.candidateIdentity ?? null,
+  })
 
   const envelope: RunEnvelope = {
     runId: params.sessionId,
@@ -174,14 +336,9 @@ export async function finalizeRunEnvelopeFromWebhook(params: {
     role,
     runtimeType,
     executionPlane,
-    candidateId: existing?.candidateId ?? deriveCandidateId({
-      specId,
-      role: role ?? undefined,
-      runtimeType,
-      executionPlane: executionPlane ?? undefined,
-      prompt: params.spawnOptions?.env?.AHA_AGENT_PROMPT,
-    }),
-    specId,
+    candidateId: candidateIdentity.candidateId,
+    specId: candidateIdentity.specId,
+    candidateIdentity,
     sessionTag: params.metadata.sessionTag ?? params.spawnOptions?.sessionTag ?? existing?.sessionTag ?? null,
     parentSessionId: params.spawnOptions?.parentSessionId ?? existing?.parentSessionId ?? null,
     sessionPath: params.metadata.path ?? params.spawnOptions?.sessionPath ?? existing?.sessionPath ?? null,

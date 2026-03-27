@@ -37,6 +37,11 @@ describe('runEnvelope', () => {
     expect(envelope.runId).toBe(buildPendingRunId(4242))
     expect(envelope.status).toBe('draft')
     expect(envelope.candidateId).toBe('spec:spec-123')
+    expect(envelope.candidateIdentity).toMatchObject({
+      candidateId: 'spec:spec-123',
+      specId: 'spec-123',
+      basis: 'spec',
+    })
 
     const path = join(rootDir, 'runs', `${envelope.runId}.json`)
     expect(existsSync(path)).toBe(true)
@@ -106,6 +111,7 @@ describe('runEnvelope', () => {
     expect(finalized.memberId).toBe('member-9')
     expect(finalized.runtimeType).toBe('codex')
     expect(finalized.candidateId.startsWith('derived:')).toBe(true)
+    expect(finalized.candidateIdentity.basis).toBe('derived')
 
     const finalPath = join(rootDir, 'runs', 'cmn-final-session.json')
     const pendingPath = join(rootDir, 'runs', `${buildPendingRunId(9898)}.json`)
@@ -114,5 +120,63 @@ describe('runEnvelope', () => {
 
     const persisted = JSON.parse(readFileSync(finalPath, 'utf-8'))
     expect(persisted.metadataSnapshot.machineId).toBe('machine-1')
+  })
+
+  it('reads materialized .genome snapshots to resolve a stable candidate identity without explicit specId', async () => {
+    rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
+    const workspaceRoot = join(rootDir, 'workspace')
+    await import('fs/promises').then(async ({ mkdir, writeFile }) => {
+      await mkdir(join(workspaceRoot, '.genome'), { recursive: true })
+      await writeFile(join(workspaceRoot, '.genome', 'spec.json'), JSON.stringify({
+        displayName: 'Genome Analyst',
+        namespace: '@official',
+        version: 3,
+        runtimeType: 'claude',
+        provenance: {
+          origin: 'forked',
+          parentId: 'parent-1',
+          mutationNote: 'narrowed scoring scope',
+        },
+      }, null, 2))
+      await writeFile(join(workspaceRoot, '.genome', 'lineage.json'), JSON.stringify({
+        specId: '@official/genome-analyst:3',
+        namespace: '@official',
+        version: 3,
+        origin: 'forked',
+        parentId: 'parent-1',
+        mutationNote: 'narrowed scoring scope',
+      }, null, 2))
+    })
+
+    const envelope = await writeDraftRunEnvelope({
+      pid: 5252,
+      rootDir,
+      options: {
+        directory: workspaceRoot,
+        sessionPath: workspaceRoot,
+        agent: 'claude',
+        role: 'researcher',
+        executionPlane: 'mainline',
+      },
+    })
+
+    expect(envelope.candidateId).toBe('spec:@official/genome-analyst:3')
+    expect(envelope.specId).toBe('@official/genome-analyst:3')
+    expect(envelope.candidateIdentity).toMatchObject({
+      candidateId: 'spec:@official/genome-analyst:3',
+      specId: '@official/genome-analyst:3',
+      basis: 'spec',
+      fullSpec: {
+        namespace: '@official',
+        displayName: 'Genome Analyst',
+        version: 3,
+        runtimeType: 'claude',
+      },
+      diff: {
+        origin: 'forked',
+        parentId: 'parent-1',
+        mutationNote: 'narrowed scoring scope',
+      },
+    })
   })
 })

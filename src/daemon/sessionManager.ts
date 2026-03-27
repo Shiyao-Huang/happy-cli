@@ -38,7 +38,8 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { execSync } from 'child_process';
 import { ulid } from 'ulid';
-import { deriveCandidateId, finalizeRunEnvelopeFromWebhook, writeDraftRunEnvelope } from './runEnvelope';
+import { finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
+import { chooseHelpAgentForRequest } from './helpAgentPool';
 
 // ── Central shared state ───────────────────────────────────────────────────────
 /**
@@ -47,7 +48,34 @@ import { deriveCandidateId, finalizeRunEnvelopeFromWebhook, writeDraftRunEnvelop
  * without duplicating the map reference.
  */
 export const pidToTrackedSession = new Map<number, TrackedSession>();
-const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }>>();
+const inFlightHelpRequestsByTeam = new Map<string, Promise<{ success: boolean; helpAgentSessionId?: string; reused?: boolean; saturated?: boolean; error?: string }>>();
+const helpAgentLeaseExpiryByTeam = new Map<string, Map<string, number>>();
+const HELP_AGENT_POOL_MAX = 2;
+const HELP_AGENT_LEASE_MS = 10 * 60 * 1000;
+
+function getHelpAgentLeaseMap(teamId: string): Map<string, number> {
+  let leaseMap = helpAgentLeaseExpiryByTeam.get(teamId);
+  if (!leaseMap) {
+    leaseMap = new Map<string, number>();
+    helpAgentLeaseExpiryByTeam.set(teamId, leaseMap);
+  }
+  return leaseMap;
+}
+
+function markHelpAgentLeased(teamId: string, sessionId: string, now = Date.now()): void {
+  getHelpAgentLeaseMap(teamId).set(sessionId, now + HELP_AGENT_LEASE_MS);
+}
+
+function cleanupHelpAgentLeases(teamId: string, activeSessionIds: string[]): Map<string, number> {
+  const leaseMap = getHelpAgentLeaseMap(teamId);
+  const activeIds = new Set(activeSessionIds);
+  for (const sessionId of [...leaseMap.keys()]) {
+    if (!activeIds.has(sessionId)) {
+      leaseMap.delete(sessionId);
+    }
+  }
+  return leaseMap;
+}
 
 // ── Spawn concurrency limiter ────────────────────────────────────────────────
 const MAX_RESPAWN_ATTEMPTS = parseInt(process.env.AHA_MAX_RESPAWN_ATTEMPTS || '3', 10);
@@ -744,17 +772,20 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       extraEnv.AHA_PARENT_SESSION_ID = options.parentSessionId;
       logger.debug(`[SESSION MANAGER] Setting AHA_PARENT_SESSION_ID=${options.parentSessionId}`);
     }
-    if (options.specId) {
-      extraEnv.AHA_SPEC_ID = options.specId;
-      logger.debug(`[SESSION MANAGER] Setting AHA_SPEC_ID=${options.specId}`);
-    }
-    extraEnv.AHA_CANDIDATE_ID = deriveCandidateId({
-      specId: options.specId,
+    const candidateIdentity = resolveCandidateIdentity({
+      specId: options.specId ?? null,
       role: options.role,
       runtimeType: options.agent,
       executionPlane: options.executionPlane,
       prompt: options.env?.AHA_AGENT_PROMPT,
+      workspacePath: options.sessionPath ?? options.directory ?? null,
     });
+    if (candidateIdentity.specId) {
+      extraEnv.AHA_SPEC_ID = candidateIdentity.specId;
+      logger.debug(`[SESSION MANAGER] Setting AHA_SPEC_ID=${candidateIdentity.specId}`);
+    }
+    extraEnv.AHA_CANDIDATE_ID = candidateIdentity.candidateId;
+    extraEnv.AHA_CANDIDATE_IDENTITY_JSON = JSON.stringify(candidateIdentity);
     logger.debug(`[SESSION MANAGER] Setting AHA_CANDIDATE_ID=${extraEnv.AHA_CANDIDATE_ID}`);
     if (options.executionPlane) {
       extraEnv.AHA_EXECUTION_PLANE = options.executionPlane;
@@ -1058,7 +1089,7 @@ export const requestHelp = async (params: {
   type: string;
   description: string;
   severity: string;
-}): Promise<{ success: boolean; helpAgentSessionId?: string; error?: string }> => {
+}): Promise<{ success: boolean; helpAgentSessionId?: string; reused?: boolean; saturated?: boolean; error?: string }> => {
   const { teamId, type, description, severity } = params;
 
   const inFlight = inFlightHelpRequestsByTeam.get(teamId);
@@ -1076,13 +1107,29 @@ export const requestHelp = async (params: {
       })
       .sort((a, b) => b.pid - a.pid);
 
-    if (activeHelpAgents.length > 0) {
-      const reusableSessionId = activeHelpAgents[0].ahaSessionId!;
+    const activeHelpAgentSessionIds = activeHelpAgents
+      .map((session) => session.ahaSessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId));
+    const leaseMap = cleanupHelpAgentLeases(teamId, activeHelpAgentSessionIds);
+    const poolDecision = chooseHelpAgentForRequest({
+      activeSessionIds: activeHelpAgentSessionIds,
+      leaseExpiryBySessionId: leaseMap,
+      maxAgents: HELP_AGENT_POOL_MAX,
+    });
+
+    if (poolDecision.action === 'reuse' && poolDecision.sessionId) {
+      const reusableSessionId = poolDecision.sessionId;
+      markHelpAgentLeased(teamId, reusableSessionId);
       logger.debug(
         `[SESSION MANAGER] Reusing existing help-agent ${reusableSessionId} for team ${teamId}; ` +
-        `skipping duplicate spawn`
+        `${poolDecision.saturated ? 'pool saturated, queueing onto existing agent' : 'preferring idle instance'}`
       );
-      return { success: true, helpAgentSessionId: reusableSessionId };
+      return {
+        success: true,
+        helpAgentSessionId: reusableSessionId,
+        reused: true,
+        saturated: poolDecision.saturated ?? false,
+      };
     }
 
     let targetSessionId = params.sessionId;
@@ -1121,7 +1168,8 @@ export const requestHelp = async (params: {
       });
 
       if (result.type === 'success' || result.type === 'queued') {
-        return { success: true, helpAgentSessionId: result.sessionId };
+        markHelpAgentLeased(teamId, result.sessionId);
+        return { success: true, helpAgentSessionId: result.sessionId, reused: false, saturated: false };
       }
 
       return {
@@ -1292,6 +1340,11 @@ export const onChildExited = (pid: number): void => {
   const tracked = pidToTrackedSession.get(pid);
   logger.debug(`[SESSION MANAGER] Removing exited process PID ${pid} from tracking`);
   pidToTrackedSession.delete(pid);
+
+  const teamId = tracked?.ahaSessionMetadataFromLocalWebhook?.teamId || tracked?.ahaSessionMetadataFromLocalWebhook?.roomId;
+  if (teamId && tracked?.ahaSessionId) {
+    helpAgentLeaseExpiryByTeam.get(teamId)?.delete(tracked.ahaSessionId);
+  }
 
   if (tracked?.ahaSessionId && _onSessionDead) {
     _onSessionDead([tracked.ahaSessionId]);

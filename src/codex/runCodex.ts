@@ -670,6 +670,16 @@ export async function runCodex(opts: {
     if (process.env.AHA_CANDIDATE_ID) {
         metadata.candidateId = process.env.AHA_CANDIDATE_ID;
     }
+    if (process.env.AHA_SPEC_ID) {
+        metadata.specId = process.env.AHA_SPEC_ID;
+    }
+    if (process.env.AHA_CANDIDATE_IDENTITY_JSON) {
+        try {
+            metadata.candidateIdentity = JSON.parse(process.env.AHA_CANDIDATE_IDENTITY_JSON);
+        } catch {
+            // Keep backward-compatible scalar fields if the JSON payload is malformed.
+        }
+    }
     if (process.env.AHA_ROOM_ID) {
         metadata.teamId = process.env.AHA_ROOM_ID;
         metadata.roomId = process.env.AHA_ROOM_ID;

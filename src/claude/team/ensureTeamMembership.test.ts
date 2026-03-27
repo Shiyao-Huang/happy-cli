@@ -44,4 +44,45 @@ describe('ensureCurrentSessionRegisteredToTeam', () => {
             })
         );
     });
+
+    it('prefers candidate identity JSON from env when metadata only carries compatibility fields', async () => {
+        const getArtifact = vi.fn().mockResolvedValue({
+            body: JSON.stringify({ team: { members: [] } }),
+        });
+        const addTeamMember = vi.fn().mockResolvedValue(undefined);
+
+        vi.stubEnv('AHA_CANDIDATE_IDENTITY_JSON', JSON.stringify({
+            candidateId: 'spec:@official/genome-analyst:3',
+            specId: '@official/genome-analyst:3',
+            basis: 'spec',
+        }));
+
+        const result = await ensureCurrentSessionRegisteredToTeam({
+            api: {
+                getArtifact,
+                addTeamMember,
+            } as any,
+            teamId: 'team-2',
+            sessionId: 'session-2',
+            role: 'researcher',
+            metadata: {
+                name: 'Genome Analyst',
+                flavor: 'claude',
+                executionPlane: 'mainline',
+                sessionTag: 'researcher-team-2',
+            } as any,
+        });
+
+        expect(result).toEqual({ registered: true, alreadyPresent: false });
+        expect(addTeamMember).toHaveBeenCalledWith(
+            'team-2',
+            'session-2',
+            'researcher',
+            'Genome Analyst',
+            expect.objectContaining({
+                candidateId: 'spec:@official/genome-analyst:3',
+                specId: '@official/genome-analyst:3',
+            })
+        );
+    });
 });
