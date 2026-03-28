@@ -69,6 +69,7 @@ import {
 import { runHeartbeatCycle } from './heartbeat';
 import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
 import { shouldUsePidHeartbeat } from './heartbeatPolicy';
+import { checkHelpAutoSpawn, createHelpAutoSpawnState } from './helpAutoSpawn';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
 // instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
@@ -625,6 +626,7 @@ export async function startDaemon(): Promise<void> {
     // Start at supervisorInterval - 1 so the first heartbeat tick triggers
     // supervisor spawn immediately instead of waiting N * heartbeatIntervalMs.
     let heartbeatCount = supervisorInterval - 1;
+    const helpAutoSpawnState = createHelpAutoSpawnState();
 
     // ── Heartbeat interval ─────────────────────────────────────────────────────
     // Every heartbeatIntervalMs (default 60s):
