@@ -74,6 +74,138 @@ async function postPromoteViaServerProxy(
     )
 }
 
+export type GenomeCreateHubPayload = {
+    namespace: string;
+    name: string;
+    version?: number;
+    description?: string;
+    spec: string;
+    isPublic?: boolean;
+    category?: string;
+    tags?: string;
+}
+
+async function postCreateHub(
+    fetchImpl: FetchLike,
+    hubUrl: string,
+    hubPublishKey: string | undefined,
+    payload: GenomeCreateHubPayload,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${hubUrl}/genomes`,
+        {
+            method: 'POST',
+            headers: buildPromoteHeaders(hubPublishKey),
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        },
+    )
+}
+
+async function postCreateHubViaServerProxy(
+    fetchImpl: FetchLike,
+    serverUrl: string,
+    authToken: string | undefined,
+    payload: GenomeCreateHubPayload,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${serverUrl}/v1/genomes/hub-create`,
+        {
+            method: 'POST',
+            headers: buildServerProxyHeaders(authToken),
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        },
+    )
+}
+
+/**
+ * Create a new genome version in genome-hub, with automatic fallback to the
+ * happy-server proxy (`POST /v1/genomes/hub-create`) when direct hub access
+ * returns 401/403 or fails entirely.  Used by `mutate_genome` MCP tool.
+ */
+export async function createGenomeViaMarketplace(args: {
+    payload: GenomeCreateHubPayload;
+    hubUrl?: string;
+    hubPublishKey?: string;
+    serverUrl?: string;
+    authToken?: string;
+    fetchImpl?: FetchLike;
+}): Promise<{
+    ok: boolean;
+    status: number;
+    body: string;
+    transport: 'direct-hub' | 'server-proxy';
+}> {
+    const fetchImpl = args.fetchImpl ?? (fetch as FetchLike)
+    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '')
+    const rawServerUrl = args.serverUrl ?? configuration.serverUrl
+    const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl)
+
+    let response: FetchResponseLike | null = null
+    let body = ''
+    let directError: unknown = null
+
+    try {
+        response = await postCreateHub(fetchImpl, hubUrl, args.hubPublishKey, args.payload)
+        body = await response.text().catch(() => '')
+    } catch (error) {
+        directError = error
+    }
+
+    const shouldTryServerProxy = Boolean(args.authToken) && (
+        directError
+        || !response
+        || response.status === 401
+        || response.status === 403
+        || response.status >= 500
+    )
+
+    if (shouldTryServerProxy) {
+        try {
+            const proxiedResponse = await postCreateHubViaServerProxy(
+                fetchImpl,
+                serverUrl,
+                args.authToken,
+                args.payload,
+            )
+            const proxiedBody = await proxiedResponse.text().catch(() => '')
+
+            return {
+                ok: proxiedResponse.ok,
+                status: proxiedResponse.status,
+                body: proxiedBody,
+                transport: 'server-proxy',
+            }
+        } catch (proxyError) {
+            if (!response) {
+                return {
+                    ok: false,
+                    status: 0,
+                    body: String(proxyError || directError || 'Unknown network error'),
+                    transport: 'server-proxy',
+                }
+            }
+        }
+    }
+
+    if (!response) {
+        return {
+            ok: false,
+            status: 0,
+            body: String(directError || 'Unknown network error'),
+            transport: 'direct-hub',
+        }
+    }
+
+    return {
+        ok: response.ok,
+        status: response.status,
+        body,
+        transport: 'direct-hub',
+    }
+}
+
 export async function promoteGenomeViaMarketplace(args: {
     target: GenomePromoteTarget;
     payload: GenomePromotePayload;

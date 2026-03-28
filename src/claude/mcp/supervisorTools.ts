@@ -1675,15 +1675,11 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         }
 
-        // 6. Create mutated genome version via genome-hub
+        // 6. Create mutated genome version via genome-hub (with proxy fallback)
         try {
-            const res = await fetch(`${hubUrl}/genomes`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(publishKey ? { Authorization: `Bearer ${publishKey}` } : {}),
-                },
-                body: JSON.stringify({
+            const { createGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
+            const createResult = await createGenomeViaMarketplace({
+                payload: {
                     namespace: args.genomeNamespace,
                     name: args.genomeName,
                     version: (genomeRecord.genome?.version ?? 0) + 1,
@@ -1700,16 +1696,24 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             ])
                         )
                     ),
-                }),
-                signal: AbortSignal.timeout(10_000),
+                },
+                hubUrl,
+                hubPublishKey: publishKey,
+                serverUrl: configuration.serverUrl,
+                authToken: client.getAuthToken(),
             });
 
-            if (!res.ok) {
-                const errBody = await res.text();
-                return { content: [{ type: 'text', text: `Failed to create mutated genome: ${res.status} ${errBody}` }], isError: true };
+            if (!createResult.ok) {
+                return { content: [{ type: 'text', text: `Failed to create mutated genome: ${createResult.status} ${createResult.body}` }], isError: true };
             }
 
-            const result = await res.json() as { genome?: { id?: string; name?: string; version?: number } };
+            let result: { genome?: { id?: string; name?: string; version?: number } } = {};
+            try {
+                result = JSON.parse(createResult.body) as { genome?: { id?: string; name?: string; version?: number } };
+            } catch {
+                return { content: [{ type: 'text', text: `Mutated genome created but response was invalid JSON: ${createResult.body}` }], isError: true };
+            }
+
             return {
                 content: [{
                     type: 'text',
@@ -1719,6 +1723,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         `ID: ${result.genome?.id ?? '?'}`,
                         `Mutations: ${args.mutations.length} applied`,
                         `Note: ${args.mutationNote}`,
+                        ...(createResult.transport === 'server-proxy' ? ['(via happy-server proxy)'] : []),
                     ].join('\n'),
                 }],
                 isError: false,
