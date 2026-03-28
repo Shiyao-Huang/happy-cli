@@ -7,7 +7,11 @@
 
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
-import { AgentState } from "@/api/types";
+import type { AgentState, PermissionMode } from "@/api/types";
+import { logCodexBridge } from "./bridgeDebug";
+
+type AutoApproveMode = Extract<PermissionMode, 'bypassPermissions' | 'yolo' | 'safe-yolo'>;
+const AUTO_APPROVE_MODES: ReadonlySet<string> = new Set<AutoApproveMode>(['bypassPermissions', 'yolo', 'safe-yolo']);
 
 interface PermissionResponse {
     id: string;
@@ -29,9 +33,11 @@ interface PermissionResult {
 export class CodexPermissionHandler {
     private pendingRequests = new Map<string, PendingRequest>();
     private session: ApiSessionClient;
+    private getPermissionMode: () => PermissionMode;
 
-    constructor(session: ApiSessionClient) {
+    constructor(session: ApiSessionClient, getPermissionMode: () => PermissionMode) {
         this.session = session;
+        this.getPermissionMode = getPermissionMode;
         this.setupRpcHandler();
     }
 
@@ -47,6 +53,23 @@ export class CodexPermissionHandler {
         toolName: string,
         input: unknown
     ): Promise<PermissionResult> {
+        const mode = this.getPermissionMode();
+
+        // Auto-approve in bypass/yolo modes — mirrors Claude branch canCallTool behavior
+        if (AUTO_APPROVE_MODES.has(mode)) {
+            logger.debug(`[Codex] Auto-approving tool ${toolName} (mode=${mode})`);
+            logCodexBridge('Auto-approved tool call (bypass mode)', { toolCallId, toolName, mode });
+            return { decision: 'approved' };
+        }
+
+        // Auto-approve Aha MCP server tools regardless of mode —
+        // these are internal tools that should never require user approval
+        if (toolName.startsWith('aha') || toolName.includes('__aha__') || toolName.includes('aha-desktop')) {
+            logger.debug(`[Codex] Auto-approving Aha MCP tool ${toolName}`);
+            logCodexBridge('Auto-approved Aha MCP tool call', { toolCallId, toolName, mode });
+            return { decision: 'approved' };
+        }
+
         return new Promise<PermissionResult>((resolve, reject) => {
             // Store the pending request
             this.pendingRequests.set(toolCallId, {
@@ -82,6 +105,12 @@ export class CodexPermissionHandler {
             }));
 
             logger.debug(`[Codex] Permission request sent for tool: ${toolName} (${toolCallId})`);
+            logCodexBridge('Queued permission request in agent state', {
+                toolCallId,
+                toolName,
+                input,
+                pendingRequestCount: this.pendingRequests.size
+            });
         });
     }
 
@@ -109,6 +138,12 @@ export class CodexPermissionHandler {
                     : { decision: response.decision === 'denied' ? 'denied' : 'abort' };
 
                 pending.resolve(result);
+                logCodexBridge('Resolved permission response', {
+                    response,
+                    result,
+                    toolName: pending.toolName,
+                    pendingRequestCount: this.pendingRequests.size
+                });
 
                 // Move request to completed in agent state
                 this.session.updateAgentState((currentState) => {
@@ -137,6 +172,12 @@ export class CodexPermissionHandler {
                 });
 
                 logger.debug(`[Codex] Permission ${response.approved ? 'approved' : 'denied'} for ${pending.toolName}`);
+                logCodexBridge('Persisted permission resolution into agent state', {
+                    requestId: response.id,
+                    toolName: pending.toolName,
+                    approved: response.approved,
+                    decision: result.decision
+                });
             }
         );
     }
@@ -146,10 +187,14 @@ export class CodexPermissionHandler {
      */
     reset(): void {
         // Reject all pending requests
+        const canceledRequestIds = Array.from(this.pendingRequests.keys());
         for (const [id, pending] of this.pendingRequests.entries()) {
             pending.reject(new Error('Session reset'));
         }
         this.pendingRequests.clear();
+        logCodexBridge('Reset pending Codex permission requests', {
+            canceledRequestIds
+        });
 
         // Clear requests in agent state
         this.session.updateAgentState((currentState) => {

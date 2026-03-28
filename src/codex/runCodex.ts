@@ -1,7 +1,7 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexMcpClient, detectCodexCliVersion } from './codexMcpClient';
+import { CodexMcpClient, detectCodexCliVersion, parseCodexApprovalRequest } from './codexMcpClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -42,6 +42,7 @@ import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
 import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
 import type { GenomeSpec } from '@/api/types/genome';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+import { CODEX_BRIDGE_DEBUG_ENV, isCodexBridgeDebugEnabled, logCodexBridge, logCodexSignal } from './utils/bridgeDebug';
 
 // Helper functions for role metadata — genome-first, empty fallback
 function getRoleTitle(roleId: string): string {
@@ -243,6 +244,39 @@ export function convertCodexMcpLifecycleEventToSessionMessage(rawMessage: any):
     }
 
     return null;
+}
+
+export function convertCodexApprovalEventToSessionMessage(rawMessage: any):
+    | {
+        type: 'tool-call';
+        name: string;
+        callId: string;
+        input: unknown;
+        id: string;
+    }
+    | null {
+    const message = unwrapCodexEvent(rawMessage);
+    if (!message || typeof message !== 'object' || message.type !== 'elicitation_request') {
+        return null;
+    }
+
+    const approvalRequest = parseCodexApprovalRequest(message);
+    if (!approvalRequest) {
+        return null;
+    }
+
+    return {
+        type: 'tool-call',
+        name: 'CodexApprovalRequest',
+        callId: `approval:${approvalRequest.toolCallId}`,
+        input: {
+            toolCallId: approvalRequest.toolCallId,
+            toolName: approvalRequest.toolName,
+            approvalKind: approvalRequest.approvalKind,
+            ...approvalRequest.input
+        },
+        id: randomUUID(),
+    };
 }
 
 export function convertCodexAssistantEventToSessionMessage(rawMessage: any):
@@ -593,6 +627,7 @@ async function buildKanbanInstructionBlock(opts: {
  * - item_started / item_completed
  * - raw_response_item
  * - mcp_tool_call_begin / mcp_tool_call_end
+ * - elicitation_request
  * - exec_command_output_delta
  */
 export async function runCodex(opts: {
@@ -616,6 +651,7 @@ export async function runCodex(opts: {
     // Log startup options
     logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}`);
     logger.debug(`[codex] Bridge compatibility target active for codex-cli ${codexCliVersion ?? 'unknown'}`);
+    logger.debug(`[codex] ${CODEX_BRIDGE_DEBUG_ENV}=${isCodexBridgeDebugEnabled() ? 'enabled' : 'disabled'}`);
 
     //
     // Machine
@@ -739,7 +775,7 @@ export async function runCodex(opts: {
         messageQueue.push(formattedMessage, getCurrentEnhancedMode());
     });
 
-    session.on('metadata-update', (newMetadata: Metadata) => {
+    session.on('metadata-update', async (newMetadata: Metadata) => {
         logger.debug('[Codex] Session metadata updated', newMetadata);
         const previousRole = metadata.role;
         const previousTeamId = metadata.teamId || metadata.roomId;
@@ -778,7 +814,32 @@ export async function runCodex(opts: {
             updates.push('Call functions.aha__get_team_info immediately to load the latest team context, roster, and workflow rules.');
             messageQueue.push(`[System]: ${updates.join(' ')}`, getCurrentEnhancedMode());
             teamInitialized = false;
-            teamContextBlock = null;
+
+            // Rebuild team context block so next session start injects updated context
+            // (mirrors Claude branch behavior in updateTeamHandling)
+            if (nextTeamId && nextRole && taskStateManager) {
+                try {
+                    const kanbanCtx = await taskStateManager.getFilteredContext();
+                    const sessionMetadataForRebuild = {
+                        ...(session.getMetadata() || {}),
+                        teamId: nextTeamId,
+                        role: nextRole,
+                    } as Metadata;
+                    const rebuiltRolePrompt = generateRolePrompt(
+                        sessionMetadataForRebuild,
+                        kanbanCtx,
+                        genomeSpec ?? undefined
+                    );
+                    teamContextBlock = rebuiltRolePrompt;
+                    teamInitialized = true;
+                    logger.debug('[Codex] Rebuilt teamContextBlock after metadata-update');
+                } catch (e) {
+                    logger.debug('[Codex] Failed to rebuild teamContextBlock:', e);
+                    teamContextBlock = null;
+                }
+            } else {
+                teamContextBlock = null;
+            }
         }
     });
 
@@ -1029,7 +1090,7 @@ export async function runCodex(opts: {
             return null;
         }
     }
-    const permissionHandler = new CodexPermissionHandler(session);
+    const permissionHandler = new CodexPermissionHandler(session, () => currentPermissionMode);
     const reasoningProcessor = new ReasoningProcessor((message) => {
         // Callback to send messages directly from the processor
         session.sendCodexMessage(message);
@@ -1046,15 +1107,35 @@ export async function runCodex(opts: {
     // accumulate the deltas so we can forward the full text to kanban.
     let agentMessageDeltaBuffer = '';
     const mcpLifecycleCallIds = new Set<string>();
+    const suppressedAhaTitleCallIds = new Set<string>();
     const execOutputBuffers = new Map<string, { stdout: string; stderr: string }>();
 
     client.setHandler((rawMsg) => {
         const msg = unwrapCodexEvent(rawMsg);
         logger.debug(`[Codex] MCP message: ${JSON.stringify(msg)}`);
+        logCodexBridge('Inbound codex/event payload', rawMsg);
+        logCodexSignal('received', msg, {
+            rawSignalType: rawMsg && typeof rawMsg === 'object' && 'type' in (rawMsg as Record<string, unknown>)
+                ? (rawMsg as Record<string, unknown>).type
+                : null
+        });
 
         // item_completed events duplicate content already delivered via agent_message / agent_reasoning.
         // Skip them entirely to prevent 2-3x message repetition in context.
         if (msg.type === 'item_completed') {
+            logCodexSignal('skipped', msg, {
+                reason: 'item_completed duplicates already-forwarded content'
+            });
+            return;
+        }
+
+        const approvalMessage = convertCodexApprovalEventToSessionMessage(msg);
+        if (approvalMessage) {
+            messageBuffer.addMessage(`Approval required: ${String((approvalMessage.input as Record<string, unknown>).toolName || 'unknown')}`, 'tool');
+            logCodexBridge('Observed approval event; relying on agentState permission flow instead of synthetic session message', approvalMessage);
+            logCodexSignal('observed-approval', msg, {
+                sessionMessage: approvalMessage
+            });
             return;
         }
 
@@ -1073,30 +1154,64 @@ export async function runCodex(opts: {
                 messageBuffer.addMessage(`[Thinking] ${fullText.substring(0, 100)}...`, 'system');
             }
 
-            session.sendCodexMessage({
+            const sessionMessage = {
                 ...assistantMessage,
                 message: fullText,
+            };
+            session.sendCodexMessage(sessionMessage);
+            logCodexSignal('forwarded-assistant', msg, {
+                sessionMessage,
+                fullTextLength: fullText.length
             });
             return;
         }
 
         const mcpLifecycleMessage = convertCodexMcpLifecycleEventToSessionMessage(msg);
         if (mcpLifecycleMessage) {
+            if (msg.type === 'mcp_tool_call_begin'
+                && msg.invocation?.server === 'aha'
+                && msg.invocation?.tool === 'change_title'
+                && mcpLifecycleMessage.type === 'tool-call') {
+                suppressedAhaTitleCallIds.add(mcpLifecycleMessage.callId);
+                logCodexSignal('suppressed-mcp-lifecycle', msg, {
+                    reason: 'aha change_title should render via summary/title update, not raw tool card',
+                    sessionMessage: mcpLifecycleMessage
+                });
+                return;
+            }
+            if (mcpLifecycleMessage.type === 'tool-call-result' && suppressedAhaTitleCallIds.has(mcpLifecycleMessage.callId)) {
+                suppressedAhaTitleCallIds.delete(mcpLifecycleMessage.callId);
+                logCodexSignal('suppressed-mcp-lifecycle', msg, {
+                    reason: 'aha change_title result suppressed with paired begin event',
+                    sessionMessage: mcpLifecycleMessage
+                });
+                return;
+            }
             if (mcpLifecycleMessage.type === 'tool-call') {
                 mcpLifecycleCallIds.add(mcpLifecycleMessage.callId);
                 messageBuffer.addMessage(`Tool: ${mcpLifecycleMessage.name}`, 'tool');
             }
             session.sendCodexMessage(mcpLifecycleMessage);
+            logCodexBridge('Forwarded MCP lifecycle event to session', mcpLifecycleMessage);
+            logCodexSignal('forwarded-mcp-lifecycle', msg, {
+                sessionMessage: mcpLifecycleMessage
+            });
             return;
         }
 
         // Accumulate streaming text deltas
         if (msg.type === 'agent_message_delta') {
             agentMessageDeltaBuffer += msg.delta;
+            logCodexSignal('buffered-agent-message-delta', msg, {
+                bufferLength: agentMessageDeltaBuffer.length
+            });
             return; // Don't process further — wait for agent_message or task_complete
         }
         // agent_message_content_delta is a duplicate of agent_message_delta with extra metadata — skip
         if (msg.type === 'agent_message_content_delta') {
+            logCodexSignal('skipped', msg, {
+                reason: 'agent_message_content_delta duplicates agent_message_delta'
+            });
             return;
         }
         if (msg.type === 'exec_command_output_delta') {
@@ -1108,6 +1223,10 @@ export async function runCodex(opts: {
                 buffer.stdout += decoded;
             }
             execOutputBuffers.set(msg.call_id, buffer);
+            logCodexSignal('buffered-exec-output-delta', msg, {
+                stdoutLength: buffer.stdout.length,
+                stderrLength: buffer.stderr.length
+            });
             return;
         }
 
@@ -1146,6 +1265,9 @@ export async function runCodex(opts: {
                 thinking = true;
                 session.keepAlive(thinking, 'remote');
             }
+            logCodexSignal('updated-thinking-state', msg, {
+                thinking
+            });
         }
         if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
             if (thinking) {
@@ -1154,60 +1276,97 @@ export async function runCodex(opts: {
                 session.keepAlive(thinking, 'remote');
             }
             // Flush any remaining delta text that wasn't closed by agent_message
+            let flushedDeltaLength = 0;
             if (agentMessageDeltaBuffer) {
-                session.sendCodexMessage({
+                flushedDeltaLength = agentMessageDeltaBuffer.length;
+                const sessionMessage = {
                     type: 'message',
                     message: agentMessageDeltaBuffer,
                     id: randomUUID()
-                });
+                };
+                session.sendCodexMessage(sessionMessage);
                 agentMessageDeltaBuffer = '';
             }
             // Reset diff processor on task end or abort
             diffProcessor.reset();
+            logCodexSignal('task-finished-cleanup', msg, {
+                thinking,
+                flushedDeltaLength,
+                diffProcessorReset: true
+            });
         }
         if (msg.type === 'agent_reasoning_section_break') {
             // Reset reasoning processor for new section
             reasoningProcessor.handleSectionBreak();
+            logCodexSignal('processed-reasoning-section-break', msg);
         }
         if (msg.type === 'agent_reasoning_delta') {
             // Process reasoning delta - tool calls are sent automatically via callback
             reasoningProcessor.processDelta(msg.delta);
+            logCodexSignal('processed-reasoning-delta', msg, {
+                deltaLength: msg.delta.length
+            });
         }
         if (msg.type === 'agent_reasoning') {
             // Complete the reasoning section - tool results or reasoning messages sent via callback
             reasoningProcessor.complete(msg.text);
+            logCodexSignal('processed-reasoning-complete', msg, {
+                textLength: msg.text.length
+            });
         }
         if (msg.type === 'agent_message') {
             // Use accumulated delta text when available; fall back to msg.message for older SDK
             const fullText = agentMessageDeltaBuffer || msg.message;
             agentMessageDeltaBuffer = '';
-            session.sendCodexMessage({
+            const sessionMessage = {
                 type: 'message',
                 message: fullText,
                 id: randomUUID()
+            };
+            session.sendCodexMessage(sessionMessage);
+            logCodexSignal('forwarded-agent-message', msg, {
+                sessionMessage,
+                fullTextLength: fullText.length
             });
         }
         const functionToolMessage = convertCodexFunctionEventToSessionMessage(msg);
         if (functionToolMessage) {
             if (functionToolMessage.type === 'tool-call' && isMcpFunctionName(functionToolMessage.name)) {
+                logCodexSignal('suppressed-function-event', msg, {
+                    reason: 'raw MCP function_call suppressed in favor of lifecycle events',
+                    sessionMessage: functionToolMessage
+                });
                 return;
             }
             if (functionToolMessage.type === 'tool-call-result' && mcpLifecycleCallIds.has(functionToolMessage.callId)) {
+                logCodexSignal('suppressed-function-event', msg, {
+                    reason: 'raw MCP function_call_output suppressed because lifecycle event already handled it',
+                    sessionMessage: functionToolMessage
+                });
                 return;
             }
             if (functionToolMessage.type === 'tool-call') {
                 messageBuffer.addMessage(`Tool: ${functionToolMessage.name}`, 'tool');
             }
             session.sendCodexMessage(functionToolMessage);
+            logCodexBridge('Forwarded function event to session', functionToolMessage);
+            logCodexSignal('forwarded-function-event', msg, {
+                sessionMessage: functionToolMessage
+            });
         }
         if (msg.type === 'exec_command_begin' || msg.type === 'exec_approval_request') {
             let { call_id, type, ...inputs } = msg;
-            session.sendCodexMessage({
+            const sessionMessage = {
                 type: 'tool-call',
                 name: 'CodexBash',
                 callId: call_id,
                 input: inputs,
                 id: randomUUID()
+            } as const;
+            session.sendCodexMessage(sessionMessage);
+            logCodexBridge('Forwarded exec event to session', sessionMessage);
+            logCodexSignal('forwarded-exec-event', msg, {
+                sessionMessage
             });
         }
         if (msg.type === 'exec_command_end') {
@@ -1221,17 +1380,26 @@ export async function runCodex(opts: {
                 };
                 execOutputBuffers.delete(call_id);
             }
-            session.sendCodexMessage({
+            const sessionMessage = {
                 type: 'tool-call-result',
                 callId: call_id,
                 output: output,
                 id: randomUUID()
+            } as const;
+            session.sendCodexMessage(sessionMessage);
+            logCodexBridge('Forwarded exec result to session', sessionMessage);
+            logCodexSignal('forwarded-exec-result', msg, {
+                sessionMessage
             });
         }
         if (msg.type === 'token_count') {
-            session.sendCodexMessage({
+            const sessionMessage = {
                 ...msg,
                 id: randomUUID()
+            };
+            session.sendCodexMessage(sessionMessage);
+            logCodexSignal('forwarded-token-count', msg, {
+                sessionMessage
             });
         }
         if (msg.type === 'patch_apply_begin') {
@@ -1244,7 +1412,7 @@ export async function runCodex(opts: {
             messageBuffer.addMessage(`Modifying ${filesMsg}...`, 'tool');
 
             // Send tool call message
-            session.sendCodexMessage({
+            const sessionMessage = {
                 type: 'tool-call',
                 name: 'CodexPatch',
                 callId: call_id,
@@ -1253,6 +1421,11 @@ export async function runCodex(opts: {
                     changes
                 },
                 id: randomUUID()
+            };
+            session.sendCodexMessage(sessionMessage);
+            logCodexSignal('forwarded-patch-begin', msg, {
+                sessionMessage,
+                changeCount
             });
         }
         if (msg.type === 'patch_apply_end') {
@@ -1269,7 +1442,7 @@ export async function runCodex(opts: {
             }
 
             // Send tool call result message
-            session.sendCodexMessage({
+            const sessionMessage = {
                 type: 'tool-call-result',
                 callId: call_id,
                 output: {
@@ -1278,6 +1451,10 @@ export async function runCodex(opts: {
                     success
                 },
                 id: randomUUID()
+            };
+            session.sendCodexMessage(sessionMessage);
+            logCodexSignal('forwarded-patch-end', msg, {
+                sessionMessage
             });
         }
         if (msg.type === 'turn_diff') {
@@ -1285,6 +1462,9 @@ export async function runCodex(opts: {
             if (msg.unified_diff) {
                 diffProcessor.processDiff(msg.unified_diff);
             }
+            logCodexSignal('processed-turn-diff', msg, {
+                diffLength: typeof msg.unified_diff === 'string' ? msg.unified_diff.length : 0
+            });
         }
     });
 
@@ -1571,7 +1751,7 @@ ${historyText}
                         case 'read-only': return 'never' as const;
                         case 'safe-yolo': return 'on-failure' as const;
                         case 'yolo':
-                        case 'bypassPermissions': return 'on-failure' as const;   // Aha default: full access
+                        case 'bypassPermissions': return 'never' as const;        // Aha full-access modes must not block on Codex approvals
                         case 'acceptEdits': return 'on-request' as const;
                         case 'plan': return 'untrusted' as const;
                         default: return 'on-failure' as const;                    // Unknown → treat as bypass

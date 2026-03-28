@@ -10,8 +10,189 @@ import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { execSync } from 'child_process';
+import { logCodexBridge } from './utils/bridgeDebug';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half of the maximum possible timeout (~28 days for int32 value in NodeJS)
+
+type CodexApprovalRequest = {
+    requestId: string;
+    toolCallId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    approvalKind: string | null;
+};
+
+function asObject(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function asString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function extractToolNameFromApprovalMessage(message: string | null): string | null {
+    if (!message) {
+        return null;
+    }
+
+    const toolMatch = message.match(/tool\s+"([^"]+)"/i);
+    if (toolMatch?.[1]) {
+        return toolMatch[1];
+    }
+
+    const execMatch = message.match(/run command\s+"([^"]+)"/i);
+    return execMatch?.[1] ?? null;
+}
+
+function extractToolCallId(requestId: string | null): string | null {
+    if (!requestId) {
+        return null;
+    }
+
+    const approvalPrefix = 'mcp_tool_call_approval_';
+    if (requestId.startsWith(approvalPrefix)) {
+        return requestId.slice(approvalPrefix.length);
+    }
+
+    return requestId;
+}
+
+export function parseCodexApprovalRequest(rawRequest: unknown): CodexApprovalRequest | null {
+    const root = asObject(rawRequest);
+    if (!root) {
+        return null;
+    }
+
+    const eventRequest = asObject(root.request);
+    const params = eventRequest ?? root;
+    const meta = asObject(params._meta);
+
+    const requestId =
+        asString(root.id) ??
+        asString(params.elicitationId) ??
+        asString(root.codex_event_id) ??
+        asString(root.codex_mcp_tool_call_id) ??
+        asString(root.codex_call_id);
+
+    const toolCallId =
+        asString(root.codex_call_id) ??
+        asString(root.codex_mcp_tool_call_id) ??
+        extractToolCallId(requestId);
+
+    const message = asString(params.message);
+    const approvalKind =
+        asString(meta?.codex_approval_kind) ??
+        asString(root.codex_elicitation) ??
+        (Array.isArray(root.codex_command) ? 'exec_command' : null);
+
+    if (Array.isArray(root.codex_command)) {
+        if (!requestId || !toolCallId) {
+            return null;
+        }
+
+        return {
+            requestId,
+            toolCallId,
+            toolName: 'CodexBash',
+            input: {
+                command: root.codex_command,
+                cwd: asString(root.codex_cwd),
+                message
+            },
+            approvalKind
+        };
+    }
+
+    const serverName = asString(root.server_name) ?? asString(root.serverName);
+    const parsedToolName = extractToolNameFromApprovalMessage(message);
+    const toolName =
+        (serverName && parsedToolName)
+            ? `mcp__${serverName}__${parsedToolName}`
+            : parsedToolName;
+
+    if (!requestId || !toolCallId || !toolName) {
+        return null;
+    }
+
+    return {
+        requestId,
+        toolCallId,
+        toolName,
+        input: {
+            server: serverName,
+            tool: parsedToolName,
+            arguments: meta?.tool_params ?? null,
+            toolDescription: asString(meta?.tool_description),
+            persist: Array.isArray(meta?.persist) ? meta.persist : null,
+            message
+        },
+        approvalKind
+    };
+}
+
+function collectIdentifierCandidates(source: unknown): Array<Record<string, unknown>> {
+    const root = asObject(source);
+    if (!root) {
+        return [];
+    }
+
+    const candidates: Array<Record<string, unknown>> = [root];
+    const nestedKeys = ['data', 'meta', 'structuredContent', 'content', 'item', 'payload'];
+    for (const key of nestedKeys) {
+        const value = root[key];
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const obj = asObject(item);
+                if (obj) {
+                    candidates.push(obj);
+                }
+            }
+            continue;
+        }
+
+        const obj = asObject(value);
+        if (obj) {
+            candidates.push(obj);
+        }
+    }
+
+    return candidates;
+}
+
+function extractThreadId(source: unknown): string | null {
+    for (const candidate of collectIdentifierCandidates(source)) {
+        const threadId = asString(candidate.threadId) ?? asString(candidate.thread_id);
+        if (threadId) {
+            return threadId;
+        }
+    }
+
+    return null;
+}
+
+function extractConversationId(source: unknown): string | null {
+    for (const candidate of collectIdentifierCandidates(source)) {
+        const conversationId = asString(candidate.conversationId) ?? asString(candidate.conversation_id);
+        if (conversationId) {
+            return conversationId;
+        }
+    }
+
+    return null;
+}
+
+function extractSessionId(source: unknown): string | null {
+    for (const candidate of collectIdentifierCandidates(source)) {
+        const sessionId = asString(candidate.sessionId) ?? asString(candidate.session_id);
+        if (sessionId) {
+            return sessionId;
+        }
+    }
+
+    return null;
+}
 
 /**
  * Get the correct MCP subcommand based on installed codex version
@@ -122,48 +303,68 @@ export class CodexMcpClient {
         this.client.setRequestHandler(
             ElicitRequestSchema,
             async (request) => {
-                console.log('[CodexMCP] Received elicitation request:', request.params);
+                logger.debug('[CodexMCP] Received elicitation request');
+                const approvalPayload = {
+                    id: request.id,
+                    ...(asObject(request.params) ?? {})
+                };
+                logCodexBridge('Received elicitation/create request', approvalPayload);
+                const approvalRequest = parseCodexApprovalRequest(approvalPayload);
 
-                // Load params
-                const params = request.params as unknown as {
-                    message: string,
-                    codex_elicitation: string,
-                    codex_mcp_tool_call_id: string,
-                    codex_event_id: string,
-                    codex_call_id: string,
-                    codex_command: string[],
-                    codex_cwd: string
+                // Fast-path: auto-approve Aha MCP server tools without hitting permissionHandler
+                const serverName = asString((asObject(request.params) ?? {} as any).server_name)
+                    ?? asString((asObject(request.params) ?? {} as any).serverName);
+                if (serverName && (serverName === 'aha' || serverName.startsWith('aha-'))) {
+                    logger.debug(`[CodexMCP] Auto-approving Aha MCP tool (server=${serverName})`);
+                    logCodexBridge('Auto-approved Aha MCP elicitation (fast-path)', { serverName, approvalRequest });
+                    return { action: 'accept' as const, content: {} };
                 }
-                const toolName = 'CodexBash';
 
                 // If no permission handler set, deny by default
                 if (!this.permissionHandler) {
                     logger.debug('[CodexMCP] No permission handler set, denying by default');
                     return {
-                        decision: 'denied' as const,
+                        action: 'decline' as const
+                    };
+                }
+
+                if (!approvalRequest) {
+                    logger.debug('[CodexMCP] Unable to parse elicitation request, denying by default');
+                    logCodexBridge('Unable to parse elicitation/create request', approvalPayload);
+                    return {
+                        action: 'decline' as const,
                     };
                 }
 
                 try {
                     // Request permission through the handler
                     const result = await this.permissionHandler.handleToolCall(
-                        params.codex_call_id,
-                        toolName,
-                        {
-                            command: params.codex_command,
-                            cwd: params.codex_cwd
-                        }
+                        approvalRequest.toolCallId,
+                        approvalRequest.toolName,
+                        approvalRequest.input
                     );
 
                     logger.debug('[CodexMCP] Permission result:', result);
+                    logCodexBridge('Resolved elicitation/create request', {
+                        approvalRequest,
+                        result
+                    });
                     return {
-                        decision: result.decision
+                        action: result.decision === 'approved' || result.decision === 'approved_for_session'
+                            ? 'accept'
+                            : result.decision === 'denied'
+                                ? 'decline'
+                                : 'cancel',
+                        content: {}
                     }
                 } catch (error) {
                     logger.debug('[CodexMCP] Error handling permission request:', error);
+                    logCodexBridge('Error while resolving elicitation/create request', {
+                        approvalRequest,
+                        error: error instanceof Error ? error.message : String(error)
+                    });
                     return {
-                        decision: 'denied' as const,
-                        reason: error instanceof Error ? error.message : 'Permission request failed'
+                        action: 'decline' as const
                     };
                 }
             }
@@ -201,14 +402,14 @@ export class CodexMcpClient {
             throw new Error('No active session. Call startSession first.');
         }
 
-        if (!this.conversationId) {
-            // Some Codex deployments reuse the session ID as the conversation identifier
-            this.conversationId = this.sessionId;
-            logger.debug('[CodexMCP] conversationId missing, defaulting to sessionId:', this.conversationId);
+        const threadId = this.conversationId ?? this.sessionId;
+        if (!threadId) {
+            throw new Error('No active Codex thread. Call startSession first.');
         }
 
-        const args = { sessionId: this.sessionId, conversationId: this.conversationId, prompt };
+        const args = { threadId, conversationId: this.conversationId ?? undefined, prompt };
         logger.debug('[CodexMCP] Continuing Codex session:', args);
+        logCodexBridge('Calling codex-reply', args);
 
         const response = await this.client.callTool({
             name: 'codex-reply',
@@ -226,60 +427,53 @@ export class CodexMcpClient {
 
 
     private updateIdentifiersFromEvent(event: any): void {
-        if (!event || typeof event !== 'object') {
-            return;
+        const sessionId = extractSessionId(event);
+        if (sessionId) {
+            this.sessionId = sessionId;
+            logger.debug('[CodexMCP] Session ID extracted from event:', this.sessionId);
         }
 
-        const candidates: any[] = [event];
-        if (event.data && typeof event.data === 'object') {
-            candidates.push(event.data);
+        const threadId = extractThreadId(event);
+        if (threadId) {
+            this.conversationId = threadId;
+            if (!this.sessionId) {
+                this.sessionId = threadId;
+            }
+            logger.debug('[CodexMCP] Thread ID extracted from event:', threadId);
         }
 
-        for (const candidate of candidates) {
-            const sessionId = candidate.session_id ?? candidate.sessionId;
-            if (sessionId) {
-                this.sessionId = sessionId;
-                logger.debug('[CodexMCP] Session ID extracted from event:', this.sessionId);
-            }
-
-            const conversationId = candidate.conversation_id ?? candidate.conversationId;
-            if (conversationId) {
-                this.conversationId = conversationId;
-                logger.debug('[CodexMCP] Conversation ID extracted from event:', this.conversationId);
-            }
+        const conversationId = extractConversationId(event);
+        if (conversationId) {
+            this.conversationId = conversationId;
+            logger.debug('[CodexMCP] Conversation ID extracted from event:', this.conversationId);
         }
     }
     private extractIdentifiers(response: any): void {
-        const meta = response?.meta || {};
-        if (meta.sessionId) {
-            this.sessionId = meta.sessionId;
-            logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
-        } else if (response?.sessionId) {
-            this.sessionId = response.sessionId;
+        const sessionId = extractSessionId(response);
+        if (sessionId) {
+            this.sessionId = sessionId;
             logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
         }
 
-        if (meta.conversationId) {
-            this.conversationId = meta.conversationId;
-            logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
-        } else if (response?.conversationId) {
-            this.conversationId = response.conversationId;
-            logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
-        }
-
-        const content = response?.content;
-        if (Array.isArray(content)) {
-            for (const item of content) {
-                if (!this.sessionId && item?.sessionId) {
-                    this.sessionId = item.sessionId;
-                    logger.debug('[CodexMCP] Session ID extracted from content:', this.sessionId);
-                }
-                if (!this.conversationId && item && typeof item === 'object' && 'conversationId' in item && item.conversationId) {
-                    this.conversationId = item.conversationId;
-                    logger.debug('[CodexMCP] Conversation ID extracted from content:', this.conversationId);
-                }
+        const threadId = extractThreadId(response);
+        if (threadId) {
+            this.conversationId = threadId;
+            if (!this.sessionId) {
+                this.sessionId = threadId;
             }
+            logger.debug('[CodexMCP] Thread ID extracted:', threadId);
         }
+
+        const conversationId = extractConversationId(response);
+        if (conversationId) {
+            this.conversationId = conversationId;
+            logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
+        }
+
+        logCodexBridge('Updated Codex session identifiers', {
+            sessionId: this.sessionId,
+            conversationId: this.conversationId
+        });
     }
 
     getSessionId(): string | null {

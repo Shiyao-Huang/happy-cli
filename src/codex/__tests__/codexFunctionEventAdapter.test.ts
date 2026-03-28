@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    convertCodexApprovalEventToSessionMessage,
     convertCodexAssistantEventToSessionMessage,
     convertCodexFunctionEventToSessionMessage,
     convertCodexMcpLifecycleEventToSessionMessage,
@@ -281,5 +282,46 @@ describe('convertCodexMcpLifecycleEventToSessionMessage', () => {
                 isError: false
             }
         });
+    });
+});
+
+describe('convertCodexApprovalEventToSessionMessage', () => {
+    it('converts real elicitation_request events into approval tool-call session messages', () => {
+        const message = convertCodexApprovalEventToSessionMessage({
+            type: 'elicitation_request',
+            turn_id: '1',
+            server_name: 'testbridge',
+            id: 'mcp_tool_call_approval_call_P7JpgLPJgs8EGodLzrWd7VmU',
+            request: {
+                mode: 'form',
+                _meta: {
+                    codex_approval_kind: 'mcp_tool_call',
+                    persist: ['session', 'always'],
+                    tool_description: 'Echo the provided text back exactly.',
+                    tool_params: { text: 'hello bridge' },
+                },
+                message: 'Allow the testbridge MCP server to run tool "echo_text"?',
+                requested_schema: {
+                    type: 'object',
+                    properties: {}
+                }
+            }
+        });
+
+        expect(message).toMatchObject({
+            type: 'tool-call',
+            name: 'CodexApprovalRequest',
+            callId: 'approval:call_P7JpgLPJgs8EGodLzrWd7VmU',
+            input: {
+                toolCallId: 'call_P7JpgLPJgs8EGodLzrWd7VmU',
+                toolName: 'mcp__testbridge__echo_text',
+                approvalKind: 'mcp_tool_call',
+                server: 'testbridge',
+                tool: 'echo_text',
+                arguments: { text: 'hello bridge' },
+                toolDescription: 'Echo the provided text back exactly.',
+            }
+        });
+        expect(message?.id).toEqual(expect.any(String));
     });
 });

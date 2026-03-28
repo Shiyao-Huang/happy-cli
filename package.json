@@ -1,6 +1,6 @@
 {
   "name": "cc-aha-cli-v3",
-  "version": "2.0.16",
+  "version": "2.1.0",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
@@ -19,7 +19,9 @@
     "kanban-v3": "./bin/aha.mjs",
     "kanban-v3-mcp": "./bin/aha-mcp.mjs",
     "aha-v5": "./bin/aha.mjs",
-    "aha-v5-mcp": "./bin/aha-mcp.mjs"
+    "aha-v5-mcp": "./bin/aha-mcp.mjs",
+    "aha-v7": "./bin/aha-v7.mjs",
+    "aha-v7-mcp": "./bin/aha-v7-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -87,7 +89,7 @@
     "release": "release-it",
     "postinstall": "node scripts/unpack-tools.cjs && node scripts/install-git-hooks.cjs",
     "install:git-hooks": "node scripts/install-git-hooks.cjs",
-    "prerecommit": "yarn typecheck && yarn test"
+    "prerecommit": "yarn typecheck && npx eslint src/ && yarn test"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.85",
