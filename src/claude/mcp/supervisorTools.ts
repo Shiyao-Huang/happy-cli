@@ -1746,8 +1746,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can compare genome versions.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can compare genome versions.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
@@ -1863,8 +1863,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can rollback genomes.' }], isError: true };
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can rollback genomes.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
