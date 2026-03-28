@@ -632,7 +632,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master' && callerRole !== 'agent-builder') {
             return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect genome specs.` }], isError: true };
         }
 
@@ -1342,7 +1342,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can evolve genomes.' }], isError: true };
         }
 
@@ -1509,7 +1509,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager') {
+        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
             return { content: [{ type: 'text', text: 'Error: Only supervisor or org-manager can mutate genomes.' }], isError: true };
         }
 
