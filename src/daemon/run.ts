@@ -622,7 +622,9 @@ export async function startDaemon(): Promise<void> {
     const supervisorInterval = parseInt(process.env.AHA_SUPERVISOR_INTERVAL || '20');
 
     let heartbeatRunning = false;
-    let heartbeatCount = 0;
+    // Start at supervisorInterval - 1 so the first heartbeat tick triggers
+    // supervisor spawn immediately instead of waiting N * heartbeatIntervalMs.
+    let heartbeatCount = supervisorInterval - 1;
 
     // ── Heartbeat interval ─────────────────────────────────────────────────────
     // Every heartbeatIntervalMs (default 60s):
@@ -653,6 +655,10 @@ export async function startDaemon(): Promise<void> {
             apiMachine.reportDeadSessions(ids);
           },
           heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat!,
+          requestShutdown,
+          startupDiskVersion: diskVersion,
+          fileState,
+          controlPort,
         });
 
         heartbeatCount++;
