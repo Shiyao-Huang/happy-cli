@@ -19,6 +19,7 @@ import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
+import { completeRunEnvelope } from '@/daemon/runEnvelope';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
@@ -1800,6 +1801,18 @@ ${instructions}
     } finally {
         clearInterval(keepAliveInterval);
         // Workspace directories are permanent; no cleanup needed.
+    }
+
+    const finalSessionMetadata = (session.getMetadata() || {}) as Metadata;
+    if (finalSessionMetadata.lifecycleState === 'auto-retired' || finalSessionMetadata.lifecycleState === 'retired') {
+        const closedAt = finalSessionMetadata.closedAt || new Date().toISOString();
+        await completeRunEnvelope({
+            runId: response.id,
+            status: 'completed',
+            closedAt,
+            retiredAt: finalSessionMetadata.retiredAt || closedAt,
+            lifecycleState: finalSessionMetadata.lifecycleState,
+        });
     }
 
     // Send session death message

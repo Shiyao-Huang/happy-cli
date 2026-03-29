@@ -82,6 +82,32 @@ function findLegacyLifecycleSentinels(content: unknown): string[] {
     return LEGACY_LIFECYCLE_SENTINELS.filter((sentinel) => joined.includes(sentinel));
 }
 
+function parseStandbyAutoExitMs(envName: string, fallbackMs: number): number | null {
+    const raw = process.env[envName];
+    if (raw == null || raw.trim() === '') {
+        return fallbackMs;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+    }
+
+    return parsed;
+}
+
+export function resolveStandbyAutoExitMs(role?: string): number | null {
+    if (role === 'help-agent') {
+        return parseStandbyAutoExitMs('AHA_HELP_STANDBY_AUTO_EXIT_MS', 120_000);
+    }
+
+    if (role === 'supervisor') {
+        return parseStandbyAutoExitMs('AHA_SUPERVISOR_STANDBY_AUTO_EXIT_MS', 60_000);
+    }
+
+    return null;
+}
+
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
 
@@ -130,8 +156,31 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     let abortController: AbortController | null = null;
     let abortFuture: Future<void> | null = null;
     let retireTimer: NodeJS.Timeout | null = null;
+    let standbyTimer: NodeJS.Timeout | null = null;
+
+    const clearStandbyTimer = (reason?: string) => {
+        if (!standbyTimer) {
+            return;
+        }
+
+        clearTimeout(standbyTimer);
+        standbyTimer = null;
+        logger.debug(
+            `[remote]: Cleared standby auto-exit timer${reason ? ` (${reason})` : ''}`
+        );
+    };
+
+    const resolveLifecycleRole = (): string | undefined =>
+        process.env.AHA_AGENT_ROLE
+        || session.client.getMetadata()?.role
+        || undefined;
 
     async function abort() {
+        clearStandbyTimer('abort');
+        if (retireTimer) {
+            clearTimeout(retireTimer);
+            retireTimer = null;
+        }
         if (abortController && !abortController.signal.aborted) {
             abortController.abort();
         }
@@ -189,6 +238,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
 
+        if (message.type === 'user') {
+            clearStandbyTimer('new inbound message');
+        }
+
         // Lifecycle is agent-controlled via explicit directives, never via loose substring matching.
         if (message.type === 'assistant') {
             const umessage = message as SDKAssistantMessage;
@@ -201,6 +254,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                 );
 
                 if (directive.action === 'retire' && !retireTimer) {
+                    clearStandbyTimer('explicit retire directive');
                     retireTimer = setTimeout(() => {
                         logger.debug(
                             `[remote]: Auto-retiring agent via explicit lifecycle directive` +
@@ -214,10 +268,50 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                 }
 
                 if (directive.action === 'standby') {
-                    logger.debug(
-                        `[remote]: Agent explicitly chose standby; session will remain alive` +
-                        `${directive.reason ? ` (${directive.reason})` : ''}`
-                    );
+                    const role = resolveLifecycleRole();
+                    const standbyAutoExitMs = resolveStandbyAutoExitMs(role);
+                    if (standbyAutoExitMs != null) {
+                        clearStandbyTimer('refresh standby window');
+                        standbyTimer = setTimeout(() => {
+                            void (async () => {
+                                const nowIso = new Date().toISOString();
+                                try {
+                                    await session.client.updateMetadata((currentMetadata) => ({
+                                        ...currentMetadata,
+                                        lifecycleState: 'auto-retired',
+                                        lifecycleStateSince: Date.now(),
+                                        closedAt: currentMetadata?.closedAt || nowIso,
+                                        retiredAt: currentMetadata?.retiredAt || nowIso,
+                                        retiredBy: 'runtime',
+                                        retireReason: directive.reason || 'standby-auto-exit',
+                                    }));
+                                    await session.flush();
+                                } catch (error) {
+                                    logger.debug('[remote]: Failed to persist auto-retired metadata before exit:', error);
+                                }
+
+                                logger.debug(
+                                    `[remote]: Auto-retiring standby agent after ${standbyAutoExitMs}ms` +
+                                    `${role ? ` (role=${role})` : ''}` +
+                                    `${directive.reason ? ` (${directive.reason})` : ''}`
+                                );
+                                if (!exitReason) {
+                                    exitReason = 'exit';
+                                }
+                                abort().catch(() => {});
+                            })();
+                        }, standbyAutoExitMs);
+                        logger.debug(
+                            `[remote]: Agent explicitly chose standby; auto-exit scheduled in ${standbyAutoExitMs}ms` +
+                            `${role ? ` for role=${role}` : ''}` +
+                            `${directive.reason ? ` (${directive.reason})` : ''}`
+                        );
+                    } else {
+                        logger.debug(
+                            `[remote]: Agent explicitly chose standby; session will remain alive` +
+                            `${directive.reason ? ` (${directive.reason})` : ''}`
+                        );
+                    }
                 }
             }
 

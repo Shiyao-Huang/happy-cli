@@ -13,7 +13,7 @@ export interface RunEnvelope {
   runId: string
   sessionId: string | null
   pid: number | null
-  status: 'draft' | 'active'
+  status: 'draft' | 'active' | 'completed'
   teamId: string | null
   memberId: string | null
   role: string | null
@@ -37,6 +37,9 @@ export interface RunEnvelope {
     flavor?: string
   }
   spawnedAt: string
+  closedAt?: string | null
+  retiredAt?: string | null
+  lifecycleState?: string | null
   updatedAt: string
 }
 
@@ -433,5 +436,40 @@ export async function finalizeRunEnvelopeFromWebhook(params: {
     }
   }
 
+  return envelope
+}
+
+export async function completeRunEnvelope(params: {
+  runId: string
+  rootDir?: string
+  status?: Extract<RunEnvelope['status'], 'completed'>
+  closedAt?: string
+  retiredAt?: string | null
+  lifecycleState?: string | null
+}): Promise<RunEnvelope | null> {
+  const existing = await readEnvelopeMaybe(params.runId, params.rootDir)
+  if (!existing) {
+    return null
+  }
+
+  const closedAt = params.closedAt ?? new Date().toISOString()
+  const nextLifecycleState = params.lifecycleState ?? existing.lifecycleState ?? null
+  const shouldStampRetiredAt = nextLifecycleState === 'retired' || nextLifecycleState === 'auto-retired'
+  const retiredAt = params.retiredAt !== undefined
+    ? params.retiredAt
+    : shouldStampRetiredAt
+      ? existing.retiredAt ?? closedAt
+      : existing.retiredAt ?? null
+
+  const envelope: RunEnvelope = {
+    ...existing,
+    status: params.status ?? 'completed',
+    closedAt,
+    retiredAt,
+    lifecycleState: nextLifecycleState,
+    updatedAt: closedAt,
+  }
+
+  await writeEnvelope(envelope, params.rootDir)
   return envelope
 }

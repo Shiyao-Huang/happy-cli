@@ -3,7 +3,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { buildPendingRunId, finalizeRunEnvelopeFromWebhook, writeDraftRunEnvelope } from './runEnvelope'
+import { buildPendingRunId, completeRunEnvelope, finalizeRunEnvelopeFromWebhook, writeDraftRunEnvelope } from './runEnvelope'
 
 describe('runEnvelope', () => {
   let rootDir: string | null = null
@@ -309,5 +309,58 @@ describe('runEnvelope', () => {
     expect(envelope.candidateIdentity.basis).toBe('derived')
     expect(envelope.specId).toBeNull()
     expect(envelope.candidateId.startsWith('derived:')).toBe(true)
+  })
+
+  it('completes an active envelope with auto-retired metadata', async () => {
+    rootDir = mkdtempSync(join(tmpdir(), 'aha-run-envelope-'))
+
+    await finalizeRunEnvelopeFromWebhook({
+      pid: 9191,
+      sessionId: 'cmn-auto-retired-session',
+      rootDir,
+      metadata: {
+        path: '/repo',
+        host: 'host',
+        homeDir: '/home',
+        ahaHomeDir: '/aha',
+        ahaLibDir: '/lib',
+        ahaToolsDir: '/tools',
+        hostPid: 9191,
+        startedBy: 'daemon',
+        role: 'help-agent',
+        teamId: 'team-auto',
+        executionPlane: 'bypass',
+        flavor: 'claude',
+      },
+      spawnOptions: {
+        directory: '/repo',
+        agent: 'claude',
+        teamId: 'team-auto',
+        role: 'help-agent',
+        sessionPath: '/repo',
+        executionPlane: 'bypass',
+      },
+    })
+
+    const completed = await completeRunEnvelope({
+      runId: 'cmn-auto-retired-session',
+      rootDir,
+      closedAt: '2026-03-29T15:00:00.000Z',
+      lifecycleState: 'auto-retired',
+    })
+
+    expect(completed).toMatchObject({
+      runId: 'cmn-auto-retired-session',
+      status: 'completed',
+      closedAt: '2026-03-29T15:00:00.000Z',
+      retiredAt: '2026-03-29T15:00:00.000Z',
+      lifecycleState: 'auto-retired',
+    })
+
+    const persisted = JSON.parse(readFileSync(join(rootDir, 'runs', 'cmn-auto-retired-session.json'), 'utf-8'))
+    expect(persisted.status).toBe('completed')
+    expect(persisted.closedAt).toBe('2026-03-29T15:00:00.000Z')
+    expect(persisted.retiredAt).toBe('2026-03-29T15:00:00.000Z')
+    expect(persisted.lifecycleState).toBe('auto-retired')
   })
 })
