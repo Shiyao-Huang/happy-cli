@@ -1084,7 +1084,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
         } catch { /* trace must never break main flow */ }
 
-        // ── Phase 3-B Change 3: Auto-trigger feedback upload when >= 3 scores ──
+        // ── Phase 3-B Change 3: Auto-trigger feedback upload on every scored cycle ──
         // Skip if this cycle was unscorable (e.g. system rate-limits) — don't pollute avgScore
         if (feedbackTarget && !args.unscoreableCycle) {
             try {
@@ -1093,13 +1093,17 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 const genomeScores = allScores.filter((score) =>
                     scoreMatchesFeedbackTarget(score, feedbackTarget)
                 );
-                if (genomeScores.length >= 3) {
-                    const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
-                    const feedback = aggScores(genomeScores);
+                const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
+                const feedback = aggScores(genomeScores);
+                if (!feedback) {
+                    logger.debug(
+                        `[score_agent] Auto-feedback upload skipped for ${feedbackTarget.namespace}/${feedbackTarget.name}: failed to aggregate ${genomeScores.length} score(s)`,
+                    );
+                } else {
                     const upload = await syncGenomeFeedbackToMarketplace({
                         target: feedbackTarget,
                         role: args.role,
-                        feedback: feedback!,
+                        feedback,
                         hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
                         hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
                         serverUrl: configuration.serverUrl,
@@ -1191,7 +1195,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             'Reads local scores for the specified role, computes aggregate statistics,',
             'strips all private data (session IDs, team IDs, file paths, evidence),',
             'and uploads only anonymized behavioral patterns and aggregate scores.',
-            'Supervisor only. Run after scoring at least 3 sessions of the same role.',
+            'Supervisor only. Can run after each scoring cycle to sync the latest aggregate.',
         ].join(' '),
         title: 'Update Genome Feedback',
         inputSchema: {
@@ -1254,10 +1258,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         if (roleScores.length === 0) {
             return { content: [{ type: 'text', text: `No specimen-bound scores found for role '${args.role}'. Score agents with explicit spec identity first; role fallback is disabled.` }], isError: false };
-        }
-
-        if (roleScores.length < 3) {
-            return { content: [{ type: 'text', text: `Only ${roleScores.length} score(s) for role '${args.role}'. Recommend at least 3 evaluations before publishing feedback.` }], isError: false };
         }
 
         // Aggregate and sanitize (no PII leaves the device)
