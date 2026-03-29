@@ -930,17 +930,22 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
         }
 
+        const { lookupSessionGenome } = await import('@/claude/utils/sessionGenomeMap');
+        const sessionGenomeMapping = lookupSessionGenome(args.sessionId);
+
         // Try to resolve specId namespace/name from genome-hub for cleaner grouping
         let specNamespace: string | undefined;
         let specName: string | undefined;
+        let specVersion: number | undefined = sessionGenomeMapping?.specVersion;
         if (resolvedSpecId) {
             try {
                 const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
                 const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}`, { signal: AbortSignal.timeout(3_000) });
                 if (res.ok) {
-                    const data = await res.json() as { genome?: { namespace?: string; name?: string } };
+                    const data = await res.json() as { genome?: { namespace?: string; name?: string; version?: number } };
                     specNamespace = data.genome?.namespace ?? undefined;
                     specName = data.genome?.name ?? undefined;
+                    specVersion ??= data.genome?.version;
                 }
             } catch { /* proceed without */ }
         }
@@ -1023,6 +1028,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             specId: resolvedSpecId,
             specNamespace: specNamespace ?? feedbackTarget?.namespace,
             specName: specName ?? feedbackTarget?.name,
+            specVersion,
             timestamp: Date.now(),
             scorer: client.sessionId,
             hardMetrics: args.hardMetrics,
@@ -1176,14 +1182,72 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
         }
 
+        // ── Write Verdict to happy-server (evolution evidence chain) ──
+        let verdictId: string | null = null;
+        try {
+            const serverUrl = configuration.serverUrl;
+            const authToken = client.getAuthToken();
+            const { buildSessionTrialLogRefs, ensureSessionTrial, findSessionTrial } = await import('@/utils/sessionTrialSync');
+            let trialId = (await findSessionTrial({
+                serverUrl,
+                authToken,
+                sessionId: args.sessionId,
+            }))?.id ?? null;
+
+            if (!trialId && sessionGenomeMapping) {
+                const trial = await ensureSessionTrial({
+                    serverUrl,
+                    authToken,
+                    mapping: sessionGenomeMapping,
+                    logRefs: buildSessionTrialLogRefs(sessionGenomeMapping),
+                });
+                trialId = trial?.id ?? null;
+            }
+
+            // Create Verdict
+            if (trialId) {
+                const verdictContent = [
+                    `Role: ${args.role}, Session: ${args.sessionId}`,
+                    `Overall: ${overall}/100, Action: ${args.action}`,
+                    `Dimensions: delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`,
+                    args.recommendations?.length ? `Recommendations: ${args.recommendations.join('; ')}` : '',
+                ].filter(Boolean).join('\n');
+
+                const verdictRes = await fetch(`${serverUrl}/v1/verdicts`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        trialId,
+                        readerRole: 'supervisor',
+                        readerSessionId: client.sessionId,
+                        content: verdictContent,
+                        score: overall,
+                        action: args.action,
+                        dimensions: JSON.stringify(dimensions),
+                    }),
+                    signal: AbortSignal.timeout(5_000),
+                }).catch(() => null);
+
+                if (verdictRes?.ok) {
+                    const created = await verdictRes.json() as { verdict?: { id: string } };
+                    verdictId = created.verdict?.id ?? null;
+                }
+            }
+
+            logger.debug(`[score_agent] Verdict written: verdictId=${verdictId}, trialId=${trialId ?? 'missing'}, specVersion=${specVersion ?? 'unknown'}`);
+        } catch (error) {
+            logger.debug(`[score_agent] Verdict write error: ${String(error)}`);
+        }
+
         const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
         const hardInfo = hardMetricsScore !== undefined ? ` hardMetricsScore=${hardMetricsScore}` : '';
         const sessionInfo = ` sessionScore(task_completion=${sessionScore.taskCompletion}, code_quality=${sessionScore.codeQuality}, collaboration=${sessionScore.collaboration}, overall=${sessionScore.overall})`;
         const autoResolvedNote = !args.specId && resolvedSpecId ? ' (specId auto-resolved from team member)' : '';
+        const verdictInfo = verdictId ? ` verdictId=${verdictId}` : '';
         return {
             content: [{
                 type: 'text',
-                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}\n${dimSummary}`,
+                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}${verdictInfo}\n${dimSummary}`,
             }],
             isError: false,
         };
@@ -1397,17 +1461,26 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         }
 
-        // 3. Merge new learnings into spec.memory.learnings (deduplicated)
+        // 3. Build diff changes — diff-only update via genome-hub
         const existingMemory = (currentSpec.memory ?? {}) as Record<string, unknown>;
         const existingLearnings: string[] = Array.isArray(existingMemory.learnings) ? existingMemory.learnings as string[] : [];
-        const mergedLearnings = Array.from(new Set([...existingLearnings, ...args.newLearnings]));
-        const evolvedSpec = {
-            ...currentSpec,
-            memory: {
-                ...existingMemory,
-                learnings: mergedLearnings,
-            },
-        };
+        const newEntries = args.newLearnings.filter((l: string) => !existingLearnings.includes(l));
+
+        if (newEntries.length === 0) {
+            return {
+                content: [{ type: 'text', text: `No new learnings to merge — all ${args.newLearnings.length} already exist.` }],
+                isError: false,
+            };
+        }
+
+        const diffChanges = newEntries.map((learning: string) => ({
+            type: 'string' as const,
+            path: 'memory.learnings',
+            op: 'append' as const,
+            content: learning,
+        }));
+
+        const diffDescription = `Evolve: merge ${newEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
 
         if (args.dryRun) {
             return {
@@ -1415,29 +1488,28 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     type: 'text',
                     text: [
                         `DRY RUN — evolve ${args.genomeNamespace}/${args.genomeName}`,
-                        `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore}) ✅`,
-                        `Existing learnings: ${existingLearnings.length}`,
-                        `New learnings to merge: ${args.newLearnings.length}`,
-                        `Merged total: ${mergedLearnings.length}`,
-                        `New entries: ${args.newLearnings.filter(l => !existingLearnings.includes(l)).join(' | ')}`,
+                        `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore})`,
+                        `New learnings: ${newEntries.length}`,
+                        `Total after merge: ${existingLearnings.length + newEntries.length}`,
+                        `Entries: ${newEntries.join(' | ')}`,
                     ].join('\n'),
                 }],
                 isError: false,
             };
         }
 
-        // 4. Call promote endpoint
+        // 4. Submit diff to genome-hub with proxy fallback (consistent with mutate_genome)
         try {
-            const { promoteGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
-            const promoteResult = await promoteGenomeViaMarketplace({
-                target: {
-                    namespace: args.genomeNamespace,
-                    name: args.genomeName,
-                },
+            const { submitDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
+            const diffResult = await submitDiffViaMarketplace({
+                namespace: args.genomeNamespace,
+                name: args.genomeName,
                 payload: {
-                    spec: JSON.stringify(evolvedSpec),
-                    minAvgScore: minScore,
-                    isPublic: true,
+                    description: diffDescription,
+                    changes: diffChanges,
+                    strategy: 'conservative',
+                    authorRole: callerRole,
+                    authorSession: client.sessionId,
                 },
                 hubUrl,
                 hubPublishKey: publishKey,
@@ -1445,29 +1517,28 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 authToken: client.getAuthToken(),
             });
 
-            if (!promoteResult.ok) {
-                return { content: [{ type: 'text', text: `Promote failed: ${promoteResult.status} ${promoteResult.body}` }], isError: true };
+            if (!diffResult.ok) {
+                return { content: [{ type: 'text', text: `Diff apply failed (${diffResult.transport}): ${diffResult.status} ${diffResult.body}` }], isError: true };
             }
 
-            let promoted: { genome?: { version?: number; id?: string } } = {};
-            try {
-                promoted = JSON.parse(promoteResult.body) as { genome?: { version?: number; id?: string } };
-            } catch {
-                return { content: [{ type: 'text', text: `Promote returned invalid JSON: ${promoteResult.body}` }], isError: true };
-            }
+            const result = JSON.parse(diffResult.body) as {
+                genome?: { version?: number; id?: string };
+                diff?: { id?: string; version?: number };
+            };
 
-            const newVersion = promoted.genome?.version ?? '?';
-            const addedCount = args.newLearnings.filter(l => !existingLearnings.includes(l)).length;
+            const newVersion = result.genome?.version ?? '?';
+            const diffId = result.diff?.id ?? '?';
+            const via = diffResult.transport === 'server-proxy' ? ' (via server proxy)' : '';
 
             return {
                 content: [{
                     type: 'text',
-                    text: `✅ Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion}${promoteResult.transport === 'server-proxy' ? ' (via happy-server proxy)' : ''}. Added ${addedCount} new learnings (total: ${mergedLearnings.length}).`,
+                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Added ${newEntries.length} new learnings (total: ${existingLearnings.length + newEntries.length}).`,
                 }],
                 isError: false,
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: `Network error during promote: ${String(error)}` }], isError: true };
+            return { content: [{ type: 'text', text: `Network error during diff apply: ${String(error)}` }], isError: true };
         }
     });
 
@@ -2311,8 +2382,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor can save supervisor state.' }], isError: true };
+        if (role !== 'supervisor' && role !== 'help-agent') {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor or help-agent can save supervisor state.' }], isError: true };
         }
         try {
             const { readSupervisorState, updateSupervisorState } = await import('@/daemon/supervisorState');

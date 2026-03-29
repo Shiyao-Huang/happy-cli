@@ -206,6 +206,150 @@ export async function createGenomeViaMarketplace(args: {
     }
 }
 
+// ── Diff submit helpers (for evolve_genome proxy fallback) ──────────
+
+type DiffSubmitPayload = {
+    description: string;
+    changes: Array<{
+        type: string;
+        path: string;
+        op: string;
+        content: string;
+    }>;
+    strategy?: string;
+    authorRole?: string;
+    authorSession?: string;
+};
+
+async function postDiffDirect(
+    fetchImpl: FetchLike,
+    hubUrl: string,
+    hubPublishKey: string | undefined,
+    namespace: string,
+    name: string,
+    payload: DiffSubmitPayload,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${hubUrl}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/diff`,
+        {
+            method: 'POST',
+            headers: buildPromoteHeaders(hubPublishKey),
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        },
+    );
+}
+
+async function postDiffViaServerProxy(
+    fetchImpl: FetchLike,
+    serverUrl: string,
+    authToken: string | undefined,
+    namespace: string,
+    name: string,
+    payload: DiffSubmitPayload,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${serverUrl}/v1/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/diff`,
+        {
+            method: 'POST',
+            headers: buildServerProxyHeaders(authToken),
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        },
+    );
+}
+
+/**
+ * Submit a diff to genome-hub for evolve_genome, with automatic fallback
+ * to the happy-server proxy (`POST /v1/genomes/:ns/:name/diff`) when direct
+ * hub access returns 401/403 or fails entirely.
+ */
+export async function submitDiffViaMarketplace(args: {
+    namespace: string;
+    name: string;
+    payload: DiffSubmitPayload;
+    hubUrl?: string;
+    hubPublishKey?: string;
+    serverUrl?: string;
+    authToken?: string;
+    fetchImpl?: FetchLike;
+}): Promise<{
+    ok: boolean;
+    status: number;
+    body: string;
+    transport: 'direct-hub' | 'server-proxy';
+}> {
+    const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
+    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
+    const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
+
+    let response: FetchResponseLike | null = null;
+    let body = '';
+    let directError: unknown = null;
+
+    try {
+        response = await postDiffDirect(fetchImpl, hubUrl, args.hubPublishKey, args.namespace, args.name, args.payload);
+        body = await response.text().catch(() => '');
+    } catch (error) {
+        directError = error;
+    }
+
+    const shouldTryServerProxy = Boolean(args.authToken) && (
+        directError
+        || !response
+        || response.status === 401
+        || response.status === 403
+        || response.status >= 500
+    );
+
+    if (shouldTryServerProxy) {
+        try {
+            const proxiedResponse = await postDiffViaServerProxy(
+                fetchImpl,
+                serverUrl,
+                args.authToken,
+                args.namespace,
+                args.name,
+                args.payload,
+            );
+            const proxiedBody = await proxiedResponse.text().catch(() => '');
+
+            return {
+                ok: proxiedResponse.ok,
+                status: proxiedResponse.status,
+                body: proxiedBody,
+                transport: 'server-proxy',
+            };
+        } catch (proxyError) {
+            if (!response) {
+                return {
+                    ok: false,
+                    status: 0,
+                    body: String(proxyError || directError || 'Unknown network error'),
+                    transport: 'server-proxy',
+                };
+            }
+        }
+    }
+
+    if (!response) {
+        return {
+            ok: false,
+            status: 0,
+            body: String(directError || 'Unknown network error'),
+            transport: 'direct-hub',
+        };
+    }
+
+    return {
+        ok: response.ok,
+        status: response.status,
+        body,
+        transport: 'direct-hub',
+    };
+}
+
 export async function promoteGenomeViaMarketplace(args: {
     target: GenomePromoteTarget;
     payload: GenomePromotePayload;
