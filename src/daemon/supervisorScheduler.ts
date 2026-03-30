@@ -273,6 +273,33 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
   const outstandingWorkByKnownTeam = new Map<string, TeamOutstandingWorkSummary>();
   const now = Date.now();
 
+  // Force-kill supervisors that have been terminated for >5 minutes (zombie cleanup)
+  const forceKillTimeoutMs = parseInt(process.env.AHA_SUPERVISOR_FORCE_KILL_TIMEOUT_MS || '300000', 10); // 5 minutes
+  for (const supervisorState of supervisorStates) {
+    if (
+      supervisorState.terminated &&
+      supervisorState.terminatedAt > 0 &&
+      supervisorState.lastSupervisorPid > 0 &&
+      (now - supervisorState.terminatedAt) > forceKillTimeoutMs
+    ) {
+      try {
+        process.kill(supervisorState.lastSupervisorPid, 0); // Check if process still exists
+        // Process is still alive after timeout, force kill it
+        process.kill(supervisorState.lastSupervisorPid, 'SIGKILL');
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Force-killed zombie supervisor PID ${supervisorState.lastSupervisorPid} ` +
+          `for team ${supervisorState.teamId} (terminated for ${Math.round((now - supervisorState.terminatedAt) / 1000)}s)`
+        );
+        await updateSupervisorRun(supervisorState.teamId, { lastSupervisorPid: 0 });
+      } catch {
+        // Process doesn't exist or already killed, clean up PID
+        if (supervisorState.lastSupervisorPid > 0) {
+          await updateSupervisorRun(supervisorState.teamId, { lastSupervisorPid: 0 });
+        }
+      }
+    }
+  }
+
   for (const supervisorState of supervisorStates) {
     outstandingWorkByKnownTeam.set(
       supervisorState.teamId,
@@ -298,6 +325,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       await updateSupervisorState(supervisorState.teamId, (state) => ({
         ...state,
         terminated: true,
+        terminatedAt: Date.now(),
         pendingAction: null,
         pendingActionMeta: null,
       }));
@@ -309,6 +337,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       await updateSupervisorState(supervisorState.teamId, (state) => ({
         ...state,
         terminated: false,
+        terminatedAt: 0,
       }));
       logger.debug(
         `[SUPERVISOR SCHEDULER] Revived terminated supervisor state for team ${supervisorState.teamId} ` +
@@ -452,6 +481,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       await updateSupervisorState(teamId, (state) => ({
         ...state,
         terminated: false,
+        terminatedAt: 0,
       }));
     }
 
@@ -479,6 +509,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
           ...state,
           idleRuns: 0,
           terminated: false,
+          terminatedAt: 0,
         }));
         logger.debug(
           `[SUPERVISOR SCHEDULER] Keeping supervisor eligible for team ${teamId} ` +
@@ -494,7 +525,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         logger.debug(
           `[SUPERVISOR SCHEDULER] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`
         );
-        await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true }));
+        await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true, terminatedAt: Date.now() }));
         continue;
       }
     }

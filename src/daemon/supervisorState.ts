@@ -108,6 +108,8 @@ export interface SupervisorState {
     lastSessionId: string | null;
     /** Whether the team is considered terminated (no new supervisor spawns) */
     terminated: boolean;
+    /** Timestamp when the supervisor was marked as terminated (ms since epoch, 0 if not terminated) */
+    terminatedAt: number;
     /** How many consecutive runs found no new content */
     idleRuns: number;
     /**
@@ -232,6 +234,7 @@ function defaultState(teamId: string): SupervisorState {
         lastConclusion: '',
         lastSessionId: null,
         terminated: false,
+        terminatedAt: 0,
         idleRuns: 0,
         ...V2_DEFAULTS,
     };

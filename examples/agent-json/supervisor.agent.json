@@ -25,7 +25,9 @@
       "onIdle": "wait",
       "onBlocked": "escalate",
       "canSpawnAgents": false,
-      "requireExplicitAssignment": false
+      "requireExplicitAssignment": false,
+      "lifecycle": "single-shot",
+      "autoRetireAfterComplete": true
     }
   },
   "env": {
