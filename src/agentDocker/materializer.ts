@@ -706,11 +706,26 @@ export function materializeAgentWorkspace(
 
     for (const action of plan.actions) {
         if (action.kind !== 'link-skill' || !action.source) continue;
+        const skillName = basename(action.target);
+
         if (!existsSync(action.source)) {
-            plan.warnings.push(`Skill source missing: ${action.source}`);
+            // No local runtime-lib for this skill.
+            // The files loop (above) already wrote inline content if the genome included it.
+            // If it did → the command directory exists, we're done for this skill.
+            // If it did not → the genome is incomplete; hard-fail so the publisher knows to fix it.
+            const inlineKey = `.claude/commands/${skillName}/SKILL.md`;
+            const allFiles = input.config.files ?? input.genome?.spec?.files;
+            if (!allFiles?.[inlineKey]) {
+                throw new Error(
+                    `Skill "${skillName}" declared in skills[] but content is missing. ` +
+                    `Embed it in genome.spec.files['.claude/commands/${skillName}/SKILL.md'] before publishing.`,
+                );
+            }
+            // Inline content already written by the files loop — nothing left to do.
             continue;
         }
-        const skillName = basename(action.target);
+
+        // Local runtime-lib found: link/copy (dev path, runtime-lib wins over inline).
         const mode = resolveMaterializationPolicy(input.config, 'skills', skillName);
         if (mode === 'copy') {
             copyPrivateResource(action.source, action.target);
