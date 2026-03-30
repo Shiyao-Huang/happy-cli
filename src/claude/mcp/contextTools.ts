@@ -129,7 +129,16 @@ export function registerContextTools(ctx: McpToolContext): void {
             const result = await api.kvList('memory.', 100);
 
             let memories = result.items.map((item: any) => {
-                try { return JSON.parse(item.value); } catch { return null; }
+                try {
+                    return JSON.parse(item.value);
+                } catch (error) {
+                    if (process.env.NODE_ENV === 'development') {
+                        logger.error('[DEV] Context item parse failed:', { key: item.key, error });
+                        throw new Error(`Context data malformed for key ${item.key}: ${String(error)}`);
+                    }
+                    logger.warn('[PROD] Context item parse failed, returning null', { key: item.key });
+                    return null;
+                }
             }).filter((m: any) => m !== null);
 
             // Filter

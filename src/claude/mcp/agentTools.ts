@@ -109,7 +109,16 @@ export function registerAgentTools(ctx: McpToolContext): void {
             // Compact directory: one line per genome, minimal tokens
             const lines = marketplaceEntries.map(g => {
                 let fb: { avgScore?: number; evaluationCount?: number } = {};
-                try { fb = g.feedbackData ? JSON.parse(g.feedbackData) : {}; } catch { /* */ }
+                try {
+                    fb = g.feedbackData ? JSON.parse(g.feedbackData) : {};
+                } catch (error) {
+                    if (process.env.NODE_ENV === 'development') {
+                        logger.error(`[DEV] Malformed feedbackData for genome ${g.id}:`, error);
+                        throw new Error(`Genome feedbackData is malformed - DB integrity issue: ${String(error)}`);
+                    }
+                    logger.error(`[PROD] Malformed feedbackData for genome ${g.id}, using empty object`, error);
+                    fb = {};
+                }
                 const parsedTags = g.tags ? (() => { try { return JSON.parse(g.tags!) as string[]; } catch { return []; } })() : [];
                 const tags = parsedTags.join(',');
                 const score = typeof fb.avgScore === 'number' ? `★${fb.avgScore}(${fb.evaluationCount})` : '';

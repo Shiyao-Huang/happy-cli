@@ -427,7 +427,14 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             }
                         }
                     }
-                } catch { /* feedback fetch is best-effort */ }
+                } catch (error) {
+                    if (process.env.NODE_ENV === 'development') {
+                        logger.error('[DEV] Feedback fetch failed - this breaks genome evolution!', error);
+                        throw new Error(`Supervisor feedback fetch failed: ${String(error)}`);
+                    }
+                    // Production: best-effort is acceptable
+                    logger.debug('[PROD] Feedback fetch failed (non-fatal)', error);
+                }
             }
 
             // ── TEAM PULSE ────────────────────────────────────────────────
@@ -471,7 +478,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         peerTaskLines.push(`  ${peerRole}: ${task.title}`);
                     }
                 }
-            } catch { /* non-critical */ }
+            } catch (error) {
+                if (process.env.NODE_ENV === 'development') {
+                    logger.warn('[DEV] Board task parsing failed - may affect peer task display', error);
+                }
+                // Non-critical: peer task display is informational only
+            }
 
             // ── LOCAL SCORE HISTORY ────────────────────────────────────────
             let scoreLines: string[] = [];
@@ -912,7 +924,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
                     const bodyValue = (artifact.body as { body?: unknown }).body;
                     if (typeof bodyValue === 'string') {
-                        try { board = JSON.parse(bodyValue); } catch { /* ignore */ }
+                        try {
+                            board = JSON.parse(bodyValue);
+                        } catch (error) {
+                            if (process.env.NODE_ENV === 'development') {
+                                logger.error('[DEV] Board JSON parsing failed - may indicate artifact format change', error);
+                                throw new Error(`Board data malformed in team artifact: ${String(error)}`);
+                            }
+                            logger.warn('[PROD] Board JSON parse failed, using fallback', error);
+                        }
                     } else if (bodyValue && typeof bodyValue === 'object') {
                         board = bodyValue;
                     }

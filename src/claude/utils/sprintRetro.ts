@@ -106,7 +106,18 @@ export async function gatherSprintData(opts: GatherRetroDataOptions): Promise<{
         const toTs = Date.parse(opts.toDate + 'T23:59:59Z');
         const entries = fs.readFileSync(supervisorLogPath, 'utf-8')
             .split('\n').filter(Boolean)
-            .map(l => { try { return JSON.parse(l); } catch { return null; } })
+            .map((l, idx) => {
+                try {
+                    return JSON.parse(l);
+                } catch (error) {
+                    if (process.env.NODE_ENV === 'development') {
+                        console.error(`[DEV] Sprint log line ${idx} is malformed:`, error);
+                        throw new Error(`Sprint log corrupted at line ${idx}: ${String(error)}`);
+                    }
+                    console.warn(`[PROD] Sprint log line ${idx} skipped (malformed)`, error);
+                    return null;
+                }
+            })
             .filter((e: any): e is Record<string, unknown> => e !== null)
             .filter((e: any) => {
                 const ts = typeof e.timestamp === 'number' ? e.timestamp : Date.parse(String(e.timestamp ?? ''));

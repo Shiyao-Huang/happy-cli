@@ -156,7 +156,13 @@ async function resolveSystemGenomeId(name: string, credentialsToken: string): Pr
     );
     const id = res.data?.genome?.id ?? null;
     if (id) return id;
-  } catch { /* fall through to legacy */ }
+  } catch (error) {
+    if (process.env.NODE_ENV === 'development') {
+      console.error(`[DEV] Genome Hub API failed for ${name}:`, error);
+      throw new Error(`Genome Hub API broken - fix before using legacy fallback: ${String(error)}`);
+    }
+    console.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
+  }
 
   try {
     const res = await axios.get(
