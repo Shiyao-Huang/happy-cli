@@ -37,8 +37,8 @@
   "routing": {
     "strategy": "fixed",
     "models": {
-      "default": "claude-sonnet-4-20250514",
-      "reasoning": "claude-opus-4-20250514"
+      "default": "claude-sonnet-4-6",
+      "reasoning": "claude-opus-4-6"
     }
   },
   "workspace": {
