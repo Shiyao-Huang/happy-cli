@@ -1,55 +1,85 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockAxiosGet = vi.hoisted(() => vi.fn());
+const mockLogger = vi.hoisted(() => ({
+    debug: vi.fn(),
+}));
+
+vi.mock('axios', () => ({
+    default: {
+        get: mockAxiosGet,
+    },
+}));
+
+vi.mock('@/ui/logger', () => ({
+    logger: mockLogger,
+}));
+
+import { fetchGenomeFeedbackData, fetchGenomeSpec, resolveEntityUrl } from './fetchGenome';
 
 /**
- * T-002: fetchGenome resolveUrl 纯函数测试
+ * T-002: redefine 分支只解析 canonical entity URL
  *
- * resolveUrl 是模块内部函数，这里用 stub 复刻其逻辑来验证 URL 解析规则。
- * 当 resolveUrl 被导出后，可直接 import 替换 stub。
+ * 直接测试导出的 resolveEntityUrl。
  */
-
-// Stub — mirrors resolveUrl logic from fetchGenome.ts
-function resolveUrl(specId: string): string {
-    const base = 'https://api.test.com';
-    const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
-    if (nsMatch) {
-        const [, ns, name, ver] = nsMatch;
-        const encodedNs = encodeURIComponent(ns);
-        return ver
-            ? `${base}/v1/genomes/${encodedNs}/${name}/${ver}`
-            : `${base}/v1/genomes/${encodedNs}/${name}/latest`;
-    }
-    return `${base}/v1/genomes/${specId}`;
-}
-
-describe('fetchGenome resolveUrl', () => {
-    it('UUID format → /v1/genomes/:id', () => {
-        const url = resolveUrl('abc-123-def');
-        expect(url).toContain('/v1/genomes/abc-123-def');
-        expect(url).not.toContain('%40');
+describe('fetchGenome resolveEntityUrl', () => {
+    beforeEach(() => {
+        mockAxiosGet.mockReset();
+        mockLogger.debug.mockReset();
     });
 
-    it('@ns/name → /v1/genomes/:encodedNs/:name/latest', () => {
-        const url = resolveUrl('@official/supervisor');
-        expect(url).toContain('/v1/genomes/%40official/supervisor/latest');
+    it('UUID format → /entities/id/:id', () => {
+        const url = resolveEntityUrl('abc-123-def');
+        expect(url).toContain('/entities/id/abc-123-def');
     });
 
-    it('@ns/name:version → /v1/genomes/:encodedNs/:name/:version', () => {
-        const url = resolveUrl('@official/supervisor:2');
-        expect(url).toContain('/v1/genomes/%40official/supervisor/2');
+    it('@ns/name → /entities/:encodedNs/:name', () => {
+        const url = resolveEntityUrl('@official/supervisor');
+        expect(url).toContain('/entities/%40official/supervisor');
+        expect(url).not.toContain('/latest');
     });
 
-    it('@official/help-agent:1 → correct URL', () => {
-        const url = resolveUrl('@official/help-agent:1');
-        expect(url).toContain('%40official/help-agent/1');
+    it('@ns/name:version → /entities/:encodedNs/:name/:version', () => {
+        const url = resolveEntityUrl('@official/supervisor:2');
+        expect(url).toContain('/entities/%40official/supervisor/2');
     });
 
-    it('full URL structure for versioned spec', () => {
-        const url = resolveUrl('@myteam/worker:10');
-        expect(url).toBe('https://api.test.com/v1/genomes/%40myteam/worker/10');
+    it('base URL comes from configuration resolver path shape', () => {
+        const url = resolveEntityUrl('@myteam/worker:10');
+        expect(url).toContain('/entities/%40myteam/worker/10');
     });
 
-    it('full URL structure for latest spec', () => {
-        const url = resolveUrl('@myteam/worker');
-        expect(url).toBe('https://api.test.com/v1/genomes/%40myteam/worker/latest');
+    it('returns null for feedbackData only on 404', async () => {
+        mockAxiosGet.mockResolvedValueOnce({
+            status: 404,
+            data: {},
+        });
+
+        await expect(fetchGenomeFeedbackData('token', '@official/supervisor')).resolves.toBeNull();
+    });
+
+    it('throws feedbackData network errors instead of silently returning null', async () => {
+        const error = new Error('network down');
+        mockAxiosGet.mockRejectedValueOnce(error);
+
+        await expect(fetchGenomeFeedbackData('token', '@official/supervisor:99')).rejects.toThrow('network down');
+        expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch feedbackData'));
+    });
+
+    it('returns null for missing entity specs only on 404', async () => {
+        mockAxiosGet.mockResolvedValueOnce({
+            status: 404,
+            data: {},
+        });
+
+        await expect(fetchGenomeSpec('token', '@official/builder')).resolves.toBeNull();
+    });
+
+    it('throws spec fetch network errors instead of silently returning null', async () => {
+        const error = new Error('hub unavailable');
+        mockAxiosGet.mockRejectedValueOnce(error);
+
+        await expect(fetchGenomeSpec('token', '@official/builder:404')).rejects.toThrow('hub unavailable');
+        expect(mockLogger.debug).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch @official/builder:404'));
     });
 });
