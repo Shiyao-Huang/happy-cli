@@ -549,6 +549,18 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 }
             }
 
+            // Genome learnings (self-mirror: agent can verify injected knowledge)
+            const learnings = genomeSpec?.memory?.learnings;
+            if (Array.isArray(learnings) && learnings.length > 0) {
+                lines.push('', `[Genome Learnings]`);
+                for (const learning of learnings.slice(0, 5)) {
+                    lines.push(`  - ${learning}`);
+                }
+                if (learnings.length > 5) {
+                    lines.push(`  ... (${learnings.length - 5} more — use get_genome_spec for full list)`);
+                }
+            }
+
             // Context window
             lines.push('', `[Context Window]`);
             lines.push(`  ${context.contextK ? `Used: ${context.contextK}K tokens` : JSON.stringify(context)}`);
@@ -637,7 +649,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     mcp.registerTool('get_genome_spec', {
-        description: 'Inspect a genome spec by ID at runtime. Returns specId, version, authorities, and behavior fields for diagnosis.',
+        description: 'Inspect a genome spec by ID at runtime. Returns the complete spec including systemPrompt, protocol, responsibilities, memory.learnings, authorities, and behavior fields. Allows an agent to self-verify its own identity and injected context.',
         title: 'Get Genome Spec',
         inputSchema: {
             specId: z.string().describe('Genome spec ID to inspect'),
@@ -654,6 +666,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 return { content: [{ type: 'text', text: `Error: Genome spec ${args.specId} not found.` }], isError: true };
             }
 
+            // Build injected prompt so the agent can verify what was actually injected
+            let injectedPrompt: string | null = null;
+            try {
+                const { buildGenomeInjection } = await import('@/claude/utils/buildGenomeInjection');
+                injectedPrompt = buildGenomeInjection(spec);
+            } catch { /* non-fatal */ }
+
             return {
                 content: [{
                     type: 'text',
@@ -666,6 +685,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         baseRoleId: spec.baseRoleId ?? null,
                         authorities: spec.authorities ?? [],
                         behavior: spec.behavior ?? null,
+                        // Full spec fields for self-mirror completeness
+                        systemPrompt: spec.systemPrompt ?? null,
+                        systemPromptSuffix: spec.systemPromptSuffix ?? null,
+                        protocol: spec.protocol ?? [],
+                        responsibilities: spec.responsibilities ?? [],
+                        evalCriteria: spec.evalCriteria ?? [],
+                        capabilities: spec.capabilities ?? [],
+                        allowedTools: spec.allowedTools ?? null,
+                        disallowedTools: spec.disallowedTools ?? null,
+                        permissionMode: spec.permissionMode ?? null,
+                        learnings: spec.memory?.learnings ?? [],
+                        memory: spec.memory ?? null,
+                        // Injected prompt for verifiable identity
+                        injectedPrompt,
                     }, null, 2),
                 }],
                 isError: false,
@@ -1404,21 +1437,109 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     // ── Evolution Materializer: evolve_genome ───────────────────────────────
+
+    /**
+     * Apply a dotted-path kv diff to a spec object (immutable — returns new object).
+     * e.g. path='behavior.onIdle', value='ask for guidance'
+     */
+    function applyKvDiff(spec: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+        const segments = path.split('.');
+        if (segments.length === 1) {
+            return { ...spec, [path]: value };
+        }
+        const [head, ...tail] = segments;
+        const child = (spec[head] != null && typeof spec[head] === 'object' && !Array.isArray(spec[head]))
+            ? spec[head] as Record<string, unknown>
+            : {};
+        return { ...spec, [head]: applyKvDiff(child, tail.join('.'), value) };
+    }
+
+    /**
+     * Apply a string diff (append or replace) to a spec field by dotted path.
+     */
+    function applyStringDiff(
+        spec: Record<string, unknown>,
+        path: string,
+        op: 'append' | 'replace',
+        content: string,
+    ): Record<string, unknown> {
+        const segments = path.split('.');
+        const parentPath = segments.slice(0, -1).join('.');
+        const field = segments[segments.length - 1];
+
+        const getAtPath = (obj: Record<string, unknown>, dotPath: string): unknown => {
+            if (!dotPath) return obj;
+            return dotPath.split('.').reduce<unknown>((cur, key) => {
+                if (cur != null && typeof cur === 'object' && !Array.isArray(cur)) {
+                    return (cur as Record<string, unknown>)[key];
+                }
+                return undefined;
+            }, obj);
+        };
+
+        const parentObj = parentPath
+            ? (getAtPath(spec, parentPath) as Record<string, unknown> ?? {})
+            : spec;
+
+        const current = parentObj[field];
+        let newValue: unknown;
+
+        if (Array.isArray(current)) {
+            newValue = op === 'append' ? [...current, content] : [content];
+        } else if (typeof current === 'string' || current === undefined) {
+            newValue = op === 'append' ? ((current ?? '') + '\n' + content).trimStart() : content;
+        } else {
+            // Scalar non-string — treat as replace
+            newValue = content;
+        }
+
+        if (parentPath) {
+            const newParent = { ...parentObj, [field]: newValue };
+            return applyKvDiff(spec, parentPath, newParent);
+        }
+        return { ...spec, [field]: newValue };
+    }
+
     mcp.registerTool('evolve_genome', {
         description: [
-            'Promote a genome to the next version by merging supervisor-synthesized learnings into spec.memory.learnings.',
+            'Promote a genome to the next version by merging supervisor-synthesized learnings and heterogeneous diffs.',
             'Step 1: Read feedbackData via update_genome_feedback (dryRun=true) to review suggestions.',
             'Step 2: Synthesize 3-7 actionable learnings from the feedback patterns.',
-            'Step 3: Call evolve_genome with the synthesized learnings — it merges them into the spec and calls promote.',
+            'Step 3: Call evolve_genome with newLearnings and/or diffs — merges them into the spec and calls promote.',
             'Requires feedbackData.avgScore >= minPromoteScore (default 60). Supervisor only.',
+            '',
+            'Diff types supported in the diffs array:',
+            '- narrative: Append a learning string to memory.learnings (same as newLearnings).',
+            '- string: Append or replace a text/array field (e.g. systemPromptSuffix, protocol).',
+            '- kv: Set a specific field by dotted path (e.g. behavior.onIdle, behavior.canSpawnAgents).',
+            '',
+            'When kv or string diffs are present, the full mutated spec is submitted as a new version.',
+            'When only narrative/newLearnings are present, the incremental diff endpoint is used.',
         ].join(' '),
         title: 'Evolve Genome',
         inputSchema: {
             genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
             genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
-            newLearnings: z.array(z.string().max(300)).min(1).max(10).describe(
+            newLearnings: z.array(z.string().max(300)).min(1).max(10).optional().describe(
                 'Synthesized learnings derived from feedbackData patterns. Each item is a short, actionable insight for future instances of this genome.'
             ),
+            diffs: z.array(z.discriminatedUnion('type', [
+                z.object({
+                    type: z.literal('kv'),
+                    path: z.string().describe("Dotted field path in the spec, e.g. 'behavior.onIdle' or 'protocol'."),
+                    value: z.unknown().describe('New value to set at the path.'),
+                }),
+                z.object({
+                    type: z.literal('string'),
+                    path: z.string().describe("Dotted field path for a text/array field, e.g. 'systemPromptSuffix'."),
+                    op: z.enum(['append', 'replace']).describe('Whether to append to or replace the field.'),
+                    content: z.string().describe('Text content to apply.'),
+                }),
+                z.object({
+                    type: z.literal('narrative'),
+                    content: z.string().max(300).describe('Narrative learning to append to memory.learnings.'),
+                }),
+            ])).optional().describe('Heterogeneous diff array. Each entry targets a specific field type.'),
             minPromoteScore: z.number().min(0).max(100).default(60).optional().describe(
                 'Minimum avgScore required to promote. Defaults to 60.'
             ),
@@ -1430,11 +1551,18 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can evolve genomes.' }], isError: true };
         }
 
+        const hasNewLearnings = Array.isArray(args.newLearnings) && args.newLearnings.length > 0;
+        const hasDiffs = Array.isArray(args.diffs) && args.diffs.length > 0;
+
+        if (!hasNewLearnings && !hasDiffs) {
+            return { content: [{ type: 'text', text: 'Error: Provide at least one of newLearnings or diffs.' }], isError: true };
+        }
+
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         // 1. Fetch current genome (spec + feedbackData)
-        let genomeRecord: { genome?: { spec: string; feedbackData?: string | null } };
+        let genomeRecord: { genome?: { spec: string; version?: number; feedbackData?: string | null; isPublic?: boolean; category?: string | null; tags?: string | null } };
         try {
             const res = await fetch(
                 `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
@@ -1443,7 +1571,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             if (!res.ok) {
                 return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} not found: ${res.status}` }], isError: true };
             }
-            genomeRecord = await res.json() as { genome?: { spec: string; feedbackData?: string | null } };
+            genomeRecord = await res.json() as typeof genomeRecord;
         } catch (error) {
             return { content: [{ type: 'text', text: `Network error fetching genome: ${String(error)}` }], isError: true };
         }
@@ -1481,44 +1609,138 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         }
 
-        // 3. Build diff changes — diff-only update via genome-hub
+        // 3. Separate diff types
+        const narrativeEntries: string[] = [];
+        const kvDiffs: Array<{ path: string; value: unknown }> = [];
+        const stringDiffs: Array<{ path: string; op: 'append' | 'replace'; content: string }> = [];
+
+        if (hasDiffs) {
+            for (const diff of args.diffs!) {
+                if (diff.type === 'narrative') narrativeEntries.push(diff.content);
+                else if (diff.type === 'kv') kvDiffs.push({ path: diff.path, value: diff.value });
+                else if (diff.type === 'string') stringDiffs.push({ path: diff.path, op: diff.op, content: diff.content });
+            }
+        }
+
+        // 4. Merge newLearnings into narrative entries
         const existingMemory = (currentSpec.memory ?? {}) as Record<string, unknown>;
         const existingLearnings: string[] = Array.isArray(existingMemory.learnings) ? existingMemory.learnings as string[] : [];
-        const newEntries = args.newLearnings.filter((l: string) => !existingLearnings.includes(l));
+        if (hasNewLearnings) {
+            for (const l of args.newLearnings!) {
+                narrativeEntries.push(l);
+            }
+        }
+        const newNarrativeEntries = narrativeEntries.filter((l) => !existingLearnings.includes(l));
 
-        if (newEntries.length === 0) {
+        const hasStructuralDiffs = kvDiffs.length > 0 || stringDiffs.length > 0;
+
+        if (!hasStructuralDiffs && newNarrativeEntries.length === 0) {
             return {
-                content: [{ type: 'text', text: `No new learnings to merge — all ${args.newLearnings.length} already exist.` }],
+                content: [{ type: 'text', text: `No new changes to apply — all learnings already exist and no structural diffs provided.` }],
                 isError: false,
             };
         }
 
-        const diffChanges = newEntries.map((learning: string) => ({
+        // 5. dryRun: preview what would change
+        if (args.dryRun) {
+            const lines = [
+                `DRY RUN — evolve ${args.genomeNamespace}/${args.genomeName}`,
+                `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore})`,
+            ];
+            if (newNarrativeEntries.length > 0) {
+                lines.push(`New learnings (${newNarrativeEntries.length}): ${newNarrativeEntries.join(' | ')}`);
+            }
+            if (kvDiffs.length > 0) {
+                lines.push(`KV diffs (${kvDiffs.length}):`);
+                for (const d of kvDiffs) lines.push(`  set ${d.path} = ${JSON.stringify(d.value)}`);
+            }
+            if (stringDiffs.length > 0) {
+                lines.push(`String diffs (${stringDiffs.length}):`);
+                for (const d of stringDiffs) lines.push(`  ${d.op} ${d.path}: "${d.content.slice(0, 80)}${d.content.length > 80 ? '...' : ''}"`);
+            }
+            lines.push(`Strategy: ${hasStructuralDiffs ? 'full-spec-create (kv/string diffs present)' : 'incremental-diff (narrative only)'}`);
+            return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
+        }
+
+        // 6a. Structural diffs: apply locally and create new genome version
+        if (hasStructuralDiffs) {
+            let mutatedSpec = { ...currentSpec };
+
+            // Apply kv diffs
+            for (const d of kvDiffs) {
+                mutatedSpec = applyKvDiff(mutatedSpec, d.path, d.value);
+            }
+
+            // Apply string diffs
+            for (const d of stringDiffs) {
+                mutatedSpec = applyStringDiff(mutatedSpec, d.path, d.op, d.content);
+            }
+
+            // Merge narrative learnings into memory.learnings
+            if (newNarrativeEntries.length > 0) {
+                const mem = (mutatedSpec.memory ?? {}) as Record<string, unknown>;
+                const lrns: string[] = Array.isArray(mem.learnings) ? mem.learnings as string[] : [];
+                mutatedSpec = {
+                    ...mutatedSpec,
+                    memory: { ...mem, learnings: Array.from(new Set([...lrns, ...newNarrativeEntries])) },
+                };
+            }
+
+            const diffSummary = [
+                ...(kvDiffs.map(d => `kv:${d.path}`)),
+                ...(stringDiffs.map(d => `${d.op}:${d.path}`)),
+                ...(newNarrativeEntries.length > 0 ? [`narrative(${newNarrativeEntries.length})`] : []),
+            ].join(', ');
+
+            try {
+                const { createGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
+                const createResult = await createGenomeViaMarketplace({
+                    payload: {
+                        namespace: args.genomeNamespace,
+                        name: args.genomeName,
+                        version: (genomeRecord.genome?.version ?? 0) + 1,
+                        description: `Evolved from ${args.genomeNamespace}/${args.genomeName}: ${diffSummary}`,
+                        spec: JSON.stringify(mutatedSpec),
+                        isPublic: genomeRecord.genome?.isPublic ?? true,
+                        category: genomeRecord.genome?.category ?? undefined,
+                        tags: genomeRecord.genome?.tags ?? undefined,
+                    },
+                    hubUrl,
+                    hubPublishKey: publishKey,
+                    serverUrl: configuration.serverUrl,
+                    authToken: client.getAuthToken(),
+                });
+
+                if (!createResult.ok) {
+                    return { content: [{ type: 'text', text: `Failed to create evolved genome: ${createResult.status} ${createResult.body}` }], isError: true };
+                }
+
+                let result: { genome?: { id?: string; version?: number } } = {};
+                try { result = JSON.parse(createResult.body) as typeof result; } catch { /* best-effort */ }
+
+                const via = createResult.transport === 'server-proxy' ? ' (via server proxy)' : '';
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${result.genome?.version ?? '?'}${via}. Applied: ${diffSummary}.`,
+                    }],
+                    isError: false,
+                };
+            } catch (error) {
+                return { content: [{ type: 'text', text: `Network error creating evolved genome: ${String(error)}` }], isError: true };
+            }
+        }
+
+        // 6b. Narrative-only path: use incremental diff endpoint (existing behavior)
+        const diffChanges = newNarrativeEntries.map((learning: string) => ({
             type: 'string' as const,
             path: 'memory.learnings',
             op: 'append' as const,
             content: learning,
         }));
 
-        const diffDescription = `Evolve: merge ${newEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
+        const diffDescription = `Evolve: merge ${newNarrativeEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
 
-        if (args.dryRun) {
-            return {
-                content: [{
-                    type: 'text',
-                    text: [
-                        `DRY RUN — evolve ${args.genomeNamespace}/${args.genomeName}`,
-                        `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore})`,
-                        `New learnings: ${newEntries.length}`,
-                        `Total after merge: ${existingLearnings.length + newEntries.length}`,
-                        `Entries: ${newEntries.join(' | ')}`,
-                    ].join('\n'),
-                }],
-                isError: false,
-            };
-        }
-
-        // 4. Submit diff to genome-hub with proxy fallback (consistent with mutate_genome)
         try {
             const { submitDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
             const diffResult = await submitDiffViaMarketplace({
@@ -1553,7 +1775,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return {
                 content: [{
                     type: 'text',
-                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Added ${newEntries.length} new learnings (total: ${existingLearnings.length + newEntries.length}).`,
+                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Added ${newNarrativeEntries.length} new learnings (total: ${existingLearnings.length + newNarrativeEntries.length}).`,
                 }],
                 isError: false,
             };

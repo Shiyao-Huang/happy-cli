@@ -799,7 +799,13 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         if (task?.status === 'done') continue;
                         await api.updateTask(inferredTeamId, task.id, {
                             assigneeId: replacement.sessionId,
-                            comment: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
+                            comment: {
+                                sessionId: client.sessionId,
+                                role: callerRole,
+                                type: 'handoff',
+                                content: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
+                                mentions: [replacement.sessionId],
+                            },
                         });
                         reassignedTasks += 1;
                     }
