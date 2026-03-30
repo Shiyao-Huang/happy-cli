@@ -194,7 +194,15 @@ export function normalizeGenomeSpecForPublication(input: {
     }
 
     if (!isOfficial) {
-        delete specObj.hooks;
+        // hooks are a kernel field (unified-schema-design.md AgentKernel) and must travel with the genome.
+        // Security note: hooks contain shell commands; the runtime materializer is responsible for
+        // validating hooks before execution. Org-managers are responsible for choosing trusted genomes.
+        if (specObj.hooks) {
+            warnings.push(
+                'Genome includes hooks (shell commands). The runtime will execute these when this genome is spawned. ' +
+                'Only spawn from genomes you trust.',
+            );
+        }
 
         if (specObj.permissionMode && !['default', 'acceptEdits'].includes(specObj.permissionMode)) {
             specObj.permissionMode = 'default';

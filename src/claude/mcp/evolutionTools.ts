@@ -137,7 +137,23 @@ The supervisor will see your request and may: send you guidance, restart your se
     mcp.registerTool('create_genome', {
         description: `Save or update a reusable agent package (genome) in the team evolution store.
 Canonical authoring should be the agent.json shape (kind=aha.agent.v1). Legacy flattened GenomeSpec JSON is still accepted as a compatibility input.
-A genome captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, and any domain knowledge to seed the agent's context.
+A genome captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, hooks, skills, env, and inline files.
+
+## Kernel fields (travel with the genome and are used by the runtime materializer)
+- \`skills\`: string[] — skill names to link from runtime-lib into the agent's commands directory
+- \`mcpServers\`: string[] — MCP server names to resolve from runtime-lib
+- \`hooks\`: { preToolUse?, postToolUse?, stop? } — per-agent Claude Code lifecycle hooks (shell commands)
+- \`env\`: { required?, optional? } — env var names the agent needs (values come from the host process)
+- \`files\`: Record<string, string> — inline file content written to the workspace at spawn time.
+  Use \`files\` to embed skill content directly (e.g. \`".claude/commands/my-skill": "<content>"\`) so
+  skills travel with the genome without requiring the runtime-lib to have them pre-installed.
+
+## Inline skills via files
+To make skills fully portable across machines, embed their content in \`files\` instead of listing names in \`skills\`:
+  \`"files": { ".claude/commands/my-skill": "# My skill\\n...command content..." }\`
+
+## Security note for hooks
+Hooks contain shell commands. The runtime executes them at tool-call boundaries. Only spawn from genomes you trust. A warning is emitted when a non-@official genome includes hooks.
 
 IMPORTANT: Every genome MUST include team collaboration capabilities.
 The system auto-injects core team tools (kanban lifecycle, messaging, help) into allowedTools,
