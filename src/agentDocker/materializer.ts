@@ -756,8 +756,8 @@ export function buildAgentWorkspacePlanFromGenome(
         hooks,
         env: resolveGenomeEnv(genomeSpec),
         workspace: {
-            defaultMode: context.workspaceMode ?? 'shared',
-            allowedModes: ['shared', 'isolated'],
+            defaultMode: context.workspaceMode ?? genomeSpec.workspace?.defaultMode ?? 'shared',
+            allowedModes: genomeSpec.workspace?.allowedModes ?? ['shared', 'isolated'],
         },
         files: genomeSpec.files,
     };

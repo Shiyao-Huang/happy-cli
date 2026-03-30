@@ -120,6 +120,8 @@ function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & 
         evalCriteria: asStringArray(value.evalCriteria) ?? asStringArray(evaluation?.criteria),
         lifecycle: (asString(value.lifecycle) ?? asString(market?.lifecycle)) as GenomeSpec['lifecycle'],
         skills: asStringArray(value.skills) ?? asStringArray(tools?.skills),
+        files: isRecord(value.files) ? value.files as Record<string, string> : undefined,
+        workspace: isRecord(value.workspace) ? value.workspace as GenomeSpec['workspace'] : undefined,
     };
 
     if (env) {

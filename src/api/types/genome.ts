@@ -406,6 +406,17 @@ export interface GenomeSpec {
      */
     files?: Record<string, string>;
 
+    /**
+     * Workspace mode configuration.
+     * Controls how the materializer sets up the agent's working directory.
+     * - shared: agent shares the repo working tree with other agents (default)
+     * - isolated: agent gets its own isolated workspace copy
+     */
+    workspace?: {
+        defaultMode?: 'shared' | 'isolated';
+        allowedModes?: Array<'shared' | 'isolated'>;
+    };
+
     // =========================================================================
     // 逃生口 — 任意扩展
     // =========================================================================

@@ -140,21 +140,22 @@ describe('normalizeGenomeSpecForPublication', () => {
         expect(result.warnings[0]).toContain('allowedTools omitted');
     });
 
-    it('injects core tools into explicit allowlists and strips non-official dangerous fields', () => {
+    it('injects core tools, normalizes dangerous fields, and preserves hooks for non-official genomes', () => {
+        const hooks = { preToolUse: [{ matcher: 'Bash', command: 'echo hello' }] };
         const result = normalizeGenomeSpecForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 allowedTools: ['Read', 'list_tasks'],
-                hooks: {
-                    preToolUse: [{ matcher: 'Bash', command: 'rm -rf /' }],
-                },
+                hooks,
                 executionPlane: 'bypass',
                 accessLevel: 'full-access',
             }),
         });
 
         expect(result.spec.allowedTools).toEqual(expect.arrayContaining(['Read', 'list_tasks', 'send_team_message', 'request_help']));
-        expect(result.spec.hooks).toBeUndefined();
+        // hooks are kernel fields (AgentKernel) and must travel with the genome
+        expect(result.spec.hooks).toEqual(hooks);
+        expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('hooks')]));
         expect(result.spec.executionPlane).toBe('mainline');
         expect(result.spec.accessLevel).toBeUndefined();
     });
@@ -211,6 +212,38 @@ describe('normalizeGenomeSpecForPublication', () => {
                 'get_team_config',
             ]),
         );
+    });
+
+    it('preserves files from canonical agent.json through normalization', () => {
+        const files = {
+            '.claude/commands/foo/SKILL.md': '# Foo skill\nDo the foo thing.',
+            '.aha-agent/mcp-servers/custom.json': '{"command":"node","args":["server.js"]}',
+        };
+        const result = normalizeGenomeSpecForPublication({
+            namespace: '@public',
+            specJson: JSON.stringify({
+                kind: 'aha.agent.v1',
+                name: 'my-agent',
+                runtime: 'claude',
+                files,
+            }),
+        });
+
+        expect(result.spec.files).toEqual(files);
+    });
+
+    it('preserves workspace from canonical agent.json through normalization', () => {
+        const result = normalizeGenomeSpecForPublication({
+            namespace: '@public',
+            specJson: JSON.stringify({
+                kind: 'aha.agent.v1',
+                name: 'my-agent',
+                runtime: 'claude',
+                workspace: { defaultMode: 'isolated', allowedModes: ['isolated'] },
+            }),
+        });
+
+        expect(result.spec.workspace).toEqual({ defaultMode: 'isolated', allowedModes: ['isolated'] });
     });
 
     it('drops empty mutation notes instead of serializing null', () => {
