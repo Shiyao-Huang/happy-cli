@@ -10,7 +10,13 @@ export const DEFAULT_GENOME_HUB_URL = 'https://aha-agi.com/genome'
 
 const persistentCliConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
-  webappUrl: z.string().url().optional()
+  webappUrl: z.string().url().optional(),
+  /**
+   * Enable model selection feature (default: false)
+   * When false: use machine's local config (env vars, allows MiniMax/GLM)
+   * When true: use model routing system (genome/KV rules)
+   */
+  enableModelSelection: z.boolean().optional().default(false)
 }).passthrough()
 
 export type PersistentCliConfig = z.infer<typeof persistentCliConfigSchema>

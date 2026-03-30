@@ -25,7 +25,11 @@
     "aha-v9": "./bin/aha-v9.mjs",
     "aha-v9-mcp": "./bin/aha-v9-mcp.mjs",
     "kanban-v9": "./bin/aha-v9.mjs",
-    "kanban-v9-mcp": "./bin/aha-v9-mcp.mjs"
+    "kanban-v9-mcp": "./bin/aha-v9-mcp.mjs",
+    "aha-v10": "./bin/aha-v10.mjs",
+    "aha-v10-mcp": "./bin/aha-v10-mcp.mjs",
+    "kanban-v10": "./bin/aha-v10.mjs",
+    "kanban-v10-mcp": "./bin/aha-v10-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
