@@ -21,7 +21,11 @@
     "aha-v5": "./bin/aha.mjs",
     "aha-v5-mcp": "./bin/aha-mcp.mjs",
     "aha-v7": "./bin/aha-v7.mjs",
-    "aha-v7-mcp": "./bin/aha-v7-mcp.mjs"
+    "aha-v7-mcp": "./bin/aha-v7-mcp.mjs",
+    "aha-v9": "./bin/aha-v9.mjs",
+    "aha-v9-mcp": "./bin/aha-v9-mcp.mjs",
+    "kanban-v9": "./bin/aha-v9.mjs",
+    "kanban-v9-mcp": "./bin/aha-v9-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -92,7 +96,7 @@
     "prerecommit": "yarn typecheck && npx eslint src/ && yarn test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.85",
+    "@anthropic-ai/claude-code": "2.1.87",
     "@anthropic-ai/sdk": "0.76.0",
     "@modelcontextprotocol/sdk": "^1.15.1",
     "@stablelib/base64": "^2.0.1",

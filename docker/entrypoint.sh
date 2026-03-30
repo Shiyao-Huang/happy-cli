@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-AHA_HOME_DIR="${AHA_HOME_DIR:-/home/node/.aha-v3}"
+AHA_HOME_DIR="${AHA_HOME_DIR:-/home/node/.aha-v9}"
 mkdir -p "$AHA_HOME_DIR"
 
 maybe_decode_b64_file() {
