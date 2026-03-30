@@ -256,14 +256,32 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                 if (directive.action === 'retire' && !retireTimer) {
                     clearStandbyTimer('explicit retire directive');
                     retireTimer = setTimeout(() => {
-                        logger.debug(
-                            `[remote]: Auto-retiring agent via explicit lifecycle directive` +
-                            `${directive.reason ? ` (${directive.reason})` : ''}`
-                        );
-                        if (!exitReason) {
-                            exitReason = 'exit';
-                        }
-                        abort().catch(() => {});
+                        void (async () => {
+                            const nowIso = new Date().toISOString();
+                            try {
+                                await session.client.updateMetadata((currentMetadata) => ({
+                                    ...currentMetadata,
+                                    lifecycleState: 'retired',
+                                    lifecycleStateSince: Date.now(),
+                                    closedAt: currentMetadata?.closedAt || nowIso,
+                                    retiredAt: currentMetadata?.retiredAt || nowIso,
+                                    retiredBy: 'runtime',
+                                    retireReason: directive.reason || 'explicit-retire-directive',
+                                }));
+                                await session.client.flush();
+                            } catch (error) {
+                                logger.debug('[remote]: Failed to persist retired metadata before exit:', error);
+                            }
+
+                            logger.debug(
+                                `[remote]: Retiring agent via explicit lifecycle directive` +
+                                `${directive.reason ? ` (${directive.reason})` : ''}`
+                            );
+                            if (!exitReason) {
+                                exitReason = 'exit';
+                            }
+                            abort().catch(() => {});
+                        })();
                     }, 2000);
                 }
 
@@ -285,7 +303,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                         retiredBy: 'runtime',
                                         retireReason: directive.reason || 'standby-auto-exit',
                                     }));
-                                    await session.flush();
+                                    await session.client.flush();
                                 } catch (error) {
                                     logger.debug('[remote]: Failed to persist auto-retired metadata before exit:', error);
                                 }

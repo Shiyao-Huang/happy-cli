@@ -264,7 +264,7 @@ export function writeSupervisorState(state: SupervisorState): void {
 
 export function markTeamTerminated(teamId: string): void {
     const state = readSupervisorState(teamId);
-    writeSupervisorState({ ...state, terminated: true });
+    writeSupervisorState({ ...state, terminated: true, terminatedAt: Date.now() });
 }
 
 export function updateSupervisorRun(

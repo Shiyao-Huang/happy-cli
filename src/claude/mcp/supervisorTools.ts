@@ -2413,6 +2413,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     lastRecommendations: args.recommendations ?? state.lastRecommendations,
                     lastSessionId: args.sessionId ?? state.lastSessionId,
                     terminated: args.teamTerminated,
+                    terminatedAt: args.teamTerminated ? Date.now() : 0,
                     idleRuns: 0,
                     pendingAction: nextPendingAction,
                     pendingActionMeta: nextPendingActionMeta,

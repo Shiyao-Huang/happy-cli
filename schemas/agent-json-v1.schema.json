@@ -226,6 +226,19 @@
             },
             "requireExplicitAssignment": {
               "type": "boolean"
+            },
+            "lifecycle": {
+              "type": "string",
+              "enum": [
+                "single-shot",
+                "persistent",
+                "on-demand"
+              ],
+              "description": "Agent lifecycle mode: single-shot (run once and retire), persistent (long-running), on-demand (spawned as needed)"
+            },
+            "autoRetireAfterComplete": {
+              "type": "boolean",
+              "description": "Whether agent should automatically retire after completing its work (typically used with single-shot lifecycle)"
             }
           }
         }
