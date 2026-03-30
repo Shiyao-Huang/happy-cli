@@ -323,6 +323,44 @@ export interface GenomeSpec {
     skills?: string[];
 
     // =========================================================================
+    // Tier 9.5 — Canonical Triggers (M2: schedule / onMessage / onTaskChange)
+    // =========================================================================
+    /**
+     * Canonical cadence definition. Runtime reads this to determine when to
+     * spawn the agent periodically. Replaces AHA_SUPERVISOR_INTERVAL env var.
+     */
+    schedule?: {
+        /** Cron expression or human-readable interval (e.g. '*/5 * * * *', '5m', '1h') */
+        interval?: string;
+        /** Maximum concurrent instances (default: 1) */
+        maxConcurrent?: number;
+        /** Whether scheduling is enabled (default: true) */
+        enabled?: boolean;
+    };
+    /**
+     * Canonical message trigger. Runtime reads this to determine when to spawn
+     * the agent in response to team messages. Replaces helpAutoSpawn hardcoded paths.
+     */
+    onMessage?: {
+        /** Message content patterns that trigger this agent (e.g. '@help', 'URGENT:') */
+        patterns?: string[];
+        /** Only trigger for messages from these roles */
+        senderRoles?: string[];
+        /** Only trigger for messages at or above this priority */
+        priority?: 'normal' | 'high' | 'urgent';
+    };
+    /**
+     * Canonical task event trigger. Runtime reads this to determine when to spawn
+     * the agent in response to task state changes.
+     */
+    onTaskChange?: {
+        /** Task lifecycle events that trigger this agent */
+        events?: Array<'created' | 'assigned' | 'blocked' | 'review' | 'completed'>;
+        /** Only trigger for tasks assigned to this agent (default: false) */
+        assignedOnly?: boolean;
+    };
+
+    // =========================================================================
     // Tier 10 — Marketplace & Lifecycle（市场发布 / 生命周期元数据）
     // =========================================================================
 
@@ -807,3 +845,33 @@ export interface A2AProjectionCard {
         outputModes?: string[];
     }>;
 }
+
+// =============================================================================
+// Canonical naming — aligned with agent-evolution-theory.md
+//
+// The design vocabulary is: AgentImage / AgentPlug / AgentTrial / AgentVerdict
+//                           LegionImage / LegionPlug / LegionLayer
+//
+// GenomeSpec and CorpsSpec remain as backward-compatible projection aliases.
+// New code should prefer the canonical names.
+// =============================================================================
+
+/**
+ * AgentImage — the complete, materialized definition of a single agent.
+ * view() result: seed ⊕ all diffs applied.
+ * Canonical name for what was previously called GenomeSpec.
+ */
+export type AgentSpec = GenomeSpec;
+
+/**
+ * AgentPlug — an evolution diff applied to an AgentImage to produce the next version.
+ * supervisor verdict → AgentPlug → next AgentImage.
+ */
+export type AgentPlug = DiffChange[];
+
+/**
+ * LegionImage — the complete definition of a multi-agent composition.
+ * Canonical name for what was previously called CorpsSpec.
+ * LegionImage = AgentImage₁@v + AgentImage₂@v + ... + LegionLayer
+ */
+export type LegionImage = CorpsSpec;
