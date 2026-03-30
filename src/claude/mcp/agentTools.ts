@@ -709,6 +709,13 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             modelId: z.string().optional().describe('Optional model override for the replacement session'),
             fallbackModelId: z.string().optional().describe('Optional fallback model override for the replacement session'),
             reason: z.string().describe('Why the replacement is being performed'),
+            comment: z.object({
+                role: z.string().optional().describe('Optional role label for the task handoff comment. Defaults to caller role.'),
+                displayName: z.string().optional().describe('Optional display name for the handoff comment.'),
+                type: z.literal('handoff').default('handoff').optional().describe('Structured TaskComment type for task migration. Must be handoff.'),
+                content: z.string().describe('Structured handoff comment content to attach to reassigned tasks.'),
+                mentions: z.array(z.string()).optional().describe('Optional sessions to mention in the handoff comment.'),
+            }).optional().describe('Optional structured TaskComment used when preserveTasks=true.'),
             minVotes: z.number().int().min(1).default(2).describe('Minimum replace votes required when checkVotes is enabled'),
             checkVotes: z.boolean().default(false).describe('When true, require replace quorum from recent vote messages before proceeding'),
             preserveTasks: z.boolean().default(true).describe('Reassign unfinished tasks from the old session to the new one'),
@@ -797,15 +804,26 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
                     for (const task of tasks) {
                         if (task?.status === 'done') continue;
-                        await api.updateTask(inferredTeamId, task.id, {
-                            assigneeId: replacement.sessionId,
-                            comment: {
+                        const taskComment = args.comment
+                            ? {
+                                sessionId: client.sessionId,
+                                role: args.comment.role || callerRole,
+                                displayName: args.comment.displayName || metadata?.name,
+                                type: 'handoff' as const,
+                                content: args.comment.content,
+                                mentions: args.comment.mentions,
+                            }
+                            : {
                                 sessionId: client.sessionId,
                                 role: callerRole,
-                                type: 'handoff',
+                                displayName: metadata?.name,
+                                type: 'handoff' as const,
                                 content: `Reassigned from ${args.sessionId} to ${replacement.sessionId}. Reason: ${args.reason}`,
                                 mentions: [replacement.sessionId],
-                            },
+                            };
+                        await api.updateTask(inferredTeamId, task.id, {
+                            assigneeId: replacement.sessionId,
+                            comment: taskComment,
                         });
                         reassignedTasks += 1;
                     }

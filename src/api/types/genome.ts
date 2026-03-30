@@ -430,6 +430,107 @@ export type TeamAuthority =
     | 'task.complete.self'
     | 'agent.spawn';
 
+// ── Diff-only evolution / canonical diff ledger ─────────────────────────────
+
+export type DiffChangeKv = {
+    type: 'kv';
+    path: string;
+    from?: unknown;
+    to: unknown;
+};
+
+export type DiffChangeString = {
+    type: 'string';
+    path: string;
+    op: 'append' | 'replace' | 'remove';
+    content: string;
+    from?: string;
+};
+
+export type DiffChangeNarrative = {
+    type: 'narrative';
+    content: string;
+};
+
+export type DiffChange = DiffChangeKv | DiffChangeString | DiffChangeNarrative;
+
+export interface GenomeDiffRecord {
+    id: string;
+    genomeId: string;
+    version: number;
+    description: string;
+    verdictRefs?: string | null;
+    changes: string;
+    strategy?: string | null;
+    authorRole?: string | null;
+    authorSession?: string | null;
+    createdAt: string;
+}
+
+export interface GenomeFeedbackHistoryEntry {
+    evaluationCount: number;
+    avgScore: number;
+    sessionScore?: {
+        taskCompletion: number;
+        codeQuality: number;
+        collaboration: number;
+        overall: number;
+    };
+    dimensions: {
+        delivery: number;
+        integrity: number;
+        efficiency: number;
+        collaboration: number;
+        reliability: number;
+    };
+    distribution: {
+        excellent: number;
+        good: number;
+        fair: number;
+        poor: number;
+    };
+    latestAction: 'keep' | 'keep_with_guardrails' | 'mutate' | 'discard';
+    suggestions: string[];
+    updatedAt: string;
+}
+
+export interface GenomeFeedbackTrend {
+    historyCount: number;
+    previousAvgScore: number | null;
+    avgScoreDelta: number;
+    latestUpdatedAt: string;
+    previousUpdatedAt: string | null;
+}
+
+export interface GenomeFeedback {
+    evaluationCount: number;
+    avgScore: number;
+    sessionScore?: {
+        taskCompletion: number;
+        codeQuality: number;
+        collaboration: number;
+        overall: number;
+    };
+    dimensions: {
+        delivery: number;
+        integrity: number;
+        efficiency: number;
+        collaboration: number;
+        reliability: number;
+    };
+    distribution: {
+        excellent: number;
+        good: number;
+        fair: number;
+        poor: number;
+    };
+    latestAction: 'keep' | 'keep_with_guardrails' | 'mutate' | 'discard';
+    suggestions: string[];
+    updatedAt: string;
+    history?: GenomeFeedbackHistoryEntry[];
+    trend?: GenomeFeedbackTrend;
+}
+
 export interface CorpsMemberOverlay {
     promptSuffix?: string;
     messaging?: GenomeSpec['messaging'];

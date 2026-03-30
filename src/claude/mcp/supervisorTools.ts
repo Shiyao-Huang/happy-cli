@@ -33,6 +33,7 @@ import type { RunEnvelope } from '@/daemon/runEnvelope'
 import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { configuration } from '@/configuration';
+import type { DiffChange, GenomeDiffRecord, GenomeFeedback, GenomeSpec } from '@/api/types/genome';
 import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorGenomeFeedback';
@@ -46,8 +47,10 @@ import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
 import { restartDaemonFlow } from '@/daemon/restartDaemon';
 import { getAllowedTools, getDeniedTools, getPermissionMode } from '@/claude/team/permissions';
+import { generateRolePrompt } from '@/claude/team/roles';
 import { buildEffectivePermissionsReport } from './inspectionTools';
 import { McpToolContext } from './mcpContext';
+import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
 export function registerSupervisorTools(ctx: McpToolContext): void {
     const {
@@ -134,13 +137,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         feedbackData?: string | null;
     };
 
-    type MarketplaceGenomeFeedback = {
-        evaluationCount?: number;
-        avgScore?: number;
-        dimensions?: Record<string, number>;
-        latestAction?: string;
-        updatedAt?: string;
+    const resolveEntityMirrorUrl = (specId: string): string => {
+        const base = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+        const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
+        if (nsMatch) {
+            const [, ns, name, version] = nsMatch;
+            const encodedNs = encodeURIComponent(ns);
+            return version
+                ? `${base}/entities/${encodedNs}/${name}/${version}`
+                : `${base}/entities/${encodedNs}/${name}`;
+        }
+        return `${base}/entities/id/${encodeURIComponent(specId)}`;
     };
+
+    type MarketplaceGenomeFeedback = Pick<GenomeFeedback, 'evaluationCount' | 'avgScore' | 'dimensions' | 'latestAction' | 'updatedAt'>;
 
     const parseFeedbackData = (feedbackData?: string | null): MarketplaceGenomeFeedback | null => {
         if (!feedbackData) return null;
@@ -191,6 +201,167 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             throw new Error(`Genome version v${version} not found`);
         }
         return data.genome;
+    };
+
+    type EntityMirrorRecord = {
+        id: string;
+        namespace?: string | null;
+        name: string;
+        version: number;
+        spec: string;
+        seed?: string | null;
+        feedbackData?: string | null;
+        description?: string | null;
+        tags?: string | null;
+        category?: string | null;
+    };
+
+    type EntityDiffRecord = {
+        id: string;
+        entityId: string;
+        version: number;
+        description: string;
+        verdictRefs?: string[] | null;
+        changes: DiffChange[];
+        strategy?: string | null;
+        authorRole?: string | null;
+        authorSession?: string | null;
+        createdAt: string;
+    };
+
+    const fetchEntityMirror = async (specId: string): Promise<{
+        entity: EntityMirrorRecord;
+        spec: Record<string, unknown>;
+        seedSpec: Record<string, unknown> | null;
+        diffHistory: EntityDiffRecord[];
+    }> => {
+        const entityRes = await fetch(resolveEntityMirrorUrl(specId), { signal: AbortSignal.timeout(5_000) });
+        if (!entityRes.ok) {
+            throw new Error(`Failed to fetch entity mirror for ${specId}: HTTP ${entityRes.status}`);
+        }
+        const entityData = await entityRes.json() as { entity?: EntityMirrorRecord };
+        if (!entityData.entity) {
+            throw new Error(`Entity mirror for ${specId} was missing payload.`);
+        }
+
+        const entity = entityData.entity;
+        const spec = JSON.parse(entity.spec) as Record<string, unknown>;
+        const seedSpec = entity.seed ? JSON.parse(entity.seed) as Record<string, unknown> : null;
+
+        let diffHistory: EntityDiffRecord[] = [];
+        if (entity.namespace && entity.name) {
+            const diffRes = await fetch(
+                `${(process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '')}/entities/${encodeURIComponent(entity.namespace)}/${encodeURIComponent(entity.name)}/diffs`,
+                { signal: AbortSignal.timeout(5_000) },
+            );
+            if (!diffRes.ok) {
+                throw new Error(`Failed to fetch entity diff history for ${entity.namespace}/${entity.name}: HTTP ${diffRes.status}`);
+            }
+            const diffData = await diffRes.json() as { diffs?: EntityDiffRecord[] };
+            if (!Array.isArray(diffData.diffs)) {
+                throw new Error(`Entity diff history for ${entity.namespace}/${entity.name} was malformed.`);
+            }
+            diffHistory = diffData.diffs;
+        }
+
+        return { entity, spec, seedSpec, diffHistory };
+    };
+
+    const fetchGenomeDiffs = async (hubUrl: string, namespace: string, name: string): Promise<GenomeDiffRecord[]> => {
+        const res = await fetch(
+            `${hubUrl}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/diffs`,
+            { signal: AbortSignal.timeout(5_000) }
+        );
+        if (!res.ok) {
+            throw new Error(`Failed to fetch diffs: HTTP ${res.status}`);
+        }
+        const data = await res.json() as { diffs?: GenomeDiffRecord[] };
+        return Array.isArray(data.diffs) ? data.diffs : [];
+    };
+
+    const parseDiffChanges = (changes?: string | null): DiffChange[] => {
+        if (!changes) return [];
+        try {
+            const parsed = JSON.parse(changes) as DiffChange[];
+            if (!Array.isArray(parsed)) {
+                throw new Error('Diff change payload was not an array.');
+            }
+            return parsed;
+        } catch {
+            throw new Error('Failed to parse diff change payload.');
+        }
+    };
+
+    const applyPreviewStringDiff = (
+        spec: Record<string, unknown>,
+        path: string,
+        op: 'append' | 'replace' | 'remove',
+        content: string,
+    ): Record<string, unknown> => {
+        const segments = path.split('.');
+        const parentPath = segments.slice(0, -1).join('.');
+        const field = segments[segments.length - 1];
+
+        const getAtPath = (obj: Record<string, unknown>, dotPath: string): unknown => {
+            if (!dotPath) return obj;
+            return dotPath.split('.').reduce<unknown>((cur, key) => {
+                if (cur != null && typeof cur === 'object' && !Array.isArray(cur)) {
+                    return (cur as Record<string, unknown>)[key];
+                }
+                return undefined;
+            }, obj);
+        };
+
+        const parentObj = parentPath
+            ? (getAtPath(spec, parentPath) as Record<string, unknown> ?? {})
+            : spec;
+
+        const current = parentObj[field];
+        let newValue: unknown = current;
+
+        if (op === 'append') {
+            if (Array.isArray(current)) {
+                newValue = [...current, content];
+            } else if (typeof current === 'string') {
+                newValue = current ? `${current}\n${content}` : content;
+            } else {
+                newValue = [content];
+            }
+        } else if (op === 'replace') {
+            newValue = content;
+        } else if (op === 'remove') {
+            if (Array.isArray(current)) {
+                newValue = current.filter((item: unknown) => item !== content);
+            } else if (typeof current === 'string') {
+                newValue = current.split(content).join('');
+            }
+        }
+
+        if (parentPath) {
+            const newParent = { ...parentObj, [field]: newValue };
+            return applyKvDiff(spec, parentPath, newParent);
+        }
+        return { ...spec, [field]: newValue };
+    };
+
+    const applyPreviewDiffChanges = (
+        spec: Record<string, unknown>,
+        changes: DiffChange[],
+    ): Record<string, unknown> => {
+        let result = { ...spec };
+        for (const change of changes) {
+            switch (change.type) {
+                case 'kv':
+                    result = applyKvDiff(result, change.path, change.to);
+                    break;
+                case 'string':
+                    result = applyPreviewStringDiff(result, change.path, change.op, change.content);
+                    break;
+                case 'narrative':
+                    break;
+            }
+        }
+        return result;
     };
 
     mcp.registerTool('read_team_log', {
@@ -329,6 +500,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         description: [
             'See yourself: who you are, your context usage, your team, and your performance.',
             'Combines identity (role, genome), capabilities, behavior config, context window status, team pulse, tasks, and performance into one view.',
+            'Also returns the effective prompt mirror, current materialized spec, diff history, and seed spec for runtime self-verification.',
             'Builds the self-reference triangle: who am I, what can I do, how am I doing.',
             'Call this at the start of each cycle to orient yourself before taking action.',
             'Available to ALL team members.',
@@ -363,7 +535,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             });
             const identity = {
                 ...projectedIdentity,
-                genomeName: genomeSpec?.displayName || genomeSpec?.name || role,
+                genomeName: genomeSpec?.displayName || genomeSpec?.baseRoleId || role,
                 genomeDescription: genomeSpec?.description || 'No genome loaded',
                 responsibilities: genomeSpec?.responsibilities || [],
                 capabilities: genomeSpec?.capabilities || [],
@@ -373,8 +545,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const behavior = genomeSpec?.behavior;
             const messaging = genomeSpec?.messaging;
 
-            // Protocol summary (first 5 items)
-            const protocol = (genomeSpec?.protocol || []).slice(0, 5);
+            // Protocol + evaluation mirror
+            const protocol = genomeSpec?.protocol || [];
             const evalCriteria = genomeSpec?.evalCriteria || [];
 
             // ── CONTEXT WINDOW ────────────────────────────────────────────
@@ -390,11 +562,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
             // ── HOW AM I DOING (genome-hub feedback) ──────────────────────
             let performanceSection: string[] = [];
+            let genomeFeedbackRaw: string | null = null;
             if (identity.specId) {
                 try {
                     const { fetchGenomeFeedbackData } = await import('@/claude/utils/fetchGenome');
                     const feedbackRaw = await fetchGenomeFeedbackData(client.getAuthToken(), identity.specId);
                     if (feedbackRaw) {
+                        genomeFeedbackRaw = feedbackRaw;
                         const feedback = JSON.parse(feedbackRaw) as {
                             avgScore?: number;
                             evaluationCount?: number;
@@ -429,7 +603,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     }
                 } catch (error) {
                     if (process.env.NODE_ENV === 'development') {
-                        logger.error('[DEV] Feedback fetch failed - this breaks genome evolution!', error);
+                        logger.debug('[DEV] Feedback fetch failed - this breaks genome evolution!', error);
                         throw new Error(`Supervisor feedback fetch failed: ${String(error)}`);
                     }
                     // Production: best-effort is acceptable
@@ -460,15 +634,26 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             // ── MY TASKS ──────────────────────────────────────────────────
             let myTaskLines: string[] = [];
             let peerTaskLines: string[] = [];
+            let kanbanContext: Parameters<typeof generateRolePrompt>[1];
+            let teamOverlayPromptSuffix: string | null = null;
             try {
                 const taskManager = getTaskStateManager();
                 if (taskManager) {
                     const kanbanCtx = await taskManager.getFilteredContext();
+                    kanbanContext = kanbanCtx;
                     for (const task of (kanbanCtx.myTasks || []).slice(0, 5)) {
                         const icon = task.status === 'in-progress' ? '🔨' : task.status === 'review' ? '👀' : '📋';
                         myTaskLines.push(`  ${icon} [${task.status}] ${task.title} (${task.id})`);
                     }
                     const board = await taskManager.getBoard();
+                    const currentTeamMember = (board?.team?.members || []).find((member: any) => {
+                        if (!member || typeof member !== 'object') return false;
+                        if (meta?.memberId && member.memberId) return member.memberId === meta.memberId;
+                        return member.sessionId === sessionId;
+                    });
+                    teamOverlayPromptSuffix = typeof currentTeamMember?.teamOverlay?.promptSuffix === 'string'
+                        ? currentTeamMember.teamOverlay.promptSuffix
+                        : null;
                     const otherInProgress = (board.tasks || []).filter(
                         (t: any) => t.status === 'in-progress' && t.assigneeId && t.assigneeId !== sessionId
                     );
@@ -498,6 +683,65 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     scoreLines.push(`  ${score.overall}/100 (${date}) ${score.action || ''}`);
                 }
             } catch { /* non-critical */ }
+
+            // ── PROMPT / SPEC MIRROR ───────────────────────────────────────
+            let globalRules: string | null = null;
+            let userPreferences: string | null = null;
+            try {
+                const [rulesConfig, preferencesConfig] = await Promise.all([
+                    api.kvGet('config.rules'),
+                    api.kvGet('config.preferences'),
+                ]);
+                globalRules = typeof rulesConfig?.value === 'string' && rulesConfig.value.trim()
+                    ? rulesConfig.value
+                    : null;
+                userPreferences = typeof preferencesConfig?.value === 'string' && preferencesConfig.value.trim()
+                    ? preferencesConfig.value
+                    : null;
+            } catch {
+                // best effort only
+            }
+
+            const mountedAgentPrompt = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
+            const generatedRolePrompt = generateRolePrompt(
+                {
+                    ...(meta || {}),
+                    teamId: teamId || undefined,
+                    roomId: meta?.roomId || teamId || undefined,
+                    role,
+                } as any,
+                kanbanContext,
+                genomeSpec ?? undefined,
+                genomeFeedbackRaw,
+            );
+            const promptCore = genomeSpec?.systemPrompt
+                ? genomeSpec.systemPrompt + (genomeSpec.systemPromptSuffix ? `\n\n${genomeSpec.systemPromptSuffix}` : '')
+                : generatedRolePrompt;
+            const promptBlocks = [
+                promptCore,
+                globalRules ? `<global_rules>\n${globalRules}\n</global_rules>` : null,
+                userPreferences ? `<user_preferences>\n${userPreferences}\n</user_preferences>` : null,
+                mountedAgentPrompt,
+                teamOverlayPromptSuffix ? teamOverlayPromptSuffix.trim() : null,
+            ].filter((block): block is string => typeof block === 'string' && block.trim().length > 0);
+            const effectivePrompt = promptBlocks.join('\n\n');
+
+            const indentBlock = (block: string, prefix = '  '): string[] =>
+                block.split('\n').map((line) => `${prefix}${line}`);
+            const learnings = Array.isArray(genomeSpec?.memory?.learnings)
+                ? genomeSpec.memory.learnings
+                : [];
+            let specMirrorObject: Record<string, unknown> | null = genomeSpec ? genomeSpec as unknown as Record<string, unknown> : null;
+            let seedSpecMirror: Record<string, unknown> | null = null;
+            let diffHistoryMirror: EntityDiffRecord[] = [];
+            if (identity.specId) {
+                const mirror = await fetchEntityMirror(identity.specId);
+                specMirrorObject = mirror.spec;
+                seedSpecMirror = mirror.seedSpec;
+                diffHistoryMirror = mirror.diffHistory;
+            }
+            const specMirror = JSON.stringify(specMirrorObject, null, 2);
+            const seedSpecMirrorJson = JSON.stringify(seedSpecMirror, null, 2);
 
             // ── FORMAT OUTPUT ─────────────────────────────────────────────
             const lines: string[] = [
@@ -540,25 +784,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     for (const step of protocol) {
                         lines.push(`    - ${step}`);
                     }
-                    if ((genomeSpec?.protocol?.length ?? 0) > 5) {
-                        lines.push(`    ... (${(genomeSpec?.protocol?.length ?? 0) - 5} more)`);
-                    }
                 }
                 if (evalCriteria.length > 0) {
                     lines.push(`  Eval Criteria: ${evalCriteria.join('; ')}`);
                 }
             }
 
-            // Genome learnings (self-mirror: agent can verify injected knowledge)
-            const learnings = genomeSpec?.memory?.learnings;
-            if (Array.isArray(learnings) && learnings.length > 0) {
+            // Genome learnings (full list for runtime self-verification)
+            if (learnings.length > 0) {
                 lines.push('', `[Genome Learnings]`);
-                for (const learning of learnings.slice(0, 5)) {
+                for (const learning of learnings) {
                     lines.push(`  - ${learning}`);
                 }
-                if (learnings.length > 5) {
-                    lines.push(`  ... (${learnings.length - 5} more — use get_genome_spec for full list)`);
-                }
+            } else {
+                lines.push('', `[Genome Learnings]`, '  (none)');
             }
 
             // Context window
@@ -601,6 +840,32 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 lines.push('', '[Peer Activity]');
                 lines.push(...peerTaskLines);
             }
+
+            lines.push('', '[Prompt Mirror]');
+            lines.push(`  Mode: ${genomeSpec?.systemPrompt ? 'custom-system-prompt' : 'generated-role-prompt'}`);
+            lines.push(`  Length: ${effectivePrompt.length} chars`);
+            lines.push('  Effective Prompt:');
+            if (effectivePrompt) {
+                lines.push(...indentBlock(effectivePrompt, '    '));
+            } else {
+                lines.push('    (unavailable)');
+            }
+
+            lines.push('', '[Spec Mirror]');
+            lines.push(...indentBlock(specMirror));
+
+            lines.push('', '[Diff History]');
+            if (diffHistoryMirror.length > 0) {
+                for (const diff of diffHistoryMirror) {
+                    lines.push(`  - v${diff.version} ${diff.description}`);
+                    lines.push(...indentBlock(JSON.stringify(diff, null, 2), '    '));
+                }
+            } else {
+                lines.push('  (none)');
+            }
+
+            lines.push('', '[Seed Spec]');
+            lines.push(...indentBlock(seedSpecMirrorJson));
 
             return {
                 content: [{ type: 'text', text: lines.join('\n') }],
@@ -649,53 +914,44 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     mcp.registerTool('get_genome_spec', {
-        description: 'Inspect a genome spec by ID at runtime. Returns the complete spec including systemPrompt, protocol, responsibilities, memory.learnings, authorities, and behavior fields. Allows an agent to self-verify its own identity and injected context.',
+        description: 'Inspect a genome spec by ID at runtime. Returns the three canonical views: view (current materialized spec), view-diff (ordered diff history), and view-not-diff (seed/original spec). Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
         title: 'Get Genome Spec',
         inputSchema: {
             specId: z.string().describe('Genome spec ID to inspect'),
         },
     }, async (args) => {
-        const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master' && callerRole !== 'agent-builder') {
+        const callerMetadata = client.getMetadata();
+        const callerRole = callerMetadata?.role;
+        const callerSpecId = callerMetadata?.specId || process.env.AHA_SPEC_ID || null;
+        const canInspectAny = callerRole === 'supervisor' || callerRole === 'org-manager' || callerRole === 'master' || callerRole === 'agent-builder';
+        const isSelfSpec = callerSpecId != null && callerSpecId === args.specId;
+        if (!canInspectAny && !isSelfSpec) {
             return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect genome specs.` }], isError: true };
         }
 
         try {
-            const spec = await fetchGenomeSpec(client.getAuthToken(), args.specId);
-            if (!spec) {
-                return { content: [{ type: 'text', text: `Error: Genome spec ${args.specId} not found.` }], isError: true };
-            }
-
-            // Build injected prompt so the agent can verify what was actually injected
-            let injectedPrompt: string | null = null;
+            const mirror = await fetchEntityMirror(args.specId);
+            const spec = mirror.spec as GenomeSpec;
             const { buildGenomeInjection } = await import('@/claude/utils/buildGenomeInjection');
-            injectedPrompt = buildGenomeInjection(spec);
+            const injectedPrompt = buildGenomeInjection(spec);
 
             return {
                 content: [{
                     type: 'text',
                     text: JSON.stringify({
                         specId: args.specId,
-                        version: spec.version ?? null,
-                        namespace: spec.namespace ?? null,
-                        displayName: spec.displayName ?? null,
-                        description: spec.description ?? null,
-                        baseRoleId: spec.baseRoleId ?? null,
-                        authorities: spec.authorities ?? [],
-                        behavior: spec.behavior ?? null,
-                        // Full spec fields for self-mirror completeness
-                        systemPrompt: spec.systemPrompt ?? null,
-                        systemPromptSuffix: spec.systemPromptSuffix ?? null,
-                        protocol: spec.protocol ?? [],
-                        responsibilities: spec.responsibilities ?? [],
-                        evalCriteria: spec.evalCriteria ?? [],
-                        capabilities: spec.capabilities ?? [],
-                        allowedTools: spec.allowedTools ?? null,
-                        disallowedTools: spec.disallowedTools ?? null,
-                        permissionMode: spec.permissionMode ?? null,
-                        learnings: spec.memory?.learnings ?? [],
-                        memory: spec.memory ?? null,
-                        // Injected prompt for verifiable identity
+                        entity: {
+                            id: mirror.entity.id,
+                            namespace: mirror.entity.namespace ?? null,
+                            name: mirror.entity.name,
+                            version: mirror.entity.version,
+                            description: mirror.entity.description ?? null,
+                            category: mirror.entity.category ?? null,
+                            tags: mirror.entity.tags ?? null,
+                        },
+                        view: spec,
+                        viewDiff: mirror.diffHistory,
+                        viewNotDiff: mirror.seedSpec,
                         injectedPrompt,
                     }, null, 2),
                 }],
@@ -959,7 +1215,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             board = JSON.parse(bodyValue);
                         } catch (error) {
                             if (process.env.NODE_ENV === 'development') {
-                                logger.error('[DEV] Board JSON parsing failed - may indicate artifact format change', error);
+                                logger.debug('[DEV] Board JSON parsing failed - may indicate artifact format change', error);
                                 throw new Error(`Board data malformed in team artifact: ${String(error)}`);
                             }
                             logger.warn('[PROD] Board JSON parse failed, using fallback', error);
@@ -1508,44 +1764,41 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
     mcp.registerTool('evolve_genome', {
         description: [
-            'Promote a genome to the next version by merging supervisor-synthesized learnings and heterogeneous diffs.',
-            'Step 1: Read feedbackData via update_genome_feedback (dryRun=true) to review suggestions.',
-            'Step 2: Synthesize 3-7 actionable learnings from the feedback patterns.',
-            'Step 3: Call evolve_genome with newLearnings and/or diffs — merges them into the spec and calls promote.',
+            'Submit a canonical diff to evolve a genome/entity to the next version.',
+            'The preferred input is a full diff object: description + verdictRefs + changes[].',
+            'changes[] supports heterogeneous kv / string / narrative diff entries and is written to the diff ledger directly.',
+            'Legacy newLearnings are converted into string-append changes on memory.learnings.',
             'Requires feedbackData.avgScore >= minPromoteScore (default 60). Supervisor only.',
-            '',
-            'Diff types supported in the diffs array:',
-            '- narrative: Append a learning string to memory.learnings (same as newLearnings).',
-            '- string: Append or replace a text/array field (e.g. systemPromptSuffix, protocol).',
-            '- kv: Set a specific field by dotted path (e.g. behavior.onIdle, behavior.canSpawnAgents).',
-            '',
-            'When kv or string diffs are present, the full mutated spec is submitted as a new version.',
-            'When only narrative/newLearnings are present, the incremental diff endpoint is used.',
         ].join(' '),
         title: 'Evolve Genome',
         inputSchema: {
             genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
             genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
+            description: z.string().max(2000).optional().describe('Human-readable diff description. Required when passing changes[].'),
+            verdictRefs: z.array(z.string().min(1)).optional().describe('Optional verdict IDs backing this evolution diff.'),
+            strategy: z.enum(['conservative', 'moderate', 'radical']).optional().describe('Diff strategy metadata for the ledger entry.'),
             newLearnings: z.array(z.string().max(300)).min(1).max(10).optional().describe(
-                'Synthesized learnings derived from feedbackData patterns. Each item is a short, actionable insight for future instances of this genome.'
+                'Legacy shorthand for appending to memory.learnings. Converted into string changes on memory.learnings.'
             ),
-            diffs: z.array(z.discriminatedUnion('type', [
+            changes: z.array(z.discriminatedUnion('type', [
                 z.object({
                     type: z.literal('kv'),
                     path: z.string().describe("Dotted field path in the spec, e.g. 'behavior.onIdle' or 'protocol'."),
-                    value: z.unknown().describe('New value to set at the path.'),
+                    from: z.unknown().optional().describe('Optional expected prior value for auditability.'),
+                    to: z.unknown().describe('New value to set at the path.'),
                 }),
                 z.object({
                     type: z.literal('string'),
                     path: z.string().describe("Dotted field path for a text/array field, e.g. 'systemPromptSuffix'."),
                     op: z.enum(['append', 'replace', 'remove']).describe('Whether to append to, replace, or remove from the field.'),
                     content: z.string().describe('Text content to apply.'),
+                    from: z.string().optional().describe('Optional expected prior string value for auditability.'),
                 }),
                 z.object({
                     type: z.literal('narrative'),
-                    content: z.string().max(300).describe('Narrative learning to append to memory.learnings.'),
+                    content: z.string().max(1000).describe('Narrative context stored in the diff ledger; does not mutate the materialized spec.'),
                 }),
-            ])).optional().describe('Heterogeneous diff array. Each entry targets a specific field type.'),
+            ])).optional().describe('Canonical heterogeneous diff array for the diff ledger.'),
             minPromoteScore: z.number().min(0).max(100).default(60).optional().describe(
                 'Minimum avgScore required to promote. Defaults to 60.'
             ),
@@ -1558,55 +1811,38 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const hasNewLearnings = Array.isArray(args.newLearnings) && args.newLearnings.length > 0;
-        const hasDiffs = Array.isArray(args.diffs) && args.diffs.length > 0;
+        const hasChanges = Array.isArray(args.changes) && args.changes.length > 0;
 
-        if (!hasNewLearnings && !hasDiffs) {
-            return { content: [{ type: 'text', text: 'Error: Provide at least one of newLearnings or diffs.' }], isError: true };
+        if (!hasNewLearnings && !hasChanges) {
+            return { content: [{ type: 'text', text: 'Error: Provide at least one of newLearnings or changes.' }], isError: true };
+        }
+        if (hasChanges && !args.description?.trim()) {
+            return { content: [{ type: 'text', text: 'Error: description is required when changes[] are provided.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
-        // 1. Fetch current genome (spec + feedbackData)
-        let genomeRecord: { genome?: { spec: string; version?: number; feedbackData?: string | null; isPublic?: boolean; category?: string | null; tags?: string | null } };
+        let currentMirror: Awaited<ReturnType<typeof fetchEntityMirror>>;
         try {
-            const res = await fetch(
-                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
-                { signal: AbortSignal.timeout(5_000) }
-            );
-            if (!res.ok) {
-                return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} not found: ${res.status}` }], isError: true };
-            }
-            genomeRecord = await res.json() as typeof genomeRecord;
+            currentMirror = await fetchEntityMirror(`${args.genomeNamespace}/${args.genomeName}`);
         } catch (error) {
-            return { content: [{ type: 'text', text: `Network error fetching genome: ${String(error)}` }], isError: true };
+            return { content: [{ type: 'text', text: `Network error fetching entity mirror: ${String(error)}` }], isError: true };
         }
-
-        if (!genomeRecord.genome) {
-            return { content: [{ type: 'text', text: 'Unexpected response from genome-hub.' }], isError: true };
-        }
-
-        // 2. Validate feedbackData score threshold
-        let currentSpec: Record<string, unknown>;
-        try {
-            currentSpec = JSON.parse(genomeRecord.genome.spec) as Record<string, unknown>;
-        } catch {
-            return { content: [{ type: 'text', text: 'Failed to parse current genome spec JSON.' }], isError: true };
-        }
+        const currentSpec = currentMirror.spec;
 
         let avgScore = 0;
-        const feedbackRaw = genomeRecord.genome.feedbackData;
+        const feedbackRaw = currentMirror.entity.feedbackData;
         if (feedbackRaw) {
             try {
                 const fb = JSON.parse(feedbackRaw) as { avgScore?: number };
                 avgScore = typeof fb.avgScore === 'number' ? fb.avgScore : 0;
-            } catch { /* proceed with 0 */ }
+            } catch {
+                return { content: [{ type: 'text', text: 'Failed to parse feedbackData JSON for evolve_genome.' }], isError: true };
+            }
         }
 
         const minScore = args.minPromoteScore ?? 60;
-        // Supervisors and org-managers are the evaluators — requiring them to be evaluated
-        // before they can evolve breaks the evolution chain (circular dependency).
-        // Skip the score gate for these trusted roles.
         const skipScoreGate = callerRole === 'supervisor' || callerRole === 'org-manager';
         if (!skipScoreGate && avgScore < minScore) {
             return {
@@ -1615,137 +1851,75 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         }
 
-        // 3. Separate diff types
-        const narrativeEntries: string[] = [];
-        const kvDiffs: Array<{ path: string; value: unknown }> = [];
-        const stringDiffs: Array<{ path: string; op: 'append' | 'replace' | 'remove'; content: string }> = [];
-
-        if (hasDiffs) {
-            for (const diff of args.diffs!) {
-                if (diff.type === 'narrative') narrativeEntries.push(diff.content);
-                else if (diff.type === 'kv') kvDiffs.push({ path: diff.path, value: diff.value });
-                else if (diff.type === 'string') stringDiffs.push({ path: diff.path, op: diff.op, content: diff.content });
-            }
-        }
-
-        // 4. Merge newLearnings into narrative entries
         const existingMemory = (currentSpec.memory ?? {}) as Record<string, unknown>;
         const existingLearnings: string[] = Array.isArray(existingMemory.learnings) ? existingMemory.learnings as string[] : [];
-        if (hasNewLearnings) {
-            for (const l of args.newLearnings!) {
-                narrativeEntries.push(l);
+        const newLearningEntries = hasNewLearnings
+            ? args.newLearnings!.filter((learning) => !existingLearnings.includes(learning))
+            : [];
+        const learningChanges: DiffChange[] = newLearningEntries.map((learning) => ({
+            type: 'string',
+            path: 'memory.learnings',
+            op: 'append',
+            content: learning,
+        }));
+        const explicitChanges: DiffChange[] = (args.changes ?? []).map((change) => {
+            if (change.type === 'kv') {
+                return {
+                    type: 'kv',
+                    path: change.path,
+                    to: change.to,
+                    ...(change.from !== undefined ? { from: change.from } : {}),
+                };
             }
-        }
-        const newNarrativeEntries = narrativeEntries.filter((l) => !existingLearnings.includes(l));
-
-        const hasStructuralDiffs = kvDiffs.length > 0 || stringDiffs.length > 0;
-
-        if (!hasStructuralDiffs && newNarrativeEntries.length === 0) {
+            if (change.type === 'string') {
+                return {
+                    type: 'string',
+                    path: change.path,
+                    op: change.op,
+                    content: change.content,
+                    ...(change.from !== undefined ? { from: change.from } : {}),
+                };
+            }
             return {
-                content: [{ type: 'text', text: `No new changes to apply — all learnings already exist and no structural diffs provided.` }],
+                type: 'narrative',
+                content: change.content,
+            };
+        });
+        const diffChanges: DiffChange[] = [
+            ...learningChanges,
+            ...explicitChanges,
+        ];
+
+        if (diffChanges.length === 0) {
+            return {
+                content: [{ type: 'text', text: 'No new changes to apply — all learnings already exist and changes[] was empty.' }],
                 isError: false,
             };
         }
 
-        // 5. dryRun: preview what would change
+        const diffDescription = args.description?.trim()
+            || `Evolve: merge ${newLearningEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
+
         if (args.dryRun) {
+            const previewSpec = applyPreviewDiffChanges(currentSpec, diffChanges);
+            const changeSummary = diffChanges.map((change) => {
+                if (change.type === 'kv') return `kv ${change.path} → ${JSON.stringify(change.to)}`;
+                if (change.type === 'string') return `string ${change.op} ${change.path}: ${JSON.stringify(change.content)}`;
+                return `narrative ${JSON.stringify(change.content)}`;
+            });
             const lines = [
                 `DRY RUN — evolve ${args.genomeNamespace}/${args.genomeName}`,
                 `Current avgScore: ${Math.round(avgScore)} (threshold: ${minScore})`,
+                `Description: ${diffDescription}`,
+                `Verdict refs: ${args.verdictRefs?.length ?? 0}`,
+                `Strategy: ${args.strategy ?? 'conservative'}`,
+                `Changes (${diffChanges.length}):`,
+                ...changeSummary.map((item) => `  - ${item}`),
+                `Preview materialized view:`,
+                JSON.stringify(previewSpec, null, 2),
             ];
-            if (newNarrativeEntries.length > 0) {
-                lines.push(`New learnings (${newNarrativeEntries.length}): ${newNarrativeEntries.join(' | ')}`);
-            }
-            if (kvDiffs.length > 0) {
-                lines.push(`KV diffs (${kvDiffs.length}):`);
-                for (const d of kvDiffs) lines.push(`  set ${d.path} = ${JSON.stringify(d.value)}`);
-            }
-            if (stringDiffs.length > 0) {
-                lines.push(`String diffs (${stringDiffs.length}):`);
-                for (const d of stringDiffs) lines.push(`  ${d.op} ${d.path}: "${d.content.slice(0, 80)}${d.content.length > 80 ? '...' : ''}"`);
-            }
-            lines.push(`Strategy: ${hasStructuralDiffs ? 'full-spec-create (kv/string diffs present)' : 'incremental-diff (narrative only)'}`);
             return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
         }
-
-        // 6a. Structural diffs: apply locally and create new genome version
-        if (hasStructuralDiffs) {
-            let mutatedSpec = { ...currentSpec };
-
-            // Apply kv diffs
-            for (const d of kvDiffs) {
-                mutatedSpec = applyKvDiff(mutatedSpec, d.path, d.value);
-            }
-
-            // Apply string diffs
-            for (const d of stringDiffs) {
-                mutatedSpec = applyStringDiff(mutatedSpec, d.path, d.op, d.content);
-            }
-
-            // Merge narrative learnings into memory.learnings
-            if (newNarrativeEntries.length > 0) {
-                const mem = (mutatedSpec.memory ?? {}) as Record<string, unknown>;
-                const lrns: string[] = Array.isArray(mem.learnings) ? mem.learnings as string[] : [];
-                mutatedSpec = {
-                    ...mutatedSpec,
-                    memory: { ...mem, learnings: Array.from(new Set([...lrns, ...newNarrativeEntries])) },
-                };
-            }
-
-            const diffSummary = [
-                ...(kvDiffs.map(d => `kv:${d.path}`)),
-                ...(stringDiffs.map(d => `${d.op}:${d.path}`)),
-                ...(newNarrativeEntries.length > 0 ? [`narrative(${newNarrativeEntries.length})`] : []),
-            ].join(', ');
-
-            try {
-                const { createGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
-                const createResult = await createGenomeViaMarketplace({
-                    payload: {
-                        namespace: args.genomeNamespace,
-                        name: args.genomeName,
-                        version: (genomeRecord.genome?.version ?? 0) + 1,
-                        description: `Evolved from ${args.genomeNamespace}/${args.genomeName}: ${diffSummary}`,
-                        spec: JSON.stringify(mutatedSpec),
-                        isPublic: genomeRecord.genome?.isPublic ?? true,
-                        category: genomeRecord.genome?.category ?? undefined,
-                        tags: genomeRecord.genome?.tags ?? undefined,
-                    },
-                    hubUrl,
-                    hubPublishKey: publishKey,
-                    serverUrl: configuration.serverUrl,
-                    authToken: client.getAuthToken(),
-                });
-
-                if (!createResult.ok) {
-                    return { content: [{ type: 'text', text: `Failed to create evolved genome: ${createResult.status} ${createResult.body}` }], isError: true };
-                }
-
-                let result: { genome?: { id?: string; version?: number } } = {};
-                result = JSON.parse(createResult.body) as typeof result;
-
-                const via = createResult.transport === 'server-proxy' ? ' (via server proxy)' : '';
-                return {
-                    content: [{
-                        type: 'text',
-                        text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${result.genome?.version ?? '?'}${via}. Applied: ${diffSummary}.`,
-                    }],
-                    isError: false,
-                };
-            } catch (error) {
-                return { content: [{ type: 'text', text: `Network error creating evolved genome: ${String(error)}` }], isError: true };
-            }
-        }
-
-        // 6b. Narrative-only path: use incremental diff endpoint (existing behavior)
-        const diffChanges = newNarrativeEntries.map((learning: string) => ({
-            type: 'string' as const,
-            path: 'memory.learnings',
-            op: 'append' as const,
-            content: learning,
-        }));
-
-        const diffDescription = `Evolve: merge ${newNarrativeEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
 
         try {
             const { submitDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
@@ -1754,8 +1928,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 name: args.genomeName,
                 payload: {
                     description: diffDescription,
+                    verdictRefs: args.verdictRefs,
                     changes: diffChanges,
-                    strategy: 'conservative',
+                    strategy: args.strategy ?? 'conservative',
                     authorRole: callerRole,
                     authorSession: client.sessionId,
                 },
@@ -1781,7 +1956,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return {
                 content: [{
                     type: 'text',
-                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Added ${newNarrativeEntries.length} new learnings (total: ${existingLearnings.length + newNarrativeEntries.length}).`,
+                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Submitted ${diffChanges.length} ledger change(s)${newLearningEntries.length > 0 ? `, including ${newLearningEntries.length} new learning append(s)` : ''}.`,
                 }],
                 isError: false,
             };
@@ -2055,10 +2230,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     // ── Version Comparison: compare_genome_versions ───────────────────────
     mcp.registerTool('compare_genome_versions', {
         description: [
-            'Compare two versions of a genome to determine which performs better.',
-            'Fetches feedbackData for both versions and computes score deltas across all dimensions.',
-            'Returns a recommendation: keep_newer, rollback_older, or insufficient_data.',
-            'Use this after evolve_genome or mutate_genome to validate that the new version improves performance.',
+            'Compare two versions of a genome using aggregated feedback plus the canonical diff ledger.',
+            'Returns the recommendation together with the diff-history slice between the two versions.',
+            'Use this after evolve_genome or mutate_genome to validate that the newer version both exists in the ledger and performs better.',
             'Supervisor only.',
         ].join(' '),
         title: 'Compare Genome Versions',
@@ -2100,6 +2274,35 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     isError: false,
                 };
             }
+            if (older.version >= newer.version) {
+                return {
+                    content: [{ type: 'text', text: 'Error: newerVersion must be greater than olderVersion.' }],
+                    isError: true,
+                };
+            }
+
+            const entityMirror = await fetchEntityMirror(`${args.genomeNamespace}/${args.genomeName}`);
+            const ledgerWindow = entityMirror.diffHistory
+                .filter((diff) => diff.version > older.version && diff.version <= newer.version)
+                .sort((a, b) => a.version - b.version);
+            const diffTypeCounts = ledgerWindow.reduce<Record<string, number>>((acc, diff) => {
+                for (const change of diff.changes) {
+                    acc[change.type] = (acc[change.type] ?? 0) + 1;
+                }
+                return acc;
+            }, {});
+            const touchedPaths = Array.from(new Set(
+                ledgerWindow.flatMap((diff) => diff.changes)
+                    .filter((change): change is Exclude<DiffChange, { type: 'narrative' }> => 'path' in change)
+                    .map((change) => change.path)
+            )).sort();
+            const diffLedger = {
+                diffCount: ledgerWindow.length,
+                versionsCovered: ledgerWindow.map((diff) => diff.version),
+                diffTypeCounts,
+                touchedPaths,
+                history: ledgerWindow,
+            };
 
             const olderFeedback = parseFeedbackData(older.feedbackData);
             const newerFeedback = parseFeedbackData(newer.feedbackData);
@@ -2113,6 +2316,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             olderVersion: older.version,
                             newerVersion: newer.version,
                             reason: 'One or both versions have no aggregated feedbackData/evaluations yet.',
+                            diffLedger,
                         }, null, 2),
                     }],
                     isError: false,
@@ -2122,15 +2326,17 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const olderAvg = olderFeedback.avgScore ?? 0;
             const newerAvg = newerFeedback.avgScore ?? 0;
             const avgScoreDelta = Math.round((newerAvg - olderAvg) * 10) / 10;
+            const olderDimensions = (olderFeedback.dimensions ?? {}) as Record<string, number>;
+            const newerDimensions = (newerFeedback.dimensions ?? {}) as Record<string, number>;
 
             const dimensionKeys = Array.from(new Set([
-                ...Object.keys(olderFeedback.dimensions ?? {}),
-                ...Object.keys(newerFeedback.dimensions ?? {}),
+                ...Object.keys(olderDimensions),
+                ...Object.keys(newerDimensions),
             ]));
             const dimensionDeltas = Object.fromEntries(
                 dimensionKeys.map((key) => [
                     key,
-                    Math.round((((newerFeedback.dimensions?.[key] ?? 0) - (olderFeedback.dimensions?.[key] ?? 0)) * 10)) / 10,
+                    Math.round((((newerDimensions[key] ?? 0) - (olderDimensions[key] ?? 0)) * 10)) / 10,
                 ])
             );
 
@@ -2156,6 +2362,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 },
                 avgScoreDelta,
                 dimensionDeltas,
+                diffLedger,
             };
             return {
                 content: [{

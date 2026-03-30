@@ -1,5 +1,6 @@
 import { configuration } from '@/configuration'
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import type { DiffChange } from '@/api/types/genome'
 import { normalizeFeedbackProxyBaseUrl } from './genomeFeedbackSync'
 
 type FetchResponseLike = {
@@ -210,12 +211,8 @@ export async function createGenomeViaMarketplace(args: {
 
 type DiffSubmitPayload = {
     description: string;
-    changes: Array<{
-        type: string;
-        path: string;
-        op: string;
-        content: string;
-    }>;
+    changes: DiffChange[];
+    verdictRefs?: string[];
     strategy?: string;
     authorRole?: string;
     authorSession?: string;
