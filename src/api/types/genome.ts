@@ -857,11 +857,17 @@ export interface A2AProjectionCard {
 // =============================================================================
 
 /**
- * AgentImage — the complete, materialized definition of a single agent.
- * view() result: seed ⊕ all diffs applied.
- * Canonical name for what was previously called GenomeSpec.
+ * AgentSpec — unified-schema-design.md canonical: "AgentSpec = AgentKernel + AgentPayload".
+ * Backward-compatible alias for GenomeSpec (the materialized compatibility projection).
  */
 export type AgentSpec = GenomeSpec;
+
+/**
+ * AgentImage — agent-evolution-theory.md canonical: "AgentImage = seed ⊕ diff₁ ⊕ ... ⊕ diffₙ".
+ * The complete, materialized definition of a single agent (view() result).
+ * Alias for GenomeSpec (compatibility projection); both names are valid.
+ */
+export type AgentImage = GenomeSpec;
 
 /**
  * AgentPlug — an evolution diff applied to an AgentImage to produce the next version.

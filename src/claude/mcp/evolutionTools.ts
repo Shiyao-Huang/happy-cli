@@ -135,9 +135,9 @@ The supervisor will see your request and may: send you guidance, restart your se
 
     // ========== Create Genome Tool (Evolution System, M3) ==========
     mcp.registerTool('create_genome', {
-        description: `Save or update a reusable agent package (genome) in the team evolution store.
-Canonical authoring should be the agent.json shape (kind=aha.agent.v1). Legacy flattened GenomeSpec JSON is still accepted as a compatibility input.
-A genome captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, hooks, skills, env, and inline files.
+        description: `Save or update a reusable agent definition (AgentImage / genome) in the team evolution store.
+Canonical authoring should be the agent.json shape (kind=aha.agent.v1), which produces an AgentImage — the fully materialized agent definition (seed ⊕ diffs). Legacy flattened GenomeSpec JSON is still accepted as a compatibility input.
+An AgentImage captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, hooks, skills, env, and inline files.
 
 ## Kernel fields (travel with the genome and are used by the runtime materializer)
 - \`skills\`: string[] — skill names to link from runtime-lib into the agent's commands directory

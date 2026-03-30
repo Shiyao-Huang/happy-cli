@@ -499,9 +499,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     mcp.registerTool('get_self_view', {
         description: [
             'See yourself: who you are, your context usage, your team, and your performance.',
-            'Combines identity (role, genome), capabilities, behavior config, context window status, team pulse, tasks, and performance into one view.',
-            'Also returns the effective prompt mirror, current materialized spec, diff history, and seed spec for runtime self-verification.',
-            'Builds the self-reference triangle: who am I, what can I do, how am I doing.',
+            'Combines identity (role, AgentImage/genome), capabilities, behavior config, context window status, team pulse, tasks, and performance into one view.',
+            'Also returns the effective prompt mirror, current materialized AgentImage (view), AgentPlug history (view-diff), and seed spec (view-not-diff) for runtime self-verification.',
+            'Builds the self-reference triangle: who am I (AgentImage), what can I do, how am I doing.',
             'Call this at the start of each cycle to orient yourself before taking action.',
             'Available to ALL team members.',
         ].join(' '),
@@ -914,10 +914,10 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     mcp.registerTool('get_genome_spec', {
-        description: 'Inspect a genome spec by ID at runtime. Returns the three canonical views: view (current materialized spec), view-diff (ordered diff history), and view-not-diff (seed/original spec). Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
-        title: 'Get Genome Spec',
+        description: 'Inspect an AgentImage (Entity / genome spec) by ID at runtime. Returns the three canonical views: view (current materialized AgentImage = seed ⊕ all AgentPlugs applied), view-diff (ordered AgentPlug history), and view-not-diff (seed/original spec before any evolution). Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
+        title: 'Get AgentImage Spec',
         inputSchema: {
-            specId: z.string().describe('Genome spec ID to inspect'),
+            specId: z.string().describe('AgentImage spec ID (Entity ID) to inspect'),
         },
     }, async (args) => {
         const callerMetadata = client.getMetadata();
@@ -2876,10 +2876,51 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 };
             });
             const predCount = predictions?.length ?? 0;
+
+            // ── M3 Self-Evolution Loop ──────────────────────────────────────
+            // If calibration is poor (< 60%) after sufficient data (>= 5 predictions),
+            // auto-submit a self-evolve diff to @official/supervisor.
+            let selfEvolveNote = '';
+            try {
+                const updatedState = readSupervisorState(args.teamId);
+                const cal = updatedState.calibration;
+                if (cal && cal.calibrationScore < 60 && cal.totalPredictions >= 5) {
+                    const { submitEntityDiff } = await import('@/claude/utils/entityHub');
+                    const biasTrend = cal.scoreBiasTrend > 0 ? 'overestimates' : 'underestimates';
+                    const biasAbs = Math.abs(cal.scoreBiasTrend).toFixed(1);
+
+                    await submitEntityDiff({
+                        namespace: '@official',
+                        name: 'supervisor',
+                        description: `Self-evolution: calibration ${cal.calibrationScore}% (${cal.correctPredictions}/${cal.totalPredictions}), bias ${biasTrend} by ${biasAbs}`,
+                        changes: [
+                            {
+                                type: 'string' as const,
+                                path: 'memory.learnings',
+                                op: 'append' as const,
+                                content: `Calibration dropped to ${cal.calibrationScore}% after ${cal.totalPredictions} predictions. Bias trend: ${biasTrend} by ${biasAbs}. Reduce confidence on new predictions by 15 points until accuracy recovers above 60%.`,
+                            },
+                            {
+                                type: 'narrative' as const,
+                                content: `Auto-triggered by M3 self-evolution loop in save_supervisor_state. Rolling accuracy: ${cal.rollingAccuracy}%. This diff only affects the next supervisor spawn, not the current session.`,
+                            },
+                        ],
+                        strategy: 'conservative',
+                        authorRole: 'supervisor',
+                        authorSession: args.sessionId,
+                    }).catch((err: unknown) => {
+                        logger.debug(`[save_supervisor_state] Self-evolve diff failed: ${String(err)}`);
+                    });
+                    selfEvolveNote = ` Self-evolution diff submitted (calibration=${cal.calibrationScore}%).`;
+                }
+            } catch (selfEvolveErr) {
+                logger.debug(`[save_supervisor_state] Self-evolution check error: ${String(selfEvolveErr)}`);
+            }
+
             return {
                 content: [{
                     type: 'text',
-                    text: `Supervisor state saved. Next run starts at team=${args.teamLogCursor}, codexHistory=${args.codexHistoryCursor ?? existing.codexHistoryCursor}. Terminated=${args.teamTerminated}. Predictions=${predCount}`
+                    text: `Supervisor state saved. Next run starts at team=${args.teamLogCursor}, codexHistory=${args.codexHistoryCursor ?? existing.codexHistoryCursor}. Terminated=${args.teamTerminated}. Predictions=${predCount}${selfEvolveNote}`
                 }],
                 isError: false,
             };
