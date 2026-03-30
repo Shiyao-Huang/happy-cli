@@ -566,7 +566,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         title: 'Update Agent Model',
         inputSchema: {
             sessionId: z.string().describe('Session ID of the agent to update'),
-            modelId: z.string().describe('New model to use (e.g. claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5)'),
+            modelId: z.string().describe('New model to use (e.g. claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-6)'),
             fallbackModelId: z.string().optional().describe('Fallback model if primary is unavailable'),
             runtimeType: z.enum(['claude', 'codex']).optional().describe('Optional runtime switch. When set, use replace_agent semantics to hot-swap the session onto the requested runtime.'),
         },

@@ -178,7 +178,7 @@ export async function summarizeRetroWithAI(rawText: string): Promise<RetroAiOutp
         const client = new Anthropic({ apiKey });
 
         const response = await client.messages.create({
-            model: 'claude-haiku-4-5',
+            model: 'claude-haiku-4-6',
             max_tokens: 1200,
             messages: [{
                 role: 'user',

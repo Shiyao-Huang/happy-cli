@@ -208,7 +208,7 @@ export function applyMetadataUpdates(existingMetadata: any, updates: AgentUpdate
   if (updates.model !== undefined) {
     if (!isRecognizedModelId(updates.model)) {
       throw new Error(
-        `Unknown model ID: "${updates.model}". Must be a recognized Claude model (e.g. claude-opus-4-5, claude-sonnet-4-5).`
+        `Unknown model ID: "${updates.model}". Must be a recognized Claude model (e.g. claude-opus-4-6, claude-sonnet-4-6).`
       );
     }
     nextMetadata.modelOverride = updates.model;
@@ -267,7 +267,7 @@ ${chalk.bold('Update options:')}
   ${chalk.cyan('--session-tag <tag>')}            Set metadata.sessionTag
   ${chalk.cyan('--summary <text>')}               Set metadata.summary.text
   ${chalk.cyan('--path <cwd>')}                   Set metadata.path
-  ${chalk.cyan('--model <modelId>')}              Override the agent's model (e.g. claude-opus-4-5)
+  ${chalk.cyan('--model <modelId>')}              Override the agent's model (e.g. claude-opus-4-6)
   ${chalk.cyan('--fallback-model <modelId>')}     Override the agent's fallback model
 
 ${chalk.bold('Workflow options:')}

@@ -24,8 +24,8 @@ describe('modelRouter', () => {
     });
 
     it('genome modelId takes highest priority', () => {
-        const result = resolveModel({ executionPlane: 'bypass', genomeModelId: 'claude-haiku-4-5' });
-        expect(result.modelId).toBe('claude-haiku-4-5');
+        const result = resolveModel({ executionPlane: 'bypass', genomeModelId: 'claude-haiku-4-6' });
+        expect(result.modelId).toBe('claude-haiku-4-6');
         expect(result.isSupported).toBe(true);
     });
 

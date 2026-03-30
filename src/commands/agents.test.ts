@@ -5,11 +5,11 @@ import { applyMetadataUpdates } from './agents';
 describe('applyMetadataUpdates model validation', () => {
     it('accepts recognized Claude model overrides', () => {
         expect(applyMetadataUpdates({}, {
-            model: 'claude-opus-4-5',
-            fallbackModel: 'claude-haiku-4-5',
+            model: 'claude-opus-4-6',
+            fallbackModel: 'claude-haiku-4-6',
         })).toMatchObject({
-            modelOverride: 'claude-opus-4-5',
-            fallbackModelOverride: 'claude-haiku-4-5',
+            modelOverride: 'claude-opus-4-6',
+            fallbackModelOverride: 'claude-haiku-4-6',
         });
     });
 

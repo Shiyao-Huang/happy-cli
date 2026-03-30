@@ -36,7 +36,7 @@ export interface TokenUsage {
 /**
  * Pricing table for Anthropic Claude models.
  *
- * Model IDs use the canonical short form (e.g. "claude-sonnet-4-5").
+ * Model IDs use the canonical short form (e.g. "claude-sonnet-4-6").
  * Resolution logic tries exact match first, then prefix match,
  * then falls back to a family-level default.
  */
@@ -54,7 +54,7 @@ export const MODEL_PRICING: Record<string, TokenPricing> = {
         cacheCreationPer1M: 18.75,
         cacheReadPer1M: 1.5,
     },
-    'claude-opus-4-5': {
+    'claude-opus-4-6': {
         inputPer1M: 15,
         outputPer1M: 75,
         cacheCreationPer1M: 18.75,
@@ -74,7 +74,7 @@ export const MODEL_PRICING: Record<string, TokenPricing> = {
         cacheCreationPer1M: 3.75,
         cacheReadPer1M: 0.3,
     },
-    'claude-sonnet-4-5': {
+    'claude-sonnet-4-6': {
         inputPer1M: 3,
         outputPer1M: 15,
         cacheCreationPer1M: 3.75,
@@ -94,7 +94,7 @@ export const MODEL_PRICING: Record<string, TokenPricing> = {
         cacheCreationPer1M: 1,
         cacheReadPer1M: 0.08,
     },
-    'claude-haiku-4-5': {
+    'claude-haiku-4-6': {
         inputPer1M: 0.80,
         outputPer1M: 4,
         cacheCreationPer1M: 1,

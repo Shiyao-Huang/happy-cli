@@ -14,8 +14,8 @@ import type { TokenUsage, CostBreakdown } from './tokenPricing';
 describe('tokenPricing', () => {
     describe('resolvePricing', () => {
         it('returns exact match for known model', () => {
-            const pricing = resolvePricing('claude-sonnet-4-5');
-            expect(pricing).toBe(MODEL_PRICING['claude-sonnet-4-5']);
+            const pricing = resolvePricing('claude-sonnet-4-6');
+            expect(pricing).toBe(MODEL_PRICING['claude-sonnet-4-6']);
         });
 
         it('returns exact match for opus model', () => {
@@ -25,7 +25,7 @@ describe('tokenPricing', () => {
         });
 
         it('returns exact match for haiku model', () => {
-            const pricing = resolvePricing('claude-haiku-4-5');
+            const pricing = resolvePricing('claude-haiku-4-6');
             expect(pricing.inputPer1M).toBe(0.80);
             expect(pricing.outputPer1M).toBe(4);
         });
@@ -63,8 +63,8 @@ describe('tokenPricing', () => {
         });
 
         it('trims whitespace before matching', () => {
-            const pricing = resolvePricing('  claude-sonnet-4-5  ');
-            expect(pricing).toBe(MODEL_PRICING['claude-sonnet-4-5']);
+            const pricing = resolvePricing('  claude-sonnet-4-6  ');
+            expect(pricing).toBe(MODEL_PRICING['claude-sonnet-4-6']);
         });
     });
 
@@ -74,7 +74,7 @@ describe('tokenPricing', () => {
                 input_tokens: 1_000_000,
                 output_tokens: 1_000_000,
             };
-            const cost = calculateCost(usage, 'claude-sonnet-4-5');
+            const cost = calculateCost(usage, 'claude-sonnet-4-6');
             // 1M * $3/1M + 1M * $15/1M = $18
             expect(cost.input).toBe(3);
             expect(cost.output).toBe(15);
@@ -100,7 +100,7 @@ describe('tokenPricing', () => {
                 input_tokens: 2_000_000,
                 output_tokens: 500_000,
             };
-            const cost = calculateCost(usage, 'claude-haiku-4-5');
+            const cost = calculateCost(usage, 'claude-haiku-4-6');
             // 2M * $0.80/1M + 0.5M * $4/1M = $1.60 + $2 = $3.60
             expect(cost.input).toBe(1.6);
             expect(cost.output).toBe(2);
@@ -114,7 +114,7 @@ describe('tokenPricing', () => {
                 cache_creation_input_tokens: 200_000,
                 cache_read_input_tokens: 300_000,
             };
-            const cost = calculateCost(usage, 'claude-sonnet-4-5');
+            const cost = calculateCost(usage, 'claude-sonnet-4-6');
             // input: 0.1M * $3 = $0.30
             // output: 0.05M * $15 = $0.75
             // cache_creation: 0.2M * $3.75 = $0.75
@@ -131,7 +131,7 @@ describe('tokenPricing', () => {
                 input_tokens: 0,
                 output_tokens: 0,
             };
-            const cost = calculateCost(usage, 'claude-sonnet-4-5');
+            const cost = calculateCost(usage, 'claude-sonnet-4-6');
             expect(cost.total).toBe(0);
             expect(cost.input).toBe(0);
             expect(cost.output).toBe(0);
@@ -154,7 +154,7 @@ describe('tokenPricing', () => {
                 input_tokens: 1,
                 output_tokens: 1,
             };
-            const cost = calculateCost(usage, 'claude-sonnet-4-5');
+            const cost = calculateCost(usage, 'claude-sonnet-4-6');
             // 1 / 1M * $3 = $0.000003
             // 1 / 1M * $15 = $0.000015
             expect(cost.input).toBe(0.000003);
@@ -167,7 +167,7 @@ describe('tokenPricing', () => {
                 input_tokens: 100,
                 output_tokens: 200,
             };
-            const cost = calculateCost(usage, 'claude-sonnet-4-5');
+            const cost = calculateCost(usage, 'claude-sonnet-4-6');
             expect(cost).toHaveProperty('total');
             expect(cost).toHaveProperty('input');
             expect(cost).toHaveProperty('output');
