@@ -725,13 +725,13 @@ export function materializeAgentWorkspace(
 // ── Genome bridge ─────────────────────────────────────────────────────────────
 
 /**
- * Build an AgentDockerConfig from a GenomeSpec, then materialize the workspace.
+ * Build an AgentDockerConfig from a GenomeSpec compatibility projection, then materialize the workspace.
  *
  * This is the genome-backed entry point for v1 materializer integration.
- * It bridges the high-level GenomeSpec (fetchGenomeSpec result) into the
- * concrete workspace layout defined by the materializer.
+ * It bridges the high-level GenomeSpec compatibility view (fetchGenomeSpec result)
+ * into the concrete workspace layout defined by the materializer.
  *
- * @param genomeSpec  - The GenomeSpec fetched from genome-hub.
+ * @param genomeSpec  - The GenomeSpec compatibility projection fetched from genome-hub.
  * @param context     - Runtime context (agentId, repoRoot, optional overrides).
  * @returns           - Fully materialized workspace result (directories created, files written).
  */

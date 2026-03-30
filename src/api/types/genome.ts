@@ -1,13 +1,14 @@
 import { z } from 'zod';
 
 /**
- * GenomeSpec — agent 的完整配置 schema。
+ * GenomeSpec — 旧读路径仍在消费的兼容投影视图。
  *
  * 类比 Docker：
  *   Genome（服务端记录） = Docker image
  *   运行中的 session     = Docker container
  *   /v1/genomes (public) = Docker Hub
- *   GenomeSpec           = Dockerfile（描述 image 的配置）
+ *   canonical authoring  = agent.json + entity.diff.jsonl
+ *   GenomeSpec           = 兼容层读取到的扁平化 projection
  *
  * 字段分层：
  *   Tier 0  身份（genome 必须有的最小信息）
@@ -19,8 +20,10 @@ import { z } from 'zod';
  *   Tier 6  团队路由（给 org-manager 按 genome 组团）
  *   meta    任意 key-value 扩展逃生口
  *
- * 只有 Tier 0 字段是语义上必要的，其余全部可选。
- * 当字段缺失时 CLI 回退到编译期 role 默认值，保证向后兼容。
+ * 说明：
+ * - 真正的 authoring truth 不在这里，而在 canonical agent.json / diff ledger。
+ * - 这里保留，是为了让尚未迁移完的 CLI/runtime/marketplace 读路径继续工作。
+ * - 新写路径应优先产出 canonical agent.json，再按需投影到 GenomeSpec。
  */
 export interface GenomeSpec {
 
@@ -545,7 +548,7 @@ export interface CorpsTaskPolicy {
     forbidPeerToPeerRouting?: boolean;
 }
 
-/** 服务端返回的完整 Genome 记录 */
+/** 服务端返回的完整 Genome 记录（其中 spec 仍是兼容层 JSON projection） */
 export interface Genome {
     id: string;
     accountId: string;
@@ -564,7 +567,7 @@ export interface Genome {
     updatedAt: string;
 }
 
-/** 解析 Genome.spec 字段为 GenomeSpec 对象，非 @official namespace 强制降级危险字段 */
+/** 解析 Genome.spec 字段为 GenomeSpec 兼容投影对象，非 @official namespace 强制降级危险字段 */
 export function parseGenomeSpec(genome: Genome): GenomeSpec {
     const raw = JSON.parse(genome.spec);
 

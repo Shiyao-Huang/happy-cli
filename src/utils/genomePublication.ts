@@ -35,6 +35,8 @@ const TEAM_PROTOCOL_RULES = [
 const TEAM_RESPONSIBILITY_RULE = 'Track assigned work on the Kanban board and keep task status current.';
 const TEAM_CAPABILITIES = ['kanban-task-lifecycle', 'team-collaboration'];
 
+type JsonRecord = Record<string, unknown>;
+
 function uniqueStrings(values: unknown[]): string[] {
     const seen = new Set<string>();
     const result: string[] = [];
@@ -48,6 +50,92 @@ function uniqueStrings(values: unknown[]): string[] {
     }
 
     return result;
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+    return Array.isArray(value) ? uniqueStrings(value) : undefined;
+}
+
+function asInteger(value: unknown): number | undefined {
+    return Number.isInteger(value) ? value as number : undefined;
+}
+
+function isCanonicalAgentJson(value: JsonRecord): boolean {
+    return value.kind === 'aha.agent.v1' && typeof value.name === 'string' && typeof value.runtime === 'string';
+}
+
+function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & JsonRecord {
+    const prompt = isRecord(value.prompt) ? value.prompt : undefined;
+    const tools = isRecord(value.tools) ? value.tools : undefined;
+    const permissions = isRecord(value.permissions) ? value.permissions : undefined;
+    const context = isRecord(value.context) ? value.context : undefined;
+    const behavior = isRecord(context?.behavior) ? context.behavior : undefined;
+    const messaging = isRecord(context?.messaging) ? context.messaging : undefined;
+    const routing = isRecord(value.routing) ? value.routing : undefined;
+    const models = isRecord(routing?.models) ? routing.models : undefined;
+    const env = isRecord(value.env) ? value.env : undefined;
+    const evaluation = isRecord(value.evaluation) ? value.evaluation : undefined;
+    const evolution = isRecord(value.evolution) ? value.evolution : undefined;
+    const market = isRecord(value.market) ? value.market : undefined;
+
+    const projected: GenomeSpec & JsonRecord = {
+        ...value,
+        displayName: asString(value.displayName) ?? asString(value.name),
+        description: asString(value.description),
+        baseRoleId: asString(value.baseRoleId),
+        namespace: asString(value.namespace) ?? asString(market?.namespace),
+        tags: asStringArray(value.tags) ?? asStringArray(market?.tags),
+        category: asString(value.category) ?? asString(market?.category),
+        systemPrompt: asString(value.systemPrompt) ?? asString(prompt?.system),
+        systemPromptSuffix: asString(value.systemPromptSuffix) ?? asString(prompt?.suffix),
+        modelId: asString(value.modelId) ?? asString(models?.default),
+        allowedTools: asStringArray(value.allowedTools) ?? asStringArray(tools?.allowed),
+        disallowedTools: asStringArray(value.disallowedTools) ?? asStringArray(tools?.disallowed),
+        mcpServers: asStringArray(value.mcpServers) ?? asStringArray(tools?.mcpServers),
+        permissionMode: (asString(value.permissionMode) ?? asString(permissions?.permissionMode)) as GenomeSpec['permissionMode'],
+        accessLevel: (asString(value.accessLevel) ?? asString(permissions?.accessLevel)) as GenomeSpec['accessLevel'],
+        executionPlane: (asString(value.executionPlane) ?? asString(permissions?.executionPlane)) as GenomeSpec['executionPlane'],
+        maxTurns: asInteger(value.maxTurns) ?? asInteger(permissions?.maxTurns),
+        teamRole: asString(value.teamRole) ?? asString(context?.teamRole),
+        capabilities: asStringArray(value.capabilities) ?? asStringArray(context?.capabilities),
+        authorities: (asStringArray(value.authorities) ?? asStringArray(context?.authorities)) as GenomeSpec['authorities'],
+        messaging: isRecord(value.messaging) ? value.messaging as GenomeSpec['messaging'] : (messaging as GenomeSpec['messaging'] | undefined),
+        behavior: isRecord(value.behavior) ? value.behavior as GenomeSpec['behavior'] : (behavior as GenomeSpec['behavior'] | undefined),
+        runtimeType: (asString(value.runtimeType) ?? asString(value.runtime)) as GenomeSpec['runtimeType'],
+        provenance: isRecord(value.provenance)
+            ? value.provenance as GenomeSpec['provenance']
+            : {
+                parentId: asString(evolution?.parentRef),
+                mutationNote: asString(evolution?.mutationNote),
+                origin: asString(evolution?.origin) as NonNullable<GenomeSpec['provenance']>['origin'],
+            },
+        evalCriteria: asStringArray(value.evalCriteria) ?? asStringArray(evaluation?.criteria),
+        lifecycle: (asString(value.lifecycle) ?? asString(market?.lifecycle)) as GenomeSpec['lifecycle'],
+        skills: asStringArray(value.skills) ?? asStringArray(tools?.skills),
+    };
+
+    if (env) {
+        projected.env = 'requiredEnv' in env || 'optionalEnv' in env
+            ? env
+            : {
+                requiredEnv: asStringArray(env.required),
+                optionalEnv: asStringArray(env.optional),
+            };
+    }
+
+    if (!projected.provenance || (!projected.provenance.parentId && !projected.provenance.mutationNote && !projected.provenance.origin)) {
+        delete projected.provenance;
+    }
+
+    return projected;
 }
 
 type SpawnCapabilitySpec = Pick<GenomeSpec, 'authorities' | 'behavior'> | null | undefined;
@@ -79,9 +167,16 @@ export function normalizeGenomeSpecForPublication(input: {
     mutationNote?: string;
     origin?: 'original' | 'forked' | 'mutated';
 }): { spec: GenomeSpec & Record<string, unknown>; specJson: string; warnings: string[] } {
-    const specObj = JSON.parse(input.specJson) as GenomeSpec & Record<string, unknown>;
+    const parsed = JSON.parse(input.specJson) as GenomeSpec & JsonRecord;
+    const specObj = isRecord(parsed) && isCanonicalAgentJson(parsed)
+        ? projectCanonicalAgentJsonToGenomeSpec(parsed)
+        : parsed;
     const warnings: string[] = [];
     const isOfficial = input.namespace === '@official';
+
+    if (isRecord(parsed) && isCanonicalAgentJson(parsed)) {
+        warnings.push('Canonical agent.json authoring detected: publishing a flattened GenomeSpec compatibility projection for legacy readers.');
+    }
 
     if (!isOfficial) {
         delete specObj.hooks;

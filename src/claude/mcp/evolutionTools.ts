@@ -16,7 +16,8 @@
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
  * - request_help is available to ALL agents and directly calls triggerHelpLane
- * - create_genome validates and sanitizes spec before delegating to api.createGenome
+ * - create_genome accepts canonical agent.json authoring or legacy GenomeSpec input,
+ *   then sanitizes and projects to the compatibility view before delegating to api.createGenome
  * - create_corps publishes a CorpsSpec team template directly to genome-hub /corps
  * - update_genome patches marketing metadata (description/tags/category) for an owned genome
  * - Non-@official genomes have hooks/permissionMode/executionPlane stripped at write time
@@ -134,9 +135,9 @@ The supervisor will see your request and may: send you guidance, restart your se
 
     // ========== Create Genome Tool (Evolution System, M3) ==========
     mcp.registerTool('create_genome', {
-        description: `Save or update a reusable agent specification (genome) in the team evolution store.
-A genome captures everything needed to reproduce a high-performing agent: system prompt,
-tool access list, model, permission mode, and any domain knowledge to seed the agent's context.
+        description: `Save or update a reusable agent package (genome) in the team evolution store.
+Canonical authoring should be the agent.json shape (kind=aha.agent.v1). Legacy flattened GenomeSpec JSON is still accepted as a compatibility input.
+A genome captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, and any domain knowledge to seed the agent's context.
 
 IMPORTANT: Every genome MUST include team collaboration capabilities.
 The system auto-injects core team tools (kanban lifecycle, messaging, help) into allowedTools,
@@ -165,7 +166,7 @@ Namespace conventions:
         title: 'Create / Update Genome',
         inputSchema: {
             name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
-            spec: z.string().describe('JSON-serialized GenomeSpec: { systemPrompt, tools?, modelId?, permissionMode?, seedContext? }'),
+            spec: z.string().describe('JSON-serialized canonical agent.json (preferred) or legacy GenomeSpec compatibility JSON. The server stores a compatibility projection today, so canonical agent.json will be flattened automatically for legacy consumers.'),
             description: z.string().optional().describe('Longer explanation of what this genome is optimized for'),
             teamId: z.string().optional().describe('Scope the genome to a specific team (null = personal/public)'),
             isPublic: z.boolean().default(false).describe('Whether other users can discover and use this genome'),
