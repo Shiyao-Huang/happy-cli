@@ -1562,17 +1562,17 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
     mcp.registerTool('update_genome_feedback', {
         description: [
-            'Push aggregate performance feedback for a genome role to the public marketplace.',
+            'Push aggregate performance feedback for an AgentImage (agent docker / Entity) role to the public marketplace.',
             'Reads local scores for the specified role, computes aggregate statistics,',
             'strips all private data (session IDs, team IDs, file paths, evidence),',
             'and uploads only anonymized behavioral patterns and aggregate scores.',
-            'Supervisor only. Can run after each scoring cycle to sync the latest aggregate.',
+            'Supervisor only. Can run after each scoring cycle to sync the latest aggregate to the AgentImage marketplace entry.',
         ].join(' '),
-        title: 'Update Genome Feedback',
+        title: 'Update Agent Docker Feedback',
         inputSchema: {
-            genomeNamespace: z.string().optional().describe("Genome namespace, e.g. '@official'. Optional when genomeId is provided."),
-            genomeName: z.string().optional().describe("Genome name, e.g. 'implementer'. Optional when genomeId is provided."),
-            genomeId: z.string().optional().describe('Genome ID (preferred over namespace+name). When provided, the tool auto-resolves namespace/name from genome-hub.'),
+            genomeNamespace: z.string().optional().describe("AgentImage namespace, e.g. '@official'. Optional when genomeId is provided."),
+            genomeName: z.string().optional().describe("AgentImage name, e.g. 'implementer'. Optional when genomeId is provided."),
+            genomeId: z.string().optional().describe('AgentImage ID (preferred over namespace+name). When provided, the tool auto-resolves namespace/name from genome-hub.'),
             role: z.string().describe('Role label used only for reporting text. It is NOT a fallback identity key.'),
             dryRun: z.boolean().optional().describe('If true, show what would be sent without uploading'),
         },
@@ -1764,13 +1764,14 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
     mcp.registerTool('evolve_genome', {
         description: [
-            'Submit a canonical diff to evolve a genome/entity to the next version.',
-            'The preferred input is a full diff object: description + verdictRefs + changes[].',
-            'changes[] supports heterogeneous kv / string / narrative diff entries and is written to the diff ledger directly.',
+            'Apply an AgentPlug (Plug) to an AgentImage (agent docker / Entity) → produces the next AgentImage version.',
+            'Implements: Image ⊕ Plug → next Image, where view(latest) = seed ⊕ diff₁ ⊕ ... ⊕ diffₙ.',
+            'The preferred input is a full Plug object: description + verdictRefs + changes[].',
+            'changes[] supports heterogeneous kv / string / narrative diff entries written to the diff ledger.',
             'Legacy newLearnings are converted into string-append changes on memory.learnings.',
             'Requires feedbackData.avgScore >= minPromoteScore (default 60). Supervisor only.',
         ].join(' '),
-        title: 'Evolve Genome',
+        title: 'Evolve Agent Docker (Apply Plug → next Image)',
         inputSchema: {
             genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
             genomeName: z.string().describe("Genome name, e.g. 'implementer'."),
@@ -2230,12 +2231,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     // ── Version Comparison: compare_genome_versions ───────────────────────
     mcp.registerTool('compare_genome_versions', {
         description: [
-            'Compare two versions of a genome using aggregated feedback plus the canonical diff ledger.',
-            'Returns the recommendation together with the diff-history slice between the two versions.',
-            'Use this after evolve_genome or mutate_genome to validate that the newer version both exists in the ledger and performs better.',
+            'Compare two AgentImage (agent docker) versions using aggregated feedback plus the canonical Plug (diff) ledger.',
+            'Returns the recommendation together with the diff-history slice (Plug chain) between the two versions.',
+            'Use this after evolve_genome or mutate_genome to validate that the newer AgentImage both exists in the ledger and performs better.',
             'Supervisor only.',
         ].join(' '),
-        title: 'Compare Genome Versions',
+        title: 'Compare Agent Docker Versions (Image diff ledger)',
         inputSchema: {
             genomeNamespace: z.string().describe("Genome namespace, e.g. '@official'."),
             genomeName: z.string().describe("Genome name, e.g. 'implementer'."),

@@ -57,7 +57,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
 
     // List Available Agents — browse genome marketplace before create_agent
     mcp.registerTool('list_available_agents', {
-        description: `Browse the genome marketplace. Returns a compact directory of all available agents sorted by rating. Use like \`ls\` — scan the list, then use the id in create_agent to spawn one. Call without arguments to get the full catalog.`,
+        description: `Browse the agent docker marketplace (AgentImage registry). Returns a compact directory of all available AgentImages sorted by rating. Use like \`ls\` — scan the list, then use the id in create_agent to spawn one. Call without arguments to get the full catalog.`,
         title: 'List Available Agents',
         inputSchema: {
             query: z.string().optional().describe('Optional search query, e.g. a role, skill, or tag'),
@@ -73,7 +73,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
             : { effectiveGenome: genomeSpecRef?.current ?? null };
         const allowed = canSpawnAgents(role, effectiveGenome);
         if (!allowed) {
-            return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent marketplace.' }], isError: true };
+            return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent docker marketplace.' }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;

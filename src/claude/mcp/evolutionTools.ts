@@ -276,20 +276,21 @@ Namespace conventions:
     });
 
     mcp.registerTool('create_corps', {
-        description: `Publish a CorpsSpec team template directly to the marketplace.
+        description: `Publish a LegionImage (legion docker / CorpsSpec team template) directly to the marketplace.
 
 Use this for 3/5/7-person team templates and other reusable roster presets.
+A LegionImage = AgentImage₁@v + AgentImage₂@v + ... + LegionLayer (bootContext + taskPolicy).
 This routes to genome-hub \`POST /corps\`, which is the public marketplace source of truth
-for team templates. Unlike \`create_genome\`, this is for \`CorpsSpec\`, not \`GenomeSpec\`.
+for team templates. Unlike \`create_genome\` (agent docker / AgentImage), this is for legion docker / LegionImage.
 
 Best practice:
-- publish member genomes first
-- then publish the corps template that references them
+- publish member agent dockers (AgentImages) first via create_genome
+- then publish the legion docker (LegionImage) that references them
 - keep team execution task-driven via bootContext.taskPolicy`,
-        title: 'Create / Update Corps Template',
+        title: 'Create / Update Legion Docker (Corps Template)',
         inputSchema: {
             name: z.string().describe('Template name, e.g. "gstack-squad"'),
-            spec: z.string().describe('JSON-serialized CorpsSpec'),
+            spec: z.string().describe('JSON-serialized LegionImage (CorpsSpec) — the legion docker package'),
             description: z.string().optional().describe('Optional marketplace description override'),
             namespace: z.string().optional().describe('Namespace scope, e.g. "@official", "@acme", or omit for @public'),
             version: z.number().int().min(1).optional().describe('Template version override; defaults to the spec version or 1'),
@@ -373,15 +374,15 @@ Best practice:
 
     mcp.registerTool('update_genome', {
         description: [
-            'Update the marketing metadata of an existing genome you own: description, tags, category, or isPublic.',
-            'Does NOT change the genome spec or create a new version.',
-            'Use this to improve how your genome appears in the marketplace without bumping its version.',
+            'Update the marketing metadata of an existing AgentImage (agent docker / Entity) you own: description, tags, category, or isPublic.',
+            'Does NOT change the AgentImage spec or produce a new version — use evolve_genome (Plug) to evolve the spec.',
+            'Use this to improve how your agent docker appears in the marketplace without bumping its version.',
             'Requires genomeId (get it from get_self_view specId or from the create_genome response).',
-            'Cannot update @official genomes unless you own them.',
+            'Cannot update @official AgentImages unless you own them.',
         ].join(' '),
-        title: 'Update Genome',
+        title: 'Update Agent Docker Metadata',
         inputSchema: {
-            genomeId: z.string().describe('Immutable genome ID to update (from get_self_view specId or create_genome response)'),
+            genomeId: z.string().describe('Immutable AgentImage ID to update (from get_self_view specId or create_genome response)'),
             description: z.string().nullable().optional().describe('New marketing description for the genome'),
             tags: z.string().nullable().optional().describe('Comma-separated tags, e.g. "fullstack,typescript,agent"'),
             category: z.string().nullable().optional().describe('Category, e.g. "implementation", "coordination", "review"'),
