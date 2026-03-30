@@ -178,6 +178,21 @@ export function normalizeGenomeSpecForPublication(input: {
         warnings.push('Canonical agent.json authoring detected: publishing a flattened GenomeSpec compatibility projection for legacy readers.');
     }
 
+    if (Array.isArray((specObj as JsonRecord).tools)) {
+        const legacyTools = uniqueStrings((specObj as JsonRecord).tools as unknown[]);
+        specObj.allowedTools = uniqueStrings([
+            ...(Array.isArray(specObj.allowedTools) ? specObj.allowedTools : []),
+            ...legacyTools,
+        ]);
+        delete (specObj as JsonRecord).tools;
+        warnings.push('Legacy tools[] migrated to allowedTools for compatibility.');
+    }
+
+    if ('seedContext' in (specObj as JsonRecord)) {
+        delete (specObj as JsonRecord).seedContext;
+        warnings.push('Legacy seedContext is deprecated and has been removed from the published compatibility projection.');
+    }
+
     if (!isOfficial) {
         delete specObj.hooks;
 

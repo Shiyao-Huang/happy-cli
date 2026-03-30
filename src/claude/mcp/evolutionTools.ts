@@ -166,7 +166,13 @@ Namespace conventions:
         title: 'Create / Update Genome',
         inputSchema: {
             name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
-            spec: z.string().describe('JSON-serialized canonical agent.json (preferred) or legacy GenomeSpec compatibility JSON. The server stores a compatibility projection today, so canonical agent.json will be flattened automatically for legacy consumers.'),
+            spec: z.string().describe(
+                'JSON-serialized canonical agent.json (preferred) or legacy GenomeSpec compatibility JSON. ' +
+                'Canonical agent.json may include prompt/tools/permissions/context/env/workspace/evaluation/evolution/market/package blocks. ' +
+                'Legacy GenomeSpec inputs may include displayName/baseRoleId/systemPrompt/systemPromptSuffix/responsibilities/protocol/messaging/behavior/memory/' +
+                'modelId/fallbackModelId/allowedTools/disallowedTools/mcpServers/hooks/skills/evalCriteria/runtimeType/provenance/lifecycle/files. ' +
+                'Legacy shorthand tools[] is migrated to allowedTools; deprecated seedContext is stripped from the published compatibility projection.'
+            ),
             description: z.string().optional().describe('Longer explanation of what this genome is optimized for'),
             teamId: z.string().optional().describe('Scope the genome to a specific team (null = personal/public)'),
             isPublic: z.boolean().default(false).describe('Whether other users can discover and use this genome'),

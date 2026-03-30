@@ -159,6 +159,29 @@ describe('normalizeGenomeSpecForPublication', () => {
         expect(result.spec.accessLevel).toBeUndefined();
     });
 
+    it('migrates legacy tools[] into allowedTools and removes seedContext', () => {
+        const result = normalizeGenomeSpecForPublication({
+            namespace: '@public',
+            specJson: JSON.stringify({
+                tools: ['Read', 'list_tasks', 'Read'],
+                seedContext: ['legacy note'],
+            }),
+        });
+
+        expect(result.spec.allowedTools).toEqual(expect.arrayContaining([
+            'Read',
+            'list_tasks',
+            'send_team_message',
+            'request_help',
+        ]));
+        expect((result.spec as any).tools).toBeUndefined();
+        expect((result.spec as any).seedContext).toBeUndefined();
+        expect(result.warnings).toEqual(expect.arrayContaining([
+            expect.stringContaining('Legacy tools[] migrated'),
+            expect.stringContaining('seedContext is deprecated'),
+        ]));
+    });
+
     it('injects create_agent tooling for spawn-capable genomes with explicit allowlists', () => {
         const result = normalizeGenomeSpecForPublication({
             namespace: '@public',
