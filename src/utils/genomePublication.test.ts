@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { getInjectedAllowedToolsForGenome, normalizeGenomeSpecForPublication } from './genomePublication';
 
@@ -261,5 +264,74 @@ describe('normalizeGenomeSpecForPublication', () => {
         expect(result.spec.provenance).toEqual({
             parentId: 'parent-1',
         });
+    });
+
+    it('auto-inlines skill content from runtime-lib into files when skill file exists', () => {
+        const libRoot = mkdtempSync(join(tmpdir(), 'aha-test-'));
+        try {
+            const skillDir = join(libRoot, 'skills', 'context-mirror');
+            mkdirSync(skillDir, { recursive: true });
+            writeFileSync(join(skillDir, 'SKILL.md'), '# Context Mirror\nDo the mirror thing.');
+
+            const result = normalizeGenomeSpecForPublication({
+                namespace: '@public',
+                runtimeLibRoot: libRoot,
+                specJson: JSON.stringify({
+                    allowedTools: ['Read'],
+                    skills: ['context-mirror'],
+                }),
+            });
+
+            expect(result.spec.files).toEqual({
+                '.claude/commands/context-mirror/SKILL.md': '# Context Mirror\nDo the mirror thing.',
+            });
+            expect(result.warnings).not.toEqual(expect.arrayContaining([expect.stringContaining('context-mirror')]));
+        } finally {
+            rmSync(libRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('emits a warning and omits the file when skill is not found in runtime-lib', () => {
+        const libRoot = mkdtempSync(join(tmpdir(), 'aha-test-'));
+        try {
+            const result = normalizeGenomeSpecForPublication({
+                namespace: '@public',
+                runtimeLibRoot: libRoot,
+                specJson: JSON.stringify({
+                    allowedTools: ['Read'],
+                    skills: ['nonexistent-skill'],
+                }),
+            });
+
+            expect(result.spec.files).toBeUndefined();
+            expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('nonexistent-skill')]));
+        } finally {
+            rmSync(libRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('does not overwrite user-provided inline skill content in files', () => {
+        const libRoot = mkdtempSync(join(tmpdir(), 'aha-test-'));
+        try {
+            const skillDir = join(libRoot, 'skills', 'commit');
+            mkdirSync(skillDir, { recursive: true });
+            writeFileSync(join(skillDir, 'SKILL.md'), '# Commit from runtime-lib');
+
+            const result = normalizeGenomeSpecForPublication({
+                namespace: '@public',
+                runtimeLibRoot: libRoot,
+                specJson: JSON.stringify({
+                    allowedTools: ['Read'],
+                    skills: ['commit'],
+                    files: {
+                        '.claude/commands/commit/SKILL.md': '# Custom commit skill',
+                    },
+                }),
+            });
+
+            expect(result.spec.files?.['.claude/commands/commit/SKILL.md']).toBe('# Custom commit skill');
+        } finally {
+            rmSync(libRoot, { recursive: true, force: true });
+        }
     });
 });

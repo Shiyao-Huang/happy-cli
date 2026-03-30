@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolveAhaHomeDir } from '@/configurationResolver';
 import type { GenomeSpec } from '@/api/types/genome';
 
 export const CORE_TEAM_TOOLS = [
@@ -168,6 +171,12 @@ export function normalizeGenomeSpecForPublication(input: {
     parentId?: string;
     mutationNote?: string;
     origin?: 'original' | 'forked' | 'mutated';
+    /**
+     * Root of the local runtime-lib directory used to auto-inline skill content.
+     * Defaults to `{AHA_HOME_DIR}/runtime-lib`.
+     * Pass `null` to disable skill auto-inlining entirely.
+     */
+    runtimeLibRoot?: string | null;
 }): { spec: GenomeSpec & Record<string, unknown>; specJson: string; warnings: string[] } {
     const parsed = JSON.parse(input.specJson) as GenomeSpec & JsonRecord;
     const specObj = isRecord(parsed) && isCanonicalAgentJson(parsed)
@@ -279,6 +288,36 @@ export function normalizeGenomeSpecForPublication(input: {
             }
         }
         specObj.provenance = nextProvenance;
+    }
+
+    // Auto-inline skill content from runtime-lib so the genome is self-contained
+    // when published to the marketplace (no runtime-lib dependency on target machine).
+    if (input.runtimeLibRoot !== null && Array.isArray(specObj.skills) && specObj.skills.length > 0) {
+        const libRoot = input.runtimeLibRoot ?? join(resolveAhaHomeDir(), 'runtime-lib');
+        const existingFiles: Record<string, string> = isRecord(specObj.files) ? specObj.files as Record<string, string> : {};
+        const inlinedFiles: Record<string, string> = { ...existingFiles };
+
+        for (const skill of specObj.skills) {
+            if (typeof skill !== 'string') continue;
+            const fileKey = `.claude/commands/${skill}/SKILL.md`;
+            if (inlinedFiles[fileKey] !== undefined) {
+                // User provided explicit inline content — never overwrite.
+                continue;
+            }
+            const skillPath = join(libRoot, 'skills', skill, 'SKILL.md');
+            if (existsSync(skillPath)) {
+                inlinedFiles[fileKey] = readFileSync(skillPath, 'utf-8');
+            } else {
+                warnings.push(
+                    `Skill "${skill}" has no inline content and was not found in runtime-lib (${skillPath}). ` +
+                    `Add it to spec.files['.claude/commands/${skill}/SKILL.md'] for cross-machine portability.`,
+                );
+            }
+        }
+
+        if (Object.keys(inlinedFiles).length > 0) {
+            specObj.files = inlinedFiles;
+        }
     }
 
     return {
