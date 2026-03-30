@@ -668,10 +668,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
             // Build injected prompt so the agent can verify what was actually injected
             let injectedPrompt: string | null = null;
-            try {
-                const { buildGenomeInjection } = await import('@/claude/utils/buildGenomeInjection');
-                injectedPrompt = buildGenomeInjection(spec);
-            } catch { /* non-fatal */ }
+            const { buildGenomeInjection } = await import('@/claude/utils/buildGenomeInjection');
+            injectedPrompt = buildGenomeInjection(spec);
 
             return {
                 content: [{
@@ -1455,12 +1453,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     }
 
     /**
-     * Apply a string diff (append or replace) to a spec field by dotted path.
+     * Apply a string diff (append, replace, or remove) to a spec field by dotted path.
      */
     function applyStringDiff(
         spec: Record<string, unknown>,
         path: string,
-        op: 'append' | 'replace',
+        op: 'append' | 'replace' | 'remove',
         content: string,
     ): Record<string, unknown> {
         const segments = path.split('.');
@@ -1484,7 +1482,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const current = parentObj[field];
         let newValue: unknown;
 
-        if (Array.isArray(current)) {
+        if (op === 'remove') {
+            if (Array.isArray(current)) {
+                newValue = current.filter((item) => item !== content);
+            } else if (typeof current === 'string') {
+                newValue = current.replace(content, '').trim();
+            } else {
+                newValue = undefined;
+            }
+        } else if (Array.isArray(current)) {
             newValue = op === 'append' ? [...current, content] : [content];
         } else if (typeof current === 'string' || current === undefined) {
             newValue = op === 'append' ? ((current ?? '') + '\n' + content).trimStart() : content;
@@ -1532,7 +1538,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 z.object({
                     type: z.literal('string'),
                     path: z.string().describe("Dotted field path for a text/array field, e.g. 'systemPromptSuffix'."),
-                    op: z.enum(['append', 'replace']).describe('Whether to append to or replace the field.'),
+                    op: z.enum(['append', 'replace', 'remove']).describe('Whether to append to, replace, or remove from the field.'),
                     content: z.string().describe('Text content to apply.'),
                 }),
                 z.object({
@@ -1612,7 +1618,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         // 3. Separate diff types
         const narrativeEntries: string[] = [];
         const kvDiffs: Array<{ path: string; value: unknown }> = [];
-        const stringDiffs: Array<{ path: string; op: 'append' | 'replace'; content: string }> = [];
+        const stringDiffs: Array<{ path: string; op: 'append' | 'replace' | 'remove'; content: string }> = [];
 
         if (hasDiffs) {
             for (const diff of args.diffs!) {
@@ -1716,7 +1722,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 }
 
                 let result: { genome?: { id?: string; version?: number } } = {};
-                try { result = JSON.parse(createResult.body) as typeof result; } catch { /* best-effort */ }
+                result = JSON.parse(createResult.body) as typeof result;
 
                 const via = createResult.transport === 'server-proxy' ? ' (via server proxy)' : '';
                 return {
