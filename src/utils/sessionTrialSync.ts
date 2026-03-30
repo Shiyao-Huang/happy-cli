@@ -51,7 +51,7 @@ export function buildSessionTrialLogRefs(mapping: Pick<SessionGenomeMapping, 'se
     return JSON.stringify(refs);
 }
 
-async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit): Promise<T | null> {
+async function fetchJson<T>(input: string | URL, init: RequestInit): Promise<T | null> {
     try {
         const res = await fetch(input, {
             ...init,
