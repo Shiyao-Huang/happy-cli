@@ -936,6 +936,23 @@ export class ApiClient {
     }
   }
 
+  async getSessionMessages(sessionId: string, params?: { limit?: number; before?: string }): Promise<{ messages: any[] }> {
+    try {
+      const response = await axios.get(
+        `${configuration.serverUrl}/v1/sessions/${sessionId}/messages`,
+        {
+          params: { limit: params?.limit, before: params?.before },
+          headers: { 'Authorization': `Bearer ${this.credential.token}` },
+          timeout: 10000
+        }
+      );
+      return { messages: response.data?.messages ?? [] };
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to fetch session messages:`, error);
+      throw new Error(`Failed to fetch session messages: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   // KV Store Methods
 
   async kvGet(key: string): Promise<{ key: string, value: string, version: number } | null> {

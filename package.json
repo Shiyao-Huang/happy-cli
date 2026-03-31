@@ -37,7 +37,11 @@
     "aha-v12": "./bin/aha-v12.mjs",
     "aha-v12-mcp": "./bin/aha-v12-mcp.mjs",
     "kanban-v12": "./bin/aha-v12.mjs",
-    "kanban-v12-mcp": "./bin/aha-v12-mcp.mjs"
+    "kanban-v12-mcp": "./bin/aha-v12-mcp.mjs",
+    "aha-v13": "./bin/aha-v13.mjs",
+    "aha-v13-mcp": "./bin/aha-v13-mcp.mjs",
+    "kanban-v13": "./bin/aha-v13.mjs",
+    "kanban-v13-mcp": "./bin/aha-v13-mcp.mjs"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",

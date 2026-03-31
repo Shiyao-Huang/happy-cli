@@ -204,7 +204,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(chalk.bold('\n📋 Your restore key (save this!):'));
     console.log(chalk.cyan(formatSecretKeyForBackup(result.secret)));
     console.log(chalk.gray('\nUse this to link other devices:'));
-    console.log(chalk.gray(`  npx aha-v12 --restore-key ${formatSecretKeyForBackup(result.secret)}`));
+    console.log(chalk.gray(`  npx aha-v13 --restore-key ${formatSecretKeyForBackup(result.secret)}`));
 
     try { await stopDaemon(); } catch { }
     try {

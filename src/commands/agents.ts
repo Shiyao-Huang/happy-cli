@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { ApiClient } from '@/api/api';
+import { decrypt, decodeBase64 } from '@/api/encryption';
 import type { AgentImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
@@ -426,6 +427,25 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         });
         break;
       }
+      case 'messages': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha agents messages <sessionId> [--limit N]');
+        }
+        const limit = parseInt(getOption(args, 'limit') || '20', 10);
+        await showAgentMessages(api, positional[1], { limit: isFinite(limit) && limit > 0 ? limit : 20, asJson, verbose });
+        break;
+      }
+      case 'send': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha agents send <sessionId> "<message>"');
+        }
+        const content = positional.slice(2).join(' ');
+        if (!content) {
+          throw new Error('Message content is required');
+        }
+        await sendAgentMessage(positional[1], content, asJson);
+        break;
+      }
       default:
         throw new Error(`Unknown agents command: ${subcommand}`);
     }
@@ -434,6 +454,120 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
     console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
   }
+}
+
+// ─── agents messages ──────────────────────────────────────────────────────────
+
+function extractTextFromContent(msgContent: any, fallback: any): string {
+  if (typeof msgContent === 'string') return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent.map((c: any) => {
+      if (typeof c === 'string') return c;
+      if (c?.type === 'text') return c.text ?? '';
+      if (c?.type === 'tool_use') return `[tool:${c.name}(${JSON.stringify(c.input ?? {}).slice(0, 60)})]`;
+      if (c?.type === 'tool_result') return `[→${JSON.stringify(c.content ?? '').slice(0, 80)}]`;
+      if (c?.type === 'thinking') return `[think:${(c.thinking ?? '').slice(0, 50)}…]`;
+      return JSON.stringify(c).slice(0, 60);
+    }).filter(Boolean).join(' ');
+  }
+  if (msgContent && typeof msgContent === 'object') {
+    // Might be another nested JSONL entry
+    return extractTextFromContent(msgContent?.message?.content ?? msgContent?.content, null) || JSON.stringify(msgContent).slice(0, 120);
+  }
+  return fallback ? JSON.stringify(fallback).slice(0, 120) : '';
+}
+
+async function showAgentMessages(
+  api: ApiClient,
+  sessionId: string,
+  options: { limit: number; asJson?: boolean; verbose?: boolean },
+): Promise<void> {
+  // Fetch session to get encryption key
+  const session = await api.getSession(sessionId);
+  if (!session) {
+    throw new Error(`Session ${sessionId} not found`);
+  }
+
+  const result = await api.getSessionMessages(sessionId, { limit: options.limit });
+  const rawMessages = result.messages ?? [];
+
+  // Session messages come back newest-first; reverse to chronological (oldest at top, newest at bottom)
+  const sorted = [...rawMessages].sort((a: any, b: any) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+
+  const messages: Array<{ role: string; content: string; timestamp?: number }> = sorted.map((raw: any) => {
+    // Session messages: {id, seq, content: {c: '...', t: '...'}, createdAt, updatedAt}
+    const blob = raw.content ?? raw.text ?? '';
+    if (session.isDecrypted && session.encryptionKey && typeof blob === 'object' && blob?.c) {
+      try {
+        const decoded = decodeBase64(blob.c);
+        const decrypted = decrypt(session.encryptionKey, session.encryptionVariant, decoded);
+        if (!decrypted || typeof decrypted !== 'object') {
+          return { role: 'encrypted', content: '[decrypt failed]', timestamp: raw.createdAt ?? raw.timestamp };
+        }
+
+        // Envelope: {role:'agent'|'user', content: <inner>, meta?}
+        // Inner can be the Claude JSONL entry: {type, message:{role, content:[...]}}
+        // OR inner IS the Claude JSONL entry directly.
+        const envelope: any = decrypted;
+        const outerRole: string = envelope?.role ?? 'agent';
+        const inner: any = envelope?.content ?? envelope;
+
+        // Resolve actual message role and content
+        const msgRole: string = inner?.message?.role ?? inner?.role ?? outerRole;
+        const msgContent: any = inner?.message?.content ?? inner?.content;
+
+        const text = extractTextFromContent(msgContent, inner);
+        return { role: msgRole, content: text.slice(0, 600), timestamp: raw.createdAt ?? raw.timestamp };
+      } catch {
+        return { role: 'encrypted', content: '[decrypt failed]', timestamp: raw.createdAt ?? raw.timestamp };
+      }
+    }
+    // Plaintext (team broadcast, etc.)
+    const role = raw.role ?? raw.senderRole ?? 'system';
+    const content = typeof blob === 'object' ? JSON.stringify(blob).slice(0, 300) : String(blob).slice(0, 600);
+    return { role, content, timestamp: raw.createdAt ?? raw.timestamp };
+  });
+
+  if (options.asJson) {
+    console.log(JSON.stringify({ sessionId, messages }, null, 2));
+    return;
+  }
+
+  if (messages.length === 0) {
+    console.log(chalk.yellow('No messages found'));
+    return;
+  }
+
+  console.log(chalk.bold(`\nAgent messages for ${sessionId} (${messages.length}):\n`));
+  for (const msg of messages) {
+    const roleColor = msg.role === 'user' ? chalk.green : msg.role === 'assistant' ? chalk.cyan : chalk.gray;
+    const ts = msg.timestamp ? chalk.gray(new Date(msg.timestamp).toLocaleTimeString() + ' ') : '';
+    console.log(`${ts}${roleColor(`[${msg.role}]`)} ${msg.content}`);
+    if (options.verbose) {
+      console.log('');
+    }
+  }
+}
+
+// ─── agents send ──────────────────────────────────────────────────────────────
+
+async function sendAgentMessage(sessionId: string, message: string, asJson?: boolean): Promise<void> {
+  const result = await daemonPost('/session-command', { sessionId, command: message });
+
+  if (result?.error) {
+    // stdin may be closed for daemon-external sessions — surface a clear hint
+    const hint = result.error.includes('no writable stdin') || result.error.includes('not tracked')
+      ? `\n  Hint: use "aha teams send <teamId> \\"@<role> ${message}\\"" to broadcast via team chat instead`
+      : '';
+    throw new Error(`${result.error}${hint}`);
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify({ success: true, sessionId, message }, null, 2));
+    return;
+  }
+  console.log(chalk.green(`✓ Message sent to agent ${sessionId}`));
+  console.log(chalk.gray('  (injected into agent stdin — agent will process it as user input)'));
 }
 
 async function listAgents(

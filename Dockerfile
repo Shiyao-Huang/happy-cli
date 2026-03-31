@@ -19,8 +19,8 @@ RUN apk add --no-cache bash git openssh-client ffmpeg dumb-init
 WORKDIR /app
 
 ENV NODE_ENV=production \
-    AHA_HOME_DIR=/home/node/.aha-v12 \
-    AHA_HOME_COMPAT_DIR=/home/node/.aha-v11 \
+    AHA_HOME_DIR=/home/node/.aha-v13 \
+    AHA_HOME_COMPAT_DIR=/home/node/.aha-v12 \
     NODE_OPTIONS=--max-old-space-size=12288 \
     AHA_DISABLE_CAFFEINATE=true
 
@@ -34,10 +34,10 @@ COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 COPY docker/entrypoint.sh /usr/local/bin/aha-cli-entrypoint
 RUN chmod +x /usr/local/bin/aha-cli-entrypoint \
-  && mkdir -p /home/node/.aha-v12 /home/node/.aha-v11 \
+  && mkdir -p /home/node/.aha-v13 /home/node/.aha-v12 \
   && chown -R node:node /app /home/node
 
 USER node
-VOLUME ["/home/node/.aha-v12"]
+VOLUME ["/home/node/.aha-v13"]
 ENTRYPOINT ["dumb-init", "--", "aha-cli-entrypoint"]
 CMD ["node", "--no-warnings", "--no-deprecation", "dist/index.mjs", "daemon", "start-sync"]

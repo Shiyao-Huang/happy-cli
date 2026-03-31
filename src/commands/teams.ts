@@ -502,6 +502,31 @@ export async function handleTeamsCommand(args: string[]) {
         await batchDeleteTeams(api, teamIds, options);
         break;
       }
+      case 'messages': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams messages <teamId> [--limit N] [--before cursor]');
+        }
+        await showTeamMessages(api, positional[1], {
+          limit: parseInt(getOption(args, 'limit') || '20', 10),
+          before: getOption(args, 'before'),
+          asJson: options.asJson,
+        });
+        break;
+      }
+      case 'send': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha teams send <teamId> "<message>" [--type chat|notification]');
+        }
+        const content = positional.slice(2).join(' ');
+        if (!content) {
+          throw new Error('Message content is required');
+        }
+        await sendTeamMessageCmd(api, positional[1], content, {
+          type: (getOption(args, 'type') || 'chat') as 'chat' | 'notification',
+          asJson: options.asJson,
+        });
+        break;
+      }
       default:
         throw new Error(`Unknown teams command: ${subcommand}`);
     }
@@ -510,6 +535,51 @@ export async function handleTeamsCommand(args: string[]) {
     console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
   }
+}
+
+async function showTeamMessages(api: ApiClient, teamId: string, options: { limit: number; before?: string; asJson?: boolean }): Promise<void> {
+  const result = await api.getTeamMessages(teamId, { limit: options.limit, before: options.before });
+  const messages = result.messages ?? [];
+
+  if (options.asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (messages.length === 0) {
+    console.log(chalk.yellow('No messages found'));
+    return;
+  }
+
+  console.log(chalk.bold(`\nTeam messages for ${teamId} (${messages.length}):\n`));
+  for (const msg of messages) {
+    const sender = chalk.cyan(msg.senderDisplayName ?? msg.senderRole ?? 'system');
+    const type = msg.type && msg.type !== 'chat' ? chalk.gray(`[${msg.type}] `) : '';
+    const ts = msg.timestamp ? chalk.gray(new Date(msg.timestamp).toLocaleTimeString()) : '';
+    const content = (msg.content ?? '').slice(0, 500);
+    console.log(`${ts} ${sender}: ${type}${content}`);
+  }
+  if (result.cursor) {
+    console.log(chalk.gray(`\n  (more messages available — use --before ${result.cursor})`));
+  }
+}
+
+async function sendTeamMessageCmd(api: ApiClient, teamId: string, content: string, options: { type: 'chat' | 'notification'; asJson?: boolean }): Promise<void> {
+  await api.sendTeamMessage(teamId, {
+    id: randomUUID(),
+    teamId,
+    type: options.type,
+    content,
+    fromDisplayName: 'CLI Operator',
+    fromRole: 'operator',
+    timestamp: Date.now(),
+  });
+
+  if (options.asJson) {
+    console.log(JSON.stringify({ success: true, teamId, content }, null, 2));
+    return;
+  }
+  console.log(chalk.green(`✓ Message sent to team ${teamId}`));
 }
 
 async function listTeams(api: ApiClient, options: TeamCommandOptions): Promise<void> {
