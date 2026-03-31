@@ -21,6 +21,46 @@ Two living skills cover how to build good agents and teams. Use them when design
 
 
 
+## 动态授权系统（待实现 — 下 sprint）
+
+Agent runtime 中增加临时工具授权插槽，消除 genome spec 静态权限粒度过粗的问题。
+
+### 核心公式
+
+```
+effectiveAllowedTools = staticTools(genome.allowedTools)
+                       ∪ temporalGrants(session, non-expired)
+```
+
+优先级链（严格）：
+```
+disallowedTools（永久硬禁）
+  > temporalGrants（运行时动态，TTL 绑定）
+    > allowedTools（genome 静态列表）
+```
+
+### opt-in 槽
+
+Genome spec 中声明 `"@granted"` token 才能接受动态授权。没有该 token 的角色物理上无法被授权额外工具。
+
+### 约束
+
+- 授予者只能授予自己拥有的工具（上界约束，daemon 层硬编码）
+- 每个授权带 TTL + reason（无过期 = 永久 = 等同于硬编码）
+- 审计链必须记录：`grantedBy + tool + taskId + expiresAt`
+- 破坏性操作永久硬禁，不进动态授权范围
+
+### 最小实现路径
+
+1. **DB** — `TemporaryGrant(id, sessionId, tool, grantedBy, expiresAt, reason)`（genome-hub）
+2. **MCP** — `grant_tool_access(sessionId, tool, ttl_minutes, reason)` — supervisor/master 专属
+3. **MCP** — `revoke_tool_access(grantId)` — 可选，提前撤销
+4. **daemon** — `permissionServer.ts` 合并 staticTools + 未过期 temporalGrants
+
+> 触发背景：0331 sprint Researcher 因 `list_available_agents` 权限不足循环失败，静态 genome 无法在不 respawn 的情况下临时授权。
+
+---
+
 ## ESM `.mjs` helper typing rule
 
 Any newly added ESM `.mjs` helper must ship with matching declaration files in the same change.
