@@ -1,7 +1,7 @@
 /**
  * Role type definitions and board template.
  *
- * All role behavior comes from GenomeSpec. No hardcoded fallback.
+ * All role behavior comes from AgentImage. No hardcoded fallback.
  * If an agent has no genome, it runs as a blank agent with no role constraints.
  */
 

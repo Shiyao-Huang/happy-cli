@@ -43,7 +43,8 @@ describe('configurationResolver', () => {
 
     expect(readPersistentCliConfig(configFile)).toEqual({
       serverUrl: 'http://localhost:3005',
-      webappUrl: 'http://localhost:8081'
+      webappUrl: 'http://localhost:8081',
+      enableModelSelection: false,
     })
   })
 
@@ -53,7 +54,8 @@ describe('configurationResolver', () => {
       AHA_WEBAPP_URL: 'http://localhost:8081'
     }, {
       serverUrl: 'https://aha-agi.com/api',
-      webappUrl: 'https://aha-agi.com/webappv3'
+      webappUrl: 'https://aha-agi.com/webappv3',
+      enableModelSelection: false,
     })).toEqual({
       serverUrl: 'http://localhost:3005',
       webappUrl: 'http://localhost:8081'
@@ -61,7 +63,7 @@ describe('configurationResolver', () => {
   })
 
   it('uses aha-agi production defaults when nothing is configured', () => {
-    expect(resolveServerConfig({}, {})).toEqual({
+    expect(resolveServerConfig({}, { enableModelSelection: false })).toEqual({
       serverUrl: 'https://aha-agi.com/api',
       webappUrl: 'https://aha-agi.com/webappv3'
     })

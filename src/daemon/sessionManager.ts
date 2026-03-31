@@ -23,6 +23,7 @@
  */
 
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import * as tmp from 'tmp';
 import { join } from 'path';
 
@@ -40,6 +41,7 @@ import { execSync } from 'child_process';
 import { ulid } from 'ulid';
 import { finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
 import { chooseHelpAgentForRequest } from './helpAgentPool';
+import { seedCodexHomeConfig, seedCodexHomeSkillUnion } from '@/codex/codexHome';
 
 // ── Central shared state ───────────────────────────────────────────────────────
 /**
@@ -740,16 +742,16 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
   try {
     let extraEnv: Record<string, string> = {};
 
-    if (options.token) {
-      if (options.agent === 'codex') {
-        const codexHomeDir = tmp.dirSync();
-        const authPath = join(codexHomeDir.name, 'auth.json');
-        await fs.writeFile(authPath, options.token, 'utf8');
-        logger.debug(`[SESSION MANAGER] Wrote Codex auth payload to ${authPath}`);
-        extraEnv = { CODEX_HOME: codexHomeDir.name };
-      } else {
-        extraEnv = { CLAUDE_CODE_OAUTH_TOKEN: options.token };
-      }
+    if (options.agent === 'codex') {
+      const codexHomeDir = tmp.dirSync({ unsafeCleanup: true });
+      seedCodexHomeConfig(codexHomeDir.name, { token: options.token });
+      seedCodexHomeSkillUnion(codexHomeDir.name, {
+        commandsDir: options.env?.AHA_AGENT_COMMANDS_DIR,
+      });
+      logger.debug(`[SESSION MANAGER] Prepared isolated Codex home at ${codexHomeDir.name}`);
+      extraEnv = { CODEX_HOME: codexHomeDir.name };
+    } else if (options.token) {
+      extraEnv = { CLAUDE_CODE_OAUTH_TOKEN: options.token };
     }
 
     if (options.teamId) {

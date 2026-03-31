@@ -16,9 +16,9 @@
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
  * - request_help is available to ALL agents and directly calls triggerHelpLane
- * - create_genome accepts canonical agent.json authoring or legacy GenomeSpec input,
+ * - create_genome accepts canonical agent.json authoring or legacy AgentImage input,
  *   then sanitizes and projects to the compatibility view before delegating to api.createGenome
- * - create_corps publishes a CorpsSpec team template directly to genome-hub /corps
+ * - create_corps publishes a LegionImage team template directly to genome-hub /corps
  * - update_genome patches marketing metadata (description/tags/category) for an owned genome
  * - Non-@official genomes have hooks/permissionMode/executionPlane stripped at write time
  */
@@ -27,7 +27,7 @@ import { z } from "zod";
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext } from './mcpContext';
-import { normalizeGenomeSpecForPublication } from '@/utils/genomePublication';
+import { normalizeAgentImageForPublication } from '@/utils/genomePublication';
 
 export function registerEvolutionTools(ctx: McpToolContext): void {
     const {
@@ -136,7 +136,7 @@ The supervisor will see your request and may: send you guidance, restart your se
     // ========== Create Genome Tool (Evolution System, M3) ==========
     mcp.registerTool('create_genome', {
         description: `Save or update a reusable agent definition (AgentImage / genome) in the team evolution store.
-Canonical authoring should be the agent.json shape (kind=aha.agent.v1), which produces an AgentImage — the fully materialized agent definition (seed ⊕ diffs). Legacy flattened GenomeSpec JSON is still accepted as a compatibility input.
+Canonical authoring should be the agent.json shape (kind=aha.agent.v1), which produces an AgentImage — the fully materialized agent definition (seed ⊕ diffs). Legacy flattened AgentImage JSON is still accepted as a compatibility input.
 An AgentImage captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, hooks, skills, env, and inline files.
 
 ## Kernel fields (travel with the genome and are used by the runtime materializer)
@@ -183,9 +183,9 @@ Namespace conventions:
         inputSchema: {
             name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
             spec: z.string().describe(
-                'JSON-serialized canonical agent.json (preferred) or legacy GenomeSpec compatibility JSON. ' +
+                'JSON-serialized canonical agent.json (preferred) or legacy AgentImage compatibility JSON. ' +
                 'Canonical agent.json may include prompt/tools/permissions/context/env/workspace/evaluation/evolution/market/package blocks. ' +
-                'Legacy GenomeSpec inputs may include displayName/baseRoleId/systemPrompt/systemPromptSuffix/responsibilities/protocol/messaging/behavior/memory/' +
+                'Legacy AgentImage inputs may include displayName/baseRoleId/systemPrompt/systemPromptSuffix/responsibilities/protocol/messaging/behavior/memory/' +
                 'modelId/fallbackModelId/allowedTools/disallowedTools/mcpServers/hooks/skills/evalCriteria/runtimeType/provenance/lifecycle/files. ' +
                 'Legacy shorthand tools[] is migrated to allowedTools; deprecated seedContext is stripped from the published compatibility projection.'
             ),
@@ -223,7 +223,7 @@ Namespace conventions:
 
             let normalized;
             try {
-                normalized = normalizeGenomeSpecForPublication({
+                normalized = normalizeAgentImageForPublication({
                     specJson: specStr,
                     namespace: args.namespace,
                     parentId: args.parentId,
@@ -276,7 +276,7 @@ Namespace conventions:
     });
 
     mcp.registerTool('create_corps', {
-        description: `Publish a LegionImage (legion docker / CorpsSpec team template) directly to the marketplace.
+        description: `Publish a LegionImage (legion docker / LegionImage team template) directly to the marketplace.
 
 Use this for 3/5/7-person team templates and other reusable roster presets.
 A LegionImage = AgentImage₁@v + AgentImage₂@v + ... + LegionLayer (bootContext + taskPolicy).
@@ -319,7 +319,7 @@ Best practice:
 
             if (!Array.isArray(parsed.members) || parsed.members.length === 0) {
                 return {
-                    content: [{ type: 'text', text: 'Error: spec must be a valid CorpsSpec with at least one member.' }],
+                    content: [{ type: 'text', text: 'Error: spec must be a valid LegionImage with at least one member.' }],
                     isError: true,
                 };
             }
@@ -335,7 +335,7 @@ Best practice:
 
             if (!normalized.description) {
                 return {
-                    content: [{ type: 'text', text: 'Error: description is required either in args.description or CorpsSpec.description.' }],
+                    content: [{ type: 'text', text: 'Error: description is required either in args.description or LegionImage.description.' }],
                     isError: true,
                 };
             }

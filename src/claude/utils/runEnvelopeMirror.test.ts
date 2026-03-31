@@ -24,6 +24,13 @@ describe('runEnvelopeMirror', () => {
                 executionPlane: 'bypass',
                 candidateId: 'spec:spec-1',
                 specId: 'spec-1',
+                candidateIdentity: {
+                    candidateId: 'spec:spec-1',
+                    specId: 'spec-1',
+                    basis: 'spec',
+                    fullSpec: null,
+                    diff: null,
+                },
                 sessionTag: null,
                 parentSessionId: null,
                 sessionPath: '/repo',

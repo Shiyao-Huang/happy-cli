@@ -6,6 +6,7 @@ import {
     getPreferredGenomeNames,
     parseMarketplaceFeedbackData,
     parseCorpsSpecFromGenome,
+    resolveSpawnRuntimeForRole,
     searchMatchesRole,
     selectBestRatedGenomeCandidate,
 } from './genomeMarketplace';
@@ -13,7 +14,23 @@ import {
 describe('genomeMarketplace helpers', () => {
     it('maps role aliases to preferred genome names', () => {
         expect(getPreferredGenomeNames('builder', 'claude')).toEqual(['builder', 'implementer']);
-        expect(getPreferredGenomeNames('agent-builder', 'codex')).toEqual(['agent-builder-codex', 'agent-builder']);
+        expect(getPreferredGenomeNames('agent-builder', 'codex')).toEqual([
+            'agent-builder-codex-r2',
+            'agent-builder-codex',
+            'agent-builder',
+        ]);
+        expect(getPreferredGenomeNames('agent-builder', 'claude')).toEqual([
+            'agent-builder-r2',
+            'agent-builder',
+            'agent-builder-portable',
+        ]);
+    });
+
+    it('defaults agent-builder spawns to codex when chat create flow does not specify a runtime', () => {
+        expect(resolveSpawnRuntimeForRole('agent-builder')).toBe('codex');
+        expect(resolveSpawnRuntimeForRole('builder')).toBe('claude');
+        expect(resolveSpawnRuntimeForRole('agent-builder', 'claude')).toBe('claude');
+        expect(resolveSpawnRuntimeForRole('builder', 'codex')).toBe('codex');
     });
 
     it('parses feedback summaries safely', () => {

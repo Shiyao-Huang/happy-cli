@@ -1,28 +1,16 @@
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 /**
- * redefine 分支里的 fetchGenome 只读 canonical entity projection。
+ * redefine 分支里的 AgentImage loader 只读 canonical entity projection。
  * 不再走 happy-server 代理，不再做离线磁盘 fallback。
  */
 import axios from 'axios';
-import { Genome, parseGenomeSpec, GenomeSpec } from '@/api/types/genome';
+import { Genome, type AgentImage, type DiffLedgerEntry, parseGenomeSpec as parseAgentImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 
-/** Compact ledger entry shape returned by GET /genomes/:ns/:name/ledger */
-export interface DiffLedgerEntry {
-    id: string;
-    genomeId: string;
-    version: number;
-    seqNo: number;
-    timestamp: string;
-    diffType: 'kv' | 'string' | 'narrative';
-    path?: string | null;
-    op?: string | null;
-    oldValue?: string | null;
-    newValue?: string | null;
-    content?: string | null;
-}
+/** Compatibility alias for canonical diff-ledger rows returned by GET /genomes/:ns/:name/ledger. */
+export type AgentPlugLedgerEntry = DiffLedgerEntry;
 
-const memCache = new Map<string, { spec: GenomeSpec; expiresAt: number }>();
+const memCache = new Map<string, { spec: AgentImage; expiresAt: number }>();
 const LATEST_TTL_MS = 5 * 60 * 1000; // 5 分钟
 
 function genomeHubBaseUrl(): string {
@@ -48,10 +36,10 @@ export function resolveEntityUrl(specId: string): string {
 }
 
 /**
- * Fetch only the feedbackData string for a genome.
+ * Fetch only the feedbackData string for an AgentImage / entity.
  * Returns null only for 404 (missing entity). Network / transport failures are rethrown.
  */
-export async function fetchGenomeFeedbackData(
+export async function fetchAgentVerdictData(
     token: string,
     specId: string,
 ): Promise<string | null> {
@@ -72,10 +60,10 @@ export async function fetchGenomeFeedbackData(
     }
 }
 
-export async function fetchGenomeSpec(
+export async function fetchAgentImage(
     token: string,
     specId: string,
-): Promise<GenomeSpec | null> {
+): Promise<AgentImage | null> {
     // redefine 分支：只保留内存缓存，不允许离线 fallback。
     const cached = memCache.get(specId);
     if (cached && Date.now() < cached.expiresAt) {
@@ -96,7 +84,7 @@ export async function fetchGenomeSpec(
             return null;
         }
 
-        const spec = parseGenomeSpec(response.data.entity);
+        const spec = parseAgentImage(response.data.entity);
         memCache.set(specId, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
         logger.debug(`[entity] Fetched ${specId}: ${response.data.entity.name} via ${url}`);
         return spec;
@@ -119,12 +107,12 @@ export function parseSpecIdParts(specId: string): { namespace: string; name: str
 }
 
 /**
- * Fetch the ordered diff ledger for a genome lineage.
+ * Fetch the ordered AgentPlug ledger for an AgentImage lineage.
  * GET /genomes/:namespace/:name/ledger
- * Returns the full ledger array (may be empty for genomes with no diffs yet).
+ * Returns the full ledger array (may be empty for images with no plugs yet).
  * Throws on non-404 HTTP errors.
  */
-export async function fetchGenomeDiffLedger(
+export async function fetchAgentPlugLedger(
     token: string,
     namespace: string,
     name: string,
@@ -142,16 +130,17 @@ export async function fetchGenomeDiffLedger(
 }
 
 /**
- * Fetch the immutable seed spec (v1 authoring truth) for a genome lineage.
+ * Fetch the immutable seed authoring document (v1 truth) for a genome lineage.
  * GET /genomes/:namespace/:name/seed
- * Returns null if genome or seed not found.
+ * The payload may be canonical agent.json or a legacy compatibility projection.
+ * Returns null if the entity or seed is not found.
  * Throws on non-404 HTTP errors.
  */
-export async function fetchGenomeSeedSpec(
+export async function fetchAgentImageSeed(
     token: string,
     namespace: string,
     name: string,
-): Promise<GenomeSpec | null> {
+): Promise<Record<string, unknown> | null> {
     const url = `${genomeHubBaseUrl()}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/seed`;
     const response = await axios.get<{ seed: string }>(
         url,
@@ -161,5 +150,5 @@ export async function fetchGenomeSeedSpec(
         },
     );
     if (response.status === 404) return null;
-    return JSON.parse(response.data.seed) as GenomeSpec;
+    return JSON.parse(response.data.seed) as Record<string, unknown>;
 }

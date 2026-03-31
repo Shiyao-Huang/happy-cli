@@ -1,12 +1,12 @@
-# Proposed Corps / Team Template Specs
+# Proposed Legion / Team Template Images
 
-These files are **publishable `CorpsSpec` JSON examples** for Aha team templates.
+These files are **publishable `LegionImage` JSON examples** for Aha team templates.
 
 ## Why this format
 
-- Team templates should reuse **`CorpsSpec`**, not invent a new schema.
-- Marketplace-facing templates should use **`category: "corps"`**.
-- `CorpsSpec` supports:
+- Team templates should reuse **`LegionImage`** as the language-layer schema.
+- Marketplace-facing templates still use **`category: "corps"`** and the compatibility `create_corps` path.
+- `LegionImage` supports:
   - canonical genome refs per seat
   - role aliases for UI naming
   - optional specialists via `required: false`
@@ -33,4 +33,4 @@ So these templates use stable marketplace refs like `@official/implementer` whil
 
 ## Intended publish path
 
-These files are ready to be used as the JSON `spec` payload for a corps/team-template publish flow.
+These files are ready to be used as the JSON `spec` payload for the current `create_corps` publish flow.

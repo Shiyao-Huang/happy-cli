@@ -37,7 +37,7 @@ describe('Role Permissions System', () => {
 
         it('should return empty disallowed tools when role not in DEFAULT_ROLES (genome-first)', () => {
             // With genome-first architecture, DEFAULT_ROLES is empty.
-            // Roles like 'scout'/'builder' are defined in GenomeSpec, not hardcoded.
+            // Roles like 'scout'/'builder' are defined in AgentImage, not hardcoded.
             const result = getRolePermissions('scout', undefined);
 
             expect(result.permissionMode).toBe('default');
@@ -48,7 +48,7 @@ describe('Role Permissions System', () => {
             const result = getRolePermissions('builder', undefined);
 
             expect(result.permissionMode).toBe('default');
-            // No hardcoded restrictions — permissions come from GenomeSpec at runtime
+            // No hardcoded restrictions — permissions come from AgentImage at runtime
             expect(result.disallowedTools).toEqual([]);
         });
 
@@ -104,19 +104,14 @@ describe('Role Permissions System', () => {
             expect(canSpawnAgents('supervisor', supervisorGenome)).toBe(true);
         });
 
-        it('regression: master with canSpawnAgents=false but authorities=[task.create] can create tasks AND spawn agents', () => {
-            // Regression fix: master is a coordinator role and MUST be able to spawn agents
-            // to manage team topology (e.g., spawn supervisor for scoring cycle).
-            // Phase 1-3 proved that blocking master from spawning broke the entire
-            // scoring pipeline — no supervisor could be created, scoring data was frozen.
-            // Coordinator roles now always get canSpawnAgents=true regardless of genome flag.
+        it('treats explicit canSpawnAgents=false as authoritative for non-legacy coordinator genomes', () => {
             const masterGenome = {
                 behavior: { canSpawnAgents: false },
                 authorities: ['task.create', 'task.assign', 'task.update.any'],
             } as any;
 
             expect(canCreateTeamTasks('master', masterGenome)).toBe(true);
-            expect(canSpawnAgents('master', masterGenome)).toBe(true);
+            expect(canSpawnAgents('master', masterGenome)).toBe(false);
         });
 
         it('regression: master with no genome at all falls back to coordinator role check', () => {
@@ -151,7 +146,7 @@ describe('Role Permissions System', () => {
         });
 
         it('should return empty prompt for worker roles without genome (genome-first)', () => {
-            // In genome-first architecture, worker role prompts come from GenomeSpec.
+            // In genome-first architecture, worker role prompts come from AgentImage.
             // Without a genome, generateRolePrompt returns '' for non-coordinator roles.
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
@@ -163,7 +158,7 @@ describe('Role Permissions System', () => {
 
         it('should return empty prompt for coordinators without genome (genome-first)', () => {
             // 'master' is not in DEFAULT_ROLES, so generateRolePrompt returns ''
-            // In production, coordinator prompts are built from GenomeSpec
+            // In production, coordinator prompts are built from AgentImage
             const prompt = generateRolePrompt({
                 teamId: 'team-123',
                 role: 'master',

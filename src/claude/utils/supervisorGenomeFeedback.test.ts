@@ -5,7 +5,7 @@ import {
     getCanonicalGenomeTargetForRole,
     resolveFeedbackUploadTarget,
     scoreMatchesFeedbackTarget,
-} from './supervisorGenomeFeedback';
+} from './supervisorAgentVerdict';
 
 function makeScore(overrides: Partial<AgentScore>): AgentScore {
     return {
@@ -31,7 +31,7 @@ function makeScore(overrides: Partial<AgentScore>): AgentScore {
     };
 }
 
-describe('supervisorGenomeFeedback', () => {
+describe('supervisorAgentVerdict', () => {
     it('maps legacy supervisor role aliases onto canonical official genomes', () => {
         expect(getCanonicalGenomeTargetForRole('solution-architect')).toEqual({
             namespace: '@official',

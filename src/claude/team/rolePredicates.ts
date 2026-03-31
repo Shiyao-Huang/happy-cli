@@ -54,7 +54,7 @@ function isLegacyOfficialMasterSpawnBugGenome(
 }
 
 // ── Genome-first role classification ─────────────────────────────────────────
-// GenomeSpec is the authority. These hardcoded lists are fallbacks for when
+// AgentImage is the authority. These hardcoded lists are fallbacks for when
 // no genome is loaded (local dev, legacy agent.json, etc.)
 // When a genome is available, use executionPlane / behavior.canSpawnAgents /
 // messaging.receiveUserMessages / teamRole instead of these lists.
@@ -95,10 +95,6 @@ export function canSpawnAgents(
     } | null,
 ): boolean {
     if (Array.isArray(genome?.authorities) && genome!.authorities!.includes('agent.spawn')) return true;
-    // Coordinator roles (master, orchestrator) must always be able to spawn agents
-    // to manage team topology — genome canSpawnAgents:false should not block them.
-    // This fixes the permission chain where master could not spawn supervisor.
-    if (isCoordinatorRole(role)) return true;
     if (genome?.behavior?.canSpawnAgents !== undefined) {
         if (genome.behavior.canSpawnAgents) {
             return true;

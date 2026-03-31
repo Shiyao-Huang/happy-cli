@@ -61,8 +61,9 @@ async function collectText(q: AsyncIterableIterator<SDKMessage>, timeoutMs: numb
 
     async function drain(): Promise<void> {
         for await (const msg of q) {
-            if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-                for (const block of msg.message.content) {
+            const content = (msg as { message?: { content?: Array<{ type?: string; text?: string }> } }).message?.content;
+            if (msg.type === 'assistant' && Array.isArray(content)) {
+                for (const block of content) {
                     if (block.type === 'text' && typeof block.text === 'string') {
                         parts.push(block.text);
                     }

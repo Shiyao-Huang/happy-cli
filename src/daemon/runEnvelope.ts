@@ -265,7 +265,7 @@ export function resolveCandidateIdentity(params: {
   } else {
     resolved = {
       candidateId: deriveCandidateId({
-        specId: null,
+        specId: undefined,
         role: params.role,
         runtimeType: params.runtimeType,
         executionPlane: params.executionPlane,

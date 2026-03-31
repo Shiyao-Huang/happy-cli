@@ -304,9 +304,9 @@ Genome Hub 当前能力：
 - `GET /namespaces/:namespace`
 - `PATCH /genomes/:namespace/:name/feedback`
 
-### 7.3 GenomeSpec 已承载的信息
+### 7.3 AgentImage 已承载的信息
 
-`genome-hub/src/types/genome.ts` 显示 GenomeSpec 已不是简单 prompt，而是完整 agent DNA：
+`genome-hub/src/types/genome.ts` 显示 `AgentImage`（兼容旧 `GenomeSpec` 读路径）已不是简单 prompt，而是完整 agent DNA：
 - identity：displayName / baseRoleId / namespace / version / category / tags
 - runtime：runtimeType / modelId / fallbackModelId / modelProvider
 - tools：allowed/disallowed tools、MCP、skills、hooks
@@ -317,7 +317,7 @@ Genome Hub 当前能力：
 - resourceBudget：estimatedTokens / context size / concurrency capability
 - compatibility / operations / resume / modelScores
 
-**结论**：Genome 在 Aha 里已经等于 **可发布、可评分、可继承、可运行的 agent package**。
+**结论**：`AgentImage` 在 Aha 里已经等于 **可发布、可评分、可继承、可运行的 agent package**。
 
 ### 7.4 Official seed 能力
 
@@ -326,7 +326,7 @@ Genome Hub 当前能力：
 - `@official/help-agent`
 - `@official/org-manager`
 - working roles：`master`、`implementer`、`architect`、`qa-engineer`、`researcher`
-- corps 模板：如 `fullstack-squad`、`research-pod`
+- legion/team templates：如 `fullstack-squad`、`research-pod`
 
 也就是说，Marketplace 不只是用户上传池，已经有 **官方启动包与 team 模板**。
 
@@ -443,4 +443,3 @@ bb-browser 在 Aha 体系中的角色是 **给 agent 打开“真实互联网访
 - 关键对象
 - 闭环位置
 - 影响仓库
-

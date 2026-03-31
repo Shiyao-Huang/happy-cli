@@ -305,7 +305,7 @@ export class CodexMcpClient {
             async (request) => {
                 logger.debug('[CodexMCP] Received elicitation request');
                 const approvalPayload = {
-                    id: request.id,
+                    id: (request as { id?: string }).id,
                     ...(asObject(request.params) ?? {})
                 };
                 logCodexBridge('Received elicitation/create request', approvalPayload);
@@ -563,5 +563,12 @@ export class CodexMcpClient {
         // Preserve session/conversation identifiers for potential reconnection / recovery flows.
         // Only forceCloseSession() should clear them.
         logger.debug(`[CodexMCP] Disconnected; session ${this.sessionId ?? 'none'} preserved`);
+    }
+
+    async forceCloseSession(): Promise<void> {
+        await this.disconnect();
+        this.sessionId = null;
+        this.conversationId = null;
+        logger.debug('[CodexMCP] forceCloseSession cleared session identifiers');
     }
 }

@@ -311,7 +311,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('status')} [teamId]               Show team + Kanban status summary
   ${chalk.yellow('create')}                        Create a team artifact
   ${chalk.yellow('spawn')}                         Create team + spawn agents from preset (P0)
-  ${chalk.yellow('publish-template')}              Publish a CorpsSpec JSON file to the marketplace
+  ${chalk.yellow('publish-template')}              Publish a LegionImage JSON file to the marketplace
   ${chalk.yellow('members')} <teamId>              List team members
   ${chalk.yellow('add-member')} <teamId>           Add a member to a team
   ${chalk.yellow('remove-member')} <teamId>        Remove a member from a team
@@ -1036,7 +1036,7 @@ async function publishTemplateFromFile(
   }
 
   if (!Array.isArray(parsed.members) || parsed.members.length === 0) {
-    throw new Error(`Template file ${filePath} is not a valid CorpsSpec: expected a non-empty members array.`);
+    throw new Error(`Template file ${filePath} is not a valid LegionImage: expected a non-empty members array.`);
   }
 
   const name = getOption(args, 'name')
@@ -1044,7 +1044,7 @@ async function publishTemplateFromFile(
   const description = getOption(args, 'description')
     || (typeof parsed.description === 'string' ? parsed.description : '');
   if (!description) {
-    throw new Error(`Template file ${filePath} is missing description. Pass --description or add CorpsSpec.description.`);
+    throw new Error(`Template file ${filePath} is missing description. Pass --description or add LegionImage.description.`);
   }
 
   const namespace = getOption(args, 'namespace') || (typeof parsed.namespace === 'string' ? parsed.namespace : '@public');
@@ -1330,6 +1330,7 @@ async function spawnTeamWithPreset(
         settingsPath: plan.settingsPath,
         envFilePath: plan.envFilePath,
         mcpConfigPath: plan.mcpConfigPath,
+        commandsDir: plan.commandsDir,
       });
 
       const spawnBody = {

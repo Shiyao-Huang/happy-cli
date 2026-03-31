@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AggregatedFeedback } from './feedbackPrivacy';
 import { normalizeFeedbackProxyBaseUrl, syncGenomeFeedbackToMarketplace } from './genomeFeedbackSync';
-import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
+import type { FeedbackUploadTarget } from './supervisorAgentVerdict';
 
 function makeFeedback(): AggregatedFeedback {
     return {

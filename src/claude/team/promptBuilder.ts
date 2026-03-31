@@ -7,7 +7,7 @@
  *   D[promptBuilder] --> A[roleConstants]
  *   D --> C[rolePredicates]
  *   D --> B[roles.config.ts]
- *   D --> E[buildGenomeInjection]
+ *   D --> E[buildAgentImageInjection]
  *   D --> F[alwaysInjectedPolicies]
  * ```
  *
@@ -17,9 +17,9 @@
  */
 
 import { Metadata } from '@/api/types';
-import type { GenomeSpec } from '@/api/types/genome';
+import type { AgentImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
-import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
+import { buildAgentImageInjection } from '@/claude/utils/buildGenomeInjection';
 import { buildSharedOperatingRulesSection } from './alwaysInjectedPolicies';
 import { DEFAULT_ROLES } from './roles.config';
 import {
@@ -127,7 +127,7 @@ function formatStatusBadge(status: string): string {
 /**
  * Build the <Role> section for a given role
  */
-function buildRoleSection(roleKey: string, roleDef: typeof DEFAULT_ROLES[string], teamId: string, genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
+function buildRoleSection(roleKey: string, roleDef: typeof DEFAULT_ROLES[string], teamId: string, genomeSpec?: import('../../api/types/genome').AgentImage): string {
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
 
     const listenFrom = genomeSpec?.messaging?.listenFrom;
@@ -167,7 +167,7 @@ ${roleDef.responsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 /**
  * Build the Phase 0 - Intent Gate section
  */
-function buildPhase0Section(roleKey: string, genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
+function buildPhase0Section(roleKey: string, genomeSpec?: import('../../api/types/genome').AgentImage): string {
     const isCoordinator = COORDINATION_ROLES.includes(roleKey);
 
     const onIdle = genomeSpec?.behavior?.onIdle;
@@ -370,7 +370,7 @@ function buildConstraintsSection(roleKey: string): string {
 /**
  * Build the <Tone_and_Style> section
  */
-function buildToneAndStyleSection(genomeSpec?: import('../../api/types/genome').GenomeSpec): string {
+function buildToneAndStyleSection(genomeSpec?: import('../../api/types/genome').AgentImage): string {
     // Get agent language from environment variable (set during team creation)
     const agentLanguage = process.env.AHA_AGENT_LANGUAGE || 'en';
     const isChinese = agentLanguage === 'zh';
@@ -735,8 +735,8 @@ Special rule for agent-authoring work:
 When forking a marketplace genome, pass the original genome's \`id\` as \`parentId\` in \`create_genome\` calls, along with a brief \`mutationNote\` describing your changes.
 
 Important marketplace publish rule:
-- Use \`create_genome\` for \`GenomeSpec\` payloads
-- Use \`create_corps\` for \`CorpsSpec\` / reusable team-template payloads
+- Use \`create_genome\` for \`AgentImage\` payloads
+- Use \`create_corps\` for \`LegionImage\` / reusable team-template payloads
 - Do NOT try to publish a team template through \`create_genome\`
 
 ### Step 4: Spawn Team Members
@@ -839,7 +839,7 @@ When woken for HR actions:
 export function generateRolePrompt(
     metadata: Metadata,
     kanbanContext?: KanbanContext,
-    genomeSpec?: GenomeSpec,
+    genomeSpec?: AgentImage,
     feedbackData?: string | null
 ): string {
     let teamId = metadata.teamId;
@@ -910,9 +910,9 @@ export function generateRolePrompt(
         sections.push('');
     }
 
-    const genomeInjection = buildGenomeInjection(genomeSpec, feedbackData);
-    if (genomeInjection) {
-        sections.push(genomeInjection);
+    const agentImageInjection = buildAgentImageInjection(genomeSpec, feedbackData);
+    if (agentImageInjection) {
+        sections.push(agentImageInjection);
         sections.push('');
     }
 

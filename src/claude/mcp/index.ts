@@ -42,7 +42,7 @@ import { registerEvolutionTools } from './evolutionTools';
 export async function startAhaServer(
     api: any,
     client: ApiSessionClient,
-    genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined },
+    genomeSpecRef?: { current: import('../../api/types/genome').AgentImage | null | undefined },
 ) {
     // Debounced heartbeat ping to daemon — fires at most once per 10s on MCP tool calls
     let lastHeartbeatPing = 0;
@@ -108,9 +108,6 @@ export async function startAhaServer(
 
         const ctx: McpToolContext = {
             mcp,
-            api,
-            client,
-            genomeSpecRef,
             handler,
             pingDaemonHeartbeat,
             ...helpers,

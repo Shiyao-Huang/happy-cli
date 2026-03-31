@@ -141,6 +141,61 @@ export function resolveTeamWorkingDirectory(
 
 // ── Genome resolution ──────────────────────────────────────────────────────────
 
+interface ResolvedGenome {
+  specId: string;
+  spec: Record<string, unknown> | null;
+}
+
+/**
+ * Resolve the specId (and optionally parsed spec) of a @official genome by name.
+ * Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).
+ * Returns null on failure — caller falls back to hardcoded role.
+ */
+async function resolveSystemGenome(name: string, credentialsToken: string): Promise<ResolvedGenome | null> {
+  const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+
+  try {
+    const res = await axios.get(
+      `${hubUrl}/genomes/%40official/${name}`,
+      { timeout: 5000 }
+    );
+    const id = res.data?.genome?.id ?? null;
+    if (id) {
+      let spec: Record<string, unknown> | null = null;
+      try {
+        const rawSpec = res.data?.genome?.spec;
+        spec = typeof rawSpec === 'string' ? JSON.parse(rawSpec) : rawSpec ?? null;
+      } catch { /* spec parse failure is non-fatal */ }
+      return { specId: id, spec };
+    }
+  } catch (error) {
+    if (process.env.NODE_ENV === 'development') {
+      console.error(`[DEV] Genome Hub API failed for ${name}:`, error);
+      throw new Error(`Genome Hub API broken - fix before using legacy fallback: ${String(error)}`);
+    }
+    console.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
+  }
+
+  try {
+    const res = await axios.get(
+      `${configuration.serverUrl}/v1/genomes/%40official/${name}/latest`,
+      { headers: { Authorization: `Bearer ${credentialsToken}` }, timeout: 5000 }
+    );
+    const id = res.data?.genome?.id ?? null;
+    if (id) {
+      let spec: Record<string, unknown> | null = null;
+      try {
+        const rawSpec = res.data?.genome?.spec;
+        spec = typeof rawSpec === 'string' ? JSON.parse(rawSpec) : rawSpec ?? null;
+      } catch { /* spec parse failure is non-fatal */ }
+      return { specId: id, spec };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve the specId of a @official genome by name.
  * Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).

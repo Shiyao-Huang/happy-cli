@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 /**
- * GenomeSpec — 旧读路径仍在消费的兼容投影视图。
+ * AgentImage — 旧读路径仍在消费的兼容投影视图。
  *
  * 类比 Docker：
  *   Genome（服务端记录） = Docker image
  *   运行中的 session     = Docker container
  *   /v1/genomes (public) = Docker Hub
  *   canonical authoring  = agent.json + entity.diff.jsonl
- *   GenomeSpec           = 兼容层读取到的扁平化 projection
+ *   AgentImage           = 兼容层读取到的扁平化 projection
  *
  * 字段分层：
  *   Tier 0  身份（genome 必须有的最小信息）
@@ -23,9 +23,9 @@ import { z } from 'zod';
  * 说明：
  * - 真正的 authoring truth 不在这里，而在 canonical agent.json / diff ledger。
  * - 这里保留，是为了让尚未迁移完的 CLI/runtime/marketplace 读路径继续工作。
- * - 新写路径应优先产出 canonical agent.json，再按需投影到 GenomeSpec。
+ * - 新写路径应优先产出 canonical agent.json，再按需投影到 AgentImage。
  */
-export interface GenomeSpec {
+export interface AgentImage {
 
     // =========================================================================
     // Tier 0 — 身份（最小必要信息，用于 UI 展示 / 路由决策）
@@ -186,7 +186,7 @@ export interface GenomeSpec {
     /**
      * 消息社交图：定义这个 agent 天生与谁通信。
      *
-     * 行为是个体属性，不由军团（CorpsSpec）覆盖。
+     * 行为是个体属性，不由军团（LegionImage）覆盖。
      * 想要不同行为的 agent 应发布为独立 genome variant，
      * 例：'@official/passive-builder' vs '@official/active-builder'
      */
@@ -330,7 +330,7 @@ export interface GenomeSpec {
      * spawn the agent periodically. Replaces AHA_SUPERVISOR_INTERVAL env var.
      */
     schedule?: {
-        /** Cron expression or human-readable interval (e.g. '*/5 * * * *', '5m', '1h') */
+        /** Cron expression or human-readable interval (e.g. `*\/5 * * * *`, '5m', '1h') */
         interval?: string;
         /** Maximum concurrent instances (default: 1) */
         maxConcurrent?: number;
@@ -459,7 +459,7 @@ export interface GenomeSpec {
     // 逃生口 — 任意扩展
     // =========================================================================
     /**
-     * 任意 key-value，用于存储 GenomeSpec 尚未定义的字段。
+     * 任意 key-value，用于存储 AgentImage 尚未定义的字段。
      * CLI 遇到 meta 里的字段会忽略，不会报错。
      * 随着系统演进，成熟的 meta 字段会被提升到正式字段。
      */
@@ -506,7 +506,7 @@ export type DiffChangeNarrative = {
 
 export type DiffChange = DiffChangeKv | DiffChangeString | DiffChangeNarrative;
 
-export interface GenomeDiffRecord {
+export interface AgentPlugRecord {
     id: string;
     genomeId: string;
     version: number;
@@ -519,7 +519,21 @@ export interface GenomeDiffRecord {
     createdAt: string;
 }
 
-export interface GenomeFeedbackHistoryEntry {
+export interface DiffLedgerEntry {
+    id: string;
+    genomeId: string;
+    version: number;
+    seqNo: number;
+    timestamp: string;
+    diffType: 'kv' | 'string' | 'narrative';
+    path?: string | null;
+    op?: string | null;
+    oldValue?: string | null;
+    newValue?: string | null;
+    content?: string | null;
+}
+
+export interface AgentVerdictHistoryEntry {
     evaluationCount: number;
     avgScore: number;
     sessionScore?: {
@@ -546,7 +560,7 @@ export interface GenomeFeedbackHistoryEntry {
     updatedAt: string;
 }
 
-export interface GenomeFeedbackTrend {
+export interface AgentVerdictTrend {
     historyCount: number;
     previousAvgScore: number | null;
     avgScoreDelta: number;
@@ -554,7 +568,7 @@ export interface GenomeFeedbackTrend {
     previousUpdatedAt: string | null;
 }
 
-export interface GenomeFeedback {
+export interface AgentVerdict {
     evaluationCount: number;
     avgScore: number;
     sessionScore?: {
@@ -579,18 +593,18 @@ export interface GenomeFeedback {
     latestAction: 'keep' | 'keep_with_guardrails' | 'mutate' | 'discard';
     suggestions: string[];
     updatedAt: string;
-    history?: GenomeFeedbackHistoryEntry[];
-    trend?: GenomeFeedbackTrend;
+    history?: AgentVerdictHistoryEntry[];
+    trend?: AgentVerdictTrend;
 }
 
-export interface CorpsMemberOverlay {
+export interface LegionMemberOverlay {
     promptSuffix?: string;
-    messaging?: GenomeSpec['messaging'];
-    behavior?: GenomeSpec['behavior'];
+    messaging?: AgentImage['messaging'];
+    behavior?: AgentImage['behavior'];
     authorities?: TeamAuthority[];
 }
 
-export interface CorpsTaskPolicy {
+export interface LegionTaskPolicy {
     boardIsSourceOfTruth?: boolean;
     requireTaskForExecution?: boolean;
     forbidChatOnlyExecution?: boolean;
@@ -603,7 +617,7 @@ export interface Genome {
     accountId: string;
     name: string;
     description?: string | null;
-    /** JSON 序列化的 GenomeSpec */
+    /** JSON 序列化的 AgentImage */
     spec: string;
     /** JSON 序列化的聚合评分数据（由 supervisor 通过 update_genome_feedback 写入） */
     feedbackData?: string | null;
@@ -616,8 +630,8 @@ export interface Genome {
     updatedAt: string;
 }
 
-/** 解析 Genome.spec 字段为 GenomeSpec 兼容投影对象，非 @official namespace 强制降级危险字段 */
-export function parseGenomeSpec(genome: Genome): GenomeSpec {
+/** 解析 Genome.spec 字段为 AgentImage 兼容投影对象，非 @official namespace 强制降级危险字段 */
+export function parseGenomeSpec(genome: Genome): AgentImage {
     const raw = JSON.parse(genome.spec);
 
     // 判断 namespace：优先从 Genome 记录的 name 前缀推断，其次从 spec 内部读取
@@ -649,21 +663,23 @@ export function parseGenomeSpec(genome: Genome): GenomeSpec {
         delete raw.disallowedTools;
     }
 
-    return raw as GenomeSpec;
+    return raw as AgentImage;
 }
 
+export const parseAgentImage = parseGenomeSpec;
+
 /**
- * CorpsSpec — 军团配置 schema。
+ * LegionImage — 军团配置 schema。
  *
  * 军团 = 多个 genome 的组合 + 共享启动上下文。
  * 军团不定义行为规则（行为由每个 genome 自身携带），
  * 只提供成员名单和启动时注入给每个成员的共享信息。
  *
  * 类比：
- *   CorpsSpec    = docker-compose.yml（组合多个镜像）
- *   GenomeSpec   = Dockerfile（定义单个镜像的完整行为）
+ *   LegionImage    = docker-compose.yml（组合多个镜像）
+ *   AgentImage   = Dockerfile（定义单个镜像的完整行为）
  */
-export interface CorpsSpec {
+export interface LegionImage {
     // ─── 基础标识 ──────────────────────────────────────────────────
     namespace: string;        // '@official', '@myorg'
     name: string;             // 'fullstack-sprint', 'research-team'
@@ -692,7 +708,7 @@ export interface CorpsSpec {
          * - messaging/behavior 用于本次编队覆盖默认 DNA
          * - authorities 用于定义该成员在此团队中的硬权限
          */
-        overlay?: CorpsMemberOverlay;
+        overlay?: LegionMemberOverlay;
     }[];
 
     // ─── 共享启动上下文 ─────────────────────────────────────────────
@@ -711,7 +727,7 @@ export interface CorpsSpec {
         /** 指挥链/消息链路，用于团队级 routing 提示 */
         commandChain?: string[];
         /** 团队级 task-first 策略 */
-        taskPolicy?: CorpsTaskPolicy;
+        taskPolicy?: LegionTaskPolicy;
     };
 }
 
@@ -796,7 +812,7 @@ export interface CanonicalAgentCard {
         displayName?: string;
         description?: string;
     };
-    genome: GenomeSpec;
+    genome: AgentImage;
     adapters?: {
         claude?: RuntimeAdapterSpec;
         codex?: RuntimeAdapterSpec;
@@ -847,37 +863,31 @@ export interface A2AProjectionCard {
 }
 
 // =============================================================================
-// Canonical naming — aligned with agent-evolution-theory.md
-//
-// The design vocabulary is: AgentImage / AgentPlug / AgentTrial / AgentVerdict
-//                           LegionImage / LegionPlug / LegionLayer
-//
-// GenomeSpec and CorpsSpec remain as backward-compatible projection aliases.
-// New code should prefer the canonical names.
+// =============================================================================
+// 方案B 终裁 — 进化理论名为主名，旧名为 backward-compat aliases
+// Design vocabulary: AgentImage / AgentPlug / AgentTrial / AgentVerdict
+//                    LegionImage / LegionPlug / LegionLayer
 // =============================================================================
 
-/**
- * AgentSpec — unified-schema-design.md canonical: "AgentSpec = AgentKernel + AgentPayload".
- * Backward-compatible alias for GenomeSpec (the materialized compatibility projection).
- */
-export type AgentSpec = GenomeSpec;
-
-/**
- * AgentImage — agent-evolution-theory.md canonical: "AgentImage = seed ⊕ diff₁ ⊕ ... ⊕ diffₙ".
- * The complete, materialized definition of a single agent (view() result).
- * Alias for GenomeSpec (compatibility projection); both names are valid.
- */
-export type AgentImage = GenomeSpec;
-
-/**
- * AgentPlug — an evolution diff applied to an AgentImage to produce the next version.
- * supervisor verdict → AgentPlug → next AgentImage.
- */
+/** AgentPlug — 进化增量，Image ⊕ Plug → next Image */
 export type AgentPlug = DiffChange[];
 
-/**
- * LegionImage — the complete definition of a multi-agent composition.
- * Canonical name for what was previously called CorpsSpec.
- * LegionImage = AgentImage₁@v + AgentImage₂@v + ... + LegionLayer
- */
-export type LegionImage = CorpsSpec;
+// ── Backward-compat aliases (旧名→新名，新代码禁止使用旧名) ──────────
+
+/** @deprecated Use AgentImage */
+export type GenomeSpec = AgentImage;
+
+/** @deprecated Use AgentImage */
+export type AgentSpec = AgentImage;
+
+/** @deprecated Use LegionImage */
+export type CorpsSpec = LegionImage;
+
+/** @deprecated Use LegionMemberOverlay */
+export type CorpsMemberOverlay = LegionMemberOverlay;
+
+/** @deprecated Use LegionTaskPolicy */
+export type CorpsTaskPolicy = LegionTaskPolicy;
+
+/** @deprecated Use AgentVerdict */
+export type GenomeFeedback = AgentVerdict;

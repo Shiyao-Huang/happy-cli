@@ -26,7 +26,7 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { TaskStateManager } from '../utils/taskStateManager';
 import { readDaemonState } from '@/persistence';
 import { createReplacementTeamMemberIdentity, createTeamMemberIdentity } from '../utils/teamMemberIdentity';
-import { resolvePreferredGenomeSpecId } from '@/utils/genomeMarketplace';
+import { resolvePreferredAgentImageId } from '@/utils/genomeMarketplace';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -38,7 +38,7 @@ export interface McpToolContext {
     mcp: McpServer;
     api: any;
     client: ApiSessionClient;
-    genomeSpecRef?: { current: import('../../api/types/genome').GenomeSpec | null | undefined };
+    genomeSpecRef?: { current: import('../../api/types/genome').AgentImage | null | undefined };
     handler: (title: string) => Promise<{ success: boolean; error?: string }>;
     pingDaemonHeartbeat: () => Promise<void>;
     getTaskStateManager: () => TaskStateManager | null;
@@ -116,7 +116,7 @@ export class ReplaceAgentStageError extends Error {
 export function buildMcpHelpers(
     api: any,
     client: ApiSessionClient,
-    genomeSpecRef: { current: import('../../api/types/genome').GenomeSpec | null | undefined } | undefined,
+    genomeSpecRef: { current: import('../../api/types/genome').AgentImage | null | undefined } | undefined,
 ): Omit<McpToolContext, 'mcp' | 'handler' | 'pingDaemonHeartbeat'> {
 
     const getTaskStateManager = (): TaskStateManager | null => {
@@ -341,7 +341,7 @@ export function buildMcpHelpers(
         // A replacement must mint a fresh member/session identity; reusing the prior
         // member tag causes getOrCreateSession(tag=...) to return the old session.
         const { memberId, sessionTag } = createReplacementTeamMemberIdentity(params.teamId, params.memberId);
-        const resolvedSpec = await resolvePreferredGenomeSpecId({
+        const resolvedSpec = await resolvePreferredAgentImageId({
             role: params.roleId,
             runtime: params.runtimeType,
             strategy: 'best-rated',

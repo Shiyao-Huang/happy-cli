@@ -9,7 +9,7 @@ import type { RunEnvelope } from '@/daemon/runEnvelope'
  *   A[supervisorTools] -->|ctx.mcp| B[McpServer]
  *   A -->|ctx.api| C[ApiClient]
  *   A -->|ctx.client| D[ApiSessionClient]
- *   A -->|ctx.genomeSpecRef| E[GenomeSpec]
+ *   A -->|ctx.genomeSpecRef| E[AgentImage]
  *   A -->|ctx.triggerHelpLane| F[helpLane]
  *   A -->|ctx.getDaemonTrackedSessionIds| G[daemonTracker]
  * ```
@@ -33,15 +33,15 @@ import type { RunEnvelope } from '@/daemon/runEnvelope'
 import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { configuration } from '@/configuration';
-import type { DiffChange, GenomeDiffRecord, GenomeFeedback, GenomeSpec } from '@/api/types/genome';
+import type { DiffChange, AgentPlugRecord, AgentVerdict, AgentImage, DiffLedgerEntry } from '@/api/types/genome';
 import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
-import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorGenomeFeedback';
+import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorAgentVerdict';
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
 import { projectSelfMirrorIdentity } from '../utils/runEnvelopeMirror';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
 import { getContextStatusReport } from '../utils/contextStatus';
-import { fetchGenomeSpec } from '../utils/fetchGenome';
+import { fetchAgentImage } from '../utils/fetchGenome';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
@@ -69,7 +69,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         teamId: string | null;
         role: string;
         specId: string | null;
-        genomeSpec: import('@/api/types/genome').GenomeSpec | null;
+        genomeSpec: import('@/api/types/genome').AgentImage | null;
         memberAuthorities: import('@/api/types/genome').TeamAuthority[];
         teamOverlayAuthorities: import('@/api/types/genome').TeamAuthority[];
     }> => {
@@ -110,7 +110,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         let genomeSpec = isSelf ? (genomeSpecRef?.current ?? null) : null;
         if (!genomeSpec && specId) {
-            genomeSpec = await fetchGenomeSpec(client.getAuthToken(), specId).catch(() => null);
+            genomeSpec = await fetchAgentImage(client.getAuthToken(), specId).catch(() => null);
         }
 
         return {
@@ -150,12 +150,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         return `${base}/entities/id/${encodeURIComponent(specId)}`;
     };
 
-    type MarketplaceGenomeFeedback = Pick<GenomeFeedback, 'evaluationCount' | 'avgScore' | 'dimensions' | 'latestAction' | 'updatedAt'>;
+    type MarketplaceAgentVerdict = Pick<AgentVerdict, 'evaluationCount' | 'avgScore' | 'dimensions' | 'latestAction' | 'updatedAt'>;
 
-    const parseFeedbackData = (feedbackData?: string | null): MarketplaceGenomeFeedback | null => {
+    const parseFeedbackData = (feedbackData?: string | null): MarketplaceAgentVerdict | null => {
         if (!feedbackData) return null;
         try {
-            return JSON.parse(feedbackData) as MarketplaceGenomeFeedback;
+            return JSON.parse(feedbackData) as MarketplaceAgentVerdict;
         } catch {
             return null;
         }
@@ -170,6 +170,24 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return [String(tags)];
         }
     };
+
+    const normalizeMirrorJson = (value: unknown): unknown => {
+        if (Array.isArray(value)) {
+            return value.map((entry) => normalizeMirrorJson(entry));
+        }
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(
+                Object.entries(value as Record<string, unknown>)
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([key, nested]) => [key, normalizeMirrorJson(nested)]),
+            );
+        }
+        return value;
+    };
+
+    const mirrorJsonEquals = (left: unknown, right: unknown): boolean => (
+        JSON.stringify(normalizeMirrorJson(left)) === JSON.stringify(normalizeMirrorJson(right))
+    );
 
     const fetchGenomeVersions = async (hubUrl: string, namespace: string, name: string): Promise<MarketplaceGenome[]> => {
         const res = await fetch(
@@ -234,6 +252,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         spec: Record<string, unknown>;
         seedSpec: Record<string, unknown> | null;
         diffHistory: EntityDiffRecord[];
+        ledgerEntries: DiffLedgerEntry[];
+        replayedSpec: Record<string, unknown> | null;
+        replayMatchesView: boolean | null;
     }> => {
         const entityRes = await fetch(resolveEntityMirrorUrl(specId), { signal: AbortSignal.timeout(5_000) });
         if (!entityRes.ok) {
@@ -249,25 +270,61 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const seedSpec = entity.seed ? JSON.parse(entity.seed) as Record<string, unknown> : null;
 
         let diffHistory: EntityDiffRecord[] = [];
+        let ledgerEntries: DiffLedgerEntry[] = [];
+        let replayedSpec: Record<string, unknown> | null = null;
+        let replayMatchesView: boolean | null = null;
         if (entity.namespace && entity.name) {
-            const diffRes = await fetch(
-                `${(process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '')}/entities/${encodeURIComponent(entity.namespace)}/${encodeURIComponent(entity.name)}/diffs`,
-                { signal: AbortSignal.timeout(5_000) },
-            );
+            const hubBaseUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+            const encodedNs = encodeURIComponent(entity.namespace);
+            const encodedName = encodeURIComponent(entity.name);
+            const ledgerParams = new URLSearchParams();
+            if (Number.isInteger(entity.version) && entity.version > 0) {
+                ledgerParams.set('version', String(entity.version));
+            }
+
+            const [diffRes, ledgerRes] = await Promise.all([
+                fetch(
+                    `${hubBaseUrl}/entities/${encodedNs}/${encodedName}/diffs`,
+                    { signal: AbortSignal.timeout(5_000) },
+                ),
+                fetch(
+                    `${hubBaseUrl}/genomes/${encodedNs}/${encodedName}/ledger${ledgerParams.size > 0 ? `?${ledgerParams.toString()}` : ''}`,
+                    { signal: AbortSignal.timeout(5_000) },
+                ),
+            ]);
             if (!diffRes.ok) {
                 throw new Error(`Failed to fetch entity diff history for ${entity.namespace}/${entity.name}: HTTP ${diffRes.status}`);
             }
+            if (!ledgerRes.ok) {
+                throw new Error(`Failed to fetch canonical ledger for ${entity.namespace}/${entity.name}: HTTP ${ledgerRes.status}`);
+            }
+
             const diffData = await diffRes.json() as { diffs?: EntityDiffRecord[] };
             if (!Array.isArray(diffData.diffs)) {
                 throw new Error(`Entity diff history for ${entity.namespace}/${entity.name} was malformed.`);
             }
             diffHistory = diffData.diffs;
+
+            const ledgerData = await ledgerRes.json() as { ledger?: DiffLedgerEntry[]; replayedSpec?: string | null };
+            if (!Array.isArray(ledgerData.ledger)) {
+                throw new Error(`Canonical ledger for ${entity.namespace}/${entity.name} was malformed.`);
+            }
+            ledgerEntries = ledgerData.ledger;
+
+            if (typeof ledgerData.replayedSpec === 'string' && ledgerData.replayedSpec.trim().length > 0) {
+                const parsedReplay = JSON.parse(ledgerData.replayedSpec);
+                if (parsedReplay === null || typeof parsedReplay !== 'object' || Array.isArray(parsedReplay)) {
+                    throw new Error(`Canonical replay for ${entity.namespace}/${entity.name} was not a JSON object.`);
+                }
+                replayedSpec = parsedReplay as Record<string, unknown>;
+                replayMatchesView = mirrorJsonEquals(spec, replayedSpec);
+            }
         }
 
-        return { entity, spec, seedSpec, diffHistory };
+        return { entity, spec, seedSpec, diffHistory, ledgerEntries, replayedSpec, replayMatchesView };
     };
 
-    const fetchGenomeDiffs = async (hubUrl: string, namespace: string, name: string): Promise<GenomeDiffRecord[]> => {
+    const fetchGenomeDiffs = async (hubUrl: string, namespace: string, name: string): Promise<AgentPlugRecord[]> => {
         const res = await fetch(
             `${hubUrl}/genomes/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/diffs`,
             { signal: AbortSignal.timeout(5_000) }
@@ -275,7 +332,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         if (!res.ok) {
             throw new Error(`Failed to fetch diffs: HTTP ${res.status}`);
         }
-        const data = await res.json() as { diffs?: GenomeDiffRecord[] };
+        const data = await res.json() as { diffs?: AgentPlugRecord[] };
         return Array.isArray(data.diffs) ? data.diffs : [];
     };
 
@@ -500,7 +557,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         description: [
             'See yourself: who you are, your context usage, your team, and your performance.',
             'Combines identity (role, AgentImage/genome), capabilities, behavior config, context window status, team pulse, tasks, and performance into one view.',
-            'Also returns the effective prompt mirror, current materialized AgentImage (view), AgentPlug history (view-diff), and seed spec (view-not-diff) for runtime self-verification.',
+            'Also returns the effective prompt mirror, current materialized AgentImage (view), AgentPlug history (view-diff), canonical ledger rows (view-ledger), and seed spec (view-not-diff) for runtime self-verification.',
             'Builds the self-reference triangle: who am I (AgentImage), what can I do, how am I doing.',
             'Call this at the start of each cycle to orient yourself before taking action.',
             'Available to ALL team members.',
@@ -565,8 +622,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             let genomeFeedbackRaw: string | null = null;
             if (identity.specId) {
                 try {
-                    const { fetchGenomeFeedbackData } = await import('@/claude/utils/fetchGenome');
-                    const feedbackRaw = await fetchGenomeFeedbackData(client.getAuthToken(), identity.specId);
+                    const { fetchAgentVerdictData } = await import('@/claude/utils/fetchGenome');
+                    const feedbackRaw = await fetchAgentVerdictData(client.getAuthToken(), identity.specId);
                     if (feedbackRaw) {
                         genomeFeedbackRaw = feedbackRaw;
                         const feedback = JSON.parse(feedbackRaw) as {
@@ -734,14 +791,21 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             let specMirrorObject: Record<string, unknown> | null = genomeSpec ? genomeSpec as unknown as Record<string, unknown> : null;
             let seedSpecMirror: Record<string, unknown> | null = null;
             let diffHistoryMirror: EntityDiffRecord[] = [];
+            let ledgerEntriesMirror: DiffLedgerEntry[] = [];
+            let replayedSpecMirror: Record<string, unknown> | null = null;
+            let replayMatchesView: boolean | null = null;
             if (identity.specId) {
                 const mirror = await fetchEntityMirror(identity.specId);
                 specMirrorObject = mirror.spec;
                 seedSpecMirror = mirror.seedSpec;
                 diffHistoryMirror = mirror.diffHistory;
+                ledgerEntriesMirror = mirror.ledgerEntries;
+                replayedSpecMirror = mirror.replayedSpec;
+                replayMatchesView = mirror.replayMatchesView;
             }
             const specMirror = JSON.stringify(specMirrorObject, null, 2);
             const seedSpecMirrorJson = JSON.stringify(seedSpecMirror, null, 2);
+            const replayedSpecMirrorJson = JSON.stringify(replayedSpecMirror, null, 2);
 
             // ── FORMAT OUTPUT ─────────────────────────────────────────────
             const lines: string[] = [
@@ -867,6 +931,26 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             lines.push('', '[Seed Spec]');
             lines.push(...indentBlock(seedSpecMirrorJson));
 
+            lines.push('', '[Canonical Ledger]');
+            if (ledgerEntriesMirror.length > 0) {
+                for (const entry of ledgerEntriesMirror) {
+                    const pathLabel = entry.path ? ` ${entry.path}` : '';
+                    lines.push(`  - v${entry.version}#${entry.seqNo} ${entry.diffType}${pathLabel}`);
+                    lines.push(...indentBlock(JSON.stringify(entry, null, 2), '    '));
+                }
+            } else {
+                lines.push('  (none)');
+            }
+
+            lines.push('', '[Replay Verification]');
+            if (replayedSpecMirror) {
+                lines.push(`  Replay Matches View: ${replayMatchesView === true ? 'true' : 'false'}`);
+                lines.push('  Replayed Spec:');
+                lines.push(...indentBlock(replayedSpecMirrorJson, '    '));
+            } else {
+                lines.push('  (unavailable)');
+            }
+
             return {
                 content: [{ type: 'text', text: lines.join('\n') }],
                 isError: false,
@@ -914,7 +998,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     mcp.registerTool('get_genome_spec', {
-        description: 'Inspect an AgentImage (Entity / genome spec) by ID at runtime. Returns the three canonical views: view (current materialized AgentImage = seed ⊕ all AgentPlugs applied), view-diff (ordered AgentPlug history), and view-not-diff (seed/original spec before any evolution). Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
+        description: 'Inspect an AgentImage (Entity / genome spec) by ID at runtime. Returns the canonical views: view (current materialized AgentImage = seed ⊕ all AgentPlugs applied), view-diff (ordered AgentPlug history), view-ledger (canonical atomic ledger rows), and view-not-diff (seed/original spec before any evolution), plus replayedSpec for self-verification. Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
         title: 'Get AgentImage Spec',
         inputSchema: {
             specId: z.string().describe('AgentImage spec ID (Entity ID) to inspect'),
@@ -931,9 +1015,9 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         try {
             const mirror = await fetchEntityMirror(args.specId);
-            const spec = mirror.spec as GenomeSpec;
-            const { buildGenomeInjection } = await import('@/claude/utils/buildGenomeInjection');
-            const injectedPrompt = buildGenomeInjection(spec);
+            const spec = mirror.spec as AgentImage;
+            const { buildAgentImageInjection } = await import('@/claude/utils/buildGenomeInjection');
+            const injectedPrompt = buildAgentImageInjection(spec);
 
             return {
                 content: [{
@@ -951,7 +1035,10 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         },
                         view: spec,
                         viewDiff: mirror.diffHistory,
+                        viewLedger: mirror.ledgerEntries,
                         viewNotDiff: mirror.seedSpec,
+                        replayedSpec: mirror.replayedSpec,
+                        replayMatchesView: mirror.replayMatchesView,
                         injectedPrompt,
                     }, null, 2),
                 }],
@@ -2231,8 +2318,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     // ── Version Comparison: compare_genome_versions ───────────────────────
     mcp.registerTool('compare_genome_versions', {
         description: [
-            'Compare two AgentImage (agent docker) versions using aggregated feedback plus the canonical Plug (diff) ledger.',
-            'Returns the recommendation together with the diff-history slice (Plug chain) between the two versions.',
+            'Compare two AgentImage (agent docker) versions using aggregated feedback plus both the Plug chain and the canonical diff ledger.',
+            'Returns the recommendation together with the Plug-history slice and the canonical ledger rows between the two versions.',
             'Use this after evolve_genome or mutate_genome to validate that the newer AgentImage both exists in the ledger and performs better.',
             'Supervisor only.',
         ].join(' '),
@@ -2304,6 +2391,25 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 touchedPaths,
                 history: ledgerWindow,
             };
+            const canonicalLedgerWindow = entityMirror.ledgerEntries
+                .filter((entry) => entry.version > older.version && entry.version <= newer.version)
+                .sort((a, b) => (a.version - b.version) || (a.seqNo - b.seqNo));
+            const canonicalDiffTypeCounts = canonicalLedgerWindow.reduce<Record<string, number>>((acc, entry) => {
+                acc[entry.diffType] = (acc[entry.diffType] ?? 0) + 1;
+                return acc;
+            }, {});
+            const canonicalTouchedPaths = Array.from(new Set(
+                canonicalLedgerWindow
+                    .map((entry) => entry.path)
+                    .filter((path): path is string => typeof path === 'string' && path.length > 0)
+            )).sort();
+            const canonicalLedger = {
+                rowCount: canonicalLedgerWindow.length,
+                versionsCovered: Array.from(new Set(canonicalLedgerWindow.map((entry) => entry.version))).sort((a, b) => a - b),
+                diffTypeCounts: canonicalDiffTypeCounts,
+                touchedPaths: canonicalTouchedPaths,
+                history: canonicalLedgerWindow,
+            };
 
             const olderFeedback = parseFeedbackData(older.feedbackData);
             const newerFeedback = parseFeedbackData(newer.feedbackData);
@@ -2318,6 +2424,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             newerVersion: newer.version,
                             reason: 'One or both versions have no aggregated feedbackData/evaluations yet.',
                             diffLedger,
+                            canonicalLedger,
                         }, null, 2),
                     }],
                     isError: false,
@@ -2364,6 +2471,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 avgScoreDelta,
                 dimensionDeltas,
                 diffLedger,
+                canonicalLedger,
             };
             return {
                 content: [{

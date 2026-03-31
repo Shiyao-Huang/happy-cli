@@ -1,5 +1,5 @@
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
-import type { CorpsSpec } from '@/api/types/genome';
+import type { LegionImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { buildMarketplaceConnectionHint } from './marketplaceConnection';
 
@@ -31,12 +31,7 @@ export type CorpsTemplateMember = {
     genome: string;
     roleAlias?: string;
     required?: boolean;
-    overlay?: {
-        promptSuffix?: string;
-        messaging?: Record<string, unknown>;
-        behavior?: Record<string, unknown>;
-        authorities?: string[];
-    };
+    overlay?: LegionImage['members'][number]['overlay'];
 };
 
 type PublishTeamCorpsTemplateOptions = {
@@ -128,12 +123,28 @@ export function parseMarketplaceFeedbackData(feedbackData?: string | null): Mark
 export function getPreferredGenomeNames(role: string, runtime: 'claude' | 'codex'): string[] {
     const normalizedRole = role.trim();
     const aliases = ROLE_MARKET_ALIASES[normalizedRole] ?? [];
+    const builderVariants = normalizedRole === 'agent-builder'
+        ? runtime === 'codex'
+            ? ['agent-builder-codex-r2', 'agent-builder-codex', 'agent-builder']
+            : ['agent-builder-r2', 'agent-builder', 'agent-builder-portable']
+        : [];
 
     return uniqueStrings([
-        runtime === 'codex' && normalizedRole === 'agent-builder' ? 'agent-builder-codex' : normalizedRole,
+        ...builderVariants,
         normalizedRole,
         ...aliases,
     ]);
+}
+
+export function resolveSpawnRuntimeForRole(
+    role: string,
+    requestedRuntime?: 'claude' | 'codex',
+): 'claude' | 'codex' {
+    if (requestedRuntime) {
+        return requestedRuntime;
+    }
+
+    return role.trim() === 'agent-builder' ? 'codex' : 'claude';
 }
 
 export function searchMatchesRole(genome: MarketplaceGenomeRecord, roleNames: string[]): boolean {
@@ -284,14 +295,14 @@ export function formatMarketplaceGenomeRef(
     return `${genome.namespace}/${genome.name}`;
 }
 
-export function parseCorpsSpecFromGenome(genome: Pick<MarketplaceGenomeRecord, 'name' | 'category' | 'spec'>): CorpsSpec {
+export function parseCorpsSpecFromGenome(genome: Pick<MarketplaceGenomeRecord, 'name' | 'category' | 'spec'>): LegionImage {
     if (!genome.spec) {
         throw new Error(`Marketplace record "${genome.name}" has no spec payload.`);
     }
 
-    const parsed = JSON.parse(genome.spec) as CorpsSpec;
+    const parsed = JSON.parse(genome.spec) as LegionImage;
     if (!parsed || !Array.isArray(parsed.members)) {
-        throw new Error(`Marketplace record "${genome.name}" is not a valid CorpsSpec team template.`);
+        throw new Error(`Marketplace record "${genome.name}" is not a valid LegionImage team template.`);
     }
 
     if (genome.category && genome.category !== 'corps') {
@@ -333,7 +344,7 @@ export async function resolveOfficialGenomeSpecId(
     return { specId: null };
 }
 
-export async function resolvePreferredGenomeSpecId(options: {
+export async function resolvePreferredAgentImageId(options: {
     role: string;
     runtime: 'claude' | 'codex';
     strategy?: 'official' | 'best-rated';
@@ -377,6 +388,8 @@ export async function resolvePreferredGenomeSpecId(options: {
     return { specId: null, source: 'none' };
 }
 
+export const resolvePreferredGenomeSpecId = resolvePreferredAgentImageId;
+
 export function slugifyMarketplaceName(input: string): string {
     const collapsed = input
         .trim()
@@ -417,8 +430,8 @@ export function buildPublishedCorpsSpec(options: {
     taskPolicy?: Record<string, unknown>;
     tags?: string[];
     members: CorpsTemplateMember[];
-}): CorpsSpec {
-    const aggregated = new Map<string, CorpsSpec['members'][number]>();
+}): LegionImage {
+    const aggregated = new Map<string, LegionImage['members'][number]>();
 
     for (const member of options.members) {
         const key = `${member.genome}::${member.roleAlias || ''}::${member.required !== false}::${stableStringify(member.overlay ?? null)}`;

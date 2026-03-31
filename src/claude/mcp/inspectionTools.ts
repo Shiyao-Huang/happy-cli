@@ -1,4 +1,4 @@
-import type { GenomeSpec, TeamAuthority } from '@/api/types/genome';
+import type { AgentImage, TeamAuthority } from '@/api/types/genome';
 import {
     canCreateTeamTasks,
     canManageExistingTasks,
@@ -54,7 +54,7 @@ interface EffectivePermissionsInput {
     permissionMode: string;
     allowedTools: string[];
     deniedTools: string[];
-    genomeSpec: GenomeSpec | null;
+    genomeSpec: AgentImage | null;
     memberAuthorities?: TeamAuthority[];
     teamOverlayAuthorities?: TeamAuthority[];
 }
@@ -86,7 +86,7 @@ function findAuthoritySource(
 
 function buildTaskCreateDecision(
     role: string,
-    effectiveGenome: GenomeSpec | null,
+    effectiveGenome: AgentImage | null,
     genomeAuthorities: Set<TeamAuthority>,
     memberAuthorities: Set<TeamAuthority>,
     teamOverlayAuthorities: Set<TeamAuthority>,
@@ -139,7 +139,7 @@ function buildTaskCreateDecision(
 
 function buildTaskManageDecision(
     role: string,
-    effectiveGenome: GenomeSpec | null,
+    effectiveGenome: AgentImage | null,
     genomeAuthorities: Set<TeamAuthority>,
     memberAuthorities: Set<TeamAuthority>,
     teamOverlayAuthorities: Set<TeamAuthority>,
@@ -184,7 +184,7 @@ function buildTaskManageDecision(
 
 function buildAgentSpawnDecision(
     role: string,
-    effectiveGenome: GenomeSpec | null,
+    effectiveGenome: AgentImage | null,
     genomeAuthorities: Set<TeamAuthority>,
     memberAuthorities: Set<TeamAuthority>,
     teamOverlayAuthorities: Set<TeamAuthority>,

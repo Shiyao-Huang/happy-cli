@@ -17,6 +17,7 @@ describe('runtimeConfig', () => {
         const settingsPath = join(root, 'settings.json');
         const envFilePath = join(root, 'env.json');
         const mcpConfigPath = join(root, 'mcp.json');
+        const commandsDir = join(root, 'commands');
 
         writeFileSync(settingsPath, '{}', 'utf-8');
         writeFileSync(envFilePath, JSON.stringify({
@@ -31,12 +32,13 @@ describe('runtimeConfig', () => {
             OPENAI_API_KEY: 'test-key',
             AHA_ROOM_ID: 'team-1',
         });
-        expect(buildMaterializedSpawnEnv({ settingsPath, envFilePath, mcpConfigPath })).toEqual({
+        expect(buildMaterializedSpawnEnv({ settingsPath, envFilePath, mcpConfigPath, commandsDir })).toEqual({
             OPENAI_API_KEY: 'test-key',
             AHA_ROOM_ID: 'team-1',
             AHA_SETTINGS_PATH: settingsPath,
             AHA_AGENT_ENV_FILE_PATH: envFilePath,
             AHA_AGENT_MCP_CONFIG_PATH: mcpConfigPath,
+            AHA_AGENT_COMMANDS_DIR: commandsDir,
         });
     });
 

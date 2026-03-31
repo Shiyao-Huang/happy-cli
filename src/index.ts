@@ -42,27 +42,26 @@ ${chalk.gray(`Version ${version}`)}
 
 ${chalk.bold('Usage:')}
   ${chalk.green('aha')} <command> [options]
-  ${chalk.green('aha')} <command> --help     Show command-specific help
+  ${chalk.green('aha')} <command> --help     Show command-specific help when supported
   ${chalk.green('aha')} --help              Show this help message
   ${chalk.green('aha')} --version           Show version number
 
 ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
-  ${chalk.yellow('auth')} [login|logout]      Authentication management
-  ${chalk.yellow('connect')} [list|remove|<vendor>] AI vendor API key management
-  ${chalk.yellow('channels')} [status|weixin] WeChat channel management
-  ${chalk.yellow('task(s)')} [list|create|update|delete|start|complete|done] Task management
-  ${chalk.yellow('team(s)')} [list|show|status|create|members|archive|delete|spawn] Team management
-  ${chalk.yellow('agent(s)')} [list|show|create|kill|update|archive|delete|spawn] Agent session management
-  ${chalk.yellow('sessions')} [list|show|archive|delete] Direct session management
+  ${chalk.yellow('auth')} [login|reconnect|restore|logout|status] Authentication management
+  ${chalk.yellow('connect')} [list|remove|codex|claude|gemini] AI vendor API key management
+  ${chalk.yellow('channel(s)')} [status|weixin] WeChat / IM channel bridge management
+  ${chalk.yellow('task(s)')} [list|show|create|update|delete|start|complete|done|lock|unlock] Task management
+  ${chalk.yellow('team(s)')} [list|show|status|create|spawn|publish-template|members|add-member|remove-member|rename|archive|unarchive|delete|batch-archive|batch-delete] Team management
+  ${chalk.yellow('agent(s)')} [list|show|create|update|rename|kill|archive|unarchive|delete|spawn] Agent session management
+  ${chalk.yellow('session(s)')} [list|show|archive|unarchive|delete] Direct session management
   ${chalk.yellow('trace')} [team|session|task|member|run|errors] Unified trace timeline
   ${chalk.yellow('usage')} [session|team]      Token usage and cost analysis
-  ${chalk.yellow('channels')} [status|weixin]  WeChat / IM channel bridge management
-  ${chalk.yellow('role(s)')} [defaults|list|pool|review|team-score] Role pool and public review
+  ${chalk.yellow('role(s)')} [defaults|list|pool|reviews|review|team-reviews|team-review|team-score] Role pool and public review
   ${chalk.yellow('codex')}                   Start team collaboration mode
-  ${chalk.yellow('ralph')} [start|status|stop] Ralph autonomous loop
+  ${chalk.yellow('ralph')} [start|status|stop|heartbeat] Ralph autonomous loop
   ${chalk.yellow('notify')} -p <msg> [-t <t>] Send push notification
-  ${chalk.yellow('daemon')} [list|stop]      Background service management
+  ${chalk.yellow('daemon')} [start|stop|status|list|logs|install|uninstall|stop-session] Background service management
 
 ${chalk.bold('Options:')}
   ${chalk.cyan('-h, --help')}              Show help information
@@ -102,7 +101,7 @@ ${chalk.bold('Examples:')}
   ${chalk.gray('# Claude Code with custom message')}
   ${chalk.green('aha')} "Implement a feature" ${chalk.cyan('--message')}
 
-For command-specific help, run:
+For supported command-specific help, run:
   ${chalk.green('aha <command> --help')}
 `)
   process.exit(0)
@@ -253,18 +252,6 @@ For command-specific help, run:
     try {
       const { handleUsageCommand } = await import('./commands/usage');
       await handleUsageCommand(args.slice(1));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
-    }
-    return;
-  } else if (subcommand === 'channels' || subcommand === 'channel') {
-    try {
-      const { channelsCommand } = await import('./commands/channels');
-      await channelsCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {

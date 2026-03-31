@@ -263,7 +263,7 @@ export class CommandExecutor {
       const tasks: any[] = res?.tasks ?? []
       const task = tasks[idx - 1]
       if (!task) return `❌ 找不到任务 #${idx}`
-      await this.getApi().updateTask(task.id, { status: 'done' })
+      await this.getApi().updateTask(teamId, task.id, { status: 'done' })
       return `✅ 任务 #${idx} "${task.title}" 已完成${this.state.statusBar()}`
     } catch (e) {
       return `❌ 完成任务失败: ${errorMsg(e)}`

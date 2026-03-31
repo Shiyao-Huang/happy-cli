@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import type { GenomeSpec } from '@/api/types/genome';
+import type { AgentImage } from '@/api/types/genome';
 
-import { buildGenomeInjection } from './buildGenomeInjection';
+import { buildAgentImageInjection } from './buildGenomeInjection';
 
-describe('buildGenomeInjection', () => {
+describe('buildAgentImageInjection', () => {
     it('includes runtime identity when runtimeType or lifecycle is present', () => {
-        const spec: GenomeSpec = {
+        const spec: AgentImage = {
             runtimeType: 'claude',
             lifecycle: 'active',
         };
 
-        const injection = buildGenomeInjection(spec);
+        const injection = buildAgentImageInjection(spec);
 
         expect(injection).toContain('## Runtime Identity');
         expect(injection).toContain('"runtimeType":"claude"');
@@ -19,14 +19,14 @@ describe('buildGenomeInjection', () => {
     });
 
     it('includes activation rules with normalized trigger conditions', () => {
-        const spec: GenomeSpec = {
+        const spec: AgentImage = {
             trigger: {
                 mode: 'event',
                 conditions: [' build failed ', 'build failed', 'PR opened'],
             },
         };
 
-        const injection = buildGenomeInjection(spec);
+        const injection = buildAgentImageInjection(spec);
 
         expect(injection).toContain('## Activation Rules');
         expect(injection).toContain('"mode":"event"');
@@ -34,7 +34,7 @@ describe('buildGenomeInjection', () => {
     });
 
     it('omits new sections when runtime metadata is absent', () => {
-        const injection = buildGenomeInjection({
+        const injection = buildAgentImageInjection({
             operations: { runtimeConfig: 'Keep context focused.' },
         });
 

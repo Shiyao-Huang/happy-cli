@@ -102,6 +102,16 @@ export interface OrgRules {
     replacement: ReplacementConfig
 }
 
+type DeepPartial<T> = {
+    [K in keyof T]?: T[K] extends Array<infer U>
+        ? U[]
+        : T[K] extends ReadonlyArray<infer U>
+            ? ReadonlyArray<U>
+            : T[K] extends object
+                ? DeepPartial<T[K]>
+                : T[K]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Defaults — Sprint 0325 Wave 2 learnings
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +157,7 @@ export const DEFAULT_ORG_RULES: Readonly<OrgRules> = Object.freeze({
 // Deep merge — preserves defaults for any missing keys
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function mergeWithDefaults(partial: Partial<OrgRules>): OrgRules {
+export function mergeWithDefaults(partial: DeepPartial<OrgRules>): OrgRules {
     return {
         version: partial.version ?? DEFAULT_ORG_RULES.version,
         escalation: { ...DEFAULT_ORG_RULES.escalation, ...partial.escalation },

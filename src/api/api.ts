@@ -2,7 +2,7 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
-import type { CorpsSpec } from '@/api/types/genome'
+import type { LegionImage, LegionMemberOverlay } from '@/api/types/genome'
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
 import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumDecryptWithSecretKey, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey, libsodiumSecretKeyFromSeed } from './encryption';
@@ -1617,7 +1617,7 @@ export class ApiClient {
       executionPlane?: string;
       runtimeType?: string;
       authorities?: string[];
-      teamOverlay?: Record<string, unknown>;
+      teamOverlay?: LegionMemberOverlay;
     }
   ): Promise<{ success: boolean; member: any }> {
     try {
@@ -2424,7 +2424,7 @@ export class ApiClient {
   }
 
   /**
-   * Publish a CorpsSpec team template directly to genome-hub /corps.
+   * Publish a LegionImage team template directly to genome-hub /corps.
    * Unlike createGenome, corps publication currently has no happy-server fallback
    * because the public marketplace is the source of truth for team templates.
    */
@@ -2437,7 +2437,7 @@ export class ApiClient {
     tags?: string;
     isPublic?: boolean;
     publisherId?: string | null;
-  }): Promise<{ genome: any; corps: CorpsSpec }> {
+  }): Promise<{ genome: any; corps: LegionImage }> {
     const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);

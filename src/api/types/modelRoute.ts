@@ -5,7 +5,7 @@
  * Users can override each rule via UI without CLI release.
  *
  * Routing priority (high → low):
- *   1. GenomeSpec.modelId (most specific, genome-level override)
+ *   1. AgentImage.modelId (most specific, genome-level override)
  *   2. KV config.model-routes rules (user-defined)
  *   3. Built-in default rules (bypass=opus, mainline-worker=sonnet)
  */
@@ -47,9 +47,9 @@ export interface ModelRouteContext {
     executionPlane?: 'bypass' | 'mainline';
     taskType?: 'plan' | 'execute' | 'review' | 'support';
     category?: string;
-    /** modelId specified in GenomeSpec (highest priority) */
+    /** modelId specified in AgentImage (highest priority) */
     genomeModelId?: string;
-    /** provider specified in GenomeSpec */
+    /** provider specified in AgentImage */
     genomeModelProvider?: string;
 }
 

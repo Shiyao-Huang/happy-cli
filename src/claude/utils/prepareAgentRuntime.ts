@@ -58,7 +58,7 @@ export interface RuntimePreparation {
 
 // ── Hooks → Settings File ────────────────────────────────────────────────────
 
-function writeGeneratedJsonFile(prefix: string, payload: Record<string, unknown>): string {
+function writeGeneratedJsonFile(prefix: string, payload: unknown): string {
     const dir = join(tmpdir(), 'aha-agent-settings');
     mkdirSync(dir, { recursive: true });
 

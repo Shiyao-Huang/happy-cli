@@ -34,7 +34,8 @@ import { readDaemonState } from '@/persistence';
 import { extractTeamConfigSnapshot } from './inspectionTools';
 import {
     publishTeamCorpsTemplate,
-    resolvePreferredGenomeSpecId,
+    resolvePreferredAgentImageId,
+    resolveSpawnRuntimeForRole,
     searchMarketplaceGenomes,
 } from '@/utils/genomeMarketplace';
 import { emitTraceEvent } from '@/trace/traceEmitter';
@@ -122,7 +123,8 @@ export function registerAgentTools(ctx: McpToolContext): void {
                 const parsedTags = g.tags ? (() => { try { return JSON.parse(g.tags!) as string[]; } catch { return []; } })() : [];
                 const tags = parsedTags.join(',');
                 const score = typeof fb.avgScore === 'number' ? `★${fb.avgScore}(${fb.evaluationCount})` : '';
-                const spawns = g.spawnCount > 0 ? `${g.spawnCount}x` : '';
+                const spawnCount = typeof g.spawnCount === 'number' ? g.spawnCount : 0;
+                const spawns = spawnCount > 0 ? `${spawnCount}x` : '';
                 const desc = (g.description ?? '').slice(0, 60);
                 const special = parsedTags.some(tag => {
                     const normalized = tag.toLowerCase();
@@ -168,7 +170,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
 
 - \`agent: "claude"\` — Default. Full Claude Code with MCP tools, file editing, terminal access. Best for most tasks.
 - \`agent: "codex"\` — OpenAI Codex. Use only when explicitly requested by user.
-- Rule: Default to claude. Only use codex when user says "codex", "openai", or "mixed mode".
+- Rule: Default to claude. Exception: when spawning \`agent-builder\` for agent-authoring / single-agent creation work, codex is the preferred default unless the user explicitly requires Claude-only.
 
 ## Prompt Engineering for Spawned Agents
 
@@ -190,7 +192,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             sessionName: z.string().optional().describe('Human-readable display name, e.g. "Frontend Implementer"'),
             prompt: z.string().optional().describe('Task-specific instructions for the agent. Be concrete — what exactly should this agent work on?'),
             model: z.string().optional().describe('Model override. Omit to use system default.'),
-            agent: z.enum(['claude', 'codex']).default('claude').describe('Runtime: claude (default, recommended) or codex (only when user explicitly requests)'),
+            agent: z.enum(['claude', 'codex']).optional().describe('Optional runtime override. Defaults to claude for normal roles; agent-builder defaults to codex so agent-authoring chat flows use the stronger hub builder by default.'),
             executionPlane: z.enum(['mainline', 'bypass']).default('mainline').describe('Execution plane. Agents can only create mainline agents.'),
             specId: z.string().optional().describe('Optional spec/role-definition ID to pass to the spawned agent via AHA_SPEC_ID env var.'),
             strategy: z.enum(['official', 'best-rated']).optional().describe('Spawn strategy: "best-rated" (default) searches the marketplace first and falls back to @official/{role}; "official" skips market search.'),
@@ -239,6 +241,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
             const parentSessionId = client.sessionId;
+            const runtime = resolveSpawnRuntimeForRole(args.role, args.agent);
 
             const spawnBody = {
                 directory: args.directory,
@@ -246,7 +249,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 sessionName: args.sessionName || `${args.role}-agent`,
                 role: args.role,
                 teamId: args.teamId,
-                agent: args.agent || 'claude',
+                agent: runtime,
                 parentSessionId,
                 executionPlane: args.executionPlane || 'mainline',
                 env: {
@@ -257,7 +260,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 },
             } as Record<string, any>;
 
-            if (args.agent === 'codex') {
+            if (runtime === 'codex') {
                 const openAiToken = await api.getVendorToken('openai');
                 if (openAiToken) {
                     spawnBody.token = typeof openAiToken === 'string'
@@ -269,9 +272,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 }
             }
 
-            const specResolution = await resolvePreferredGenomeSpecId({
+            const specResolution = await resolvePreferredAgentImageId({
                 role: args.role,
-                runtime: args.agent || 'claude',
+                runtime,
                 strategy: args.strategy || 'best-rated',
                 explicitSpecId: args.specId,
             });
@@ -300,8 +303,8 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                         member_id: memberId,
                         session_id: client.sessionId,
                     },
-                    `${role || 'unknown'} requested spawn of ${args.role} (runtime=${args.agent || 'claude'}) in team ${args.teamId}`,
-                    { attrs: { role: args.role, runtime: args.agent || 'claude', specId: resolvedSpecId } },
+                    `${role || 'unknown'} requested spawn of ${args.role} (runtime=${runtime}) in team ${args.teamId}`,
+                    { attrs: { role: args.role, runtime, specId: resolvedSpecId } },
                 );
             } catch { /* trace must never break main flow */ }
 
@@ -338,7 +341,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                             specId: resolvedSpecId,
                             parentSessionId,
                             executionPlane: args.executionPlane || 'mainline',
-                            runtimeType: args.agent || 'claude',
+                            runtimeType: runtime,
                         }
                     );
                     logger.debug(`[create_agent] Added ${args.role} (${spawnedSessionId}) to team ${args.teamId}`);

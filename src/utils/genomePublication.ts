@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAhaHomeDir } from '@/configurationResolver';
-import type { GenomeSpec } from '@/api/types/genome';
+import type { AgentImage } from '@/api/types/genome';
+import { resolveDeclaredSkillSource } from '@/skills/skillResolver';
 
 export const CORE_TEAM_TOOLS = [
     'create_task',
@@ -31,7 +32,7 @@ export const SPAWN_CAPABLE_TEAM_TOOLS = [
 
 const TEAM_PROTOCOL_RULES = [
     'Use the Kanban board as the source of truth: check list_tasks for assigned work, and use start_task / complete_task to keep lifecycle accurate',
-    'Follow your genome\\\'s assignment policy before claiming unassigned work. If you require explicit assignment, wait for assignment instead of self-assigning',
+    'Follow your AgentImage\\\'s assignment policy before claiming unassigned work. If you require explicit assignment, wait for assignment instead of self-assigning',
     'Coordinate via send_team_message; use request_help or @help when blocked',
 ];
 
@@ -75,7 +76,7 @@ function isCanonicalAgentJson(value: JsonRecord): boolean {
     return value.kind === 'aha.agent.v1' && typeof value.name === 'string' && typeof value.runtime === 'string';
 }
 
-function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & JsonRecord {
+function projectCanonicalAgentJsonToAgentImage(value: JsonRecord): AgentImage & JsonRecord {
     const prompt = isRecord(value.prompt) ? value.prompt : undefined;
     const tools = isRecord(value.tools) ? value.tools : undefined;
     const permissions = isRecord(value.permissions) ? value.permissions : undefined;
@@ -89,7 +90,7 @@ function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & 
     const evolution = isRecord(value.evolution) ? value.evolution : undefined;
     const market = isRecord(value.market) ? value.market : undefined;
 
-    const projected: GenomeSpec & JsonRecord = {
+    const projected: AgentImage & JsonRecord = {
         ...value,
         displayName: asString(value.displayName) ?? asString(value.name),
         description: asString(value.description),
@@ -103,28 +104,28 @@ function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & 
         allowedTools: asStringArray(value.allowedTools) ?? asStringArray(tools?.allowed),
         disallowedTools: asStringArray(value.disallowedTools) ?? asStringArray(tools?.disallowed),
         mcpServers: asStringArray(value.mcpServers) ?? asStringArray(tools?.mcpServers),
-        permissionMode: (asString(value.permissionMode) ?? asString(permissions?.permissionMode)) as GenomeSpec['permissionMode'],
-        accessLevel: (asString(value.accessLevel) ?? asString(permissions?.accessLevel)) as GenomeSpec['accessLevel'],
-        executionPlane: (asString(value.executionPlane) ?? asString(permissions?.executionPlane)) as GenomeSpec['executionPlane'],
+        permissionMode: (asString(value.permissionMode) ?? asString(permissions?.permissionMode)) as AgentImage['permissionMode'],
+        accessLevel: (asString(value.accessLevel) ?? asString(permissions?.accessLevel)) as AgentImage['accessLevel'],
+        executionPlane: (asString(value.executionPlane) ?? asString(permissions?.executionPlane)) as AgentImage['executionPlane'],
         maxTurns: asInteger(value.maxTurns) ?? asInteger(permissions?.maxTurns),
         teamRole: asString(value.teamRole) ?? asString(context?.teamRole),
         capabilities: asStringArray(value.capabilities) ?? asStringArray(context?.capabilities),
-        authorities: (asStringArray(value.authorities) ?? asStringArray(context?.authorities)) as GenomeSpec['authorities'],
-        messaging: isRecord(value.messaging) ? value.messaging as GenomeSpec['messaging'] : (messaging as GenomeSpec['messaging'] | undefined),
-        behavior: isRecord(value.behavior) ? value.behavior as GenomeSpec['behavior'] : (behavior as GenomeSpec['behavior'] | undefined),
-        runtimeType: (asString(value.runtimeType) ?? asString(value.runtime)) as GenomeSpec['runtimeType'],
+        authorities: (asStringArray(value.authorities) ?? asStringArray(context?.authorities)) as AgentImage['authorities'],
+        messaging: isRecord(value.messaging) ? value.messaging as AgentImage['messaging'] : (messaging as AgentImage['messaging'] | undefined),
+        behavior: isRecord(value.behavior) ? value.behavior as AgentImage['behavior'] : (behavior as AgentImage['behavior'] | undefined),
+        runtimeType: (asString(value.runtimeType) ?? asString(value.runtime)) as AgentImage['runtimeType'],
         provenance: isRecord(value.provenance)
-            ? value.provenance as GenomeSpec['provenance']
+            ? value.provenance as AgentImage['provenance']
             : {
                 parentId: asString(evolution?.parentRef),
                 mutationNote: asString(evolution?.mutationNote),
-                origin: asString(evolution?.origin) as NonNullable<GenomeSpec['provenance']>['origin'],
+                origin: asString(evolution?.origin) as NonNullable<AgentImage['provenance']>['origin'],
             },
         evalCriteria: asStringArray(value.evalCriteria) ?? asStringArray(evaluation?.criteria),
-        lifecycle: (asString(value.lifecycle) ?? asString(market?.lifecycle)) as GenomeSpec['lifecycle'],
+        lifecycle: (asString(value.lifecycle) ?? asString(market?.lifecycle)) as AgentImage['lifecycle'],
         skills: asStringArray(value.skills) ?? asStringArray(tools?.skills),
         files: isRecord(value.files) ? value.files as Record<string, string> : undefined,
-        workspace: isRecord(value.workspace) ? value.workspace as GenomeSpec['workspace'] : undefined,
+        workspace: isRecord(value.workspace) ? value.workspace as AgentImage['workspace'] : undefined,
     };
 
     if (env) {
@@ -143,18 +144,18 @@ function projectCanonicalAgentJsonToGenomeSpec(value: JsonRecord): GenomeSpec & 
     return projected;
 }
 
-type SpawnCapabilitySpec = Pick<GenomeSpec, 'authorities' | 'behavior'> | null | undefined;
+type SpawnCapabilitySpec = Pick<AgentImage, 'authorities' | 'behavior'> | null | undefined;
 
-function genomeHasSpawnCapability(spec?: SpawnCapabilitySpec): boolean {
+function agentImageHasSpawnCapability(spec?: SpawnCapabilitySpec): boolean {
     return spec?.behavior?.canSpawnAgents === true
         || (Array.isArray(spec?.authorities) && spec.authorities.includes('agent.spawn'));
 }
 
-export function getInjectedAllowedToolsForGenome(
+export function getInjectedAllowedToolsForAgentImage(
     spec?: SpawnCapabilitySpec,
     options?: { spawnCapable?: boolean },
 ): string[] {
-    const spawnCapable = options?.spawnCapable ?? genomeHasSpawnCapability(spec);
+    const spawnCapable = options?.spawnCapable ?? agentImageHasSpawnCapability(spec);
     return uniqueStrings([
         ...CORE_TEAM_TOOLS,
         ...(spawnCapable ? SPAWN_CAPABLE_TEAM_TOOLS : []),
@@ -165,7 +166,7 @@ function hasTaskLifecycleText(values: string[]): boolean {
     return values.some((value) => /kanban|task|list_tasks|start_task|complete_task|board/i.test(value));
 }
 
-export function normalizeGenomeSpecForPublication(input: {
+export function normalizeAgentImageForPublication(input: {
     specJson: string;
     namespace?: string;
     parentId?: string;
@@ -177,16 +178,16 @@ export function normalizeGenomeSpecForPublication(input: {
      * Pass `null` to disable skill auto-inlining entirely.
      */
     runtimeLibRoot?: string | null;
-}): { spec: GenomeSpec & Record<string, unknown>; specJson: string; warnings: string[] } {
-    const parsed = JSON.parse(input.specJson) as GenomeSpec & JsonRecord;
+}): { spec: AgentImage & Record<string, unknown>; specJson: string; warnings: string[] } {
+    const parsed = JSON.parse(input.specJson) as AgentImage & JsonRecord;
     const specObj = isRecord(parsed) && isCanonicalAgentJson(parsed)
-        ? projectCanonicalAgentJsonToGenomeSpec(parsed)
+        ? projectCanonicalAgentJsonToAgentImage(parsed)
         : parsed;
     const warnings: string[] = [];
     const isOfficial = input.namespace === '@official';
 
     if (isRecord(parsed) && isCanonicalAgentJson(parsed)) {
-        warnings.push('Canonical agent.json authoring detected: publishing a flattened GenomeSpec compatibility projection for legacy readers.');
+        warnings.push('Canonical agent.json authoring detected: publishing a flattened AgentImage compatibility projection for legacy readers.');
     }
 
     if (Array.isArray((specObj as JsonRecord).tools)) {
@@ -205,13 +206,13 @@ export function normalizeGenomeSpecForPublication(input: {
     }
 
     if (!isOfficial) {
-        // hooks are a kernel field (unified-schema-design.md AgentKernel) and must travel with the genome.
+        // hooks are a kernel field (unified-schema-design.md AgentKernel) and must travel with the agent image.
         // Security note: hooks contain shell commands; the runtime materializer is responsible for
-        // validating hooks before execution. Org-managers are responsible for choosing trusted genomes.
+        // validating hooks before execution. Org-managers are responsible for choosing trusted agent images.
         if (specObj.hooks) {
             warnings.push(
-                'Genome includes hooks (shell commands). The runtime will execute these when this genome is spawned. ' +
-                'Only spawn from genomes you trust.',
+                'AgentImage includes hooks (shell commands). The runtime will execute these when this image is spawned. ' +
+                'Only spawn from agent images you trust.',
             );
         }
 
@@ -234,7 +235,7 @@ export function normalizeGenomeSpecForPublication(input: {
 
     if (Array.isArray(specObj.allowedTools)) {
         specObj.allowedTools = uniqueStrings([
-            ...getInjectedAllowedToolsForGenome(specObj),
+            ...getInjectedAllowedToolsForAgentImage(specObj),
             ...specObj.allowedTools,
         ]);
     } else if (specObj.allowedTools !== undefined) {
@@ -244,7 +245,7 @@ export function normalizeGenomeSpecForPublication(input: {
         );
     } else {
         warnings.push(
-            'allowedTools omitted: core team tools were not injected because allowedTools acts as a restrictive whitelist. Consider explicitly listing required tools for portable marketplace genomes.',
+            'allowedTools omitted: core team tools were not injected because allowedTools acts as a restrictive whitelist. Consider explicitly listing required tools for portable marketplace agent images.',
         );
     }
 
@@ -273,9 +274,9 @@ export function normalizeGenomeSpecForPublication(input: {
 
     if (input.parentId !== undefined || input.mutationNote !== undefined || input.origin !== undefined) {
         const existingProvenance = specObj.provenance && typeof specObj.provenance === 'object'
-            ? specObj.provenance as (NonNullable<GenomeSpec['provenance']> & Record<string, unknown>)
+            ? specObj.provenance as (NonNullable<AgentImage['provenance']> & Record<string, unknown>)
             : {};
-        const nextProvenance: NonNullable<GenomeSpec['provenance']> & Record<string, unknown> = {
+        const nextProvenance: NonNullable<AgentImage['provenance']> & Record<string, unknown> = {
             ...existingProvenance,
         };
         if (input.origin) nextProvenance.origin = input.origin;
@@ -290,7 +291,7 @@ export function normalizeGenomeSpecForPublication(input: {
         specObj.provenance = nextProvenance;
     }
 
-    // Auto-inline skill content from runtime-lib so the genome is self-contained
+    // Auto-inline skill content from runtime-lib so the agent image is self-contained
     // when published to the marketplace (no runtime-lib dependency on target machine).
     if (input.runtimeLibRoot !== null && Array.isArray(specObj.skills) && specObj.skills.length > 0) {
         const libRoot = input.runtimeLibRoot ?? join(resolveAhaHomeDir(), 'runtime-lib');
@@ -304,12 +305,15 @@ export function normalizeGenomeSpecForPublication(input: {
                 // User provided explicit inline content — never overwrite.
                 continue;
             }
-            const skillPath = join(libRoot, 'skills', skill, 'SKILL.md');
-            if (existsSync(skillPath)) {
-                inlinedFiles[fileKey] = readFileSync(skillPath, 'utf-8');
+            const resolved = resolveDeclaredSkillSource({
+                skillName: skill,
+                runtimeLibRoot: libRoot,
+            });
+            if (resolved) {
+                inlinedFiles[fileKey] = readFileSync(join(resolved.path, 'SKILL.md'), 'utf-8');
             } else {
                 warnings.push(
-                    `Skill "${skill}" has no inline content and was not found in runtime-lib (${skillPath}). ` +
+                    `Skill "${skill}" has no inline content and was not found in runtime-lib or user skill roots. ` +
                     `Add it to spec.files['.claude/commands/${skill}/SKILL.md'] for cross-machine portability.`,
                 );
             }

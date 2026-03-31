@@ -55,7 +55,7 @@ import {
 
 describe('sessionManager recovered session self-heal', () => {
     const pingHeartbeat = vi.fn();
-    let killSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let killSpy: { mockRestore: () => void } | null = null;
 
     beforeEach(() => {
         resetSessionManagerForTests();
@@ -352,6 +352,9 @@ describe('sessionManager recovered session self-heal', () => {
         });
 
         expect(queued.type).toBe('queued');
+        if (queued.type !== 'queued') {
+            throw new Error(`Expected queued spawn result, got ${queued.type}`);
+        }
         expect(queued.sessionId).toMatch(/^queued-/);
         expect(queued.queuePosition).toBe(1);
         expect(mockSpawnAhaCLI).not.toHaveBeenCalled();

@@ -34,12 +34,14 @@ export function buildMaterializedSpawnEnv(opts: {
     settingsPath: string;
     envFilePath: string;
     mcpConfigPath: string;
+    commandsDir?: string;
 }): Record<string, string> {
     return {
         ...readMaterializedEnvValues(opts.envFilePath),
         AHA_SETTINGS_PATH: opts.settingsPath,
         AHA_AGENT_ENV_FILE_PATH: opts.envFilePath,
         AHA_AGENT_MCP_CONFIG_PATH: opts.mcpConfigPath,
+        ...(opts.commandsDir ? { AHA_AGENT_COMMANDS_DIR: opts.commandsDir } : {}),
     };
 }
 

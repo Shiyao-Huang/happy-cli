@@ -47,7 +47,7 @@ function makeTempRoot(): string {
 
 // ── Schema validator ──────────────────────────────────────────────────────────
 
-let validate: ReturnType<Ajv['compile']>;
+let validate: any;
 
 beforeAll(() => {
     const ajv = new Ajv2020({ allErrors: true, strict: false });

@@ -2,11 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { getInjectedAllowedToolsForGenome, normalizeGenomeSpecForPublication } from './genomePublication';
+import { getInjectedAllowedToolsForAgentImage, normalizeAgentImageForPublication } from './genomePublication';
 
-describe('normalizeGenomeSpecForPublication', () => {
-    it('projects canonical agent.json authoring into a legacy-compatible GenomeSpec view', () => {
-        const result = normalizeGenomeSpecForPublication({
+describe('normalizeAgentImageForPublication', () => {
+    it('projects canonical agent.json authoring into a legacy-compatible AgentImage view', () => {
+        const result = normalizeAgentImageForPublication({
             namespace: '@official',
             specJson: JSON.stringify({
                 kind: 'aha.agent.v1',
@@ -122,7 +122,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('adds neutral team collaboration scaffolding without forcing self-assignment', () => {
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 systemPrompt: 'You are a worker.',
@@ -145,7 +145,7 @@ describe('normalizeGenomeSpecForPublication', () => {
 
     it('injects core tools, normalizes dangerous fields, and preserves hooks for non-official genomes', () => {
         const hooks = { preToolUse: [{ matcher: 'Bash', command: 'echo hello' }] };
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 allowedTools: ['Read', 'list_tasks'],
@@ -164,7 +164,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('migrates legacy tools[] into allowedTools and removes seedContext', () => {
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 tools: ['Read', 'list_tasks', 'Read'],
@@ -187,7 +187,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('injects create_agent tooling for spawn-capable genomes with explicit allowlists', () => {
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 allowedTools: ['Read'],
@@ -207,7 +207,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('supports runtime spawn-tool injection when role fallback allows spawning', () => {
-        expect(getInjectedAllowedToolsForGenome(undefined, { spawnCapable: true })).toEqual(
+        expect(getInjectedAllowedToolsForAgentImage(undefined, { spawnCapable: true })).toEqual(
             expect.arrayContaining([
                 'create_agent',
                 'list_available_agents',
@@ -222,7 +222,7 @@ describe('normalizeGenomeSpecForPublication', () => {
             '.claude/commands/foo/SKILL.md': '# Foo skill\nDo the foo thing.',
             '.aha-agent/mcp-servers/custom.json': '{"command":"node","args":["server.js"]}',
         };
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 kind: 'aha.agent.v1',
@@ -236,7 +236,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('preserves workspace from canonical agent.json through normalization', () => {
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             specJson: JSON.stringify({
                 kind: 'aha.agent.v1',
@@ -250,7 +250,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     });
 
     it('drops empty mutation notes instead of serializing null', () => {
-        const result = normalizeGenomeSpecForPublication({
+        const result = normalizeAgentImageForPublication({
             namespace: '@public',
             mutationNote: '',
             specJson: JSON.stringify({
@@ -273,7 +273,7 @@ describe('normalizeGenomeSpecForPublication', () => {
             mkdirSync(skillDir, { recursive: true });
             writeFileSync(join(skillDir, 'SKILL.md'), '# Context Mirror\nDo the mirror thing.');
 
-            const result = normalizeGenomeSpecForPublication({
+            const result = normalizeAgentImageForPublication({
                 namespace: '@public',
                 runtimeLibRoot: libRoot,
                 specJson: JSON.stringify({
@@ -294,7 +294,7 @@ describe('normalizeGenomeSpecForPublication', () => {
     it('emits a warning and omits the file when skill is not found in runtime-lib', () => {
         const libRoot = mkdtempSync(join(tmpdir(), 'aha-test-'));
         try {
-            const result = normalizeGenomeSpecForPublication({
+            const result = normalizeAgentImageForPublication({
                 namespace: '@public',
                 runtimeLibRoot: libRoot,
                 specJson: JSON.stringify({
@@ -317,7 +317,7 @@ describe('normalizeGenomeSpecForPublication', () => {
             mkdirSync(skillDir, { recursive: true });
             writeFileSync(join(skillDir, 'SKILL.md'), '# Commit from runtime-lib');
 
-            const result = normalizeGenomeSpecForPublication({
+            const result = normalizeAgentImageForPublication({
                 namespace: '@public',
                 runtimeLibRoot: libRoot,
                 specJson: JSON.stringify({
@@ -332,6 +332,40 @@ describe('normalizeGenomeSpecForPublication', () => {
             expect(result.spec.files?.['.claude/commands/commit/SKILL.md']).toBe('# Custom commit skill');
         } finally {
             rmSync(libRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('auto-inlines skill content from user skill roots when runtime-lib does not contain it', () => {
+        const previousSkillRoots = process.env.AHA_SKILL_ROOTS;
+        const libRoot = mkdtempSync(join(tmpdir(), 'aha-test-lib-'));
+        const userSkillRoot = mkdtempSync(join(tmpdir(), 'aha-test-user-skills-'));
+
+        try {
+            const skillDir = join(userSkillRoot, 'commit');
+            mkdirSync(skillDir, { recursive: true });
+            writeFileSync(join(skillDir, 'SKILL.md'), '# Commit from user skill root');
+            process.env.AHA_SKILL_ROOTS = userSkillRoot;
+
+            const result = normalizeAgentImageForPublication({
+                namespace: '@public',
+                runtimeLibRoot: libRoot,
+                specJson: JSON.stringify({
+                    allowedTools: ['Read'],
+                    skills: ['commit'],
+                }),
+            });
+
+            expect(result.spec.files).toEqual({
+                '.claude/commands/commit/SKILL.md': '# Commit from user skill root',
+            });
+        } finally {
+            if (previousSkillRoots === undefined) {
+                delete process.env.AHA_SKILL_ROOTS;
+            } else {
+                process.env.AHA_SKILL_ROOTS = previousSkillRoots;
+            }
+            rmSync(libRoot, { recursive: true, force: true });
+            rmSync(userSkillRoot, { recursive: true, force: true });
         }
     });
 });

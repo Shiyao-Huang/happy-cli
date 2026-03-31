@@ -82,14 +82,14 @@ user
 |------|---------|
 | `list_available_agents` | List all available agent roles/genomes |
 | `list_team_agents` | List agents currently in the team |
-| `create_agent` | Spawn a new agent with a genome spec |
+| `create_agent` | Spawn a new agent with an AgentImage spec |
 | `kill_agent` | Terminate a running agent session |
 | `compact_agent` | Trigger context compaction for an agent |
 | `score_agent` | Score an agent's performance (0-10 with rationale) |
 | `score_supervisor_self` | Self-score as supervisor |
 | `update_genome_feedback` | Submit feedback to improve a genome |
-| `create_genome` | Create a new genome definition |
-| `create_corps` | Publish a CorpsSpec team template to the marketplace |
+| `create_genome` | Create a new AgentImage definition |
+| `create_corps` | Publish a LegionImage team template to the marketplace |
 
 #### 2.5 Logs & Diagnostics
 

@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-AHA_HOME_DIR="${AHA_HOME_DIR:-/home/node/.aha-v9}"
+AHA_HOME_DIR="${AHA_HOME_DIR:-/home/node/.aha-v12}"
+AHA_HOME_COMPAT_DIR="${AHA_HOME_COMPAT_DIR:-/home/node/.aha-v11}"
 mkdir -p "$AHA_HOME_DIR"
 
 maybe_decode_b64_file() {
@@ -15,9 +16,24 @@ maybe_decode_b64_file() {
     fi
 }
 
+maybe_seed_legacy_file() {
+    filename="$1"
+    target_path="$AHA_HOME_DIR/$filename"
+    source_path="$AHA_HOME_COMPAT_DIR/$filename"
+
+    if [ "$AHA_HOME_COMPAT_DIR" != "$AHA_HOME_DIR" ] && [ ! -f "$target_path" ] && [ -f "$source_path" ]; then
+        cp "$source_path" "$target_path"
+        echo "[aha-cli-entrypoint] Seeded $filename from $AHA_HOME_COMPAT_DIR"
+    fi
+}
+
 maybe_decode_b64_file "AHA_CREDENTIALS_JSON_B64" "$AHA_HOME_DIR/access.key"
 maybe_decode_b64_file "AHA_CONFIG_JSON_B64" "$AHA_HOME_DIR/config.json"
 maybe_decode_b64_file "AHA_SETTINGS_JSON_B64" "$AHA_HOME_DIR/settings.json"
+
+maybe_seed_legacy_file "access.key"
+maybe_seed_legacy_file "config.json"
+maybe_seed_legacy_file "settings.json"
 
 if [ ! -f "$AHA_HOME_DIR/access.key" ]; then
     echo "[aha-cli-entrypoint] Missing $AHA_HOME_DIR/access.key" >&2

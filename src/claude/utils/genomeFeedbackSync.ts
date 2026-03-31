@@ -1,6 +1,6 @@
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { AggregatedFeedback } from './feedbackPrivacy';
-import type { FeedbackUploadTarget } from './supervisorGenomeFeedback';
+import type { FeedbackUploadTarget } from './supervisorAgentVerdict';
 import { configuration } from '@/configuration';
 
 type FetchResponseLike = {

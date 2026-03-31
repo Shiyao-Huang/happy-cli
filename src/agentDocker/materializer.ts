@@ -14,8 +14,13 @@ import { execFileSync } from 'node:child_process';
 import { basename, join } from 'path';
 
 import { configuration } from '@/configuration';
-import type { GenomeSpec } from '@/api/types/genome';
-import { buildHooksSettingsContent } from '@/claude/utils/hooksSettings';
+import type { AgentImage } from '@/api/types/genome';
+import { buildHooksSettingsContent, type ClaudeHooksSettingsContent } from '@/claude/utils/hooksSettings';
+import {
+    extractInlineSkillFileMap,
+    listGlobalSkillSources,
+    resolveDeclaredSkillSource,
+} from '@/skills/skillResolver';
 
 export type WorkspaceMode = 'shared' | 'isolated';
 export type AgentRuntime = 'claude' | 'codex' | 'open-code';
@@ -32,6 +37,7 @@ export interface AgentDockerConfig {
     kind: 'aha.agent.v1';
     name: string;
     runtime: AgentRuntime;
+    description?: string;
 
     // ── Required: trigger file materialization ──
     skills?: string[];
@@ -98,7 +104,7 @@ export interface MaterializeAgentWorkspaceInput {
     runtime: AgentRuntime;
     config: AgentDockerConfig;
     genome?: {
-        spec: GenomeSpec;
+        spec: AgentImage;
         specId?: string;
     };
     workspaceMode?: WorkspaceMode;
@@ -122,6 +128,7 @@ export interface MaterializeAction {
     target: string;
     source?: string;
     reason: string;
+    required?: boolean;
 }
 
 export interface MaterializeAgentWorkspaceResult {
@@ -209,7 +216,7 @@ function resolveMaterializedEnvValues(opts: {
     return values;
 }
 
-function buildHooksSettings(hooks?: AgentDockerConfig['hooks']): Record<string, unknown> {
+function buildHooksSettings(hooks?: AgentDockerConfig['hooks']): ClaudeHooksSettingsContent {
     const normalizedHooks = hooks
         ? {
             preToolUse: hooks.preToolUse?.map((hook) => ({
@@ -227,7 +234,7 @@ function buildHooksSettings(hooks?: AgentDockerConfig['hooks']): Record<string, 
     return buildHooksSettingsContent(normalizedHooks);
 }
 
-export interface BuildAgentWorkspacePlanFromGenomeContext {
+export interface BuildAgentWorkspacePlanFromAgentImageContext {
     agentId: string;
     repoRoot: string;
     specId?: string;
@@ -240,23 +247,23 @@ export interface BuildAgentWorkspacePlanFromGenomeContext {
     };
 }
 
-function resolveGenomeDisplayName(genomeSpec: GenomeSpec): string {
-    return genomeSpec.displayName
-        ?? genomeSpec.teamRole
-        ?? genomeSpec.baseRoleId
+function resolveAgentImageDisplayName(agentImage: AgentImage): string {
+    return agentImage.displayName
+        ?? agentImage.teamRole
+        ?? agentImage.baseRoleId
         ?? 'agent';
 }
 
-function resolveGenomeEnv(genomeSpec: GenomeSpec): AgentDockerConfig['env'] | undefined {
-    const genomeEnv = (genomeSpec as unknown as {
+function resolveAgentImageEnv(agentImage: AgentImage): AgentDockerConfig['env'] | undefined {
+    const agentImageEnv = (agentImage as unknown as {
         env?: { required?: string[]; optional?: string[]; requiredEnv?: string[]; optionalEnv?: string[] };
     }).env;
 
-    if (!genomeEnv) return undefined;
+    if (!agentImageEnv) return undefined;
 
     return {
-        required: genomeEnv.requiredEnv ?? genomeEnv.required,
-        optional: genomeEnv.optionalEnv ?? genomeEnv.optional,
+        required: agentImageEnv.requiredEnv ?? agentImageEnv.required,
+        optional: agentImageEnv.optionalEnv ?? agentImageEnv.optional,
     };
 }
 
@@ -303,9 +310,9 @@ function defaultRepoConfigRoot(repoRoot: string): string {
     return join(repoRoot, '.aha-config');
 }
 
-function buildGenomeRefInjection(genomeSpec: GenomeSpec, specId?: string): NonNullable<GenomeSpec['contextInjections']>[number] {
+function buildAgentImageRefInjection(agentImage: AgentImage, specId?: string): NonNullable<AgentImage['contextInjections']>[number] {
     const resolvedSpecId = specId ?? process.env.AHA_SPEC_ID ?? 'unknown';
-    const versionLabel = genomeSpec.version !== undefined ? `v${genomeSpec.version}` : 'unversioned';
+    const versionLabel = agentImage.version !== undefined ? `v${agentImage.version}` : 'unversioned';
 
     return {
         trigger: 'on_join',
@@ -313,35 +320,35 @@ function buildGenomeRefInjection(genomeSpec: GenomeSpec, specId?: string): NonNu
     };
 }
 
-function buildGenomeSpecSnapshot(genomeSpec: GenomeSpec, specId?: string): GenomeSpec {
-    const injected = buildGenomeRefInjection(genomeSpec, specId);
-    const existing = genomeSpec.contextInjections ?? [];
-    const withoutGenomeRef = existing.filter((entry) => !entry.content.includes('__genome_ref__'));
+function buildAgentImageSnapshot(agentImage: AgentImage, specId?: string): AgentImage {
+    const injected = buildAgentImageRefInjection(agentImage, specId);
+    const existing = agentImage.contextInjections ?? [];
+    const withoutAgentImageRef = existing.filter((entry) => !entry.content.includes('__genome_ref__'));
 
     return {
-        ...genomeSpec,
-        contextInjections: [...withoutGenomeRef, injected],
+        ...agentImage,
+        contextInjections: [...withoutAgentImageRef, injected],
     };
 }
 
-function buildGenomeLineagePayload(genomeSpec: GenomeSpec, specId?: string): Record<string, unknown> {
+function buildAgentImageLineagePayload(agentImage: AgentImage, specId?: string): Record<string, unknown> {
     return {
         specId: specId ?? process.env.AHA_SPEC_ID ?? null,
-        namespace: genomeSpec.namespace ?? null,
-        version: genomeSpec.version ?? null,
-        origin: genomeSpec.provenance?.origin ?? 'original',
-        parentId: genomeSpec.provenance?.parentId ?? null,
-        mutationNote: genomeSpec.provenance?.mutationNote ?? null,
+        namespace: agentImage.namespace ?? null,
+        version: agentImage.version ?? null,
+        origin: agentImage.provenance?.origin ?? 'original',
+        parentId: agentImage.provenance?.parentId ?? null,
+        mutationNote: agentImage.provenance?.mutationNote ?? null,
     };
 }
 
-function buildEvalCriteriaMarkdown(genomeSpec: GenomeSpec): string {
-    const criteria = genomeSpec.evalCriteria ?? [];
+function buildAgentEvalCriteriaMarkdown(agentImage: AgentImage): string {
+    const criteria = agentImage.evalCriteria ?? [];
     if (criteria.length === 0) {
         return [
             '# Evaluation Criteria',
             '',
-            '_No explicit evalCriteria declared for this genome._',
+            '_No explicit evalCriteria declared for this agent image._',
             '',
         ].join('\n');
     }
@@ -386,20 +393,6 @@ function selectEffectiveSkills(input: MaterializeAgentWorkspaceInput): string[] 
     if (!override?.length) return declared;
 
     return declared.filter((skill) => override.includes(skill));
-}
-
-function resolveSkillSourcePath(input: MaterializeAgentWorkspaceInput, skill: string, runtimeLibRoot: string): string {
-    const runtimeLibSkill = join(runtimeLibRoot, 'skills', skill);
-    if (existsSync(runtimeLibSkill)) {
-        return runtimeLibSkill;
-    }
-
-    const repoLocalSkill = join(input.repoRoot, 'skills', skill);
-    if (existsSync(repoLocalSkill)) {
-        return repoLocalSkill;
-    }
-
-    return runtimeLibSkill;
 }
 
 export function buildAgentWorkspacePlan(
@@ -466,12 +459,37 @@ export function buildAgentWorkspacePlan(
             },
     ];
 
-    for (const skill of selectEffectiveSkills(input)) {
+    const declaredSkills = selectEffectiveSkills(input);
+    const inlineSkillFiles = extractInlineSkillFileMap({
+        ...(input.genome?.spec?.files ?? {}),
+        ...(input.config.files ?? {}),
+    });
+    const declaredSkillSet = new Set(declaredSkills);
+    const inlineSkillSet = new Set(Object.keys(inlineSkillFiles));
+
+    for (const skill of declaredSkills) {
+        const resolved = resolveDeclaredSkillSource({
+            skillName: skill,
+            runtimeLibRoot,
+            repoRoot: input.repoRoot,
+        });
         actions.push({
             kind: 'link-skill',
-            source: resolveSkillSourcePath(input, skill, runtimeLibRoot),
+            source: resolved?.path,
             target: join(commandsDir, skill),
-            reason: 'Expose only package-allowed skills to this agent',
+            reason: 'Expose declared package skill to this agent',
+            required: true,
+        });
+    }
+
+    for (const [skillName, source] of listGlobalSkillSources()) {
+        if (declaredSkillSet.has(skillName) || inlineSkillSet.has(skillName)) continue;
+        actions.push({
+            kind: 'link-skill',
+            source: source.path,
+            target: join(commandsDir, skillName),
+            reason: 'Expose unioned user-installed skill to this agent',
+            required: false,
         });
     }
 
@@ -664,18 +682,21 @@ export function materializeAgentWorkspace(
     writeFileSync(plan.mcpConfigPath, JSON.stringify(mcpPayload, null, 2), 'utf-8');
 
     if (input.genome?.spec) {
-        const specSnapshot = buildGenomeSpecSnapshot(input.genome.spec, input.genome.specId);
+        const specSnapshot = buildAgentImageSnapshot(input.genome.spec, input.genome.specId);
         writeFileSync(plan.genomeSpecPath, JSON.stringify(specSnapshot, null, 2), 'utf-8');
         writeFileSync(
             plan.genomeLineagePath,
-            JSON.stringify(buildGenomeLineagePayload(input.genome.spec, input.genome.specId), null, 2),
+            JSON.stringify(buildAgentImageLineagePayload(input.genome.spec, input.genome.specId), null, 2),
             'utf-8',
         );
-        writeFileSync(plan.genomeEvalCriteriaPath, buildEvalCriteriaMarkdown(input.genome.spec), 'utf-8');
+        writeFileSync(plan.genomeEvalCriteriaPath, buildAgentEvalCriteriaMarkdown(input.genome.spec), 'utf-8');
     }
 
-    // Materialize inline files — makes the genome package self-contained
-    const inlineFiles = input.config.files ?? input.genome?.spec?.files;
+    // Materialize inline files — makes the AgentImage package self-contained
+    const inlineFiles = {
+        ...(input.genome?.spec?.files ?? {}),
+        ...(input.config.files ?? {}),
+    };
     if (inlineFiles) {
         for (const [relativePath, content] of Object.entries(inlineFiles)) {
             const targetPath = join(plan.workspaceRoot, relativePath);
@@ -705,27 +726,27 @@ export function materializeAgentWorkspace(
     }
 
     for (const action of plan.actions) {
-        if (action.kind !== 'link-skill' || !action.source) continue;
+        if (action.kind !== 'link-skill') continue;
         const skillName = basename(action.target);
+        const inlineKey = `.claude/commands/${skillName}/SKILL.md`;
+        const allFiles = inlineFiles;
 
-        if (!existsSync(action.source)) {
-            // No local runtime-lib for this skill.
-            // The files loop (above) already wrote inline content if the genome included it.
-            // If it did → the command directory exists, we're done for this skill.
-            // If it did not → the genome is incomplete; hard-fail so the publisher knows to fix it.
-            const inlineKey = `.claude/commands/${skillName}/SKILL.md`;
-            const allFiles = input.config.files ?? input.genome?.spec?.files;
-            if (!allFiles?.[inlineKey]) {
-                throw new Error(
-                    `Skill "${skillName}" declared in skills[] but content is missing. ` +
-                    `Embed it in genome.spec.files['.claude/commands/${skillName}/SKILL.md'] before publishing.`,
-                );
-            }
-            // Inline content already written by the files loop — nothing left to do.
+        if (allFiles[inlineKey] !== undefined) {
+            // Published inline files are authoritative for reproducibility.
             continue;
         }
 
-        // Local runtime-lib found: link/copy (dev path, runtime-lib wins over inline).
+        if (!action.source || !existsSync(action.source)) {
+            if (action.required) {
+                throw new Error(
+                    `Skill "${skillName}" declared in skills[] but content is missing. ` +
+                    `Embed it in the published AgentImage files payload at files['.claude/commands/${skillName}/SKILL.md'] before publishing.`,
+                );
+            }
+            continue;
+        }
+
+        // Local skill source found: link/copy as a runtime supplement for missing inline content.
         const mode = resolveMaterializationPolicy(input.config, 'skills', skillName);
         if (mode === 'copy') {
             copyPrivateResource(action.source, action.target);
@@ -737,44 +758,44 @@ export function materializeAgentWorkspace(
     return plan;
 }
 
-// ── Genome bridge ─────────────────────────────────────────────────────────────
+// ── AgentImage bridge ─────────────────────────────────────────────────────────
 
 /**
- * Build an AgentDockerConfig from a GenomeSpec compatibility projection, then materialize the workspace.
+ * Build an AgentDockerConfig from an AgentImage compatibility projection, then materialize the workspace.
  *
- * This is the genome-backed entry point for v1 materializer integration.
- * It bridges the high-level GenomeSpec compatibility view (fetchGenomeSpec result)
+ * This is the AgentImage-backed entry point for v1 materializer integration.
+ * It bridges the high-level AgentImage compatibility view (fetchAgentImage result)
  * into the concrete workspace layout defined by the materializer.
  *
- * @param genomeSpec  - The GenomeSpec compatibility projection fetched from genome-hub.
+ * @param agentImage  - The AgentImage compatibility projection fetched from genome-hub.
  * @param context     - Runtime context (agentId, repoRoot, optional overrides).
  * @returns           - Fully materialized workspace result (directories created, files written).
  */
-export function buildAgentWorkspacePlanFromGenome(
-    genomeSpec: GenomeSpec,
-    context: BuildAgentWorkspacePlanFromGenomeContext,
+export function buildAgentWorkspacePlanFromAgentImage(
+    agentImage: AgentImage,
+    context: BuildAgentWorkspacePlanFromAgentImageContext,
 ): MaterializeAgentWorkspaceResult {
-    const hooks: AgentDockerConfig['hooks'] = genomeSpec.hooks
+    const hooks: AgentDockerConfig['hooks'] = agentImage.hooks
         ? {
-            preToolUse: genomeSpec.hooks.preToolUse as AgentHookCommand[] | undefined,
-            postToolUse: genomeSpec.hooks.postToolUse as AgentHookCommand[] | undefined,
-            stop: genomeSpec.hooks.stop as AgentHookCommand[] | undefined,
+            preToolUse: agentImage.hooks.preToolUse as AgentHookCommand[] | undefined,
+            postToolUse: agentImage.hooks.postToolUse as AgentHookCommand[] | undefined,
+            stop: agentImage.hooks.stop as AgentHookCommand[] | undefined,
         }
         : undefined;
 
     const config: AgentDockerConfig = {
         kind: 'aha.agent.v1',
-        name: resolveGenomeDisplayName(genomeSpec),
-        runtime: (genomeSpec.runtimeType as AgentRuntime | undefined) ?? 'claude',
-        skills: withDefaultAgentSkills(genomeSpec.skills),
-        mcpServers: genomeSpec.mcpServers,
+        name: resolveAgentImageDisplayName(agentImage),
+        runtime: (agentImage.runtimeType as AgentRuntime | undefined) ?? 'claude',
+        skills: withDefaultAgentSkills(agentImage.skills),
+        mcpServers: agentImage.mcpServers,
         hooks,
-        env: resolveGenomeEnv(genomeSpec),
+        env: resolveAgentImageEnv(agentImage),
         workspace: {
-            defaultMode: context.workspaceMode ?? genomeSpec.workspace?.defaultMode ?? 'shared',
-            allowedModes: genomeSpec.workspace?.allowedModes ?? ['shared', 'isolated'],
+            defaultMode: context.workspaceMode ?? agentImage.workspace?.defaultMode ?? 'shared',
+            allowedModes: agentImage.workspace?.allowedModes ?? ['shared', 'isolated'],
         },
-        files: genomeSpec.files,
+        files: agentImage.files,
     };
 
     return materializeAgentWorkspace({
@@ -783,7 +804,7 @@ export function buildAgentWorkspacePlanFromGenome(
         runtime: config.runtime,
         config,
         genome: {
-            spec: genomeSpec,
+            spec: agentImage,
             specId: context.specId,
         },
         workspaceMode: context.workspaceMode,

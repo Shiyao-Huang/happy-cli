@@ -1,4 +1,4 @@
-import type { GenomeSpec } from '@/api/types/genome';
+import type { AgentImage } from '@/api/types/genome';
 import { deterministicStringify } from '@/utils/deterministicJson';
 
 function normalizeStringArray(values?: string[]): string[] {
@@ -12,7 +12,7 @@ function formatBulletSection(title: string, items?: string[]): string {
     return `## ${title}\n${normalized.map((item) => `- ${item}`).join('\n')}`;
 }
 
-function formatIterationGuide(spec: GenomeSpec): string {
+function formatIterationGuide(spec: AgentImage): string {
     const guide = spec.memory?.iterationGuide;
     if (!guide) return '';
 
@@ -32,15 +32,15 @@ function formatIterationGuide(spec: GenomeSpec): string {
     }
 
     if (sections.length === 0) return '';
-    return `## Genome Iteration Guide\n${sections.join('\n\n')}`;
+    return `## Agent Image Iteration Guide\n${sections.join('\n\n')}`;
 }
 
-function formatResume(spec: GenomeSpec): string {
+function formatResume(spec: AgentImage): string {
     const performanceRating = spec.resume?.performanceRating;
     const reviews = normalizeStringArray(spec.resume?.reviews);
     if (performanceRating == null && reviews.length === 0) return '';
 
-    const lines: string[] = ['## Genome Resume'];
+    const lines: string[] = ['## Agent Image Resume'];
     if (performanceRating != null) {
         lines.push(`- Performance Rating: ${performanceRating}`);
     }
@@ -51,13 +51,13 @@ function formatResume(spec: GenomeSpec): string {
     return lines.join('\n');
 }
 
-function formatRuntimeConfig(spec: GenomeSpec): string {
+function formatRuntimeConfig(spec: AgentImage): string {
     const runtimeConfig = spec.operations?.runtimeConfig?.trim();
     if (!runtimeConfig) return '';
     return `## Runtime Operating Notes\n${runtimeConfig}`;
 }
 
-function formatRuntimeIdentity(spec: GenomeSpec): string {
+function formatRuntimeIdentity(spec: AgentImage): string {
     if (!spec.runtimeType && !spec.lifecycle) return '';
 
     const payload = {
@@ -68,7 +68,7 @@ function formatRuntimeIdentity(spec: GenomeSpec): string {
     return `## Runtime Identity\n${deterministicStringify(payload)}`;
 }
 
-function formatActivationRules(spec: GenomeSpec): string {
+function formatActivationRules(spec: AgentImage): string {
     if (!spec.trigger?.mode && !spec.trigger?.conditions?.length) return '';
 
     const payload = {
@@ -79,7 +79,7 @@ function formatActivationRules(spec: GenomeSpec): string {
     return `## Activation Rules\n${deterministicStringify(payload)}`;
 }
 
-function formatScope(spec: GenomeSpec): string {
+function formatScope(spec: AgentImage): string {
     const scope = spec.scopeOfResponsibility;
     if (!scope) return '';
 
@@ -100,7 +100,7 @@ function formatScope(spec: GenomeSpec): string {
     return `## Scope Of Responsibility\n${deterministicStringify(normalized)}`;
 }
 
-function formatModelPreferences(spec: GenomeSpec): string {
+function formatModelPreferences(spec: AgentImage): string {
     const hasPreferredModel = Boolean(spec.preferredModel?.trim());
     const hasModelScores = spec.modelScores && Object.keys(spec.modelScores).length > 0;
     if (!hasPreferredModel && !hasModelScores) return '';
@@ -139,7 +139,7 @@ function formatFeedbackMirror(feedbackData?: string | null): string {
 
     if (!parsed.evaluationCount || parsed.evaluationCount < 1) return '';
 
-    const lines: string[] = ['## Genome Evaluation Mirror'];
+    const lines: string[] = ['## Agent Verdict Mirror'];
     lines.push(`- Evaluation Count: ${parsed.evaluationCount}`);
     if (parsed.avgScore != null) lines.push(`- Average Score: ${Math.round(parsed.avgScore)}`);
     if (parsed.latestAction) lines.push(`- Latest Action: ${parsed.latestAction}`);
@@ -167,7 +167,7 @@ function formatFeedbackMirror(feedbackData?: string | null): string {
     return lines.join('\n');
 }
 
-function formatMessagingBehavior(spec: GenomeSpec): string {
+function formatMessagingBehavior(spec: AgentImage): string {
     const messaging = spec.messaging;
     const behavior = spec.behavior;
     const authorities = (spec as any).authorities as string[] | undefined;
@@ -207,17 +207,17 @@ function formatMessagingBehavior(spec: GenomeSpec): string {
 }
 
 
-export function buildGenomeInjection(spec?: GenomeSpec | null, feedbackData?: string | null): string {
+export function buildAgentImageInjection(spec?: AgentImage | null, feedbackData?: string | null): string {
     if (!spec && !feedbackData) return '';
 
     const sections = [
         ...(spec ? [
             formatMessagingBehavior(spec),
-            formatBulletSection('Genome Learnings', spec.memory?.learnings),
+            formatBulletSection('Agent Image Learnings', spec.memory?.learnings),
             formatIterationGuide(spec),
-            formatBulletSection('Genome Specialties', spec.resume?.specialties),
+            formatBulletSection('Agent Image Specialties', spec.resume?.specialties),
             formatResume(spec),
-            formatBulletSection('Genome Common Patterns', spec.operations?.commonPatterns),
+            formatBulletSection('Agent Image Common Patterns', spec.operations?.commonPatterns),
             formatRuntimeConfig(spec),
             formatRuntimeIdentity(spec),
             formatActivationRules(spec),
@@ -231,11 +231,11 @@ export function buildGenomeInjection(spec?: GenomeSpec | null, feedbackData?: st
 
     return [
         '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-        '[GENOME MEMORY INJECTION]',
+        '[AGENT IMAGE MEMORY INJECTION]',
         '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
         sections.join('\n\n'),
         '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-        '[END GENOME MEMORY INJECTION]',
+        '[END AGENT IMAGE MEMORY INJECTION]',
         '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     ].join('\n');
 }

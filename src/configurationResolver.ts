@@ -57,7 +57,7 @@ export function resolvePersistentConfigFile(
 
 export function readPersistentCliConfig(configFile: string): PersistentCliConfig {
   if (!existsSync(configFile)) {
-    return {}
+    return persistentCliConfigSchema.parse({})
   }
 
   const content = readFileSync(configFile, 'utf8')
@@ -67,7 +67,7 @@ export function readPersistentCliConfig(configFile: string): PersistentCliConfig
 
 export function resolveServerConfig(
   env: NodeJS.ProcessEnv = process.env,
-  persistentConfig: PersistentCliConfig = {}
+  persistentConfig: PersistentCliConfig = persistentCliConfigSchema.parse({})
 ): {
   serverUrl: string
   webappUrl: string

@@ -53,7 +53,7 @@ describe('mergeWithDefaults', () => {
     })
 
     it('deep-merges partial escalation config', () => {
-        const partial: Partial<OrgRules> = {
+        const partial: Parameters<typeof mergeWithDefaults>[0] = {
             escalation: { masterSilenceThresholdMinutes: 60 },
         }
         const merged = mergeWithDefaults(partial)
@@ -63,7 +63,7 @@ describe('mergeWithDefaults', () => {
     })
 
     it('deep-merges partial delegation config', () => {
-        const partial: Partial<OrgRules> = {
+        const partial: Parameters<typeof mergeWithDefaults>[0] = {
             delegation: { anyAgentCanCreateContinuationTasks: false },
         }
         const merged = mergeWithDefaults(partial)

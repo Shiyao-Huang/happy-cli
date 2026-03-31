@@ -1,11 +1,11 @@
-import type { GenomeSpec } from '@/api/types/genome';
+import type { AgentImage } from '@/api/types/genome';
 import { loadOrgRules, type OrgRules } from '@/orgDocker/orgRulesLoader';
 
 type SharedOperatingRulesOptions = {
     roleKey: string;
     isCoordinator: boolean;
     isBypass: boolean;
-    genomeSpec?: GenomeSpec | null;
+    genomeSpec?: AgentImage | null;
     /** Optional org-rules override; if omitted, loaded from ~/.aha/org-rules.json */
     orgRules?: OrgRules;
 };
@@ -23,11 +23,11 @@ function formatRule(rule: SharedOperatingRule): string {
 }
 
 /**
- * Build behavioral DNA instructions from GenomeSpec Tier 7 fields.
+ * Build behavioral DNA instructions from AgentImage Tier 7 fields.
  * Translates messaging/behavior fields into natural language prompts
  * so the agent's personality is driven by its genome, not hardcode.
  */
-function buildBehaviorDnaRules(genomeSpec: GenomeSpec | null | undefined): SharedOperatingRule[] {
+function buildBehaviorDnaRules(genomeSpec: AgentImage | null | undefined): SharedOperatingRule[] {
     if (!genomeSpec) return [];
     const rules: SharedOperatingRule[] = [];
 
@@ -264,7 +264,7 @@ export function buildSharedOperatingRulesSection(
     rules.push(...behaviorRules);
     rules.push(...buildRuntimeBoundaryAndContextMirrorRules());
 
-    // Inject genome-specific protocol rules (from GenomeSpec.protocol[])
+    // Inject genome-specific protocol rules (from AgentImage.protocol[])
     const genomeProtocol = options.genomeSpec?.protocol;
     if (genomeProtocol?.length) {
         rules.push({

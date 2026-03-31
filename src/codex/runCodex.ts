@@ -38,13 +38,18 @@ import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMe
 import { buildAgentHandshakeContent, COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
-import { fetchGenomeSpec } from '@/claude/utils/fetchGenome';
-import { buildGenomeInjection } from '@/claude/utils/buildGenomeInjection';
-import type { GenomeSpec } from '@/api/types/genome';
+import { fetchAgentImage } from '@/claude/utils/fetchGenome';
+import { buildAgentImageInjection } from '@/claude/utils/buildGenomeInjection';
+import type { AgentImage } from '@/api/types/genome';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { CODEX_BRIDGE_DEBUG_ENV, isCodexBridgeDebugEnabled, logCodexBridge, logCodexSignal } from './utils/bridgeDebug';
+import {
+    materializeAgentImageSkillsToCodexHome,
+    seedCodexHomeConfig,
+    seedCodexHomeSkillUnion,
+} from './codexHome';
 
-// Helper functions for role metadata — genome-first, empty fallback
+// Helper functions for role metadata — agent-image-first, empty fallback
 function getRoleTitle(roleId: string): string {
     return DEFAULT_ROLES[roleId]?.name || roleId;
 }
@@ -828,7 +833,7 @@ export async function runCodex(opts: {
                     const rebuiltRolePrompt = generateRolePrompt(
                         sessionMetadataForRebuild,
                         kanbanCtx,
-                        genomeSpec ?? undefined
+                        agentImage ?? undefined
                     );
                     teamContextBlock = rebuiltRolePrompt;
                     teamInitialized = true;
@@ -1510,23 +1515,50 @@ export async function runCodex(opts: {
     }
 
     // ============================================================
-    // Genome Spec — fetch and build injection text
+    // AgentImage — fetch and build injection text
     // ============================================================
-    let genomeInjectionBlock: string | null = null;
-    let genomeSpec: GenomeSpec | null = null;
-    const genomeSpecId = process.env.AHA_SPEC_ID;
-    if (genomeSpecId) {
+    let agentImageInjectionBlock: string | null = null;
+    let agentImage: AgentImage | null = null;
+    const agentImageId = process.env.AHA_SPEC_ID;
+    if (agentImageId) {
         try {
-            genomeSpec = await fetchGenomeSpec(opts.credentials.token, genomeSpecId);
-            const injection = buildGenomeInjection(genomeSpec);
+            agentImage = await fetchAgentImage(opts.credentials.token, agentImageId);
+            const injection = buildAgentImageInjection(agentImage);
             if (injection) {
-                genomeInjectionBlock = injection;
-                logger.debug(`[Codex] Genome injection built for spec ${genomeSpecId}`);
+                agentImageInjectionBlock = injection;
+                logger.debug(`[Codex] AgentImage injection built for spec ${agentImageId}`);
             }
         } catch (error) {
             if (process.env.AHA_GENOME_FALLBACK !== '1') {
-                logger.debug(`[Codex] Failed to load genome spec (specId=${genomeSpecId}): ${error}`);
+                logger.debug(`[Codex] Failed to load agent image (specId=${agentImageId}): ${error}`);
             }
+        }
+    }
+    const sourceCodexEnv = { ...process.env };
+    const materializedCommandsDir = process.env.AHA_AGENT_COMMANDS_DIR;
+    if ((materializedCommandsDir || agentImage) && !process.env.CODEX_HOME) {
+        const isolatedCodexHome = fs.mkdtempSync(join(os.tmpdir(), 'aha-codex-home-'));
+        seedCodexHomeConfig(isolatedCodexHome, { env: sourceCodexEnv });
+        process.env.CODEX_HOME = isolatedCodexHome;
+        logger.debug(`[Codex] Created isolated CODEX_HOME at ${isolatedCodexHome} for runtime skill overlay`);
+    }
+
+    const effectiveCodexHome = process.env.CODEX_HOME || join(os.homedir(), '.codex');
+    if (materializedCommandsDir) {
+        seedCodexHomeSkillUnion(effectiveCodexHome, {
+            commandsDir: materializedCommandsDir,
+            env: sourceCodexEnv,
+        });
+    }
+    if (agentImage) {
+        const warnings = materializeAgentImageSkillsToCodexHome(effectiveCodexHome, {
+            agentImage,
+            runtimeLibRoot: join(configuration.ahaHomeDir, 'runtime-lib'),
+            repoRoot: process.cwd(),
+            env: sourceCodexEnv,
+        });
+        for (const warning of warnings) {
+            logger.debug(`[Codex] ${warning}`);
         }
     }
     const mountedAgentPromptBlock = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
@@ -1648,7 +1680,7 @@ export async function runCodex(opts: {
             const sharedRolePrompt = generateRolePrompt(
                 sessionMetadataForPrompt,
                 joinKanbanContext,
-                genomeSpec ?? undefined
+                agentImage ?? undefined
             );
 
             const recentTeamActivityBlock = trimIdent(`
@@ -1794,9 +1826,9 @@ ${historyText}
                         );
                     }
 
-                    // Inject genome memory (learnings, patterns, scope, etc.)
-                    if (genomeInjectionBlock && !teamInitialized) {
-                        instructionBlocks.push(genomeInjectionBlock);
+                    // Inject agent-image memory (learnings, patterns, scope, etc.)
+                    if (agentImageInjectionBlock && !teamInitialized) {
+                        instructionBlocks.push(agentImageInjectionBlock);
                     }
 
                     if (desktopKanbanInstructionBlock) {

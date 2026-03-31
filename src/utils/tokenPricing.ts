@@ -60,21 +60,9 @@ export const MODEL_PRICING: Record<string, TokenPricing> = {
         cacheCreationPer1M: 18.75,
         cacheReadPer1M: 1.5,
     },
-    'claude-opus-4-6': {
-        inputPer1M: 15,
-        outputPer1M: 75,
-        cacheCreationPer1M: 18.75,
-        cacheReadPer1M: 1.5,
-    },
 
     // ── Sonnet 4.x family ───────────────────────────────────────────
     'claude-sonnet-4': {
-        inputPer1M: 3,
-        outputPer1M: 15,
-        cacheCreationPer1M: 3.75,
-        cacheReadPer1M: 0.3,
-    },
-    'claude-sonnet-4-6': {
         inputPer1M: 3,
         outputPer1M: 15,
         cacheCreationPer1M: 3.75,

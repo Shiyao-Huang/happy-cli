@@ -21,6 +21,7 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { McpToolContext } from './mcpContext';
+import { logger } from '@/ui/logger';
 
 export function registerContextTools(ctx: McpToolContext): void {
     const { mcp, api, handler } = ctx;

@@ -135,7 +135,7 @@ async function weixinLogin(): Promise<void> {
 }
 
 function renderQrCode(
-  qrTerminal: { generate: (text: string, options?: { small?: boolean }) => void },
+  qrTerminal: { generate: (text: string, options?: { small: boolean }, callback?: (qrcode: string) => void) => void },
   displayUrl: string,
 ): void {
   qrTerminal.generate(displayUrl, { small: true })

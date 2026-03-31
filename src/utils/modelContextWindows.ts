@@ -7,18 +7,14 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
     'claude-opus-4': DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS,
     'claude-opus-4-1': DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS,
     'claude-opus-4-6': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
-    'claude-opus-4-6': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-opus-4-20250514': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-sonnet-4': DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS,
-    'claude-sonnet-4-6': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-sonnet-4-6': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-sonnet-4-20250514': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-haiku-4': DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS,
     'claude-haiku-4-6': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     // Explicit [1m] variants retained for backward compat
     'claude-opus-4-6[1m]': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
-    'claude-opus-4-6[1m]': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
-    'claude-sonnet-4-6[1m]': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-sonnet-4-6[1m]': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
     'claude-haiku-4-6[1m]': CLAUDE_1M_CONTEXT_WINDOW_TOKENS,
 };

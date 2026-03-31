@@ -42,11 +42,10 @@ import { StatusReporter, createStatusReporter } from './team/statusReporter';
 import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
-import { fetchGenomeSpec, fetchGenomeFeedbackData } from './utils/fetchGenome';
-import { buildGenomeInjection } from './utils/buildGenomeInjection';
-import { buildAgentWorkspacePlanFromGenome, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
+import { fetchAgentImage, fetchAgentVerdictData } from './utils/fetchGenome';
+import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
-import { getInjectedAllowedToolsForGenome } from '@/utils/genomePublication';
+import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
@@ -292,8 +291,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     );
 
     // Start Aha MCP server — pass a ref so genome spec (loaded below) can be written in later
-    const _genomeSpecRef: { current: import('../api/types/genome').GenomeSpec | null | undefined } = { current: undefined };
-    const ahaServer = await startAhaServer(api, session, _genomeSpecRef);
+    const _agentImageRef: { current: import('../api/types/genome').AgentImage | null | undefined } = { current: undefined };
+    const ahaServer = await startAhaServer(api, session, _agentImageRef);
     logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
     const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
     if (desktopMcpUrl) {
@@ -416,42 +415,42 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const _roleBasedSpecId = !_explicitSpecId && process.env.AHA_AGENT_ROLE
         ? `@official/${process.env.AHA_AGENT_ROLE}`
         : undefined;
-    const _genomeSpecId = _explicitSpecId ?? _roleBasedSpecId;
-    const [_genomeSpec, _genomeFeedbackData] = _genomeSpecId
+    const _agentImageId = _explicitSpecId ?? _roleBasedSpecId;
+    const [_agentImage, _agentVerdictData] = _agentImageId
         ? await Promise.all([
-            fetchGenomeSpec(credentials.token, _genomeSpecId).catch((err) => {
+            fetchAgentImage(credentials.token, _agentImageId).catch((err) => {
                 // AHA_GENOME_FALLBACK=1 → silent (production mode)
                 // default (testing) → warn so we can see genome loading failures
                 if (process.env.AHA_GENOME_FALLBACK !== '1') {
-                    console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_genomeSpecId}): ${err?.message ?? err}`);
+                    console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_agentImageId}): ${err?.message ?? err}`);
                     console.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
                 }
                 return null;
             }),
-            fetchGenomeFeedbackData(credentials.token, _genomeSpecId).catch(() => null),
+            fetchAgentVerdictData(credentials.token, _agentImageId).catch(() => null),
         ])
         : [null, null] as const;
 
     // Write into the ref so startAhaServer's tools (create_agent etc.) can use genome data
-    _genomeSpecRef.current = _genomeSpec;
+    _agentImageRef.current = _agentImage;
     const startupRole = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
 
-    if (_genomeSpec) {
+    if (_agentImage) {
         // Tier 2 — 模型覆盖
-        if (_genomeSpec.modelId && !currentModel) {
-            currentModel = _genomeSpec.modelId;
+        if (_agentImage.modelId && !currentModel) {
+            currentModel = _agentImage.modelId;
             logger.debug(`[genome] Model set from genome: ${currentModel}`);
         }
-        if (_genomeSpec.fallbackModelId && !currentFallbackModel) {
-            currentFallbackModel = _genomeSpec.fallbackModelId;
+        if (_agentImage.fallbackModelId && !currentFallbackModel) {
+            currentFallbackModel = _agentImage.fallbackModelId;
             logger.debug(`[genome] Fallback model set from genome: ${currentFallbackModel}`);
         }
 
         // Tier 3 — 工具访问控制
         // Core team tools that EVERY agent must have — kanban, messaging, help.
         // Without these, agents become isolated islands that can't collaborate.
-        const ignoreGenomeToolConstraints = isBypassRole(startupRole, _genomeSpec) && startupRole === 'supervisor';
-        if (_genomeSpec.allowedTools?.length) {
+        const ignoreGenomeToolConstraints = isBypassRole(startupRole, _agentImage) && startupRole === 'supervisor';
+        if (_agentImage.allowedTools?.length) {
             if (ignoreGenomeToolConstraints) {
                 logger.debug('[genome] Ignoring genome allowedTools for supervisor so it can inspect raw logs directly');
             } else {
@@ -459,20 +458,20 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 // so agents never lose kanban/messaging/help, and spawn-capable genomes
                 // keep create_agent/list_available_agents available.
                 const merged = Array.from(new Set([
-                    ...getInjectedAllowedToolsForGenome(_genomeSpec, {
-                        spawnCapable: canSpawnAgents(startupRole, _genomeSpec),
+                    ...getInjectedAllowedToolsForAgentImage(_agentImage, {
+                        spawnCapable: canSpawnAgents(startupRole, _agentImage),
                     }),
-                    ..._genomeSpec.allowedTools,
+                    ..._agentImage.allowedTools,
                 ]));
                 currentAllowedTools = merged;
-                logger.debug(`[genome] Allowed tools set from genome (${_genomeSpec.allowedTools.length} custom + injected team tools = ${merged.length} total)`);
+                logger.debug(`[agent-image] Allowed tools set from agent image (${_agentImage.allowedTools.length} custom + injected team tools = ${merged.length} total)`);
             }
         }
-        if (_genomeSpec.disallowedTools?.length) {
+        if (_agentImage.disallowedTools?.length) {
             if (ignoreGenomeToolConstraints) {
                 logger.debug('[genome] Ignoring genome disallowedTools for supervisor so it can inspect raw logs directly');
             } else {
-                currentDisallowedTools = _genomeSpec.disallowedTools;
+                currentDisallowedTools = _agentImage.disallowedTools;
                 logger.debug(`[genome] Disallowed tools set from genome: ${currentDisallowedTools.join(', ')}`);
             }
         }
@@ -484,12 +483,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         currentDisallowedTools = [...(currentDisallowedTools || []), ...CC_NATIVE_TEAM_TOOLS];
 
         // Tier 4 — 权限模式（优先级低于 CLI 参数）
-        if (_genomeSpec.permissionMode && !currentPermissionMode) {
-            currentPermissionMode = _genomeSpec.permissionMode;
+        if (_agentImage.permissionMode && !currentPermissionMode) {
+            currentPermissionMode = _agentImage.permissionMode;
             logger.debug(`[genome] Permission mode set from genome: ${currentPermissionMode}`);
         }
 
-        logger.debug(`[genome] Genome spec applied at startup (specId=${_genomeSpecId})`);
+        logger.debug(`[genome] Genome spec applied at startup (specId=${_agentImageId})`);
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -498,12 +497,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // skills 注入 appendSystemPrompt；settingsPath 传递给 launcher 的 --settings 标志。
     const _agentId = process.env.AHA_TEAM_MEMBER_ID || response.id;
     let _workspacePlan: MaterializeAgentWorkspaceResult | null = null;
-    let _maxTurns: number | undefined = _genomeSpec?.maxTurns;
+    let _maxTurns: number | undefined = _agentImage?.maxTurns;
 
-    if (_genomeSpec) {
+    if (_agentImage) {
         // Materialize workspace (hooks → settings.json, env → env.json, skills → commands/)
         try {
-            _workspacePlan = buildAgentWorkspacePlanFromGenome(_genomeSpec, {
+            _workspacePlan = buildAgentWorkspacePlanFromAgentImage(_agentImage, {
                 agentId: _agentId,
                 repoRoot: workingDirectory,
                 launchOverrides: { env: options.claudeEnvVars },
@@ -519,7 +518,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         }
 
         // Skills → system prompt injection (agent awareness)
-        const effectiveSkills = withDefaultAgentSkills(_genomeSpec.skills);
+        const effectiveSkills = withDefaultAgentSkills(_agentImage.skills);
         if (effectiveSkills.length > 0) {
             const skillsText = [
                 '## Available Agent Skills',
@@ -540,10 +539,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Pre-materialized workspace: AHA_SETTINGS_PATH is set by `aha agents spawn`
     // when materializing a local agent.json without uploading to genome-hub.
     // Only applies when no genome spec was loaded (genome takes precedence).
-    const _prebuiltSettingsPath = (!_genomeSpec && process.env.AHA_SETTINGS_PATH)
+    const _prebuiltSettingsPath = (!_agentImage && process.env.AHA_SETTINGS_PATH)
         ? process.env.AHA_SETTINGS_PATH
         : undefined;
-    const _prebuiltMcpServerNames = (!_genomeSpec && process.env.AHA_AGENT_MCP_CONFIG_PATH)
+    const _prebuiltMcpServerNames = (!_agentImage && process.env.AHA_AGENT_MCP_CONFIG_PATH)
         ? readMaterializedMcpServerNames(process.env.AHA_AGENT_MCP_CONFIG_PATH)
         : [];
     if (_prebuiltSettingsPath) {
@@ -573,8 +572,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         const resolved = resolveModel({
             role: roleForRouter,
             executionPlane: execPlane,
-            genomeModelId: _genomeSpec?.modelId,
-            genomeModelProvider: _genomeSpec?.modelProvider,
+            genomeModelId: _agentImage?.modelId,
+            genomeModelProvider: _agentImage?.modelProvider,
         });
 
         if (resolved.isSupported) {
@@ -584,7 +583,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // 非 Anthropic provider 降级：记录警告，使用 fallback model
             logger.debug(
                 `[modelRouter] Provider not supported, falling back to anthropic/${resolved.fallbackModelId}. ` +
-                `(genome requested: ${_genomeSpec?.modelProvider}/${_genomeSpec?.modelId})`
+                `(genome requested: ${_agentImage?.modelProvider}/${_agentImage?.modelId})`
             );
             currentModel = resolved.fallbackModelId;
             if (!currentFallbackModel) {
@@ -646,14 +645,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 role,
                 metadata: session.getMetadata() || metadata,
                 taskStateManager,
-                specId: _genomeSpecId || undefined,
+                specId: _agentImageId || undefined,
             });
             logger.debug(
                 `[runClaude] Team membership sync result: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
             );
 
             // Initialize ApprovalWorkflow for coordination roles (master, orchestrator, team-lead)
-            if (isCoordinatorRole(role, _genomeSpec)) {
+            if (isCoordinatorRole(role, _agentImage)) {
                 logger.debug(`[runClaude] ApprovalWorkflow initialized for coordinator role ${role}`);
             }
 
@@ -754,7 +753,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         // Ensure we have role and teamId in metadata for generateRolePrompt
                         if (!sessionMetadataForTeamMsg.role) sessionMetadataForTeamMsg.role = role;
                         if (!sessionMetadataForTeamMsg.teamId) sessionMetadataForTeamMsg.teamId = teamId;
-                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext, _genomeSpec ?? undefined, _genomeFeedbackData);
+                        const rolePromptForTeamMsg = generateRolePrompt(sessionMetadataForTeamMsg, kanbanContext, _agentImage ?? undefined, _agentVerdictData);
                         const { disallowedTools: roleDisallowedToolsForMsg } = getRolePermissions(role, currentPermissionMode);
 
                         // Inject into message queue using the SAME mode as the initial context injection
@@ -790,19 +789,19 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (isNewJoin) {
                 logger.debug(`[runClaude] Performing handshake and context injection for team ${teamId}`);
 
-                // 1. Send Handshake - Dynamic from GenomeSpec + explicit role context + @help
+                // 1. Send Handshake - Dynamic from AgentImage + explicit role context + @help
                 try {
                     const roleDef = DEFAULT_ROLES[role!];
-                    const roleTitle = _genomeSpec?.displayName || roleDef?.name || role;
+                    const roleTitle = _agentImage?.displayName || roleDef?.name || role;
 
-                    // Dynamic: pull responsibilities and capabilities from GenomeSpec (the DNA),
+                    // Dynamic: pull responsibilities and capabilities from AgentImage (the DNA),
                     // fall back to static role definitions only when no genome is loaded.
-                    const responsibilities: string[] = _genomeSpec?.responsibilities?.slice(0, 3)
+                    const responsibilities: string[] = _agentImage?.responsibilities?.slice(0, 3)
                         || roleDef?.responsibilities?.slice(0, 3)
                         || [];
-                    const capabilities: string[] = (_genomeSpec as any)?.capabilities || [];
-                    const genomeDescription = _genomeSpec?.description;
-                    const scope = (_genomeSpec as any)?.scopeOfResponsibility;
+                    const capabilities: string[] = (_agentImage as any)?.capabilities || [];
+                    const agentImageDescription = _agentImage?.description;
+                    const scope = (_agentImage as any)?.scopeOfResponsibility;
                     const scopeSummary = scope?.ownedPaths?.length
                         ? [
                             `Owned paths: ${scope.ownedPaths.join(', ')}`,
@@ -812,16 +811,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
                     let introContent: string = '';
 
-                    if (isBootstrapRole(role, _genomeSpec)) {
+                    if (isBootstrapRole(role, _agentImage)) {
                         logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
                         console.log(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
                     } else {
-                        const roleSummary = genomeDescription || roleDef?.name || roleTitle;
+                        const roleSummary = agentImageDescription || roleDef?.name || roleTitle;
                         introContent = buildAgentHandshakeContent({
                             role: role!,
                             roleTitle,
-                            isCoordinator: isCoordinatorRole(role, _genomeSpec),
-                            isBootstrap: isBootstrapRole(role, _genomeSpec),
+                            isCoordinator: isCoordinatorRole(role, _agentImage),
+                            isBootstrap: isBootstrapRole(role, _agentImage),
                             roleDescription: roleSummary,
                             responsibilities,
                             capabilities,
@@ -839,7 +838,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         fromRole: role,
                         metadata: { type: 'handshake', roleTitle }
                     };
-                    if (!isBootstrapRole(role, _genomeSpec)) {
+                    if (!isBootstrapRole(role, _agentImage)) {
                         await api.sendTeamMessage(teamId, handshakeMsg);
                         logger.debug('[runClaude] Sent handshake message to team');
                         console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
@@ -890,7 +889,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 // Filter Kanban Board for Context Isolation (only if we have data)
                 let filteredBoard = teamData ? { ...teamData } : { message: 'Team data not yet available. Wait for tasks from Master.' };
                 const currentSessionMetadata = (session.getMetadata() || {}) as any;
-                if (teamData && !isCoordinatorRole(role, _genomeSpec) && !isBootstrapRole(role, _genomeSpec)) {
+                if (teamData && !isCoordinatorRole(role, _agentImage) && !isBootstrapRole(role, _agentImage)) {
                     // Workers only see:
                     // 1. Tasks assigned to them
                     // 2. Unassigned tasks (todo)
@@ -934,15 +933,15 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
                 let instructions: string;
 
-                // ── Genome Tier 1：Prompt 注入（复用启动阶段已 fetch 的 _genomeSpec）──
-                // _genomeSpec 在启动时已 fetch 并缓存，这里直接用，不重复请求。
+                // ── Genome Tier 1：Prompt 注入（复用启动阶段已 fetch 的 _agentImage）──
+                // _agentImage 在启动时已 fetch 并缓存，这里直接用，不重复请求。
                 // If genome supplies a full system prompt, use it directly and
                 // skip the compiled role prompt below.
-                if (_genomeSpec?.systemPrompt) {
-                    instructions = _genomeSpec.systemPrompt
-                        + (_genomeSpec.systemPromptSuffix ? '\n\n' + _genomeSpec.systemPromptSuffix : '');
-                    logger.debug(`[genome] Using genome systemPrompt (specId=${_genomeSpecId})`);
-                } else if (isBypassRole(role, _genomeSpec) && role === 'supervisor') {
+                if (_agentImage?.systemPrompt) {
+                    instructions = _agentImage.systemPrompt
+                        + (_agentImage.systemPromptSuffix ? '\n\n' + _agentImage.systemPromptSuffix : '');
+                    logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId})`);
+                } else if (isBypassRole(role, _agentImage) && role === 'supervisor') {
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
                     const lastSessionId = process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
@@ -1111,7 +1110,7 @@ ${pendingAction ? `→ There IS a pending action. Execute it now:
    **h. Close the loop immediately after scoring — a score is not the end state:**
       - \`discard\` → intervene in the same run: \`kill_agent\` or \`replace_agent\`, and call \`request_help\` if human / live assistance is needed
       - \`mutate\` → create an explicit improvement loop in the same run: call \`request_help\` with a concrete mutation brief, and when genome evolution is appropriate use \`create_genome\` with \`origin:"mutated"\`, \`parentId\`, and \`mutationNote\`
-      - when publishing reusable team templates / CorpsSpec payloads, use \`create_corps\` instead of \`create_genome\`
+      - when publishing reusable team templates / LegionImage payloads, use \`create_corps\` instead of \`create_genome\`
       - \`keep\` / \`keep_with_guardrails\` → keep the current genome/session alive, then continue toward \`update_genome_feedback\` when score volume is sufficient
 9. **Upload feedback to marketplace**: For each genome with ≥ 3 scored sessions, call \`update_genome_feedback\` using exact specimen identity from \`specId\` / \`list_team_agents\` / explicit namespace+name.
    If specimen identity is missing, do NOT guess and do NOT fallback by role. Leave the feedback unpublished and record the cycle for audit instead. This writes aggregated session scoring back to the genome, not just local disk. The aggregate \`avgScore\` is the public crowd-review score shown on the agent detail page and the marketplace.
@@ -1187,10 +1186,10 @@ When the cycle is complete, choose your own lifecycle explicitly:
 - Phase 2 may use helper tools plus direct raw-log inspection, then \`score_agent\`, \`update_genome_feedback\`, \`evolve_genome\`, \`request_help\`, \`kill_agent\`, \`replace_agent\`, \`create_genome\`, \`create_corps\`
 
 </Supervisor_Instructions>`;
-                    if (_genomeSpec?.systemPromptSuffix) {
-                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    if (_agentImage?.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
-                } else if (isBypassRole(role, _genomeSpec) && role === 'help-agent') {
+                } else if (isBypassRole(role, _agentImage) && role === 'help-agent') {
                     instructions = `
 <HelpAgent_Instructions>
 
@@ -1221,10 +1220,10 @@ You respond to a specific help request, fix it, then decide whether to retire or
 6. When you consider the repair complete, emit an explicit lifecycle directive if you want to retire or standby
 
 </HelpAgent_Instructions>`;
-                    if (_genomeSpec?.systemPromptSuffix) {
-                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    if (_agentImage?.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
-                } else if (isBootstrapRole(role, _genomeSpec)) {
+                } else if (isBootstrapRole(role, _agentImage)) {
                     instructions = `
 <Bootstrap_Instructions>
 
@@ -1265,10 +1264,10 @@ You assemble the team, then explicitly decide whether to retire. You are invisib
 - After all create_agent and create_task calls, decide whether to retire explicitly. Default bootstrap behavior is to retire.
 
 </Bootstrap_Instructions>`;
-                    if (_genomeSpec?.systemPromptSuffix) {
-                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    if (_agentImage?.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
-                } else if (isCoordinatorRole(role, _genomeSpec)) {                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
+                } else if (isCoordinatorRole(role, _agentImage)) {                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
                     instructions = `
 <Coordinator_Instructions>
 
@@ -1326,8 +1325,8 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 **NO USER INSTRUCTION = WAIT. DO NOT explore files for "tasks to do".**
 
 </Coordinator_Instructions>`;
-                    if (_genomeSpec?.systemPromptSuffix) {
-                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    if (_agentImage?.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
                 } else {
                     // Worker instructions - OhMyOpenCode / Sisyphus pattern
@@ -1381,8 +1380,8 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
 **NO ASSIGNED TASKS = ANNOUNCE + WAIT. DO NOT search for work.**
 
 </Worker_Instructions>`;
-                    if (_genomeSpec?.systemPromptSuffix) {
-                        instructions += '\n\n' + _genomeSpec.systemPromptSuffix;
+                    if (_agentImage?.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
                 }
 
@@ -1453,7 +1452,7 @@ ${instructions}
                 // Ensure we have role and teamId in metadata for generateRolePrompt
                 if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
                 if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
-                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _genomeSpec ?? undefined, _genomeFeedbackData);
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _agentImage ?? undefined, _agentVerdictData);
                 logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
                 const enhancedMode: EnhancedMode = {
@@ -1528,9 +1527,9 @@ ${instructions}
         // Resolve permission mode from meta
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            const validModes: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
-            if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-                messagePermissionMode = message.meta.permissionMode as PermissionMode;
+            const validModes: Array<NonNullable<StartOptions['permissionMode']>> = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
+            if (validModes.includes(message.meta.permissionMode as NonNullable<StartOptions['permissionMode']>)) {
+                messagePermissionMode = message.meta.permissionMode as NonNullable<StartOptions['permissionMode']>;
                 currentPermissionMode = messagePermissionMode;
                 logger.debug(`[loop] Permission mode updated from user message to: ${currentPermissionMode}`);
 
@@ -1615,7 +1614,7 @@ ${instructions}
         const { permissionMode: effectivePermissionMode, disallowedTools: roleDisallowedTools } =
             getRolePermissions(role, requestedMode);
 
-        const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _genomeSpec ?? undefined, _genomeFeedbackData);
+        const rolePrompt = generateRolePrompt(sessionMetadata, undefined, _agentImage ?? undefined, _agentVerdictData);
 
         if (specialCommand.type === 'clear') {
             logger.debug('[start] Detected /clear command');

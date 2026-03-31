@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildAgentWorkspacePlan,
-    buildAgentWorkspacePlanFromGenome,
+    buildAgentWorkspacePlanFromAgentImage,
     ensureRuntimeLibStructure,
     materializeAgentWorkspace,
     withDefaultAgentSkills,
@@ -37,7 +37,7 @@ describe('buildAgentWorkspacePlan', () => {
         expect(plan.effectiveCwd).toBe('/repo/project');
         expect(plan.commandsDir).toContain('/runtime/agent-1/workspace/.claude/commands');
         expect(plan.actions.some((a) => a.kind === 'attach-repo')).toBe(true);
-        expect(plan.actions.filter((a) => a.kind === 'link-skill')).toHaveLength(2);
+        expect(plan.actions.filter((a) => a.kind === 'link-skill' && a.required)).toHaveLength(2);
     });
 
     it('falls back when requested workspace mode is not allowed', () => {
@@ -83,8 +83,8 @@ describe('buildAgentWorkspacePlan', () => {
             },
         });
 
-        expect(plan.actions.filter((a) => a.kind === 'link-skill')).toHaveLength(1);
-        expect(plan.actions.find((a) => a.kind === 'link-skill')?.target).toContain('/commands/search');
+        expect(plan.actions.filter((a) => a.kind === 'link-skill' && a.required)).toHaveLength(1);
+        expect(plan.actions.find((a) => a.kind === 'link-skill' && a.required)?.target).toContain('/commands/search');
         expect(config.tools.skills).toEqual(['review', 'search', 'summarize']);
     });
 
@@ -94,6 +94,7 @@ describe('buildAgentWorkspacePlan', () => {
         const runtimeLibRoot = join(root, 'runtime-lib');
         mkdirSync(repoRoot, { recursive: true });
         mkdirSync(join(runtimeLibRoot, 'skills', 'review'), { recursive: true });
+        writeFileSync(join(runtimeLibRoot, 'skills', 'review', 'SKILL.md'), '# review', 'utf-8');
         writeFileSync(join(repoRoot, 'README.md'), 'source repo', 'utf-8');
 
         const plan = materializeAgentWorkspace({
@@ -149,7 +150,7 @@ describe('buildAgentWorkspacePlan', () => {
         expect(lstatSync(join(plan.commandsDir, 'review')).isSymbolicLink()).toBe(true);
     });
 
-    it('bridges GenomeSpec into a materialized workspace plan with env/hooks/mcp mapping', () => {
+    it('bridges AgentImage into a materialized workspace plan with env/hooks/mcp mapping', () => {
         const root = mkdtempSync(join(tmpdir(), 'aha-materializer-genome-'));
         const repoRoot = join(root, 'repo');
         const runtimeLibRoot = join(root, 'runtime-lib');
@@ -157,9 +158,11 @@ describe('buildAgentWorkspacePlan', () => {
         mkdirSync(repoRoot, { recursive: true });
         mkdirSync(join(runtimeLibRoot, 'skills', 'review'), { recursive: true });
         mkdirSync(join(runtimeLibRoot, 'skills', 'ship'), { recursive: true });
+        writeFileSync(join(runtimeLibRoot, 'skills', 'review', 'SKILL.md'), '# review', 'utf-8');
+        writeFileSync(join(runtimeLibRoot, 'skills', 'ship', 'SKILL.md'), '# ship', 'utf-8');
         writeFileSync(join(repoRoot, 'index.ts'), 'export const hello = "world";\n', 'utf-8');
 
-        const plan = buildAgentWorkspacePlanFromGenome({
+        const plan = buildAgentWorkspacePlanFromAgentImage({
             displayName: 'Genome Reviewer',
             namespace: '@test',
             version: 2,
@@ -242,16 +245,21 @@ describe('buildAgentWorkspacePlan', () => {
         expect(existsSync(join(plan.commandsDir, 'ship'))).toBe(false);
     });
 
-    it('uses fallback shared mode defaults when GenomeSpec does not declare extras', () => {
+    it('uses fallback shared mode defaults when AgentImage does not declare extras', () => {
         const root = mkdtempSync(join(tmpdir(), 'aha-materializer-genome-default-'));
         const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+        const defaultSkillDir = join(runtimeLibRoot, 'skills', 'context-mirror');
         mkdirSync(repoRoot, { recursive: true });
+        mkdirSync(defaultSkillDir, { recursive: true });
+        writeFileSync(join(defaultSkillDir, 'SKILL.md'), '# context-mirror', 'utf-8');
 
-        const plan = buildAgentWorkspacePlanFromGenome({
+        const plan = buildAgentWorkspacePlanFromAgentImage({
             baseRoleId: 'builder',
         }, {
             agentId: `default-agent-${Date.now()}`,
             repoRoot,
+            runtimeLibRoot,
         });
 
         expect(plan.workspaceMode).toBe('shared');
@@ -319,6 +327,40 @@ describe('buildAgentWorkspacePlan', () => {
         expect(readFileSync(join(target, 'SKILL.md'), 'utf-8')).toBe('# review');
     });
 
+    it('keeps inline skill files authoritative over runtime-lib skill sources', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-inline-skill-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+        const skillDir = join(runtimeLibRoot, 'skills', 'review');
+
+        mkdirSync(repoRoot, { recursive: true });
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, 'SKILL.md'), '# review from runtime-lib', 'utf-8');
+
+        const plan = materializeAgentWorkspace({
+            agentId: `inline-skill-${Date.now()}`,
+            repoRoot,
+            runtime: 'claude',
+            workspaceMode: 'shared',
+            runtimeLibRoot,
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'InlineSkillTest',
+                runtime: 'claude',
+                tools: {
+                    skills: ['review'],
+                },
+                files: {
+                    '.claude/commands/review/SKILL.md': '# review from inline image',
+                },
+            },
+        });
+
+        const target = join(plan.commandsDir, 'review');
+        expect(lstatSync(target).isSymbolicLink()).toBe(false);
+        expect(readFileSync(join(target, 'SKILL.md'), 'utf-8')).toBe('# review from inline image');
+    });
+
     it('falls back to repo-local skills when runtime-lib does not contain the skill', () => {
         const root = mkdtempSync(join(tmpdir(), 'aha-materializer-repo-skill-'));
         const repoRoot = join(root, 'repo');
@@ -345,6 +387,51 @@ describe('buildAgentWorkspacePlan', () => {
         });
 
         expect(readFileSync(join(plan.commandsDir, 'context-mirror', 'SKILL.md'), 'utf-8')).toBe('# context-mirror');
+    });
+
+    it('unions user-installed skills into commandsDir as additive runtime skills', () => {
+        const previousSkillRoots = process.env.AHA_SKILL_ROOTS;
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-global-skill-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+        const runtimeSkillDir = join(runtimeLibRoot, 'skills', 'review');
+        const userSkillRoot = join(root, 'user-skills');
+        const userSkillDir = join(userSkillRoot, 'user-extra');
+
+        mkdirSync(repoRoot, { recursive: true });
+        mkdirSync(runtimeSkillDir, { recursive: true });
+        mkdirSync(userSkillDir, { recursive: true });
+        writeFileSync(join(runtimeSkillDir, 'SKILL.md'), '# review', 'utf-8');
+        writeFileSync(join(userSkillDir, 'SKILL.md'), '# user-extra', 'utf-8');
+
+        process.env.AHA_SKILL_ROOTS = userSkillRoot;
+
+        try {
+            const plan = materializeAgentWorkspace({
+                agentId: `global-skill-${Date.now()}`,
+                repoRoot,
+                runtime: 'claude',
+                workspaceMode: 'shared',
+                runtimeLibRoot,
+                config: {
+                    kind: 'aha.agent.v1',
+                    name: 'GlobalSkillTest',
+                    runtime: 'claude',
+                    tools: {
+                        skills: ['review'],
+                    },
+                },
+            });
+
+            expect(readFileSync(join(plan.commandsDir, 'review', 'SKILL.md'), 'utf-8')).toBe('# review');
+            expect(readFileSync(join(plan.commandsDir, 'user-extra', 'SKILL.md'), 'utf-8')).toBe('# user-extra');
+        } finally {
+            if (previousSkillRoots === undefined) {
+                delete process.env.AHA_SKILL_ROOTS;
+            } else {
+                process.env.AHA_SKILL_ROOTS = previousSkillRoots;
+            }
+        }
     });
 
     it('replaces dangling skill symlinks when rematerializing the same agent workspace', () => {
@@ -396,5 +483,60 @@ describe('buildAgentWorkspacePlan', () => {
         });
 
         expect(readFileSync(join(secondPlan.commandsDir, 'review', 'SKILL.md'), 'utf-8')).toBe('# review B');
+    });
+
+    it('throws when a declared skill has no inline file and no runtime-lib source', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-missing-skill-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+
+        mkdirSync(repoRoot, { recursive: true });
+
+        expect(() => materializeAgentWorkspace({
+            agentId: `missing-skill-${Date.now()}`,
+            repoRoot,
+            runtime: 'claude',
+            workspaceMode: 'shared',
+            runtimeLibRoot,
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'MissingSkillTest',
+                runtime: 'claude',
+                tools: {
+                    skills: ['context-mirror'],
+                },
+            },
+        })).toThrow(
+            'Skill "context-mirror" declared in skills[] but content is missing.',
+        );
+    });
+
+    it('succeeds with inline skill files even when runtime-lib does not contain the skill', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-inline-skill-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+
+        mkdirSync(repoRoot, { recursive: true });
+
+        const plan = materializeAgentWorkspace({
+            agentId: `inline-skill-${Date.now()}`,
+            repoRoot,
+            runtime: 'claude',
+            workspaceMode: 'shared',
+            runtimeLibRoot,
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'InlineSkillTest',
+                runtime: 'claude',
+                tools: {
+                    skills: ['context-mirror'],
+                },
+                files: {
+                    '.claude/commands/context-mirror/SKILL.md': '# inline context-mirror',
+                },
+            },
+        });
+
+        expect(readFileSync(join(plan.commandsDir, 'context-mirror', 'SKILL.md'), 'utf-8')).toBe('# inline context-mirror');
     });
 });

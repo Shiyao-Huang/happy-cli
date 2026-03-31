@@ -529,6 +529,75 @@
         }
       }
     },
+    "schedule": {
+      "description": "[M2] Canonical cadence definition. Runtime reads this to determine when to spawn the agent periodically.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "type": "string",
+          "description": "Cron expression or human-readable interval (e.g. '*/5 * * * *', '5m', '1h')"
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Maximum concurrent instances of this agent"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "onMessage": {
+      "description": "[M2] Canonical message trigger. Runtime reads this to determine when to spawn the agent in response to team messages.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Message content patterns that trigger this agent (e.g. '@help', 'URGENT:')"
+        },
+        "senderRoles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Only trigger for messages from these roles"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["normal", "high", "urgent"],
+          "description": "Only trigger for messages at or above this priority"
+        }
+      }
+    },
+    "onTaskChange": {
+      "description": "[M2] Canonical task event trigger. Runtime reads this to determine when to spawn the agent in response to task state changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["created", "assigned", "blocked", "review", "completed"]
+          },
+          "description": "Task lifecycle events that trigger this agent"
+        },
+        "assignedOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only trigger for tasks assigned to this agent"
+        }
+      }
+    },
     "meta": {
       "type": "object"
     }
