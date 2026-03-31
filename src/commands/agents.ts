@@ -1,18 +1,27 @@
 import chalk from 'chalk';
 import { ApiClient } from '@/api/api';
+import type { AgentImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
-import { materializeAgentWorkspace, type AgentDockerConfig, withDefaultAgentSkills } from '@/agentDocker/materializer';
+import {
+  buildAgentWorkspacePlanFromAgentImage,
+  materializeAgentWorkspace,
+  type AgentDockerConfig,
+  withDefaultAgentSkills,
+} from '@/agentDocker/materializer';
 import { buildMaterializedSpawnEnv } from '@/agentDocker/runtimeConfig';
 import { isRecognizedModelId } from '@/utils/modelContextWindows';
 import { publishTeamCorpsTemplate, resolvePreferredGenomeSpecId } from '@/utils/genomeMarketplace';
+import { normalizeAgentImageForPublication } from '@/utils/genomePublication';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { randomUUID } from 'node:crypto';
-import { ensureDaemonRunning } from '@/daemon/controlClient';
+import { ensureDaemonRunning, checkIfDaemonRunningAndCleanupStaleState, daemonPost } from '@/daemon/controlClient';
 import { readDaemonState } from '@/persistence';
 import { COORDINATION_ROLES } from '@/claude/team/roleConstants';
+import { findClaudeLogFile } from '@/claude/utils/runtimeLogReader';
+import { homedir } from 'os';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -250,6 +259,7 @@ ${chalk.bold('Commands:')}
   ${chalk.yellow('unarchive')} <id...>             Restore one or more archived agent sessions
   ${chalk.yellow('delete')} <id...>                Delete one or more agent sessions
   ${chalk.yellow('kill')} <sessionId...>           Kill (archive) one or more agents
+  ${chalk.yellow('logs')} <sessionId>              Show agent CC log (last N entries)
   ${chalk.yellow('spawn')} <agent.json>            Spawn agent from local agent JSON file
 
 ${chalk.bold('List options:')}
@@ -269,6 +279,10 @@ ${chalk.bold('Update options:')}
   ${chalk.cyan('--path <cwd>')}                   Set metadata.path
   ${chalk.cyan('--model <modelId>')}              Override the agent's model (e.g. claude-opus-4-6)
   ${chalk.cyan('--fallback-model <modelId>')}     Override the agent's fallback model
+
+${chalk.bold('Logs options:')}
+  ${chalk.cyan('--lines <n>')}                   Number of log entries to show (default: 50)
+  ${chalk.cyan('--verbose, -v')}                  Show full entry detail
 
 ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--ids a,b,c')}                    Alternative to positional IDs for archive/delete
@@ -292,6 +306,8 @@ ${chalk.bold('Examples:')}
   ${chalk.green('aha agents create --role builder --team team_123')}
   ${chalk.green('aha agents create --role qa-engineer --team team_123 --name "QA Bot"')}
   ${chalk.green('aha agents kill session_123')}
+  ${chalk.green('aha agents logs session_123')}
+  ${chalk.green('aha agents logs session_123 --lines 100')}
   ${chalk.green('aha agents update session_123 --role builder --team team_123')}
   ${chalk.green('aha agents rename session_123 "Builder 2"')}
   ${chalk.green('aha agents archive session_123 session_456')}
@@ -343,6 +359,14 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
           throw new Error('Usage: aha agents kill <sessionId...>');
         }
         await archiveAgents(api, sessionIds, true, asJson);
+        break;
+      }
+      case 'logs': {
+        if (positional.length < 2) {
+          throw new Error('Usage: aha agents logs <sessionId> [--lines N]');
+        }
+        const lines = parseInt(getOption(args, 'lines') || '50', 10);
+        await logsAgent(api, positional[1], { lines: isFinite(lines) && lines > 0 ? lines : 50, asJson, verbose });
         break;
       }
       case 'show':
@@ -617,6 +641,70 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   },
 };
 
+type BuiltinAgentImageOptions = {
+  roleId: string;
+  displayName: string;
+  runtime: 'claude' | 'codex';
+  teamId?: string;
+};
+
+export function buildBuiltinAgentImage(
+  options: BuiltinAgentImageOptions,
+): { agentImage: AgentImage; promptSuffix?: string } {
+  const roleConfig = BUILTIN_ROLE_CONFIGS[options.roleId] || {};
+  const teamContextSuffix = options.teamId
+    ? `## Team Context
+- Team ID: ${options.teamId}
+- Your role: ${options.roleId}
+- On startup: call get_team_info then list_tasks
+- Kanban protocol: start_task before work, complete_task after done
+- Report blockers via send_team_message @master`
+    : '';
+  const promptSuffix = [roleConfig.systemPromptSuffix, teamContextSuffix]
+    .map(value => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join('\n\n') || undefined;
+  const authorities = [
+    ...(COORDINATION_ROLES.includes(options.roleId) ? ['task.create'] : []),
+    ...(roleConfig.behavior?.canSpawnAgents ? ['agent.spawn'] : []),
+  ];
+  const canonicalSpec = {
+    kind: 'aha.agent.v1' as const,
+    name: options.displayName,
+    description: roleConfig.description || `${options.roleId} agent`,
+    baseRoleId: options.roleId,
+    runtime: options.runtime,
+    ...(promptSuffix ? { prompt: { suffix: promptSuffix } } : {}),
+    tools: {
+      mcpServers: ['aha'],
+      skills: withDefaultAgentSkills(),
+    },
+    context: {
+      teamRole: options.roleId,
+      ...(authorities.length > 0 ? { authorities } : {}),
+      behavior: roleConfig.behavior,
+    },
+    env: {
+      required: ['ANTHROPIC_API_KEY'],
+      optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'],
+    },
+    workspace: {
+      defaultMode: 'shared' as const,
+      allowedModes: ['shared' as const, 'isolated' as const],
+    },
+  };
+
+  const normalized = normalizeAgentImageForPublication({
+    specJson: JSON.stringify(canonicalSpec),
+    runtimeLibRoot: null,
+  });
+
+  return {
+    agentImage: normalized.spec as AgentImage,
+    promptSuffix,
+  };
+}
+
 async function createAgent(
   api: ApiClient,
   roleId: string,
@@ -625,33 +713,27 @@ async function createAgent(
   const agentId = randomUUID();
   const repoRoot = opts.cwd || process.cwd();
   const displayName = opts.name || roleId;
-  const roleConfig = BUILTIN_ROLE_CONFIGS[roleId] || {};
-
-  const teamContextSuffix = opts.teamId
-    ? `\n\n## Team Context\n- Team ID: ${opts.teamId}\n- Your role: ${roleId}\n- On startup: call get_team_info then list_tasks\n- Kanban protocol: start_task before work, complete_task after done\n- Report blockers via send_team_message @master`
-    : '';
-
-  const config: AgentDockerConfig = {
-    kind: 'aha.agent.v1',
-    name: displayName,
+  const built = buildBuiltinAgentImage({
+    roleId,
+    displayName,
     runtime: opts.model,
-    description: roleConfig.description || `${roleId} agent`,
-    systemPromptSuffix: (roleConfig.systemPromptSuffix || '') + teamContextSuffix,
-    behavior: roleConfig.behavior,
-    tools: { mcpServers: ['aha'], skills: withDefaultAgentSkills() },
-    env: { required: ['ANTHROPIC_API_KEY'], optional: ['AHA_ROOM_ID', 'AHA_SESSION_ID'] },
-    workspace: { defaultMode: 'shared', allowedModes: ['shared', 'isolated'] },
-  };
+    teamId: opts.teamId,
+  });
 
   if (!opts.asJson) {
     console.log(chalk.bold(`\nCreating agent: ${displayName} (${roleId})\n`));
   }
 
-  const plan = materializeAgentWorkspace({
+  const specResolution = await resolvePreferredGenomeSpecId({
+    role: roleId,
+    runtime: opts.model,
+    strategy: 'best-rated',
+  });
+
+  const plan = buildAgentWorkspacePlanFromAgentImage(built.agentImage, {
     agentId,
     repoRoot,
-    runtime: config.runtime,
-    config,
+    specId: specResolution.specId ?? undefined,
     workspaceMode: 'shared',
   });
 
@@ -671,16 +753,15 @@ async function createAgent(
     settingsPath: plan.settingsPath,
     envFilePath: plan.envFilePath,
     mcpConfigPath: plan.mcpConfigPath,
+    commandsDir: plan.commandsDir,
   });
-  const specResolution = await resolvePreferredGenomeSpecId({
-    role: roleId,
-    runtime: opts.model,
-    strategy: 'best-rated',
-  });
+  if (!specResolution.specId && built.promptSuffix) {
+    materializedEnv.AHA_AGENT_PROMPT = built.promptSuffix;
+  }
 
   const spawnBody = {
     directory: plan.effectiveCwd,
-    agent: opts.model === 'codex' ? 'codex' : 'claude',
+    agent: built.agentImage.runtimeType === 'codex' ? 'codex' : 'claude',
     role: roleId,
     sessionName: displayName,
     teamId: opts.teamId,
@@ -813,6 +894,7 @@ async function spawnAgent(
     settingsPath: plan.settingsPath,
     envFilePath: plan.envFilePath,
     mcpConfigPath: plan.mcpConfigPath,
+    commandsDir: plan.commandsDir,
   });
   const spawnBody = {
     directory: plan.effectiveCwd,
@@ -857,5 +939,130 @@ async function spawnAgent(
   console.log(chalk.green(`✓ Agent spawned: ${sessionId}`));
   console.log(chalk.gray(`  role=${role} runtime=${config.runtime} teamId=${opts.teamId || '-'}`));
   console.log(chalk.gray(`  settings=${plan.settingsPath}`));
+  console.log();
+}
+
+function printCcLogEntry(entry: any, verbose: boolean): void {
+  const type = entry?.type ?? entry?.message?.type;
+  const role = entry?.message?.role ?? entry?.role;
+  const content = entry?.message?.content ?? entry?.content;
+
+  if (type === 'system') {
+    if (verbose) {
+      console.log(chalk.gray(`  [system] ${JSON.stringify(entry).slice(0, 120)}`));
+    }
+    return;
+  }
+
+  if (role === 'user') {
+    const text = Array.isArray(content)
+      ? content.filter((c: any) => c?.type === 'text').map((c: any) => c.text).join(' ').slice(0, 200)
+      : typeof content === 'string' ? content.slice(0, 200) : '';
+    if (text) {
+      console.log(`${chalk.cyan('→ user')}  ${chalk.white(text)}`);
+    }
+    return;
+  }
+
+  if (role === 'assistant') {
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === 'text' && block.text) {
+          console.log(`${chalk.green('← asst')}  ${chalk.white(block.text.slice(0, 300))}`);
+        } else if (block?.type === 'tool_use') {
+          const inputStr = block.input ? JSON.stringify(block.input).slice(0, 100) : '';
+          console.log(`${chalk.yellow('⚙ tool')}  ${chalk.bold(block.name)} ${chalk.gray(inputStr)}`);
+        }
+      }
+    } else if (typeof content === 'string' && content) {
+      console.log(`${chalk.green('← asst')}  ${chalk.white(content.slice(0, 300))}`);
+    }
+    return;
+  }
+
+  if (type === 'tool_result') {
+    if (verbose) {
+      const resultText = Array.isArray(entry.content)
+        ? entry.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text).join(' ').slice(0, 150)
+        : '';
+      if (resultText) {
+        console.log(`${chalk.magenta('✓ tool')}  ${chalk.gray(resultText)}`);
+      }
+    }
+    return;
+  }
+
+  if (verbose) {
+    console.log(chalk.gray(`  [${type || 'unknown'}] ${JSON.stringify(entry).slice(0, 120)}`));
+  }
+}
+
+async function logsAgent(
+  api: ApiClient,
+  sessionId: string,
+  opts: { lines: number; asJson: boolean; verbose: boolean },
+): Promise<void> {
+  const session = await api.getSession(sessionId);
+  if (!session) {
+    throw new Error(`Session ${sessionId} not found`);
+  }
+
+  let claudeLocalSessionId: string | undefined;
+  try {
+    const teamId = session.metadata?.teamId || session.metadata?.roomId;
+    if (teamId) {
+      const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
+      if (isRunning) {
+        const result = await daemonPost('/list-team-sessions', { teamId });
+        const teamSessions: Array<{ ahaSessionId: string; claudeLocalSessionId?: string }> = result?.sessions ?? [];
+        const match = teamSessions.find(s => s.ahaSessionId === sessionId);
+        claudeLocalSessionId = match?.claudeLocalSessionId;
+      }
+    }
+  } catch (error) {
+    logger.debug('[agent logs] Failed to resolve daemon session info (non-fatal):', error);
+  }
+
+  const logFilePath = claudeLocalSessionId ? findClaudeLogFile(homedir(), claudeLocalSessionId) : null;
+
+  if (opts.asJson) {
+    console.log(JSON.stringify({
+      sessionId,
+      claudeLocalSessionId: claudeLocalSessionId ?? null,
+      logFilePath,
+      session: sanitizeSession(session),
+    }, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold(`\nAgent: ${sessionId}\n`));
+  printSession(session, opts.verbose);
+
+  if (!claudeLocalSessionId) {
+    console.log(chalk.gray('\n  (No active daemon session found — agent may not be running or belongs to no team)'));
+    console.log();
+    return;
+  }
+
+  if (!logFilePath) {
+    console.log(chalk.gray(`\n  (CC log not found for local session: ${claudeLocalSessionId})`));
+    console.log();
+    return;
+  }
+
+  console.log(chalk.bold(`\nCC Log: ${chalk.gray(logFilePath)}`));
+  const raw = readFileSync(logFilePath, 'utf-8');
+  const lines = raw.split('\n').filter(Boolean);
+  const tail = lines.slice(-opts.lines);
+  console.log(chalk.gray(`  (last ${tail.length} of ${lines.length} entries)\n`));
+
+  for (const line of tail) {
+    try {
+      const entry = JSON.parse(line);
+      printCcLogEntry(entry, opts.verbose);
+    } catch {
+      console.log(chalk.gray(`  ${line.slice(0, 120)}`));
+    }
+  }
   console.log();
 }
