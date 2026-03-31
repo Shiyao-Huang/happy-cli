@@ -5,6 +5,7 @@ import {
     getCanonicalGenomeTargetForRole,
     resolveFeedbackUploadTarget,
     scoreMatchesFeedbackTarget,
+    deriveFeedbackTargetFromScores,
 } from './supervisorAgentVerdict';
 
 function makeScore(overrides: Partial<AgentScore>): AgentScore {
@@ -146,5 +147,73 @@ describe('supervisorAgentVerdict', () => {
             makeScore({ role: 'master' }),
             target!,
         )).toBe(false);
+    });
+});
+
+describe('deriveFeedbackTargetFromScores', () => {
+    it('preserves existing genomeId without inspecting scores', () => {
+        const target = {
+            genomeId: 'entity-v3',
+            namespace: '@official',
+            name: 'master',
+            source: 'score-spec' as const,
+        };
+        const result = deriveFeedbackTargetFromScores(target, [
+            makeScore({ specId: 'entity-v2' }),
+        ]);
+        expect(result.genomeId).toBe('entity-v3');
+    });
+
+    it('derives genomeId when all scores share the same specId', () => {
+        const target = {
+            namespace: '@official',
+            name: 'master',
+            source: 'explicit-target' as const,
+        };
+        const scores = [
+            makeScore({ specId: 'entity-v3', specNamespace: '@official', specName: 'master' }),
+            makeScore({ specId: 'entity-v3', specNamespace: '@official', specName: 'master' }),
+        ];
+        const result = deriveFeedbackTargetFromScores(target, scores);
+        expect(result.genomeId).toBe('entity-v3');
+        expect(result.namespace).toBe('@official');
+        expect(result.name).toBe('master');
+    });
+
+    it('does not derive genomeId when scores have mixed specIds', () => {
+        const target = {
+            namespace: '@official',
+            name: 'master',
+            source: 'explicit-target' as const,
+        };
+        const scores = [
+            makeScore({ specId: 'entity-v2', specNamespace: '@official', specName: 'master' }),
+            makeScore({ specId: 'entity-v3', specNamespace: '@official', specName: 'master' }),
+        ];
+        const result = deriveFeedbackTargetFromScores(target, scores);
+        expect(result.genomeId).toBeUndefined();
+    });
+
+    it('does not derive genomeId when scores have no specId', () => {
+        const target = {
+            namespace: '@official',
+            name: 'master',
+            source: 'explicit-target' as const,
+        };
+        const scores = [
+            makeScore({ specNamespace: '@official', specName: 'master' }),
+        ];
+        const result = deriveFeedbackTargetFromScores(target, scores);
+        expect(result.genomeId).toBeUndefined();
+    });
+
+    it('does not derive genomeId when scores array is empty', () => {
+        const target = {
+            namespace: '@official',
+            name: 'master',
+            source: 'explicit-target' as const,
+        };
+        const result = deriveFeedbackTargetFromScores(target, []);
+        expect(result.genomeId).toBeUndefined();
     });
 });

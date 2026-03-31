@@ -36,7 +36,7 @@ import { configuration } from '@/configuration';
 import type { DiffChange, AgentPlugRecord, AgentVerdict, AgentImage, DiffLedgerEntry } from '@/api/types/genome';
 import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
-import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget } from '../utils/supervisorAgentVerdict';
+import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget, deriveFeedbackTargetFromScores } from '../utils/supervisorAgentVerdict';
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
 import { projectSelfMirrorIdentity } from '../utils/runEnvelopeMirror';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
@@ -1718,6 +1718,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: `No specimen-bound scores found for role '${args.role}'. Score agents with explicit spec identity first; role fallback is disabled.` }], isError: false };
         }
 
+        // Auto-derive genomeId from scored specIds when not explicitly provided.
+        // If all matching scores point to the same entity ID, use it so feedback
+        // is written to the specific version row that was actually scored — not the
+        // current latest (which may already be a newer evolved version).
+        const effectiveFeedbackTarget = deriveFeedbackTargetFromScores(feedbackTarget, roleScores);
+
         // Aggregate and sanitize (no PII leaves the device)
         const feedback = aggregateScores(roleScores);
         if (!feedback) {
@@ -1735,10 +1741,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         ].join('\n');
 
         if (args.dryRun) {
+            const targetDesc = effectiveFeedbackTarget.genomeId
+                ? `${resolvedNamespace}/${resolvedName} (entity ${effectiveFeedbackTarget.genomeId})`
+                : `${resolvedNamespace}/${resolvedName} (latest)`;
             return {
                 content: [{
                     type: 'text',
-                    text: `DRY RUN — would send to ${resolvedNamespace}/${resolvedName}:\n${summary}\n\nPrivacy: session IDs, team IDs, file paths, and raw evidence are stripped before upload.`,
+                    text: `DRY RUN — would send to ${targetDesc}:\n${summary}\n\nPrivacy: session IDs, team IDs, file paths, and raw evidence are stripped before upload.`,
                 }],
                 isError: false,
             };
@@ -1746,7 +1755,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         try {
             const upload = await syncGenomeFeedbackToMarketplace({
-                target: feedbackTarget,
+                target: effectiveFeedbackTarget,
                 role: args.role,
                 feedback,
                 hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,

@@ -117,8 +117,11 @@ async function patchFeedback(
     target: FeedbackUploadTarget,
     feedback: AggregatedFeedback,
 ): Promise<FetchResponseLike> {
+    const url = target.genomeId
+        ? `${hubUrl}/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`
+        : `${hubUrl}/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
     return fetchImpl(
-        `${hubUrl}/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`,
+        url,
         {
             method: 'PATCH',
             headers: buildFeedbackHeaders(hubPublishKey),
@@ -135,8 +138,11 @@ async function patchFeedbackViaServerProxy(
     target: FeedbackUploadTarget,
     feedback: AggregatedFeedback,
 ): Promise<FetchResponseLike> {
+    const url = target.genomeId
+        ? `${serverUrl}/v1/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`
+        : `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
     return fetchImpl(
-        `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`,
+        url,
         {
             method: 'PATCH',
             headers: buildServerProxyHeaders(authToken),
@@ -160,7 +166,7 @@ export function normalizeFeedbackProxyBaseUrl(serverUrl: string): string {
 }
 
 function canAutoCreateOfficialTarget(target: FeedbackUploadTarget): boolean {
-    if (target.namespace !== '@official') {
+    if (target.namespace !== '@official' || target.genomeId) {
         return false;
     }
 

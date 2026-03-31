@@ -38,6 +38,26 @@ export function getCanonicalGenomeTargetForRole(role: string): { namespace: stri
     return ROLE_TO_CANONICAL_GENOME.get(normalizeRole(role)) ?? null;
 }
 
+/**
+ * Derives an effective feedback target from local scores.
+ * If the target has no genomeId and all matching scores share the same specId,
+ * the specId is used as genomeId so feedback is written to the specific entity
+ * row that was actually scored (not the current latest, which may be newer).
+ */
+export function deriveFeedbackTargetFromScores(
+    target: FeedbackUploadTarget,
+    scores: AgentScore[],
+): FeedbackUploadTarget {
+    if (target.genomeId) return target;
+    const uniqueSpecIds = [...new Set(
+        scores.map((s) => s.specId).filter((id): id is string => typeof id === 'string'),
+    )];
+    if (uniqueSpecIds.length === 1) {
+        return { ...target, genomeId: uniqueSpecIds[0] };
+    }
+    return target;
+}
+
 export function resolveFeedbackUploadTarget(args: {
     role: string;
     specId?: string;
