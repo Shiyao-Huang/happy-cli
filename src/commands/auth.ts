@@ -11,6 +11,8 @@ import os from 'node:os';
 import { reconnectWithStoredCredentials } from '@/auth/reconnect';
 import { parseBackupKeyToSecret } from '@/utils/backupKey';
 import { authGetToken } from '@/api/auth';
+import { doEmailOtpAuth } from '@/api/supabaseAuth';
+import { formatSecretKeyForBackup } from '@/utils/backupKey';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
   try {
@@ -80,7 +82,7 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--force|--new|-n] [--mobile]         Authenticate with Aha
+  aha auth login [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
   aha auth reconnect                                   Refresh token for the currently cached account
   aha auth restore --code <key>                        Restore a known account from backup key
   aha auth logout                                      Remove authentication and machine data
@@ -93,10 +95,12 @@ ${chalk.bold('Options:')}
   --restore,-r Legacy alias for reconnect/restore during \`login\`
   --code <key> Backup key for restore (e.g. XXXXX-XXXXX-...), no browser needed
   --mobile    Use the old mobile QR/manual flow instead of default web login
+  --email     Use email OTP login (no browser needed, works on headless Linux)
 
 ${chalk.bold('Recommended flows:')}
   aha auth reconnect
   aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
+  aha auth login --email
   aha auth login --force
 `);
 }
@@ -171,6 +175,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   const restoreAccount = args.includes('--restore') || args.includes('-r');
   const forceAuth = createNewAccount || restoreAccount;
   const useMobileAuth = args.includes('--mobile');
+  const useEmailAuth = args.includes('--email');
   const existingCreds = await readCredentials();
   const settings = await readSettings();
 
@@ -180,6 +185,35 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   if (createNewAccount && restoreAccount) {
     console.error(chalk.red('Choose either --new/--force or --restore, not both.'));
     process.exit(1);
+  }
+
+  // ── Email OTP: terminal-only login, no browser needed ──
+  if (useEmailAuth) {
+    const result = await doEmailOtpAuth();
+    if (!result) {
+      process.exit(1);
+    }
+
+    await clearMachineId();
+    await writeCredentialsLegacy({ secret: result.secret, token: result.token });
+    const { accountId } = decodeTokenSubject(result.token);
+    console.log(chalk.green('\n✓ Signed in via email'));
+    if (accountId) {
+      console.log(chalk.gray(`  Account ID: ${accountId}`));
+    }
+    console.log(chalk.bold('\n📋 Your restore key (save this!):'));
+    console.log(chalk.cyan(formatSecretKeyForBackup(result.secret)));
+    console.log(chalk.gray('\nUse this to link other devices:'));
+    console.log(chalk.gray(`  npx aha-v12 --restore-key ${formatSecretKeyForBackup(result.secret)}`));
+
+    try { await stopDaemon(); } catch { }
+    try {
+      const daemonResult = await ensureDaemonRunning();
+      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+    } catch (error) {
+      console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
+    }
+    return;
   }
 
   // ── Restore with --code: direct key-based restore, no browser needed ──
