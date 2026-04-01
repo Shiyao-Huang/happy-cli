@@ -69,6 +69,7 @@ async function exchangeWithServer(accessToken: string, secret: Uint8Array): Prom
         challenge: encodeBase64(challenge),
         publicKey: encodeBase64(publicKey),
         signature: encodeBase64(signature),
+        contentSecretKey: encodeBase64(secret),
     });
 
     return {
