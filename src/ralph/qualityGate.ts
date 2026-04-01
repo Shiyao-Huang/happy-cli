@@ -11,10 +11,11 @@
  *   Layer 3: Build      → ensures build stays green
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from '@/ui/logger';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 // === Types ===
 
@@ -139,12 +140,13 @@ function runCommand(
     const startTime = Date.now();
 
     return new Promise((resolve) => {
-        const child = execFile(command, args, {
+        const execOptions = withWindowsHide<ExecFileOptions>({
             cwd,
             timeout: 120_000, // 2 minute timeout per check
             maxBuffer: 5 * 1024 * 1024, // 5MB output buffer
             env: { ...process.env, CI: 'true', FORCE_COLOR: '0' },
-        }, (error, stdout, stderr) => {
+        });
+        const child = execFile(command, args, execOptions, (error, stdout, stderr) => {
             const durationMs = Date.now() - startTime;
             const output = [stdout, stderr].filter(Boolean).join('\n').trim();
             const passed = !error;

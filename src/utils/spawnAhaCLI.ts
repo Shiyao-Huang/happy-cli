@@ -54,6 +54,7 @@ import { join } from 'node:path';
 import { projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 /**
  * Spawn the Aha CLI with the given arguments in a cross-platform way.
@@ -112,12 +113,7 @@ export function spawnAhaCLI(args: string[], options: SpawnOptions = {}): ChildPr
     throw new Error(errorMessage);
   }
 
-  const spawnOptions: SpawnOptions = { ...options };
-  if (process.platform === 'win32' && spawnOptions.windowsHide === undefined) {
-    // Detached/background Node children on Windows otherwise pop a transient console
-    // window, which looks like the terminal is flashing repeatedly.
-    spawnOptions.windowsHide = true;
-  }
+  const spawnOptions: SpawnOptions = withWindowsHide({ ...options });
 
   return spawn('node', nodeArgs, spawnOptions);
 }

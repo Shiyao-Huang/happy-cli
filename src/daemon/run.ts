@@ -46,8 +46,9 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock, readSettings } from '@/persistence';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
 import { projectPath } from '@/projectPath';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
@@ -131,6 +132,8 @@ async function ensureGenomeHubAccess(): Promise<number> {
   const localPort = new URL(hubUrl).port || '3006';
 
   return new Promise<number>((resolve) => {
+    const tunnelOptions = withWindowsHide<SpawnOptions>({ stdio: 'ignore', detached: true });
+
     const tunnel = spawn('ssh', [
       '-f',                          // background after auth
       '-N',                          // no remote command
@@ -140,7 +143,7 @@ async function ensureGenomeHubAccess(): Promise<number> {
       '-o', 'StrictHostKeyChecking=accept-new',
       '-L', `${localPort}:localhost:${localPort}`,
       sshHost,
-    ], { stdio: 'ignore', detached: true });
+    ], tunnelOptions);
 
     tunnel.on('error', (err) => {
       logger.debug(`[GENOME HUB] SSH tunnel spawn error: ${err.message}`);

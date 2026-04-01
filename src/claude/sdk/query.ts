@@ -3,7 +3,7 @@
  * Handles spawning Claude process and managing message streams
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { existsSync } from 'node:fs'
 import { Stream } from './stream'
@@ -25,6 +25,7 @@ import {
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
+import { withWindowsHide } from '@/utils/windowsProcessOptions'
 
 /**
  * Query class manages Claude Code process interaction
@@ -329,14 +330,15 @@ export function query(config: {
     // Spawn Claude Code process
     logDebug(`Spawning Claude Code process: ${executable} ${[...executableArgs, pathToClaudeCodeExecutable, ...args].join(' ')}`)
 
-    const child = spawn(executable, [...executableArgs, pathToClaudeCodeExecutable, ...args], {
+    const childOptions = withWindowsHide<SpawnOptions>({
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: {
             ...process.env
         }
-    }) as ChildProcessWithoutNullStreams
+    })
+    const child = spawn(executable, [...executableArgs, pathToClaudeCodeExecutable, ...args], childOptions) as ChildProcessWithoutNullStreams
 
     // Handle stdin
     let childStdin: Writable | null = null

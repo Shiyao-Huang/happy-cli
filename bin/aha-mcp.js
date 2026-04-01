@@ -20,7 +20,8 @@ if (!hasNoWarnings || !hasNoDeprecation) {
       ...process.argv.slice(2)
     ], {
       stdio: 'inherit',
-      env: process.env
+      env: process.env,
+      windowsHide: process.platform === 'win32'
     });
   } catch (error) {
     process.exit(error.status || 1);
@@ -29,4 +30,3 @@ if (!hasNoWarnings || !hasNoDeprecation) {
   // Already have desired flags; import module directly
   import('../dist/codex/ahaMcpStdioBridge.mjs');
 }
-

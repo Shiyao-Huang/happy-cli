@@ -2,10 +2,11 @@
  * Low-level difftastic wrapper - just arguments in, string out
  */
 
-import { spawn } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
 import { join, resolve } from 'path';
 import { platform, arch } from 'os';
 import { projectPath } from '@/projectPath';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 export interface DifftasticResult {
     exitCode: number
@@ -36,7 +37,7 @@ export function run(args: string[], options?: DifftasticOptions): Promise<Diffta
     const binaryPath = getBinaryPath();
     
     return new Promise((resolve, reject) => {
-        const child = spawn(binaryPath, args, {
+        const childOptions = withWindowsHide<SpawnOptions>({
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: options?.cwd,
             env: {
@@ -45,15 +46,16 @@ export function run(args: string[], options?: DifftasticOptions): Promise<Diffta
                 FORCE_COLOR: '1'
             }
         });
+        const child = spawn(binaryPath, args, childOptions);
 
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (data) => {
+        child.stdout?.on('data', (data) => {
             stdout += data.toString();
         });
 
-        child.stderr.on('data', (data) => {
+        child.stderr?.on('data', (data) => {
             stderr += data.toString();
         });
 

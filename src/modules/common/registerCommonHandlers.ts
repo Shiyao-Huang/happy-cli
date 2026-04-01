@@ -8,6 +8,7 @@ import { run as runRipgrep } from '@/modules/ripgrep/index';
 import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 const execAsync = promisify(exec);
 
@@ -169,10 +170,10 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
         try {
             // Build options with shell enabled by default
             // Note: ExecOptions doesn't support boolean for shell, but exec() uses the default shell when shell is undefined
-            const options: ExecOptions = {
+            const options: ExecOptions = withWindowsHide<ExecOptions>({
                 cwd: data.cwd,
                 timeout: data.timeout || 30000, // Default 30 seconds timeout
-            };
+            });
 
             const { stdout, stderr } = await execAsync(data.command, options);
 

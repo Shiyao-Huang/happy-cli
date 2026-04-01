@@ -3,14 +3,15 @@
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { logger } from '@/ui/logger';
 import type { CodexSessionConfig, CodexToolResponse } from './types';
 import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CodexPermissionHandler } from './utils/permissionHandler';
-import { execSync } from 'child_process';
+import { execFileSync, type ExecFileSyncOptions } from 'child_process';
 import { logCodexBridge } from './utils/bridgeDebug';
+import { createCodexTransport } from './windowsSafeStdioClientTransport';
+import { withWindowsHide } from '@/utils/windowsProcessOptions';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half of the maximum possible timeout (~28 days for int32 value in NodeJS)
 
@@ -198,9 +199,15 @@ function extractSessionId(source: unknown): string | null {
  * Get the correct MCP subcommand based on installed codex version
  * Versions >= 0.43.0-alpha.5 use 'mcp-server', older versions use 'mcp'
  */
+function readCodexVersion(): string {
+    return execFileSync('codex', ['--version'], withWindowsHide<ExecFileSyncOptions>({
+        encoding: 'utf8' as BufferEncoding,
+    })).toString().trim();
+}
+
 function getCodexMcpCommand(): string {
     try {
-        const version = execSync('codex --version', { encoding: 'utf8' }).trim();
+        const version = readCodexVersion();
         const match = version.match(/codex-cli\s+(\d+\.\d+\.\d+(?:-alpha\.\d+)?)/);
         if (!match) return 'mcp-server'; // Default to newer command if we can't parse
 
@@ -226,7 +233,7 @@ function getCodexMcpCommand(): string {
 
 export function detectCodexCliVersion(): string | null {
     try {
-        const version = execSync('codex --version', { encoding: 'utf8' }).trim();
+        const version = readCodexVersion();
         const match = version.match(/codex-cli\s+(\d+\.\d+\.\d+(?:-alpha\.\d+)?)/);
         return match ? match[1] : null;
     } catch (error) {
@@ -237,7 +244,7 @@ export function detectCodexCliVersion(): string | null {
 
 export class CodexMcpClient {
     private client: Client;
-    private transport: StdioClientTransport | null = null;
+    private transport: ReturnType<typeof createCodexTransport> | null = null;
     private connected: boolean = false;
     private sessionId: string | null = null;
     private conversationId: string | null = null;
@@ -279,7 +286,7 @@ export class CodexMcpClient {
         const mcpCommand = getCodexMcpCommand();
         logger.debug(`[CodexMCP] Connecting to Codex MCP server using command: codex ${mcpCommand}`);
 
-        this.transport = new StdioClientTransport({
+        this.transport = createCodexTransport({
             command: 'codex',
             args: [mcpCommand],
             env: Object.keys(process.env).reduce((acc, key) => {

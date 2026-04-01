@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { resolve, join } from "node:path";
 import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
@@ -8,6 +8,7 @@ import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
 import { projectPath } from "@/projectPath";
 import { systemPrompt } from "./utils/systemPrompt";
+import { withWindowsHide } from "@/utils/windowsProcessOptions";
 
 
 // Get Claude CLI path from project root
@@ -123,12 +124,14 @@ export async function claudeLocal(opts: {
                 ...opts.claudeEnvVars
             }
 
-            const child = spawn('node', [claudeCliPath, ...args], {
+            const childOptions = withWindowsHide<SpawnOptions>({
                 stdio: ['inherit', 'inherit', 'inherit', 'pipe'],
                 signal: opts.abort,
                 cwd: opts.path,
                 env,
             });
+
+            const child = spawn('node', [claudeCliPath, ...args], childOptions);
 
             // Listen to the custom fd (fd 3) line by line
             if (child.stdio[3]) {
