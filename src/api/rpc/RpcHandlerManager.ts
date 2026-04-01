@@ -13,6 +13,13 @@ import {
 } from './types';
 import { Socket } from 'socket.io-client';
 
+const RPC_ERROR_FLAG = '__ahaRpcError';
+
+type RpcErrorPayload = {
+    __ahaRpcError: true;
+    message: string;
+};
+
 export class RpcHandlerManager {
     private handlers: RpcHandlerMap = new Map();
     private readonly scopePrefix: string;
@@ -63,9 +70,7 @@ export class RpcHandlerManager {
 
             if (!handler) {
                 this.logger('[RPC] [ERROR] Method not found', { method: request.method });
-                const errorResponse = { error: 'Method not found' };
-                const encryptedError = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, errorResponse));
-                return encryptedError;
+                return this.encryptResponse(this.createRpcErrorPayload('Method not found'));
             }
 
             // Decrypt the incoming params
@@ -75,14 +80,12 @@ export class RpcHandlerManager {
             const result = await handler(decryptedParams);
 
             // Encrypt and return the response
-            const encryptedResponse = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, result));
-            return encryptedResponse;
+            return this.encryptResponse(result);
         } catch (error) {
             this.logger('[RPC] [ERROR] Error handling request', { error });
-            const errorResponse = {
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
-            return encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, errorResponse));
+            return this.encryptResponse(
+                this.createRpcErrorPayload(error instanceof Error ? error.message : 'Unknown error')
+            );
         }
     }
 
@@ -146,6 +149,17 @@ export class RpcHandlerManager {
      */
     private getPrefixedMethod(method: string): string {
         return `${this.scopePrefix}:${method}`;
+    }
+
+    private createRpcErrorPayload(message: string): RpcErrorPayload {
+        return {
+            [RPC_ERROR_FLAG]: true,
+            message,
+        };
+    }
+
+    private encryptResponse(data: any): string {
+        return encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, data));
     }
 
     private registerMethodWithRetry(method: string): void {

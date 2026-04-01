@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import { RpcHandlerManager } from './RpcHandlerManager';
 
 describe('RpcHandlerManager', () => {
@@ -72,5 +73,51 @@ describe('RpcHandlerManager', () => {
 
         expect(socket.emit).toHaveBeenCalledTimes(1);
         expect(socket.off).toHaveBeenCalledWith('rpc-registered', expect.any(Function));
+    });
+
+    it('wraps thrown handler errors with the rpc error sentinel payload', async () => {
+        const encryptionKey = new Uint8Array(32);
+        const manager = new RpcHandlerManager({
+            scopePrefix: 'machine-1',
+            encryptionKey,
+            encryptionVariant: 'legacy'
+        });
+
+        manager.registerHandler('spawn-aha-session', async () => {
+            throw new Error('spawn failed');
+        });
+
+        const response = await manager.handleRequest({
+            method: 'machine-1:spawn-aha-session',
+            params: encodeBase64(encrypt(encryptionKey, 'legacy', { cwd: '/tmp' }))
+        });
+
+        expect(
+            decrypt(encryptionKey, 'legacy', decodeBase64(response))
+        ).toEqual({
+            __ahaRpcError: true,
+            message: 'spawn failed'
+        });
+    });
+
+    it('wraps missing handlers with the rpc error sentinel payload', async () => {
+        const encryptionKey = new Uint8Array(32);
+        const manager = new RpcHandlerManager({
+            scopePrefix: 'machine-1',
+            encryptionKey,
+            encryptionVariant: 'legacy'
+        });
+
+        const response = await manager.handleRequest({
+            method: 'machine-1:missing-method',
+            params: encodeBase64(encrypt(encryptionKey, 'legacy', {}))
+        });
+
+        expect(
+            decrypt(encryptionKey, 'legacy', decodeBase64(response))
+        ).toEqual({
+            __ahaRpcError: true,
+            message: 'Method not found'
+        });
     });
 });
