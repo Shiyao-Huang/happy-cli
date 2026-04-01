@@ -908,6 +908,10 @@ export class ApiClient {
       logger.debug(`[API] Sent team message to ${teamId}`);
       logger.debug(`[METRICS] TeamMessage sent to ${teamId}`);
     } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 410) {
+        logger.debug(`[API] Session deleted (410), stopping message send to ${teamId}`);
+        return;
+      }
       logger.debug(`[API] [ERROR] Failed to send team message:`, error);
       throw new Error(`Failed to send team message: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
