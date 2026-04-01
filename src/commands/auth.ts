@@ -52,9 +52,15 @@ async function ensureDaemonRunningAfterAuth(): Promise<DaemonEnsureResult> {
   try {
     return await ensureDaemonRunning();
   } catch (error) {
-    console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
-    console.log(chalk.gray('  Run "aha daemon start" to start manually'));
-    return null;
+    await checkIfDaemonRunningAndCleanupStaleState().catch(() => false);
+
+    try {
+      return await ensureDaemonRunning();
+    } catch (retryError) {
+      console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${retryError instanceof Error ? retryError.message : 'Unknown'}`));
+      console.log(chalk.gray('  Run "aha daemon start" to start manually'));
+      return null;
+    }
   }
 }
 
@@ -91,7 +97,7 @@ async function ensureRecoveryMaterialForSeed(token: string, secret: Uint8Array, 
     await bootstrapRecoveryMaterial(token, secret);
   } catch (error) {
     console.log(chalk.yellow(`⚠️  Recovery bootstrap failed after ${source}: ${describeBootstrapError(error)}`));
-    console.log(chalk.gray('  Fresh-browser Google login may still require Restore Key until this succeeds.'));
+    console.log(chalk.gray('  Same-Google auto-recovery may still fall back to a join ticket or Restore Key until this succeeds.'));
   }
 }
 
@@ -146,7 +152,7 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
+  aha auth login [--code <ticket-or-key>] [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
   aha auth reconnect                                   Refresh token for the currently cached account
   aha auth join --ticket <ticket>                      Join an existing account from a one-time link ticket
   aha auth restore --code <key>                        Restore a known account from backup key
@@ -164,8 +170,9 @@ ${chalk.bold('Options:')}
   --email     Use email OTP login (no browser needed, works on headless Linux)
 
 ${chalk.bold('Recommended flows:')}
+  aha auth login
+  aha auth login --code aha_join_xxx
   aha auth reconnect
-  aha auth join --ticket aha_join_xxx
   aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth login --email
   aha auth login --force
@@ -239,7 +246,7 @@ async function handleAuthReconnect(): Promise<void> {
 
   if (!existingCreds) {
     console.error(chalk.red('No local credentials found.'));
-    console.log(chalk.gray('Use `aha auth restore --code <backup-key>` to recover a known account.'));
+    console.log(chalk.gray('Use `aha auth login --code aha_join_xxx` from another signed-in device, or `aha auth restore --code <backup-key>` as backup.'));
     process.exit(1);
   }
 
@@ -260,7 +267,7 @@ async function handleAuthReconnect(): Promise<void> {
     printDaemonStatus(daemonResult);
   } catch (error) {
     console.error(chalk.red('Reconnect failed:'), error instanceof Error ? error.message : 'Unknown error');
-    console.log(chalk.gray('Use `aha auth restore --code <backup-key>` if you need to force a known account.'));
+    console.log(chalk.gray('Use `aha auth login --code aha_join_xxx` from another signed-in device first, or `aha auth restore --code <backup-key>` as backup.'));
     process.exit(1);
   }
 }
@@ -297,10 +304,11 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
-    console.log(chalk.bold('\n📋 Your restore key (save this!):'));
+    console.log(chalk.bold('\n📋 Your emergency restore key:'));
     console.log(chalk.cyan(formatSecretKeyForBackup(result.secret)));
-    console.log(chalk.gray('\nUse this to link other devices:'));
+    console.log(chalk.gray('\nEmergency-only recovery command:'));
     console.log(chalk.gray(`  npm i aha-agi && npx aha auth restore --code ${formatSecretKeyForBackup(result.secret)}`));
+    console.log(chalk.gray('\nFor normal new-device onboarding, copy a one-time join command from the web app.'));
 
     try { await stopDaemon(); } catch { }
     printDaemonStatus(await ensureDaemonRunningAfterAuth());

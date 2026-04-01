@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
-import { encodeBase64, decodeBase64, authChallenge } from './encryption';
+import { encodeBase64, decodeBase64 } from './encryption';
 import { configuration } from '@/configuration';
 import tweetnacl from 'tweetnacl';
 
@@ -58,26 +58,6 @@ async function verifyOtp(email: string, token: string): Promise<string> {
     return response.data.access_token;
 }
 
-/**
- * Exchange Supabase token + client secret for happy-server token.
- */
-async function exchangeWithServer(accessToken: string, secret: Uint8Array): Promise<{ token: string; userId: string }> {
-    const { challenge, publicKey, signature } = authChallenge(secret);
-
-    const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase`, {
-        accessToken,
-        challenge: encodeBase64(challenge),
-        publicKey: encodeBase64(publicKey),
-        signature: encodeBase64(signature),
-        contentSecretKey: encodeBase64(secret),
-    });
-
-    return {
-        token: response.data.token,
-        userId: response.data.userId,
-    };
-}
-
 function generateRecoveryKeyPair() {
     const secret = new Uint8Array(randomBytes(tweetnacl.box.secretKeyLength));
     return tweetnacl.box.keyPair.fromSecretKey(secret);
@@ -93,21 +73,42 @@ function decryptRecoveredSecret(encryptedBundle: Uint8Array, recipientSecretKey:
     return tweetnacl.box.open(encrypted, nonce, ephemeralPublicKey, recipientSecretKey);
 }
 
-async function recoverWithServer(accessToken: string): Promise<EmailOtpResult> {
+type SupabaseCompleteResult =
+    | ({ state: 'existing_recovered' } & EmailOtpResult)
+    | ({ state: 'new_account_created' } & EmailOtpResult)
+    | { state: 'migration_required' };
+
+async function completeWithServer(accessToken: string): Promise<SupabaseCompleteResult> {
     const keypair = generateRecoveryKeyPair();
-    const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase/recover`, {
+    const newSecret = new Uint8Array(randomBytes(32));
+    const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase/complete`, {
         accessToken,
         recoveryPublicKey: encodeBase64(keypair.publicKey),
+        newContentSecretKey: encodeBase64(newSecret),
     });
 
-    const encryptedContentSecretKey = decodeBase64(response.data.encryptedContentSecretKey);
-    const secret = decryptRecoveredSecret(encryptedContentSecretKey, keypair.secretKey);
-    if (!secret) {
-        throw new Error('Failed to decrypt recovered account secret');
+    if (response.data.state === 'migration_required') {
+        return { state: 'migration_required' };
+    }
+
+    if (response.data.state === 'existing_recovered') {
+        const encryptedContentSecretKey = decodeBase64(response.data.encryptedContentSecretKey);
+        const secret = decryptRecoveredSecret(encryptedContentSecretKey, keypair.secretKey);
+        if (!secret) {
+            throw new Error('Failed to decrypt recovered account secret');
+        }
+
+        return {
+            state: 'existing_recovered',
+            secret,
+            token: response.data.token,
+            userId: response.data.userId,
+        };
     }
 
     return {
-        secret,
+        state: 'new_account_created',
+        secret: newSecret,
         token: response.data.token,
         userId: response.data.userId,
     };
@@ -155,39 +156,23 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
     }
 
     try {
-        return await recoverWithServer(accessToken);
-    } catch (error) {
-        if (axios.isAxiosError(error)) {
-            if (error.response?.status === 409 && error.response.data?.code === 'RECOVERY_NOT_READY') {
-                console.log('\nThis email is already linked to an account, but automatic recovery is not ready yet.');
-                console.log('Use a backup key or a one-time link command from an existing device.\n');
-                return null;
-            }
-            if (!(error.response?.status === 404 && error.response.data?.code === 'ACCOUNT_NOT_FOUND')) {
-                console.error('Server recovery failed:', error instanceof Error ? error.message : error);
-                return null;
-            }
-        } else {
-            console.error('Server recovery failed:', error instanceof Error ? error.message : error);
+        const result = await completeWithServer(accessToken);
+        if (result.state === 'migration_required') {
+            console.log('\nThis email is already linked to an account, but automatic recovery is not ready yet.');
+            console.log('Use a backup key or a one-time link command from an existing device.\n');
             return null;
         }
-    }
-
-    const secret = new Uint8Array(randomBytes(32));
-
-    try {
-        const result = await exchangeWithServer(accessToken, secret);
         return {
-            secret,
+            secret: result.secret,
             token: result.token,
             userId: result.userId,
         };
     } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 409) {
             const code = error.response.data?.code;
-            if (code === 'RESTORE_REQUIRED') {
-                console.log('\nThis email is already linked to an account.');
-                console.log('Use a backup key to restore your existing account:');
+            if (code === 'ACCOUNT_LINK_CONFLICT') {
+                console.log('\nThis sign-in identity conflicts with an existing restore key mapping.');
+                console.log('Use a backup key or a one-time join command from an existing device:');
                 console.log('  npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-...\n');
                 return null;
             }
