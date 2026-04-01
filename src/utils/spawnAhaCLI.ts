@@ -112,5 +112,12 @@ export function spawnAhaCLI(args: string[], options: SpawnOptions = {}): ChildPr
     throw new Error(errorMessage);
   }
 
-  return spawn('node', nodeArgs, options);
+  const spawnOptions: SpawnOptions = { ...options };
+  if (process.platform === 'win32' && spawnOptions.windowsHide === undefined) {
+    // Detached/background Node children on Windows otherwise pop a transient console
+    // window, which looks like the terminal is flashing repeatedly.
+    spawnOptions.windowsHide = true;
+  }
+
+  return spawn('node', nodeArgs, spawnOptions);
 }
