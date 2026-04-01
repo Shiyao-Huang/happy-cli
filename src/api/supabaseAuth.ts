@@ -131,8 +131,8 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
             const code = error.response.data?.code;
             if (code === 'RESTORE_REQUIRED') {
                 console.log('\nThis email is already linked to an account.');
-                console.log('Use --restore-key to restore your existing account:');
-                console.log('  npx aha-v13 --restore-key XXXXX-XXXXX-...\n');
+                console.log('Use a backup key to restore your existing account:');
+                console.log('  npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-...\n');
                 return null;
             }
         }

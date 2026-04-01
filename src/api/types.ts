@@ -302,7 +302,10 @@ export const MachineMetadataSchema = z.object({
   ahaCliVersion: z.string(),
   homeDir: z.string(),
   ahaHomeDir: z.string(),
-  ahaLibDir: z.string()
+  ahaLibDir: z.string(),
+  username: z.string().optional(),
+  arch: z.string().optional(),
+  displayName: z.string().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

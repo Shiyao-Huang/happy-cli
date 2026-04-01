@@ -216,12 +216,51 @@ export class ApiClient {
 
     const encodedDataEncryptionKey = dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined;
 
+    // Preserve optional metadata fields (for example a user-assigned displayName)
+    // that were previously stored for this machine.
+    let metadataToPersist: MachineMetadata = opts.metadata;
+    try {
+      const existingResponse = await axios.get(`${configuration.serverUrl}/v1/machines/${opts.machineId}`, {
+        headers: {
+          'Authorization': `Bearer ${this.credential.token}`,
+        },
+        validateStatus: (status) => status === 200 || status === 404,
+      });
+
+      if (existingResponse.status === 200 && existingResponse.data?.machine) {
+        const existingRaw = existingResponse.data.machine;
+        let existingEncryptionKey = encryptionKey;
+        let existingEncryptionVariant = encryptionVariant;
+
+        if (existingRaw.dataEncryptionKey) {
+          const unwrappedKey = this.unwrapDataEncryptionKey(existingRaw.dataEncryptionKey);
+          if (unwrappedKey) {
+            existingEncryptionKey = unwrappedKey;
+            existingEncryptionVariant = 'dataKey';
+          }
+        }
+
+        const existingMetadata = existingRaw.metadata
+          ? decrypt(existingEncryptionKey, existingEncryptionVariant, decodeBase64(existingRaw.metadata))
+          : null;
+
+        if (existingMetadata && typeof existingMetadata === 'object') {
+          metadataToPersist = {
+            ...(existingMetadata as MachineMetadata),
+            ...opts.metadata,
+          };
+        }
+      }
+    } catch (error) {
+      logger.debug('[API] Failed to load existing machine metadata before registration:', error);
+    }
+
     // Create machine
     const response = await axios.post(
       `${configuration.serverUrl}/v1/machines`,
       {
         id: opts.machineId,
-        metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
+        metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, metadataToPersist)),
         daemonState: opts.daemonState ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.daemonState)) : undefined,
         dataEncryptionKey: encodedDataEncryptionKey
       },
