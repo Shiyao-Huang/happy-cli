@@ -6,6 +6,10 @@
 > 2026-04-01 `online-v2-fix` 更新：
 > 已新增一次性 `join ticket` 接入链路，并把 CLI Email OTP 改为 `recover-first`。
 > 本文同时保留“修复前为什么会卡在 restore key”的背景分析，以及“修复后真实用户旅程”。
+>
+> 2026-04-02 补充：
+> CLI 在 `restore / reconnect / join` 成功后，也需要自动把 canonical secret bootstrap 回 `/v1/account/recovery-material`。
+> 否则会出现 “CLI 已恢复成功，但新浏览器 Google 登录仍卡在 Restore Key” 的割裂体验。
 
 ## 文档目标
 
@@ -42,6 +46,13 @@
 所以这不是“Google 没登录成功”，而是：
 
 > 身份登录成功了，但账户密钥恢复失败了
+
+## 本轮经验教训
+
+- `Account.publicKey` 是账户根身份，不是某台设备的公钥。
+- `join ticket` 是“加设备”能力，不是“同一 Google 自动恢复”的替代品。
+- Web `localStorage` 里保留 secret 是一致性要求，不是偶然实现。
+- 只要某条成功恢复路径没有把 recovery material 反向补回服务端，后续 fresh browser Google 登录就仍然会掉进 `Restore Key`。
 
 ## 核心对象
 

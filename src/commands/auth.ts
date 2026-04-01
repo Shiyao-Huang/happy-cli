@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsContentSecretKey, writeCredentialsLegacy } from '@/persistence';
+import axios from 'axios';
+import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsContentSecretKey, writeCredentialsLegacy, Credentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -14,6 +15,7 @@ import { authGetToken } from '@/api/auth';
 import { doEmailOtpAuth } from '@/api/supabaseAuth';
 import { formatSecretKeyForBackup } from '@/utils/backupKey';
 import { isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
+import { bootstrapRecoveryMaterial, getRecoveryMaterialSecret } from '@/auth/recoveryBootstrap';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
   try {
@@ -62,6 +64,44 @@ function printDaemonStatus(result: DaemonEnsureResult): void {
   }
 
   console.log(chalk.gray(`  Daemon: ${result === 'started' ? 'started in background' : 'already running'}`));
+}
+
+function describeBootstrapError(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const serverError = typeof error.response?.data?.error === 'string'
+      ? error.response.data.error
+      : null;
+    if (serverError) {
+      return serverError;
+    }
+    if (error.code) {
+      return error.code;
+    }
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Unknown error';
+}
+
+async function ensureRecoveryMaterialForSeed(token: string, secret: Uint8Array, source: string): Promise<void> {
+  try {
+    await bootstrapRecoveryMaterial(token, secret);
+  } catch (error) {
+    console.log(chalk.yellow(`⚠️  Recovery bootstrap failed after ${source}: ${describeBootstrapError(error)}`));
+    console.log(chalk.gray('  Fresh-browser Google login may still require Restore Key until this succeeds.'));
+  }
+}
+
+async function ensureRecoveryMaterialForCredentials(credentials: Credentials, source: string): Promise<void> {
+  const secret = getRecoveryMaterialSecret(credentials);
+  if (!secret) {
+    return;
+  }
+
+  await ensureRecoveryMaterialForSeed(credentials.token, secret, source);
 }
 
 export async function handleAuthCommand(args: string[]): Promise<void> {
@@ -146,6 +186,7 @@ async function handleAuthRestore(args: string[]): Promise<void> {
     const token = await authGetToken(secretBytes, 'reconnect');
     await clearMachineId();
     await writeCredentialsLegacy({ secret: secretBytes, token });
+    await ensureRecoveryMaterialForSeed(token, secretBytes, 'restore');
     const { accountId } = decodeTokenSubject(token);
     console.log(chalk.green('✓ Credentials restored from backup key'));
     if (accountId) {
@@ -177,6 +218,7 @@ async function handleAuthJoin(args: string[]): Promise<void> {
       contentSecretKey: result.secret,
       token: result.token,
     });
+    await ensureRecoveryMaterialForSeed(result.token, result.secret, 'join');
 
     console.log(chalk.green('✓ Joined account successfully'));
     if (result.userId) {
@@ -204,6 +246,7 @@ async function handleAuthReconnect(): Promise<void> {
   console.log(chalk.yellow('Reconnecting to existing account...'));
   try {
     const refreshed = await reconnectWithStoredCredentials(existingCreds);
+    await ensureRecoveryMaterialForCredentials(refreshed, 'reconnect');
     const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(refreshed.token);
 
@@ -248,6 +291,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
     await clearMachineId();
     await writeCredentialsLegacy({ secret: result.secret, token: result.token });
+    await ensureRecoveryMaterialForSeed(result.token, result.secret, 'email login');
     const { accountId } = decodeTokenSubject(result.token);
     console.log(chalk.green('\n✓ Signed in via email'));
     if (accountId) {
@@ -277,10 +321,11 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   if (restoreAccount && existingCreds) {
     console.log(chalk.yellow('Reconnecting to existing account...'));
     try {
-      await reconnectWithStoredCredentials(existingCreds);
+      const refreshed = await reconnectWithStoredCredentials(existingCreds);
+      await ensureRecoveryMaterialForCredentials(refreshed, 'login --restore');
       // Same account — daemon is still valid, just ensure it's running
       const daemonResult = await ensureDaemonRunningAfterAuth();
-      const { accountId } = decodeTokenSubject(existingCreds.token);
+      const { accountId } = decodeTokenSubject(refreshed.token);
       console.log(chalk.green('\n✓ Reconnected successfully'));
       if (accountId) {
         console.log(chalk.gray(`  Account ID: ${accountId}`));
@@ -349,6 +394,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       webMode: restoreAccount ? 'reconnect' : (createNewAccount ? 'create' : 'auto'),
       forceAuth: restoreAccount
     });
+    await ensureRecoveryMaterialForCredentials(result.credentials, useMobileAuth ? 'mobile auth' : 'web auth');
     const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(result.credentials.token);
     console.log(chalk.green('\n✓ Authentication successful'));
