@@ -5,6 +5,7 @@
 - [aha-v3-cli-reference.md](aha-v3-cli-reference.md) — CLI command reference
 - [aha-v3-agent-guide.md](aha-v3-agent-guide.md) — Agent development guide
 - [auth-quickstart.md](auth-quickstart.md) — Authentication setup
+- [auth-login-complete-paths-2026-04-01.md](auth-login-complete-paths-2026-04-01.md) — 中文认证完整路径与恢复逻辑
 - [aha-platform-feature-map.md](aha-platform-feature-map.md) — Platform feature overview
 
 ## Architecture & Design

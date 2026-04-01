@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsLegacy } from '@/persistence';
+import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsContentSecretKey, writeCredentialsLegacy } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -13,6 +13,7 @@ import { parseBackupKeyToSecret } from '@/utils/backupKey';
 import { authGetToken } from '@/api/auth';
 import { doEmailOtpAuth } from '@/api/supabaseAuth';
 import { formatSecretKeyForBackup } from '@/utils/backupKey';
+import { isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
   try {
@@ -43,6 +44,26 @@ function readRestoreCodeArg(args: string[]): string | undefined {
   return positional;
 }
 
+type DaemonEnsureResult = Awaited<ReturnType<typeof ensureDaemonRunning>> | null;
+
+async function ensureDaemonRunningAfterAuth(): Promise<DaemonEnsureResult> {
+  try {
+    return await ensureDaemonRunning();
+  } catch (error) {
+    console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
+    console.log(chalk.gray('  Run "aha daemon start" to start manually'));
+    return null;
+  }
+}
+
+function printDaemonStatus(result: DaemonEnsureResult): void {
+  if (!result) {
+    return;
+  }
+
+  console.log(chalk.gray(`  Daemon: ${result === 'started' ? 'started in background' : 'already running'}`));
+}
+
 export async function handleAuthCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
 
@@ -60,6 +81,9 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
       break;
     case 'restore':
       await handleAuthRestore(args.slice(1));
+      break;
+    case 'join':
+      await handleAuthJoin(args.slice(1));
       break;
     case 'logout':
       await handleAuthLogout();
@@ -84,6 +108,7 @@ ${chalk.bold('aha auth')} - Authentication management
 ${chalk.bold('Usage:')}
   aha auth login [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
   aha auth reconnect                                   Refresh token for the currently cached account
+  aha auth join --ticket <ticket>                      Join an existing account from a one-time link ticket
   aha auth restore --code <key>                        Restore a known account from backup key
   aha auth logout                                      Remove authentication and machine data
   aha auth status                                      Show authentication status
@@ -93,12 +118,14 @@ ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
   --restore,-r Legacy alias for reconnect/restore during \`login\`
-  --code <key> Backup key for restore (e.g. XXXXX-XXXXX-...), no browser needed
+  --code <key> Backup key or one-time join ticket, no browser needed
+  --ticket    Explicit flag for one-time account join tickets
   --mobile    Use the old mobile QR/manual flow instead of default web login
   --email     Use email OTP login (no browser needed, works on headless Linux)
 
 ${chalk.bold('Recommended flows:')}
   aha auth reconnect
+  aha auth join --ticket aha_join_xxx
   aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth login --email
   aha auth login --force
@@ -130,13 +157,38 @@ async function handleAuthRestore(args: string[]): Promise<void> {
   }
 
   try { await stopDaemon(); } catch { }
-  try {
-    const daemonResult = await ensureDaemonRunning();
-    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
-  } catch (error) {
-    console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
-    console.log(chalk.gray('  Run "aha daemon start" to start manually'));
+  printDaemonStatus(await ensureDaemonRunningAfterAuth());
+}
+
+async function handleAuthJoin(args: string[]): Promise<void> {
+  const ticketIdx = args.indexOf('--ticket');
+  const ticket = (ticketIdx >= 0 && args[ticketIdx + 1]) ? args[ticketIdx + 1] : readRestoreCodeArg(args);
+  if (!ticket) {
+    console.error(chalk.red('Missing join ticket.'));
+    console.log(chalk.gray('Usage: aha auth join --ticket aha_join_xxxxxxxxxxxxxxxxxxxxxxxx'));
+    process.exit(1);
   }
+
+  console.log(chalk.yellow('Joining existing account from link ticket...'));
+  try {
+    const result = await redeemAccountJoinTicket(ticket);
+    await clearMachineId();
+    await writeCredentialsContentSecretKey({
+      contentSecretKey: result.secret,
+      token: result.token,
+    });
+
+    console.log(chalk.green('✓ Joined account successfully'));
+    if (result.userId) {
+      console.log(chalk.gray(`  Account ID: ${result.userId}`));
+    }
+  } catch (error) {
+    console.error(chalk.red('Join failed:'), error instanceof Error ? error.message : 'Unknown error');
+    process.exit(1);
+  }
+
+  try { await stopDaemon(); } catch { }
+  printDaemonStatus(await ensureDaemonRunningAfterAuth());
 }
 
 async function handleAuthReconnect(): Promise<void> {
@@ -152,7 +204,7 @@ async function handleAuthReconnect(): Promise<void> {
   console.log(chalk.yellow('Reconnecting to existing account...'));
   try {
     const refreshed = await reconnectWithStoredCredentials(existingCreds);
-    const daemonResult = await ensureDaemonRunning();
+    const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(refreshed.token);
 
     console.log(chalk.green('\n✓ Reconnected successfully'));
@@ -162,7 +214,7 @@ async function handleAuthReconnect(): Promise<void> {
     if (settings?.machineId) {
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
     }
-    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+    printDaemonStatus(daemonResult);
   } catch (error) {
     console.error(chalk.red('Reconnect failed:'), error instanceof Error ? error.message : 'Unknown error');
     console.log(chalk.gray('Use `aha auth restore --code <backup-key>` if you need to force a known account.'));
@@ -207,17 +259,16 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(chalk.gray(`  npm i aha-agi && npx aha auth restore --code ${formatSecretKeyForBackup(result.secret)}`));
 
     try { await stopDaemon(); } catch { }
-    try {
-      const daemonResult = await ensureDaemonRunning();
-      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
-    } catch (error) {
-      console.log(chalk.yellow(`⚠️  Daemon start failed (non-fatal): ${error instanceof Error ? error.message : 'Unknown'}`));
-    }
+    printDaemonStatus(await ensureDaemonRunningAfterAuth());
     return;
   }
 
   // ── Restore with --code: direct key-based restore, no browser needed ──
   if (restoreCode) {
+    if (isAccountJoinTicket(restoreCode)) {
+      await handleAuthJoin(['--ticket', restoreCode]);
+      return;
+    }
     await handleAuthRestore(['--code', restoreCode]);
     return;
   }
@@ -228,7 +279,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     try {
       await reconnectWithStoredCredentials(existingCreds);
       // Same account — daemon is still valid, just ensure it's running
-      const daemonResult = await ensureDaemonRunning();
+      const daemonResult = await ensureDaemonRunningAfterAuth();
       const { accountId } = decodeTokenSubject(existingCreds.token);
       console.log(chalk.green('\n✓ Reconnected successfully'));
       if (accountId) {
@@ -237,7 +288,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       if (settings?.machineId) {
         console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       }
-      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+      printDaemonStatus(daemonResult);
       return;
     } catch (error) {
       console.log(chalk.yellow(`⚠️  Local reconnect failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
@@ -280,8 +331,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       console.log(chalk.green('✓ Already authenticated'));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       console.log(chalk.gray(`  Host: ${os.hostname()}`));
-      const daemonResult = await ensureDaemonRunning();
-      console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+      printDaemonStatus(await ensureDaemonRunningAfterAuth());
       console.log(chalk.gray(`  Use 'aha auth login --force' to re-authenticate`));
       return;
     } else if (existingCreds && !settings?.machineId) {
@@ -299,14 +349,14 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       webMode: restoreAccount ? 'reconnect' : (createNewAccount ? 'create' : 'auto'),
       forceAuth: restoreAccount
     });
-    const daemonResult = await ensureDaemonRunning();
+    const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(result.credentials.token);
     console.log(chalk.green('\n✓ Authentication successful'));
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
     console.log(chalk.gray(`  Machine ID: ${result.machineId}`));
-    console.log(chalk.gray(`  Daemon: ${daemonResult === 'started' ? 'started in background' : 'already running'}`));
+    printDaemonStatus(daemonResult);
   } catch (error) {
     console.error(chalk.red('Authentication failed:'), error instanceof Error ? error.message : 'Unknown error');
     if (forceAuth) {

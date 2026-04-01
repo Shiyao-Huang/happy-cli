@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
-import { encodeBase64, authChallenge } from './encryption';
+import { encodeBase64, decodeBase64, authChallenge } from './encryption';
 import { configuration } from '@/configuration';
+import tweetnacl from 'tweetnacl';
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? 'https://cegpdcfsqcfowgwkpanl.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlZ3BkY2ZzcWNmb3dnd2twYW5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4ODM3MDcsImV4cCI6MjA5MDQ1OTcwN30.4Y2QD5oTjze_QxEAeTBPUYTbOhhCeCr-LRVyJoiIK64';
@@ -76,6 +77,41 @@ async function exchangeWithServer(accessToken: string, secret: Uint8Array): Prom
     };
 }
 
+function generateRecoveryKeyPair() {
+    const secret = new Uint8Array(randomBytes(tweetnacl.box.secretKeyLength));
+    return tweetnacl.box.keyPair.fromSecretKey(secret);
+}
+
+function decryptRecoveredSecret(encryptedBundle: Uint8Array, recipientSecretKey: Uint8Array): Uint8Array | null {
+    const ephemeralPublicKey = encryptedBundle.slice(0, tweetnacl.box.publicKeyLength);
+    const nonce = encryptedBundle.slice(
+        tweetnacl.box.publicKeyLength,
+        tweetnacl.box.publicKeyLength + tweetnacl.box.nonceLength,
+    );
+    const encrypted = encryptedBundle.slice(tweetnacl.box.publicKeyLength + tweetnacl.box.nonceLength);
+    return tweetnacl.box.open(encrypted, nonce, ephemeralPublicKey, recipientSecretKey);
+}
+
+async function recoverWithServer(accessToken: string): Promise<EmailOtpResult> {
+    const keypair = generateRecoveryKeyPair();
+    const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase/recover`, {
+        accessToken,
+        recoveryPublicKey: encodeBase64(keypair.publicKey),
+    });
+
+    const encryptedContentSecretKey = decodeBase64(response.data.encryptedContentSecretKey);
+    const secret = decryptRecoveredSecret(encryptedContentSecretKey, keypair.secretKey);
+    if (!secret) {
+        throw new Error('Failed to decrypt recovered account secret');
+    }
+
+    return {
+        secret,
+        token: response.data.token,
+        userId: response.data.userId,
+    };
+}
+
 export interface EmailOtpResult {
     secret: Uint8Array;
     token: string;
@@ -115,6 +151,25 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
     } catch (error) {
         console.error('Verification failed:', error instanceof Error ? error.message : error);
         return null;
+    }
+
+    try {
+        return await recoverWithServer(accessToken);
+    } catch (error) {
+        if (axios.isAxiosError(error)) {
+            if (error.response?.status === 409 && error.response.data?.code === 'RECOVERY_NOT_READY') {
+                console.log('\nThis email is already linked to an account, but automatic recovery is not ready yet.');
+                console.log('Use a backup key or a one-time link command from an existing device.\n');
+                return null;
+            }
+            if (!(error.response?.status === 404 && error.response.data?.code === 'ACCOUNT_NOT_FOUND')) {
+                console.error('Server recovery failed:', error instanceof Error ? error.message : error);
+                return null;
+            }
+        } else {
+            console.error('Server recovery failed:', error instanceof Error ? error.message : error);
+            return null;
+        }
     }
 
     const secret = new Uint8Array(randomBytes(32));

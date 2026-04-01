@@ -4,7 +4,7 @@
  */
 
 import { logger } from '@/ui/logger';
-import { clearDaemonState, readDaemonState } from '@/persistence';
+import { clearDaemonState, readDaemonState, readDaemonStateRaw } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
@@ -128,6 +128,7 @@ export async function stopDaemonHttp(): Promise<void> {
 export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolean> {
   const state = await readDaemonState();
   if (!state) {
+    await cleanupOrphanedDaemonLock();
     return false;
   }
 
@@ -140,6 +141,67 @@ export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolea
     await cleanupDaemonState();
     return false;
   }
+}
+
+async function isPidRunning(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readDaemonLockPid(): number | null {
+  try {
+    const pid = Number(readFileSync(configuration.daemonLockFile, 'utf-8').trim());
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupOrphanedDaemonLock(): Promise<void> {
+  const rawState = await readDaemonStateRaw();
+  if (rawState && rawState.state !== 'stopped') {
+    return;
+  }
+
+  const lockPid = readDaemonLockPid();
+  if (!lockPid) {
+    return;
+  }
+
+  if (!(await isPidRunning(lockPid))) {
+    logger.debug('[DAEMON RUN] Lock file points to a dead PID, cleaning up stale daemon metadata');
+    await cleanupDaemonState();
+    return;
+  }
+
+  logger.debug(`[DAEMON RUN] Found orphaned daemon lock held by PID ${lockPid}, terminating it`);
+
+  try {
+    process.kill(lockPid, 'SIGTERM');
+  } catch {
+    // Ignore races if the process exits between the existence check and SIGTERM.
+  }
+
+  await waitForProcessDeath(lockPid, 1500).catch(() => { });
+
+  if (await isPidRunning(lockPid)) {
+    try {
+      process.kill(lockPid, 'SIGKILL');
+    } catch {
+      // Ignore races if the process exits before the hard kill.
+    }
+    await waitForProcessDeath(lockPid, 1500).catch(() => { });
+  }
+
+  if (await isPidRunning(lockPid)) {
+    throw new Error(`Failed to clear stale daemon lock held by PID ${lockPid}`);
+  }
+
+  await cleanupDaemonState();
 }
 
 /**
@@ -227,7 +289,14 @@ export async function ensureDaemonRunning(): Promise<'already-running' | 'starte
     return 'already-running';
   }
 
-  const started = await startDaemonDetached();
+  await cleanupOrphanedDaemonLock();
+
+  let started = await startDaemonDetached();
+  if (!started) {
+    await cleanupOrphanedDaemonLock();
+    started = await startDaemonDetached();
+  }
+
   if (!started) {
     throw new Error('Failed to start daemon');
   }
