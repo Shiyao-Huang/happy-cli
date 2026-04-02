@@ -13,8 +13,8 @@ import { reconnectWithStoredCredentials } from '@/auth/reconnect';
 import { parseBackupKeyToSecret } from '@/utils/backupKey';
 import { authGetToken } from '@/api/auth';
 import { doEmailOtpAuth } from '@/api/supabaseAuth';
-import { formatSecretKeyForBackup } from '@/utils/backupKey';
-import { isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
+import { ApiClient } from '@/api/api';
+import { createAccountJoinTicket, isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
 import { bootstrapRecoveryMaterial, getRecoveryMaterialSecret } from '@/auth/recoveryBootstrap';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
@@ -92,6 +92,19 @@ function describeBootstrapError(error: unknown): string {
   return 'Unknown error';
 }
 
+function formatExpiration(expiresAt: string | number | null | undefined): string | null {
+  if (expiresAt === null || expiresAt === undefined) {
+    return null;
+  }
+
+  const parsed = new Date(expiresAt);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleString();
+  }
+
+  return String(expiresAt);
+}
+
 async function ensureRecoveryMaterialForSeed(token: string, secret: Uint8Array, source: string): Promise<void> {
   try {
     await bootstrapRecoveryMaterial(token, secret);
@@ -131,6 +144,9 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
     case 'join':
       await handleAuthJoin(args.slice(1));
       break;
+    case 'show-join-code':
+      await handleAuthShowJoinCode();
+      break;
     case 'logout':
       await handleAuthLogout();
       break;
@@ -156,6 +172,7 @@ ${chalk.bold('Usage:')}
   aha auth reconnect                                   Refresh token for the currently cached account
   aha auth join --ticket <ticket>                      Join an existing account from a one-time link ticket
   aha auth restore --code <key>                        Restore a known account from backup key
+  aha auth show-join-code                              Generate a one-time join command for another machine
   aha auth logout                                      Remove authentication and machine data
   aha auth status                                      Show authentication status
   aha auth help                                        Show this help message
@@ -172,6 +189,7 @@ ${chalk.bold('Options:')}
 ${chalk.bold('Recommended flows:')}
   aha auth login
   aha auth login --code aha_join_xxx
+  aha auth show-join-code
   aha auth reconnect
   aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth login --email
@@ -240,6 +258,30 @@ async function handleAuthJoin(args: string[]): Promise<void> {
   printDaemonStatus(await ensureDaemonRunningAfterAuth());
 }
 
+async function handleAuthShowJoinCode(): Promise<void> {
+  const credentials = await readCredentials();
+  if (!credentials) {
+    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    process.exit(1);
+  }
+
+  console.log(chalk.yellow('Generating one-time join command...'));
+  try {
+    const { ticket, expiresAt } = await createAccountJoinTicket(credentials.token);
+    console.log(chalk.green('✓ One-time join command ready'));
+    console.log(chalk.gray('  Run this on your new machine:'));
+    console.log(chalk.cyan(`  aha auth login --code ${ticket}`));
+
+    const expiresLabel = formatExpiration(expiresAt);
+    if (expiresLabel) {
+      console.log(chalk.gray(`  Expires: ${expiresLabel}`));
+    }
+  } catch (error) {
+    console.error(chalk.red('Failed to generate join command:'), error instanceof Error ? error.message : 'Unknown error');
+    process.exit(1);
+  }
+}
+
 async function handleAuthReconnect(): Promise<void> {
   const existingCreds = await readCredentials();
   const settings = await readSettings();
@@ -304,11 +346,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
-    console.log(chalk.bold('\n📋 Your emergency restore key:'));
-    console.log(chalk.cyan(formatSecretKeyForBackup(result.secret)));
-    console.log(chalk.gray('\nEmergency-only recovery command:'));
-    console.log(chalk.gray(`  npm i aha-agi && npx aha auth restore --code ${formatSecretKeyForBackup(result.secret)}`));
-    console.log(chalk.gray('\nFor normal new-device onboarding, copy a one-time join command from the web app.'));
+    console.log(chalk.gray('\nTo add another machine later, run `aha auth show-join-code` on this device.'));
 
     try { await stopDaemon(); } catch { }
     printDaemonStatus(await ensureDaemonRunningAfterAuth());
@@ -559,6 +597,23 @@ async function handleAuthStatus(): Promise<void> {
 
   // Data location
   console.log(chalk.gray(`\n  Data directory: ${configuration.ahaHomeDir}`));
+
+  try {
+    const api = await ApiClient.create(credentials);
+    const { teams } = await api.listTeams();
+    console.log(chalk.bold(`\nTeams (${teams.length})`));
+    if (teams.length === 0) {
+      console.log(chalk.gray('  No teams found'));
+    } else {
+      for (const team of teams) {
+        console.log(chalk.gray(`  - ${team.name} (${team.id}) · members ${team.memberCount} · tasks ${team.taskCount}`));
+      }
+    }
+  } catch (error) {
+    logger.debug('[AUTH] Failed to load teams for auth status:', error);
+    console.log(chalk.yellow('\n⚠️  Failed to load teams'));
+    console.log(chalk.gray(`  ${error instanceof Error ? error.message : 'Unknown error'}`));
+  }
 
   // Daemon status
   try {
