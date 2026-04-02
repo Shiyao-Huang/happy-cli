@@ -5,7 +5,19 @@ import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, Mac
 import type { LegionImage, LegionMemberOverlay } from '@/api/types/genome'
 import { ApiSessionClient } from './apiSession';
 import { ApiMachineClient } from './apiMachine';
-import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumDecryptWithSecretKey, libsodiumEncryptForPublicKey, libsodiumPublicKeyFromSecretKey, libsodiumSecretKeyFromSeed } from './encryption';
+import {
+  canonicalContentSecretBoxPrivateKey,
+  canonicalContentSecretBoxPublicKey,
+  decodeBase64,
+  encodeBase64,
+  getRandomBytes,
+  encrypt,
+  decrypt,
+  libsodiumDecryptWithSecretKey,
+  libsodiumEncryptForPublicKey,
+  libsodiumPublicKeyFromSecretKey,
+  libsodiumSecretKeyFromSeed,
+} from './encryption';
 import { PushNotificationClient } from './pushNotifications';
 import { configuration } from '@/configuration';
 import chalk from 'chalk';
@@ -48,8 +60,16 @@ export class ApiClient {
 
     if (decoded[0] === 0) {
       if (this.credential.encryption.type === 'contentSecretKey') {
-        const secretKey = libsodiumSecretKeyFromSeed(this.credential.encryption.contentSecretKey);
-        return libsodiumDecryptWithSecretKey(decoded.slice(1), secretKey);
+        const encryptedKey = decoded.slice(1);
+        const canonicalSecretKey = canonicalContentSecretBoxPrivateKey(this.credential.encryption.contentSecretKey);
+        const canonicalDecrypted = libsodiumDecryptWithSecretKey(encryptedKey, canonicalSecretKey);
+        if (canonicalDecrypted) {
+          return canonicalDecrypted;
+        }
+
+        // Compatibility fallback for data keys wrapped by older CLI builds
+        const legacySecretKey = libsodiumSecretKeyFromSeed(this.credential.encryption.contentSecretKey);
+        return libsodiumDecryptWithSecretKey(encryptedKey, legacySecretKey);
       }
       if (this.credential.encryption.type === 'dataKey') {
         const secretKey = libsodiumSecretKeyFromSeed(this.credential.encryption.machineKey);
@@ -100,7 +120,7 @@ export class ApiClient {
 
       // Encrypt the data encryption key using box encryption with contentSecretKey
       // This matches how Kanban encrypts data: derive keypair from contentSecretKey
-      const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+      const publicKey = canonicalContentSecretBoxPublicKey(this.credential.encryption.contentSecretKey);
       let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
@@ -195,7 +215,7 @@ export class ApiClient {
       encryptionVariant = 'dataKey';
       encryptionKey = getRandomBytes(32);
 
-      const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+      const publicKey = canonicalContentSecretBoxPublicKey(this.credential.encryption.contentSecretKey);
       let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte
@@ -1207,7 +1227,7 @@ export class ApiClient {
         encryptionKey = getRandomBytes(32);
         encryptionVariant = 'dataKey';
 
-        const publicKey = libsodiumPublicKeyFromSecretKey(this.credential.encryption.contentSecretKey);
+        const publicKey = canonicalContentSecretBoxPublicKey(this.credential.encryption.contentSecretKey);
         const encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, publicKey);
         dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
         dataEncryptionKey.set([0], 0); // Version byte

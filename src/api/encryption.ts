@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac } from 'node:crypto';
 import tweetnacl from 'tweetnacl';
 
 /**
@@ -61,6 +61,37 @@ export function libsodiumPublicKeyFromSecretKey(seed: Uint8Array): Uint8Array {
   // NOTE: This matches libsodium implementation, tweetnacl doesnt do this by default
   const secretKey = libsodiumSecretKeyFromSeed(seed);
   return new Uint8Array(tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey);
+}
+
+function deriveKeySync(master: Uint8Array, usage: string, path: string[]): Uint8Array {
+  let I = new Uint8Array(
+    createHmac('sha512', Buffer.from(new TextEncoder().encode(`${usage} Master Seed`)))
+      .update(Buffer.from(master))
+      .digest()
+  );
+  let key = I.slice(0, 32);
+  let chainCode = I.slice(32);
+
+  for (const index of path) {
+    const data = new Uint8Array([0x0, ...new TextEncoder().encode(index)]);
+    I = new Uint8Array(createHmac('sha512', Buffer.from(chainCode)).update(Buffer.from(data)).digest());
+    key = I.slice(0, 32);
+    chainCode = I.slice(32);
+  }
+
+  return key;
+}
+
+export function deriveCanonicalContentBoxSeed(contentSecretKey: Uint8Array): Uint8Array {
+  return deriveKeySync(contentSecretKey, 'Happy EnCoder', ['content']);
+}
+
+export function canonicalContentSecretBoxPrivateKey(contentSecretKey: Uint8Array): Uint8Array {
+  return libsodiumSecretKeyFromSeed(deriveCanonicalContentBoxSeed(contentSecretKey));
+}
+
+export function canonicalContentSecretBoxPublicKey(contentSecretKey: Uint8Array): Uint8Array {
+  return libsodiumPublicKeyFromSecretKey(deriveCanonicalContentBoxSeed(contentSecretKey));
 }
 
 export function libsodiumEncryptForPublicKey(data: Uint8Array, recipientPublicKey: Uint8Array): Uint8Array {
