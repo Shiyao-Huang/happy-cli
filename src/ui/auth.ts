@@ -10,6 +10,7 @@ import { generateWebAuthUrl } from "@/api/webAuth";
 import { openBrowser } from "@/utils/browser";
 import { randomUUID } from 'node:crypto';
 import { logger } from './logger';
+import { buildTerminalConnectUrl } from './deepLinkSchemes';
 
 export type AuthMethod = 'mobile' | 'web';
 export type WebAuthMode = 'auto' | 'create' | 'reconnect';
@@ -60,7 +61,7 @@ async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials 
     console.log('\nMobile Authentication\n');
     console.log('Scan this QR code with your Aha mobile app:\n');
 
-    const authUrl = 'aha://terminal?' + encodeBase64Url(keypair.publicKey);
+    const authUrl = buildTerminalConnectUrl(encodeBase64Url(keypair.publicKey));
     displayQRCode(authUrl);
 
     console.log('\nOr manually enter this URL:');
