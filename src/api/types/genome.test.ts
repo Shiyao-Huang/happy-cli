@@ -62,4 +62,31 @@ describe('genome runtime metadata validation', () => {
         expect(parsed.trigger?.mode).toBe('event');
         expect(parsed.provenance?.origin).toBe('forked');
     });
+
+    it('normalizes stringified skill arrays from malformed stored specs', () => {
+        const genome: Genome = {
+            id: 'genome-2',
+            accountId: 'account-1',
+            name: '@official/org-manager',
+            parentSessionId: 'session-1',
+            spec: JSON.stringify({
+                namespace: '@official',
+                skills: '["context-mirror", "find-skills", "brainstorming"]\nfind-skills\nbrainstorming',
+                mcpServers: '["aha"]',
+                allowedTools: '["Read", "Grep"]',
+                disallowedTools: '["kill_agent"]',
+            }),
+            spawnCount: 0,
+            isPublic: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        };
+
+        const parsed = parseGenomeSpec(genome);
+
+        expect(parsed.skills).toEqual(['context-mirror', 'find-skills', 'brainstorming']);
+        expect(parsed.mcpServers).toEqual(['aha']);
+        expect(parsed.allowedTools).toEqual(['Read', 'Grep']);
+        expect(parsed.disallowedTools).toEqual(['kill_agent']);
+    });
 });

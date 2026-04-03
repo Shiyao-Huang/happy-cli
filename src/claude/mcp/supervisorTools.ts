@@ -52,6 +52,47 @@ import { buildEffectivePermissionsReport } from './inspectionTools';
 import { McpToolContext } from './mcpContext';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 
+/**
+ * Resolve entity namespace + name from explicit params or a specRef string.
+ * specRef format: "@namespace/name" or "@namespace/name:version"
+ */
+export function resolveEntityNsName(
+    specNamespace: string | undefined,
+    specName: string | undefined,
+    specRef: string | undefined,
+): { ns: string; name: string } | null {
+    if (specNamespace && specName) return { ns: specNamespace, name: specName };
+    if (!specRef) return null;
+    const match = specRef.match(/^@?([^/]+)\/([^:]+)/);
+    if (!match) return null;
+    return { ns: `@${match[1]}`, name: match[2] };
+}
+
+/**
+ * Build the verdict content string from scoring dimensions and metadata.
+ */
+export function buildVerdictContent(args: {
+    role: string;
+    sessionId: string;
+    overall: number;
+    action: string;
+    dimensions: {
+        delivery: number;
+        integrity: number;
+        efficiency: number;
+        collaboration: number;
+        reliability: number;
+    };
+    recommendations?: string[];
+}): string {
+    return [
+        `Role: ${args.role}, Session: ${args.sessionId}`,
+        `Overall: ${args.overall}/100, Action: ${args.action}`,
+        `Dimensions: delivery=${args.dimensions.delivery} integrity=${args.dimensions.integrity} efficiency=${args.dimensions.efficiency} collaboration=${args.dimensions.collaboration} reliability=${args.dimensions.reliability}`,
+        args.recommendations?.length ? `Recommendations: ${args.recommendations.join('; ')}` : '',
+    ].filter(Boolean).join('\n');
+}
+
 export function registerSupervisorTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -1576,61 +1617,59 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
         }
 
-        // ── Write Verdict to happy-server (evolution evidence chain) ──
+        // ── Write Verdict to canonical hub evidence chain ──
         let verdictId: string | null = null;
+        let trialId: string | null = null;
+        let verdictWriteSource: 'hub' | 'none' = 'none';
+
+        const verdictContent = buildVerdictContent({
+            role: args.role,
+            sessionId: args.sessionId,
+            overall,
+            action: args.action,
+            dimensions,
+            recommendations: args.recommendations,
+        });
+
+        // Canonical path: write directly to genome-hub.
         try {
-            const serverUrl = configuration.serverUrl;
-            const authToken = client.getAuthToken();
-            const { buildSessionTrialLogRefs, ensureSessionTrial, findSessionTrial } = await import('@/utils/sessionTrialSync');
-            let trialId = (await findSessionTrial({
-                serverUrl,
-                authToken,
-                sessionId: args.sessionId,
-            }))?.id ?? null;
+            const entity = resolveEntityNsName(specNamespace, specName, sessionGenomeMapping?.specRef);
+            if (entity) {
+                const { ensureEntityTrial, createEntityVerdict } = await import('../utils/entityHub.js');
+                const { buildSessionTrialLogRefs } = await import('@/utils/sessionTrialSync');
+                const hubPublishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
-            if (!trialId && sessionGenomeMapping) {
-                const trial = await ensureSessionTrial({
-                    serverUrl,
-                    authToken,
-                    mapping: sessionGenomeMapping,
-                    logRefs: buildSessionTrialLogRefs(sessionGenomeMapping),
+                const trialResult = await ensureEntityTrial({
+                    token: hubPublishKey || undefined,
+                    namespace: entity.ns,
+                    name: entity.name,
+                    teamId: sessionGenomeMapping?.teamId,
+                    sessionId: args.sessionId,
+                    contextNarrative: `score_agent verdict for ${args.role} session ${args.sessionId}`,
+                    logRefs: sessionGenomeMapping ? buildSessionTrialLogRefs(sessionGenomeMapping) : [],
                 });
-                trialId = trial?.id ?? null;
+                trialId = trialResult.trial.id;
+
+                const verdictResult = await createEntityVerdict({
+                    token: hubPublishKey || undefined,
+                    trialId,
+                    readerRole: 'supervisor',
+                    readerSessionId: client.sessionId,
+                    content: verdictContent,
+                    score: overall,
+                    action: args.action,
+                    dimensions,
+                });
+                verdictId = verdictResult.verdict.id;
+                verdictWriteSource = 'hub';
+                logger.debug(`[score_agent] Verdict written to hub: verdictId=${verdictId}, trialId=${trialId}, specVersion=${specVersion ?? 'unknown'}`);
+            } else {
+                logger.debug(
+                    `[score_agent] Skipped hub verdict write because entity identity could not be resolved for session=${args.sessionId}, role=${args.role}`
+                );
             }
-
-            // Create Verdict
-            if (trialId) {
-                const verdictContent = [
-                    `Role: ${args.role}, Session: ${args.sessionId}`,
-                    `Overall: ${overall}/100, Action: ${args.action}`,
-                    `Dimensions: delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`,
-                    args.recommendations?.length ? `Recommendations: ${args.recommendations.join('; ')}` : '',
-                ].filter(Boolean).join('\n');
-
-                const verdictRes = await fetch(`${serverUrl}/v1/verdicts`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        trialId,
-                        readerRole: 'supervisor',
-                        readerSessionId: client.sessionId,
-                        content: verdictContent,
-                        score: overall,
-                        action: args.action,
-                        dimensions: JSON.stringify(dimensions),
-                    }),
-                    signal: AbortSignal.timeout(5_000),
-                }).catch(() => null);
-
-                if (verdictRes?.ok) {
-                    const created = await verdictRes.json() as { verdict?: { id: string } };
-                    verdictId = created.verdict?.id ?? null;
-                }
-            }
-
-            logger.debug(`[score_agent] Verdict written: verdictId=${verdictId}, trialId=${trialId ?? 'missing'}, specVersion=${specVersion ?? 'unknown'}`);
-        } catch (error) {
-            logger.debug(`[score_agent] Verdict write error: ${String(error)}`);
+        } catch (hubError) {
+            logger.debug(`[score_agent] Hub verdict write failed: ${String(hubError)}`);
         }
 
         const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
@@ -3074,10 +3113,34 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 logger.debug(`[save_supervisor_state] Self-evolution check error: ${String(selfEvolveErr)}`);
             }
 
+            // ── Retire own session when team is terminated ────────────────
+            // Mirrors the retire_self pattern: stop the supervisor process via
+            // daemon HTTP so the OS process actually exits instead of idling.
+            let processTerminated = false;
+            if (args.teamTerminated) {
+                try {
+                    const ownSessionId = client.sessionId;
+                    if (ownSessionId) {
+                        const daemonState = await readDaemonState();
+                        if (daemonState?.httpPort) {
+                            const stopResp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop-session`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ sessionId: ownSessionId }),
+                                signal: AbortSignal.timeout(10_000),
+                            });
+                            processTerminated = stopResp.ok;
+                        }
+                    }
+                } catch {
+                    // Best-effort: daemon may not be running
+                }
+            }
+
             return {
                 content: [{
                     type: 'text',
-                    text: `Supervisor state saved. Next run starts at team=${args.teamLogCursor}, codexHistory=${args.codexHistoryCursor ?? existing.codexHistoryCursor}. Terminated=${args.teamTerminated}. Predictions=${predCount}${selfEvolveNote}`
+                    text: `Supervisor state saved. Next run starts at team=${args.teamLogCursor}, codexHistory=${args.codexHistoryCursor ?? existing.codexHistoryCursor}. Terminated=${args.teamTerminated}. Predictions=${predCount}${selfEvolveNote}${processTerminated ? ' Process stop requested.' : ''}`
                 }],
                 isError: false,
             };

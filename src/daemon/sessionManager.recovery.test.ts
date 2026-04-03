@@ -375,6 +375,30 @@ describe('sessionManager recovered session self-heal', () => {
         expect(spawnArgs.env.AHA_RECOVER_SESSION_ID).toBe(queued.sessionId);
     });
 
+    it('returns pending instead of error when the child process starts but the webhook does not arrive in time', async () => {
+        process.env.AHA_SESSION_WEBHOOK_TIMEOUT_MS = '1';
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 77777,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+        });
+
+        await expect(
+            spawnSession({
+                directory: process.cwd(),
+                agent: 'claude',
+                teamId: 'team-pending',
+                role: 'builder',
+                sessionName: 'Pending Builder',
+            })
+        ).resolves.toEqual({
+            type: 'pending',
+            pendingSessionId: 'pending-pid-77777',
+            pid: 77777,
+        });
+    });
+
     it('respawns automatically after abnormal exit once respawn options are available', async () => {
         vi.useFakeTimers();
 

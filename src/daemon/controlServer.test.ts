@@ -201,6 +201,57 @@ describe('controlServer /list', () => {
     });
 });
 
+describe('controlServer /spawn-session', () => {
+    let stopServer: () => Promise<void> = async () => {};
+    let port: number;
+
+    afterEach(async () => {
+        await stopServer();
+    });
+
+    it('returns 202 pending when the child process started but webhook binding is still pending', async () => {
+        const result = await startDaemonControlServer({
+            getChildren: () => [],
+            stopSession: () => false,
+            spawnSession: async () => ({
+                type: 'pending' as const,
+                pendingSessionId: 'pending-pid-77777',
+                pid: 77777,
+            }),
+            requestShutdown: () => {},
+            onAhaSessionWebhook: () => {},
+        });
+
+        port = result.port;
+        stopServer = result.stop;
+
+        const response = await fetch(`http://127.0.0.1:${port}/spawn-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                directory: process.cwd(),
+                role: 'builder',
+                sessionName: 'Pending Builder',
+            }),
+        });
+
+        expect(response.status).toBe(202);
+        const data = await response.json() as {
+            success: boolean;
+            pending: boolean;
+            pendingSessionId: string;
+            pid: number;
+        };
+        expect(data).toEqual({
+            success: true,
+            pending: true,
+            pendingSessionId: 'pending-pid-77777',
+            pid: 77777,
+            approvedNewDirectoryCreation: true,
+        });
+    });
+});
+
 describe('controlServer /channels', () => {
     let stopServer: () => Promise<void>;
     let port: number;

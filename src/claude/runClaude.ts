@@ -123,6 +123,60 @@ function resolveEnvPermissionMode(rawMode?: string): StartOptions['permissionMod
     }
 }
 
+function serializeErrorForLog(error: unknown): Record<string, unknown> {
+    if (error instanceof Error) {
+        const base: Record<string, unknown> = {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+        };
+
+        const anyError = error as Error & { code?: unknown; cause?: unknown };
+        if (anyError.code !== undefined) {
+            base.code = anyError.code;
+        }
+        if (anyError.cause !== undefined) {
+            base.cause = anyError.cause instanceof Error
+                ? {
+                    name: anyError.cause.name,
+                    message: anyError.cause.message,
+                    stack: anyError.cause.stack,
+                }
+                : anyError.cause;
+        }
+        return base;
+    }
+
+    if (error && typeof error === 'object') {
+        return error as Record<string, unknown>;
+    }
+
+    return { value: String(error) };
+}
+
+/**
+ * Replace `{{VAR_NAME}}` placeholders in a genome systemPrompt with runtime values.
+ * Unknown tokens are left as-is so downstream code can still detect them.
+ */
+function resolvePromptTemplateVars(template: string, vars: Record<string, string>): string {
+    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => vars[key] ?? match);
+}
+
+/**
+ * Build a stringified pending-action block from the env var.
+ * Returns '(none)' when the env var is empty / missing.
+ */
+function buildPendingActionBlock(): string {
+    const raw = process.env.AHA_SUPERVISOR_PENDING_ACTION || '';
+    if (!raw) return '(none)';
+    try {
+        const parsed = JSON.parse(raw);
+        return JSON.stringify(parsed);
+    } catch {
+        return raw;
+    }
+}
+
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
     const workingDirectory = process.cwd();
     const sessionTag = options.sessionTag || randomUUID();
@@ -513,7 +567,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 logger.debug(`[genome] Workspace warning: ${w}`);
             }
         } catch (err) {
-            logger.error('[genome] Failed to materialize workspace:', err);
+            logger.error('[genome] Failed to materialize workspace:', serializeErrorForLog(err));
             throw err;
         }
 
@@ -938,10 +992,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 // If genome supplies a full system prompt, use it directly and
                 // skip the compiled role prompt below.
                 if (_agentImage?.systemPrompt) {
-                    instructions = _agentImage.systemPrompt
-                        + (_agentImage.systemPromptSuffix ? '\n\n' + _agentImage.systemPromptSuffix : '');
+                    instructions = resolvePromptTemplateVars(_agentImage.systemPrompt, {
+                        AHA_SUPERVISOR_TEAM_LOG_CURSOR: process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0',
+                        AHA_SUPERVISOR_LAST_CONCLUSION: process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '(none — this is the first run)',
+                        AHA_SUPERVISOR_PENDING_ACTION: process.env.AHA_SUPERVISOR_PENDING_ACTION || '(none)',
+                        AHA_SUPERVISOR_CC_LOG_CURSORS: process.env.AHA_SUPERVISOR_CC_LOG_CURSORS || '{}',
+                        AHA_SUPERVISOR_CODEX_HISTORY_CURSOR: process.env.AHA_SUPERVISOR_CODEX_HISTORY_CURSOR || '0',
+                        AHA_SUPERVISOR_CODEX_SESSION_CURSORS: process.env.AHA_SUPERVISOR_CODEX_SESSION_CURSORS || '{}',
+                        AHA_SUPERVISOR_LAST_SESSION_ID: process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '(none)',
+                        AHA_SUPERVISOR_PENDING_ACTION_BLOCK: buildPendingActionBlock(),
+                        AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
+                        AHA_AGENT_ROLE: role || 'agent',
+                    });
+                    if (_agentImage.systemPromptSuffix) {
+                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
+                    }
                     logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId})`);
                 } else if (isBypassRole(role, _agentImage) && role === 'supervisor') {
+                    logger.warn(`[genome] No genome systemPrompt for supervisor (specId=${_agentImageId ?? 'none'}); using legacy compiled prompt`);
                     const lastConclusion = process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '';
                     const lastSessionId = process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '';
                     const teamLogCursor = process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0';
@@ -1190,6 +1258,7 @@ When the cycle is complete, choose your own lifecycle explicitly:
                         instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
                 } else if (isBypassRole(role, _agentImage) && role === 'help-agent') {
+                    logger.warn(`[genome] No genome systemPrompt for help-agent (specId=${_agentImageId ?? 'none'}); using legacy compiled prompt`);
                     instructions = `
 <HelpAgent_Instructions>
 
@@ -1224,6 +1293,7 @@ You respond to a specific help request, fix it, then decide whether to retire or
                         instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
                 } else if (isBootstrapRole(role, _agentImage)) {
+                    logger.warn(`[genome] No genome systemPrompt for bootstrap (specId=${_agentImageId ?? 'none'}); using legacy compiled prompt`);
                     instructions = `
 <Bootstrap_Instructions>
 
@@ -1268,6 +1338,7 @@ You assemble the team, then explicitly decide whether to retire. You are invisib
                         instructions += '\n\n' + _agentImage.systemPromptSuffix;
                     }
                 } else if (isCoordinatorRole(role, _agentImage)) {                    // Coordinator instructions - OhMyOpenCode / Sisyphus pattern
+                    logger.warn(`[genome] No genome systemPrompt for coordinator (specId=${_agentImageId ?? 'none'}); using legacy compiled prompt`);
                     instructions = `
 <Coordinator_Instructions>
 
@@ -1330,6 +1401,7 @@ Before doing ANYTHING else, you MUST complete these steps IN ORDER:
                     }
                 } else {
                     // Worker instructions - OhMyOpenCode / Sisyphus pattern
+                    logger.warn(`[genome] No genome systemPrompt for worker role=${role} (specId=${_agentImageId ?? 'none'}); using legacy compiled prompt`);
                     instructions = `
 <Worker_Instructions>
 

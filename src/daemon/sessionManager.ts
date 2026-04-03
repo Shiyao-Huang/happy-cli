@@ -39,7 +39,7 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { execSync } from 'child_process';
 import { ulid } from 'ulid';
-import { finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
+import { buildPendingRunId, finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
 import { chooseHelpAgentForRequest } from './helpAgentPool';
 import { seedCodexHomeConfig, seedCodexHomeSkillUnion } from '@/codex/codexHome';
 
@@ -936,8 +936,9 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
         pidToAwaiter.delete(ahaProcess.pid!);
         logger.debug(`[SESSION MANAGER] Session webhook timeout for PID ${ahaProcess.pid}`);
         resolve({
-          type: 'error',
-          errorMessage: `Session webhook timeout for PID ${ahaProcess.pid}`,
+          type: 'pending',
+          pendingSessionId: buildPendingRunId(ahaProcess.pid!, options.sessionId),
+          pid: ahaProcess.pid!,
         });
       }, sessionWebhookTimeoutMs);
 
@@ -1173,6 +1174,12 @@ export const requestHelp = async (params: {
         markHelpAgentLeased(teamId, result.sessionId);
         return { success: true, helpAgentSessionId: result.sessionId, reused: false, saturated: false };
       }
+      if (result.type === 'pending') {
+        return {
+          success: false,
+          error: `Help-agent launch is pending webhook binding (${result.pendingSessionId})`,
+        };
+      }
 
       return {
         success: false,
@@ -1317,6 +1324,11 @@ function scheduleRespawn(session: TrackedSession): void {
         logger.debug(
           `[SESSION MANAGER] Respawn #${respawnCount} accepted for role=${role} ` +
           `team=${teamId} → session=${result.sessionId}${result.type === 'queued' ? ` (queued at position ${result.queuePosition})` : ''}`
+        );
+      } else if (result.type === 'pending') {
+        logger.debug(
+          `[SESSION MANAGER] Respawn #${respawnCount} started for role=${role} ` +
+          `team=${teamId} and is awaiting webhook binding (${result.pendingSessionId}, pid=${result.pid})`
         );
       } else {
         const errorMsg = result.type === 'error' ? result.errorMessage : 'unknown error';

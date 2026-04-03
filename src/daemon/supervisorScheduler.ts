@@ -706,6 +706,10 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
           `[SUPERVISOR SCHEDULER] Supervisor agent accepted: ${supervisorResult.sessionId}` +
           (supervisorResult.type === 'queued' ? ` (queued at position ${supervisorResult.queuePosition})` : '')
         );
+      } else if (supervisorResult.type === 'pending') {
+        logger.debug(
+          `[SUPERVISOR SCHEDULER] Supervisor process started and is awaiting webhook binding: ${supervisorResult.pendingSessionId} (pid=${supervisorResult.pid})`
+        );
       }
     } catch (e) {
       logger.debug(`[SUPERVISOR SCHEDULER] Failed to spawn supervisor: ${e}`);

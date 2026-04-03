@@ -2,7 +2,7 @@ import axios from 'axios';
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver';
 import type { DiffChange, Genome, AgentVerdict } from '@/api/types/genome';
 
-type EntityLogRef = {
+export type EntityLogRef = {
     kind: 'claude' | 'codex' | 'team' | 'daemon' | 'git' | 'browser' | 'other';
     path: string;
     sessionId?: string;
@@ -13,10 +13,68 @@ function genomeHubBaseUrl(): string {
 }
 
 function authHeaders(token?: string): Record<string, string> {
+    const resolvedToken = token ?? process.env.HUB_PUBLISH_KEY ?? '';
     return {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(resolvedToken ? { Authorization: `Bearer ${resolvedToken}` } : {}),
     };
+}
+
+function normalizeEntityLogRefs(logRefs?: EntityLogRef[] | string): EntityLogRef[] {
+    if (!logRefs) {
+        return [];
+    }
+    if (typeof logRefs !== 'string') {
+        return logRefs;
+    }
+
+    try {
+        const parsed = JSON.parse(logRefs) as unknown;
+        return Array.isArray(parsed) ? parsed as EntityLogRef[] : [];
+    } catch {
+        return [];
+    }
+}
+
+type EntityRecord = {
+    id: string;
+};
+
+type EntityTrialRecord = {
+    id: string;
+    sessionId?: string | null;
+    endedAt?: string | null;
+};
+
+async function getEntityByName(args: {
+    token?: string;
+    namespace: string;
+    name: string;
+}): Promise<EntityRecord | null> {
+    try {
+        const response = await axios.get(
+            `${genomeHubBaseUrl()}/entities/${encodeURIComponent(args.namespace)}/${encodeURIComponent(args.name)}`,
+            { headers: authHeaders(args.token) },
+        );
+        return (response.data as { entity?: EntityRecord }).entity ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function listEntityTrials(args: {
+    token?: string;
+    entityId: string;
+}): Promise<EntityTrialRecord[]> {
+    try {
+        const response = await axios.get(
+            `${genomeHubBaseUrl()}/entities/id/${encodeURIComponent(args.entityId)}/trials`,
+            { headers: authHeaders(args.token) },
+        );
+        return (response.data as { trials?: EntityTrialRecord[] }).trials ?? [];
+    } catch {
+        return [];
+    }
 }
 
 export async function createEntityTrial(args: {
@@ -24,19 +82,54 @@ export async function createEntityTrial(args: {
     namespace: string;
     name: string;
     teamId?: string;
+    sessionId?: string;
     contextNarrative?: string;
-    logRefs?: EntityLogRef[];
+    logRefs?: EntityLogRef[] | string;
 }): Promise<{ trial: { id: string } }> {
     const response = await axios.post(
         `${genomeHubBaseUrl()}/entities/${encodeURIComponent(args.namespace)}/${encodeURIComponent(args.name)}/trials`,
         {
             teamId: args.teamId,
+            sessionId: args.sessionId,
             contextNarrative: args.contextNarrative,
-            logRefs: args.logRefs ?? [],
+            logRefs: normalizeEntityLogRefs(args.logRefs),
         },
         { headers: authHeaders(args.token) },
     );
     return response.data as { trial: { id: string } };
+}
+
+export async function ensureEntityTrial(args: {
+    token?: string;
+    namespace: string;
+    name: string;
+    teamId?: string;
+    sessionId?: string;
+    contextNarrative?: string;
+    logRefs?: EntityLogRef[] | string;
+}): Promise<{ trial: { id: string } }> {
+    if (args.sessionId) {
+        const entity = await getEntityByName({
+            token: args.token,
+            namespace: args.namespace,
+            name: args.name,
+        });
+        if (entity?.id) {
+            const trials = await listEntityTrials({
+                token: args.token,
+                entityId: entity.id,
+            });
+            const existing = trials.find((trial) =>
+                trial.sessionId === args.sessionId
+                && (trial.endedAt == null || trial.endedAt === '')
+            );
+            if (existing) {
+                return { trial: { id: existing.id } };
+            }
+        }
+    }
+
+    return createEntityTrial(args);
 }
 
 export async function appendEntityTrialLogRefs(args: {

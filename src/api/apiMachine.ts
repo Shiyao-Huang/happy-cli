@@ -166,6 +166,16 @@ export class ApiMachineClient {
                         queuePosition: result.queuePosition,
                     };
 
+                case 'pending':
+                    logger.debug(
+                        `[API MACHINE] Spawned session process is awaiting webhook binding: ${result.pendingSessionId} (pid=${result.pid})`
+                    );
+                    return {
+                        type: 'pending',
+                        pendingSessionId: result.pendingSessionId,
+                        pid: result.pid,
+                    };
+
                 case 'requestToApproveDirectoryCreation':
                     logger.debug(`[API MACHINE] Requesting directory creation approval for: ${result.directory}`);
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory };

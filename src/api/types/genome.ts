@@ -630,6 +630,62 @@ export interface Genome {
     updatedAt: string;
 }
 
+function normalizeStringListField(value: unknown): string[] | undefined {
+    if (Array.isArray(value)) {
+        const normalized = value
+            .filter((entry): entry is string => typeof entry === 'string')
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+        return normalized.length > 0 ? Array.from(new Set(normalized)) : [];
+    }
+
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return [];
+    }
+
+    const normalized = new Set<string>();
+
+    if (trimmed.startsWith('[')) {
+        const lastBracket = trimmed.lastIndexOf(']');
+        const jsonCandidate = lastBracket >= 0 ? trimmed.slice(0, lastBracket + 1) : trimmed;
+
+        try {
+            const parsed = JSON.parse(jsonCandidate);
+            if (Array.isArray(parsed)) {
+                for (const entry of parsed) {
+                    if (typeof entry !== 'string') continue;
+                    const item = entry.trim();
+                    if (item) normalized.add(item);
+                }
+            }
+        } catch {
+            // Fall through to line parsing below.
+        }
+
+        const remainder = lastBracket >= 0 ? trimmed.slice(lastBracket + 1) : '';
+        for (const line of remainder.split(/\r?\n/)) {
+            const item = line.trim().replace(/^['"]|['"]$/g, '');
+            if (item) normalized.add(item);
+        }
+
+        if (normalized.size > 0) {
+            return Array.from(normalized);
+        }
+    }
+
+    for (const part of trimmed.split(/\r?\n|,/)) {
+        const item = part.trim().replace(/^['"]|['"]$/g, '');
+        if (item) normalized.add(item);
+    }
+
+    return Array.from(normalized);
+}
+
 /** 解析 Genome.spec 字段为 AgentImage 兼容投影对象，非 @official namespace 强制降级危险字段 */
 export function parseGenomeSpec(genome: Genome): AgentImage {
     const raw = JSON.parse(genome.spec);
@@ -656,11 +712,32 @@ export function parseGenomeSpec(genome: Genome): AgentImage {
     }
 
     // 所有 genome 的类型验证：防止类型混淆攻击
-    if (raw.allowedTools && !Array.isArray(raw.allowedTools)) {
+    const normalizedSkills = normalizeStringListField(raw.skills);
+    if (normalizedSkills !== undefined) {
+        raw.skills = normalizedSkills;
+    }
+    const normalizedMcpServers = normalizeStringListField(raw.mcpServers);
+    if (normalizedMcpServers !== undefined) {
+        raw.mcpServers = normalizedMcpServers;
+    }
+    const normalizedAllowedTools = normalizeStringListField(raw.allowedTools);
+    if (normalizedAllowedTools !== undefined) {
+        raw.allowedTools = normalizedAllowedTools;
+    }
+    const normalizedDisallowedTools = normalizeStringListField(raw.disallowedTools);
+    if (normalizedDisallowedTools !== undefined) {
+        raw.disallowedTools = normalizedDisallowedTools;
+    } else if (raw.disallowedTools && !Array.isArray(raw.disallowedTools)) {
+        delete raw.disallowedTools;
+    }
+    if (normalizedAllowedTools === undefined && raw.allowedTools && !Array.isArray(raw.allowedTools)) {
         delete raw.allowedTools;
     }
-    if (raw.disallowedTools && !Array.isArray(raw.disallowedTools)) {
-        delete raw.disallowedTools;
+    if (normalizedSkills === undefined && raw.skills && !Array.isArray(raw.skills)) {
+        delete raw.skills;
+    }
+    if (normalizedMcpServers === undefined && raw.mcpServers && !Array.isArray(raw.mcpServers)) {
+        delete raw.mcpServers;
     }
 
     return raw as AgentImage;

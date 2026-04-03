@@ -59,6 +59,9 @@ export async function resumeClaudeAgent(
         if (result.type === 'success' || result.type === 'queued') {
             return { success: true, newSessionId: result.sessionId };
         }
+        if (result.type === 'pending') {
+            return { success: true, newSessionId: result.pendingSessionId };
+        }
         return {
             success: false,
             error: result.type === 'error' ? result.errorMessage : `Unexpected result: ${result.type}`
@@ -107,6 +110,9 @@ export async function resumeCodexAgent(
 
         if (result.type === 'success' || result.type === 'queued') {
             return { success: true, newSessionId: result.sessionId };
+        }
+        if (result.type === 'pending') {
+            return { success: true, newSessionId: result.pendingSessionId };
         }
         return {
             success: false,

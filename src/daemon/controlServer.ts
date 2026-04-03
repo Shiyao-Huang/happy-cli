@@ -387,6 +387,13 @@ export function startDaemonControlServer({
             queued: z.boolean().optional(),
             queuePosition: z.number().optional(),
           }),
+          202: z.object({
+            success: z.literal(true),
+            pending: z.literal(true),
+            pendingSessionId: z.string(),
+            pid: z.number(),
+            approvedNewDirectoryCreation: z.boolean().optional(),
+          }),
           409: z.object({
             success: z.boolean(),
             requiresUserApproval: z.boolean().optional(),
@@ -428,6 +435,16 @@ export function startDaemonControlServer({
             approvedNewDirectoryCreation: true,
             queued: true,
             queuePosition: result.queuePosition,
+          };
+
+        case 'pending':
+          reply.code(202);
+          return {
+            success: true,
+            pending: true,
+            pendingSessionId: result.pendingSessionId,
+            pid: result.pid,
+            approvedNewDirectoryCreation: true,
           };
         
         case 'requestToApproveDirectoryCreation':
@@ -566,6 +583,12 @@ export function startDaemonControlServer({
 
         if (result.type === 'success') {
           return { success: true, helpAgentSessionId: result.sessionId };
+        }
+        if (result.type === 'pending') {
+          return {
+            success: false,
+            error: `Help-agent launch is pending webhook binding (${result.pendingSessionId})`,
+          };
         }
         return { success: false, error: 'Failed to spawn help-agent' };
       } catch (error) {
