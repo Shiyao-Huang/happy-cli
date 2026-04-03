@@ -10,7 +10,6 @@ import { stopDaemon, checkIfDaemonRunningAndCleanupStaleState, ensureDaemonRunni
 import { logger } from '@/ui/logger';
 import os from 'node:os';
 import { reconnectWithStoredCredentials } from '@/auth/reconnect';
-import { parseBackupKeyToSecret } from '@/utils/backupKey';
 import { authGetToken } from '@/api/auth';
 import { doEmailOtpAuth } from '@/api/supabaseAuth';
 import { ApiClient } from '@/api/api';
@@ -138,9 +137,6 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
     case 'reconnect':
       await handleAuthReconnect();
       break;
-    case 'restore':
-      await handleAuthRestore(args.slice(1));
-      break;
     case 'join':
       await handleAuthJoin(args.slice(1));
       break;
@@ -168,10 +164,9 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--code <ticket-or-key>] [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
+  aha auth login [--code <ticket>] [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
   aha auth reconnect                                   Refresh token for the currently cached account
   aha auth join --ticket <ticket>                      Join an existing account from a one-time link ticket
-  aha auth restore --code <key>                        Restore a known account from backup key
   aha auth show-join-code                              Generate a one-time join command for another machine
   aha auth logout                                      Remove authentication and machine data
   aha auth status                                      Show authentication status
@@ -180,8 +175,7 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
-  --restore,-r Legacy alias for reconnect/restore during \`login\`
-  --code <key> Backup key or one-time join ticket, no browser needed
+  --code <ticket> One-time join ticket, no browser needed
   --ticket    Explicit flag for one-time account join tickets
   --mobile    Use the old mobile QR/manual flow instead of default web login
   --email     Use email OTP login (no browser needed, works on headless Linux)
@@ -191,39 +185,9 @@ ${chalk.bold('Recommended flows:')}
   aha auth login --code aha_join_xxx
   aha auth show-join-code
   aha auth reconnect
-  aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth login --email
   aha auth login --force
 `);
-}
-
-async function handleAuthRestore(args: string[]): Promise<void> {
-  const restoreCode = readRestoreCodeArg(args);
-  if (!restoreCode) {
-    console.error(chalk.red('Missing backup key.'));
-    console.log(chalk.gray('Usage: aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX'));
-    process.exit(1);
-  }
-
-  console.log(chalk.yellow('Restoring account from backup key...'));
-  try {
-    const secretBytes = parseBackupKeyToSecret(restoreCode);
-    const token = await authGetToken(secretBytes, 'reconnect');
-    await clearMachineId();
-    await writeCredentialsLegacy({ secret: secretBytes, token });
-    await ensureRecoveryMaterialForSeed(token, secretBytes, 'restore');
-    const { accountId } = decodeTokenSubject(token);
-    console.log(chalk.green('✓ Credentials restored from backup key'));
-    if (accountId) {
-      console.log(chalk.gray(`  Account ID: ${accountId}`));
-    }
-  } catch (error) {
-    console.error(chalk.red('Restore from backup key failed:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
-  }
-
-  try { await stopDaemon(); } catch { }
-  printDaemonStatus(await ensureDaemonRunningAfterAuth());
 }
 
 async function handleAuthJoin(args: string[]): Promise<void> {
@@ -288,7 +252,7 @@ async function handleAuthReconnect(): Promise<void> {
 
   if (!existingCreds) {
     console.error(chalk.red('No local credentials found.'));
-    console.log(chalk.gray('Use `aha auth login --code aha_join_xxx` from another signed-in device, or `aha auth restore --code <backup-key>` as backup.'));
+    console.log(chalk.gray('Use `aha auth show-join-code` on another signed-in device to generate a join command, then run it here.'));
     process.exit(1);
   }
 
@@ -309,7 +273,7 @@ async function handleAuthReconnect(): Promise<void> {
     printDaemonStatus(daemonResult);
   } catch (error) {
     console.error(chalk.red('Reconnect failed:'), error instanceof Error ? error.message : 'Unknown error');
-    console.log(chalk.gray('Use `aha auth login --code aha_join_xxx` from another signed-in device first, or `aha auth restore --code <backup-key>` as backup.'));
+    console.log(chalk.gray('Use `aha auth show-join-code` on another signed-in device to generate a join command, then run it here.'));
     process.exit(1);
   }
 }
@@ -353,14 +317,15 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     return;
   }
 
-  // ── Restore with --code: direct key-based restore, no browser needed ──
+  // ── Restore with --code: join ticket only ──
   if (restoreCode) {
     if (isAccountJoinTicket(restoreCode)) {
       await handleAuthJoin(['--ticket', restoreCode]);
       return;
     }
-    await handleAuthRestore(['--code', restoreCode]);
-    return;
+    console.error(chalk.red('Invalid code. Only join tickets (aha_join_... or 6-character codes) are supported.'));
+    console.log(chalk.gray('To join from another device, run: aha auth show-join-code'));
+    process.exit(1);
   }
 
   // ── Restore with local credentials: try reconnect WITHOUT stopping daemon ──

@@ -2742,6 +2742,45 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
     });
 
+    mcp.registerTool('retire_self', {
+        description: 'Gracefully retire the calling agent. Archives the session and terminates the OS process. Use when the agent has completed its work and should exit. Available to all roles.',
+        title: 'Retire Self',
+        inputSchema: {
+            reason: z.string().describe('Why this agent is retiring'),
+        },
+    }, async (args) => {
+        const ownSessionId = client.sessionId;
+        if (!ownSessionId) {
+            return { content: [{ type: 'text', text: 'Error: No session ID found for this agent.' }], isError: true };
+        }
+        try {
+            const result = await api.batchArchiveSessions([ownSessionId]);
+
+            let processTerminated = false;
+            try {
+                const daemonState = await readDaemonState();
+                if (daemonState?.httpPort) {
+                    const stopResp = await fetch(`http://127.0.0.1:${daemonState.httpPort}/stop-session`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sessionId: ownSessionId }),
+                        signal: AbortSignal.timeout(10_000),
+                    });
+                    processTerminated = stopResp.ok;
+                }
+            } catch {
+                // Best-effort: daemon may not be running
+            }
+
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated }) }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('recover_session', {
         description: 'Restore a previously archived agent session, making it active again in the team roster. Supervisor/org-manager only. Use when an archived agent needs to resume work.',
         title: 'Recover Session',

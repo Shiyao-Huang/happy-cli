@@ -35,15 +35,11 @@ export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials |
 
     // Create a new authentication request
     try {
-        console.log(`[AUTH DEBUG] Sending auth request to: ${configuration.serverUrl}/v1/auth/request`);
-        console.log(`[AUTH DEBUG] Public key: ${encodeBase64(keypair.publicKey).substring(0, 20)}...`);
         await axios.post(`${configuration.serverUrl}/v1/auth/request`, {
             publicKey: encodeBase64(keypair.publicKey),
             supportsV2: true
         });
-        console.log(`[AUTH DEBUG] Auth request sent successfully`);
     } catch (error) {
-        console.log(`[AUTH DEBUG] Failed to send auth request:`, error);
         console.log('Failed to create authentication request, please try again later.');
         return null;
     }

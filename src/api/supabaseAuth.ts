@@ -78,13 +78,45 @@ type SupabaseCompleteResult =
     | ({ state: 'new_account_created' } & EmailOtpResult)
     | { state: 'migration_required' };
 
+async function fetchWrappingPublicKey(accessToken: string): Promise<Uint8Array | null> {
+    try {
+        const response = await axios.get<{ wrappingPublicKey: string }>(
+            `${configuration.serverUrl}/v1/auth/wrapping-key`,
+            { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        return decodeBase64(response.data.wrappingPublicKey);
+    } catch {
+        return null;
+    }
+}
+
+async function buildSupabaseCompleteSecretPayload(accessToken: string, contentSecretKey: Uint8Array): Promise<Record<string, string>> {
+    const wrappingPublicKey = await fetchWrappingPublicKey(accessToken);
+    if (!wrappingPublicKey) {
+        return {
+            newContentSecretKey: encodeBase64(contentSecretKey),
+        };
+    }
+
+    const ephemeral = tweetnacl.box.keyPair();
+    const nonce = tweetnacl.randomBytes(tweetnacl.box.nonceLength);
+    const ciphertext = tweetnacl.box(contentSecretKey, nonce, wrappingPublicKey, ephemeral.secretKey);
+
+    return {
+        newEncryptedContentSecretKey: encodeBase64(ciphertext),
+        newNonce: encodeBase64(nonce),
+        newEphemeralPublicKey: encodeBase64(ephemeral.publicKey),
+    };
+}
+
 async function completeWithServer(accessToken: string): Promise<SupabaseCompleteResult> {
     const keypair = generateRecoveryKeyPair();
     const newSecret = new Uint8Array(randomBytes(32));
+    const secretPayload = await buildSupabaseCompleteSecretPayload(accessToken, newSecret);
     const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase/complete`, {
         accessToken,
         recoveryPublicKey: encodeBase64(keypair.publicKey),
-        newContentSecretKey: encodeBase64(newSecret),
+        ...secretPayload,
     });
 
     if (response.data.state === 'migration_required') {
@@ -158,8 +190,9 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
     try {
         const result = await completeWithServer(accessToken);
         if (result.state === 'migration_required') {
-            console.log('\nThis email is already linked to an account, but automatic recovery is not ready yet.');
-            console.log('Use a backup key or a one-time link command from an existing device.\n');
+            console.log('\nThis account needs to be migrated to Google sign-in.');
+            console.log('On another signed-in device, run: aha auth show-join-code');
+            console.log('Then run the generated command on this device to join.\n');
             return null;
         }
         return {
@@ -171,9 +204,9 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
         if (axios.isAxiosError(error) && error.response?.status === 409) {
             const code = error.response.data?.code;
             if (code === 'ACCOUNT_LINK_CONFLICT') {
-                console.log('\nThis sign-in identity conflicts with an existing restore key mapping.');
-                console.log('Use a backup key or a one-time join command from an existing device:');
-                console.log('  npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-...\n');
+                console.log('\nThis sign-in identity conflicts with an existing account.');
+                console.log('On another signed-in device, run: aha auth show-join-code');
+                console.log('Then run the generated command on this device to join.\n');
                 return null;
             }
         }

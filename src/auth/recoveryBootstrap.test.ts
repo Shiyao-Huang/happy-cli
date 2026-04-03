@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('axios', () => ({
   default: {
+    get: vi.fn(),
     post: vi.fn(),
   },
 }));
@@ -47,13 +48,22 @@ describe('getRecoveryMaterialSecret', () => {
 describe('bootstrapRecoveryMaterial', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(axios.get).mockRejectedValue(new Error('wrapping-key unavailable'));
   });
 
-  it('posts the canonical seed to the authenticated recovery endpoint', async () => {
+  it('posts the canonical seed to the authenticated recovery endpoint when wrapping-key is unavailable', async () => {
     const secret = new Uint8Array([1, 2, 3]);
 
     await bootstrapRecoveryMaterial('token-123', secret);
 
+    expect(vi.mocked(axios.get)).toHaveBeenCalledWith(
+      'https://aha-agi.test/v1/auth/wrapping-key',
+      {
+        headers: {
+          Authorization: 'Bearer token-123',
+        },
+      }
+    );
     expect(vi.mocked(axios.post)).toHaveBeenCalledWith(
       'https://aha-agi.test/v1/account/recovery-material',
       {
@@ -66,5 +76,35 @@ describe('bootstrapRecoveryMaterial', () => {
         },
       }
     );
+  });
+
+  it('encrypts the canonical seed before posting when wrapping-key is available', async () => {
+    const secret = new Uint8Array([1, 2, 3]);
+    const wrappingPublicKey = Buffer.from(new Uint8Array(32).fill(4)).toString('base64');
+    vi.mocked(axios.get).mockResolvedValue({
+      data: {
+        wrappingPublicKey,
+      },
+    } as never);
+
+    await bootstrapRecoveryMaterial('token-123', secret);
+
+    expect(vi.mocked(axios.post)).toHaveBeenCalledWith(
+      'https://aha-agi.test/v1/account/recovery-material',
+      expect.objectContaining({
+        encryptedContentSecretKey: expect.any(String),
+        nonce: expect.any(String),
+        ephemeralPublicKey: expect.any(String),
+      }),
+      {
+        headers: {
+          Authorization: 'Bearer token-123',
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const payload = vi.mocked(axios.post).mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload.contentSecretKey).toBeUndefined();
   });
 });

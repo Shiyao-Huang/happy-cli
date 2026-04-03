@@ -24,6 +24,7 @@ import axios from 'axios';
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
 import { TrackedSession } from './types';
+import { stopSession } from './sessionManager';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import {
   getPendingActionRetryDelayMs,
@@ -390,6 +391,25 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         pendingAction: null,
         pendingActionMeta: null,
       }));
+      // Stop the running supervisor process if alive
+      if (supervisorState.lastSupervisorPid > 0) {
+        try {
+          process.kill(supervisorState.lastSupervisorPid, 0); // liveness check
+          if (supervisorState.lastSessionId) {
+            stopSession(supervisorState.lastSessionId);
+          } else {
+            process.kill(supervisorState.lastSupervisorPid, 'SIGTERM');
+          }
+          await updateSupervisorRun(supervisorState.teamId, { lastSupervisorPid: 0 });
+          logger.debug(
+            `[SUPERVISOR SCHEDULER] Stopped supervisor PID ${supervisorState.lastSupervisorPid} ` +
+            `(session ${supervisorState.lastSessionId}) for inactive team ${supervisorState.teamId}`
+          );
+        } catch {
+          // PID already dead, just clear it
+          await updateSupervisorRun(supervisorState.teamId, { lastSupervisorPid: 0 });
+        }
+      }
       logger.debug(`[SUPERVISOR SCHEDULER] Marked supervisor state terminated for inactive team ${supervisorState.teamId}`);
       continue;
     }
@@ -587,6 +607,20 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
           `[SUPERVISOR SCHEDULER] Supervisor idle for ${supervisorState.idleRuns} runs on team ${teamId}, marking terminated`
         );
         await updateSupervisorState(teamId, (state) => ({ ...state, terminated: true, terminatedAt: Date.now() }));
+        // Safety: stop any lingering supervisor process
+        if (supervisorState.lastSupervisorPid > 0) {
+          try {
+            process.kill(supervisorState.lastSupervisorPid, 0);
+            if (supervisorState.lastSessionId) {
+              stopSession(supervisorState.lastSessionId);
+            } else {
+              process.kill(supervisorState.lastSupervisorPid, 'SIGTERM');
+            }
+            await updateSupervisorRun(teamId, { lastSupervisorPid: 0 });
+          } catch {
+            await updateSupervisorRun(teamId, { lastSupervisorPid: 0 });
+          }
+        }
         continue;
       }
     }
