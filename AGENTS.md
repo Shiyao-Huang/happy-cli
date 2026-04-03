@@ -1,5 +1,13 @@
 # Repository Guidelines
 
+## 0403 Sprint 架构决策
+
+- **一个 runtime，多态全靠 genome**：所有 agent 共享 runClaude.ts，行为差异通过 Entity.spec（config + systemPrompt）实现。Runtime 不应有 role-specific 分支。
+- **Prompt 在 DB 不在代码**：runClaude.ts 只从 `_agentImage.systemPrompt` 读取 prompt，用 `resolvePromptTemplateVars()` 替换 `{{}}` 占位符。代码里零行 prompt 文本。
+- **Hub 直写 evidence**：`entityHub.ts` 直写 genome-hub Trial/Verdict。`sessionTrialSync.ts` 是 compat fallback，不是主链。
+- **Artifact-first**：先创建 artifact（pending state），再 spawn session，再 patch。`SpawnResult` 类型替代 `string | null`。
+- **`resolveEntityNsName()` + `buildVerdictContent()`** 已从 supervisorTools 闭包提取到模块作用域，可独立测试。
+
 ## Agent & Legion Construction Skills
 
 Two living skills cover how to build good agents and teams. Use them when designing, evolving, or debugging genomes and legion templates.

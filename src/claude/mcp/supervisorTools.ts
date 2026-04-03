@@ -1620,7 +1620,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         // ── Write Verdict to canonical hub evidence chain ──
         let verdictId: string | null = null;
         let trialId: string | null = null;
-        let verdictWriteSource: 'hub' | 'none' = 'none';
 
         const verdictContent = buildVerdictContent({
             role: args.role,
@@ -1635,34 +1634,32 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         try {
             const entity = resolveEntityNsName(specNamespace, specName, sessionGenomeMapping?.specRef);
             if (entity) {
-                const { ensureEntityTrial, createEntityVerdict } = await import('../utils/entityHub.js');
+                const { writeEntityVerdict } = await import('../utils/evidenceWriter.js');
                 const { buildSessionTrialLogRefs } = await import('@/utils/sessionTrialSync');
                 const hubPublishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
-                const trialResult = await ensureEntityTrial({
-                    token: hubPublishKey || undefined,
+                const verdictWrite = await writeEntityVerdict({
                     namespace: entity.ns,
                     name: entity.name,
                     teamId: sessionGenomeMapping?.teamId,
                     sessionId: args.sessionId,
                     contextNarrative: `score_agent verdict for ${args.role} session ${args.sessionId}`,
                     logRefs: sessionGenomeMapping ? buildSessionTrialLogRefs(sessionGenomeMapping) : [],
-                });
-                trialId = trialResult.trial.id;
-
-                const verdictResult = await createEntityVerdict({
-                    token: hubPublishKey || undefined,
-                    trialId,
                     readerRole: 'supervisor',
                     readerSessionId: client.sessionId,
                     content: verdictContent,
                     score: overall,
                     action: args.action,
                     dimensions,
+                    hubPublishKey: hubPublishKey || undefined,
+                    serverUrl: configuration.serverUrl,
+                    authToken: client.getAuthToken(),
                 });
-                verdictId = verdictResult.verdict.id;
-                verdictWriteSource = 'hub';
-                logger.debug(`[score_agent] Verdict written to hub: verdictId=${verdictId}, trialId=${trialId}, specVersion=${specVersion ?? 'unknown'}`);
+                trialId = verdictWrite.trialId;
+                verdictId = verdictWrite.verdictId;
+                logger.debug(
+                    `[score_agent] Verdict written via ${verdictWrite.transport}: verdictId=${verdictId}, trialId=${trialId}, specVersion=${specVersion ?? 'unknown'}`
+                );
             } else {
                 logger.debug(
                     `[score_agent] Skipped hub verdict write because entity identity could not be resolved for session=${args.sessionId}, role=${args.role}`
@@ -3081,33 +3078,44 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 const updatedState = readSupervisorState(args.teamId);
                 const cal = updatedState.calibration;
                 if (cal && cal.calibrationScore < 60 && cal.totalPredictions >= 5) {
-                    const { submitEntityDiff } = await import('@/claude/utils/entityHub');
+                    const { submitDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
                     const biasTrend = cal.scoreBiasTrend > 0 ? 'overestimates' : 'underestimates';
                     const biasAbs = Math.abs(cal.scoreBiasTrend).toFixed(1);
+                    const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
-                    await submitEntityDiff({
+                    const diffResult = await submitDiffViaMarketplace({
                         namespace: '@official',
                         name: 'supervisor',
-                        description: `Self-evolution: calibration ${cal.calibrationScore}% (${cal.correctPredictions}/${cal.totalPredictions}), bias ${biasTrend} by ${biasAbs}`,
-                        changes: [
-                            {
-                                type: 'string' as const,
-                                path: 'memory.learnings',
-                                op: 'append' as const,
-                                content: `Calibration dropped to ${cal.calibrationScore}% after ${cal.totalPredictions} predictions. Bias trend: ${biasTrend} by ${biasAbs}. Reduce confidence on new predictions by 15 points until accuracy recovers above 60%.`,
-                            },
-                            {
-                                type: 'narrative' as const,
-                                content: `Auto-triggered by M3 self-evolution loop in save_supervisor_state. Rolling accuracy: ${cal.rollingAccuracy}%. This diff only affects the next supervisor spawn, not the current session.`,
-                            },
-                        ],
-                        strategy: 'conservative',
-                        authorRole: 'supervisor',
-                        authorSession: args.sessionId,
-                    }).catch((err: unknown) => {
-                        logger.debug(`[save_supervisor_state] Self-evolve diff failed: ${String(err)}`);
+                        payload: {
+                            description: `Self-evolution: calibration ${cal.calibrationScore}% (${cal.correctPredictions}/${cal.totalPredictions}), bias ${biasTrend} by ${biasAbs}`,
+                            changes: [
+                                {
+                                    type: 'string' as const,
+                                    path: 'memory.learnings',
+                                    op: 'append' as const,
+                                    content: `Calibration dropped to ${cal.calibrationScore}% after ${cal.totalPredictions} predictions. Bias trend: ${biasTrend} by ${biasAbs}. Reduce confidence on new predictions by 15 points until accuracy recovers above 60%.`,
+                                },
+                                {
+                                    type: 'narrative' as const,
+                                    content: `Auto-triggered by M3 self-evolution loop in save_supervisor_state. Rolling accuracy: ${cal.rollingAccuracy}%. This diff only affects the next supervisor spawn, not the current session.`,
+                                },
+                            ],
+                            strategy: 'conservative',
+                            authorRole: 'supervisor',
+                            authorSession: args.sessionId,
+                        },
+                        hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                        hubPublishKey: publishKey || undefined,
+                        serverUrl: configuration.serverUrl,
+                        authToken: client.getAuthToken(),
                     });
-                    selfEvolveNote = ` Self-evolution diff submitted (calibration=${cal.calibrationScore}%).`;
+                    if (!diffResult.ok) {
+                        logger.debug(
+                            `[save_supervisor_state] Self-evolve diff failed (${diffResult.transport}): ${diffResult.status} ${diffResult.body}`
+                        );
+                    } else {
+                        selfEvolveNote = ` Self-evolution diff submitted (calibration=${cal.calibrationScore}%).`;
+                    }
                 }
             } catch (selfEvolveErr) {
                 logger.debug(`[save_supervisor_state] Self-evolution check error: ${String(selfEvolveErr)}`);
