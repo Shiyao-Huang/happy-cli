@@ -356,7 +356,6 @@ Best practice:
                 version: normalized.version,
                 tags: args.tags,
                 isPublic: args.isPublic,
-                publisherId: sessionId,
             });
 
             return {

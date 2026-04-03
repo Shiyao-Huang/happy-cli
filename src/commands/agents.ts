@@ -932,7 +932,6 @@ async function createAgent(
       publishedCorpsTemplate = await publishTeamCorpsTemplate({
         api,
         teamId: opts.teamId,
-        publisherId: sessionId,
       });
     } catch (err) {
       logger.debug('[agents create] Warning: failed to register in team roster:', err);

@@ -615,6 +615,7 @@ export interface LegionTaskPolicy {
 export interface Genome {
     id: string;
     accountId: string;
+    namespace?: string | null;
     name: string;
     description?: string | null;
     /** JSON 序列化的 AgentImage */
@@ -628,6 +629,16 @@ export interface Genome {
     isPublic: boolean;
     createdAt: string;
     updatedAt: string;
+}
+
+function isOfficialAgentNamespace(args: {
+    namespace?: string | null;
+    name?: string | null;
+    ref?: string | null;
+}): boolean {
+    return args.namespace === '@official'
+        || args.name?.startsWith('@official/') === true
+        || args.ref?.startsWith('@official/') === true;
 }
 
 function normalizeStringListField(value: unknown): string[] | undefined {
@@ -686,61 +697,65 @@ function normalizeStringListField(value: unknown): string[] | undefined {
     return Array.from(normalized);
 }
 
-/** 解析 Genome.spec 字段为 AgentImage 兼容投影对象，非 @official namespace 强制降级危险字段 */
-export function parseGenomeSpec(genome: Genome): AgentImage {
-    const raw = JSON.parse(genome.spec);
-
-    // 判断 namespace：优先从 Genome 记录的 name 前缀推断，其次从 spec 内部读取
-    const specNamespace: string | undefined = raw.namespace;
-    const isOfficial = specNamespace === '@official' || genome.name?.startsWith('@official/');
+function normalizeAgentImageObject(raw: Record<string, unknown>, isOfficial: boolean): AgentImage {
+    let obj: Record<string, unknown> = { ...raw };
 
     if (!isOfficial) {
-        // 删除危险字段：hooks 可执行任意命令
-        delete raw.hooks;
-        // permissionMode 只允许安全值
-        if (raw.permissionMode && !['default', 'acceptEdits'].includes(raw.permissionMode)) {
-            raw.permissionMode = 'default';
-        }
-        // executionPlane 强制 mainline（bypass 允许绕过权限检查）
-        if (raw.executionPlane === 'bypass') {
-            raw.executionPlane = 'mainline';
-        }
-        // accessLevel 禁止 full-access
-        if (raw.accessLevel === 'full-access') {
-            delete raw.accessLevel;
-        }
+        const { hooks: _h, accessLevel: _a, ...rest } = obj;
+        obj = {
+            ...(_a !== 'full-access' ? { accessLevel: _a } : {}),
+            ...rest,
+            permissionMode: ['default', 'acceptEdits'].includes(String(obj.permissionMode)) ? obj.permissionMode : 'default',
+            executionPlane: obj.executionPlane === 'bypass' ? 'mainline' : (obj.executionPlane ?? 'mainline'),
+        };
     }
 
-    // 所有 genome 的类型验证：防止类型混淆攻击
-    const normalizedSkills = normalizeStringListField(raw.skills);
+    const normalizedSkills = normalizeStringListField(obj.skills);
     if (normalizedSkills !== undefined) {
-        raw.skills = normalizedSkills;
-    }
-    const normalizedMcpServers = normalizeStringListField(raw.mcpServers);
-    if (normalizedMcpServers !== undefined) {
-        raw.mcpServers = normalizedMcpServers;
-    }
-    const normalizedAllowedTools = normalizeStringListField(raw.allowedTools);
-    if (normalizedAllowedTools !== undefined) {
-        raw.allowedTools = normalizedAllowedTools;
-    }
-    const normalizedDisallowedTools = normalizeStringListField(raw.disallowedTools);
-    if (normalizedDisallowedTools !== undefined) {
-        raw.disallowedTools = normalizedDisallowedTools;
-    } else if (raw.disallowedTools && !Array.isArray(raw.disallowedTools)) {
-        delete raw.disallowedTools;
-    }
-    if (normalizedAllowedTools === undefined && raw.allowedTools && !Array.isArray(raw.allowedTools)) {
-        delete raw.allowedTools;
-    }
-    if (normalizedSkills === undefined && raw.skills && !Array.isArray(raw.skills)) {
-        delete raw.skills;
-    }
-    if (normalizedMcpServers === undefined && raw.mcpServers && !Array.isArray(raw.mcpServers)) {
-        delete raw.mcpServers;
+        obj = { ...obj, skills: normalizedSkills };
+    } else if (obj.skills && !Array.isArray(obj.skills)) {
+        const { skills: _s, ...withoutSkills } = obj;
+        obj = withoutSkills;
     }
 
-    return raw as AgentImage;
+    const normalizedMcpServers = normalizeStringListField(obj.mcpServers);
+    if (normalizedMcpServers !== undefined) {
+        obj = { ...obj, mcpServers: normalizedMcpServers };
+    } else if (obj.mcpServers && !Array.isArray(obj.mcpServers)) {
+        const { mcpServers: _m, ...withoutMcpServers } = obj;
+        obj = withoutMcpServers;
+    }
+
+    const normalizedAllowedTools = normalizeStringListField(obj.allowedTools);
+    if (normalizedAllowedTools !== undefined) {
+        obj = { ...obj, allowedTools: normalizedAllowedTools };
+    } else if (obj.allowedTools && !Array.isArray(obj.allowedTools)) {
+        const { allowedTools: _at, ...withoutAllowedTools } = obj;
+        obj = withoutAllowedTools;
+    }
+
+    const normalizedDisallowedTools = normalizeStringListField(obj.disallowedTools);
+    if (normalizedDisallowedTools !== undefined) {
+        obj = { ...obj, disallowedTools: normalizedDisallowedTools };
+    } else if (obj.disallowedTools && !Array.isArray(obj.disallowedTools)) {
+        const { disallowedTools: _dt, ...withoutDisallowedTools } = obj;
+        obj = withoutDisallowedTools;
+    }
+
+    return obj as AgentImage;
+}
+
+/** 解析 Genome.spec 字段为 AgentImage 兼容投影对象，非 @official namespace 强制降级危险字段 */
+export function parseGenomeSpec(genome: Genome): AgentImage {
+    const raw = JSON.parse(genome.spec) as Record<string, unknown>;
+
+    return normalizeAgentImageObject(
+        raw,
+        isOfficialAgentNamespace({
+            namespace: typeof raw.namespace === 'string' ? raw.namespace : genome.namespace,
+            name: genome.name,
+        }),
+    );
 }
 
 export const parseAgentImage = parseGenomeSpec;
@@ -911,6 +926,43 @@ export interface CanonicalAgentCard {
 
 /** AgentPackageManifest 当前与 CanonicalAgentCard 同义，保留独立命名给后续打包层使用。 */
 export type AgentPackageManifest = CanonicalAgentCard;
+
+export interface AgentPackageFileEntry {
+    hash: string;
+    size: number;
+    requiredAtSpawn: boolean;
+    inlineContent?: string;
+}
+
+export interface AgentPackage {
+    kind: 'aha.agent.package.v1';
+    baseImage?: string;
+    entrypoint?: string;
+    manifest: AgentPackageManifest;
+    files?: Record<string, AgentPackageFileEntry>;
+    sourceEntityId: string;
+}
+
+export function hydrateAgentImageFromPackage(agentPackage: AgentPackage): AgentImage {
+    const hydratedFiles = agentPackage.files
+        ? Object.fromEntries(
+            Object.entries(agentPackage.files)
+                .filter(([, entry]) => typeof entry.inlineContent === 'string')
+                .map(([path, entry]) => [path, entry.inlineContent as string]),
+        )
+        : undefined;
+
+    return normalizeAgentImageObject({
+        ...agentPackage.manifest.genome,
+        files: hydratedFiles && Object.keys(hydratedFiles).length > 0
+            ? hydratedFiles
+            : undefined,
+    } as Record<string, unknown>, isOfficialAgentNamespace({
+        namespace: agentPackage.manifest.identity.namespace,
+        name: agentPackage.manifest.identity.name,
+        ref: agentPackage.manifest.identity.ref,
+    }));
+}
 
 /**
  * A2AProjectionCard — 面向 A2A / 外部发现的投影对象。

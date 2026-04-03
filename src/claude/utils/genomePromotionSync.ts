@@ -218,6 +218,21 @@ type DiffSubmitPayload = {
     authorSession?: string;
 };
 
+export type PackageDiffOp =
+    | { type: 'manifest_set'; path: string; value: unknown }
+    | { type: 'file_put'; path: string; content?: string; hash?: string }
+    | { type: 'file_delete'; path: string };
+
+type PackageDiffSubmitPayload = {
+    description: string;
+    ops: PackageDiffOp[];
+    baseVersion?: number;
+    verdictRefs?: string[];
+    strategy?: string;
+    authorRole?: string;
+    authorSession?: string;
+};
+
 async function postDiffDirect(
     fetchImpl: FetchLike,
     hubUrl: string,
@@ -250,6 +265,24 @@ async function postDiffViaServerProxy(
         {
             method: 'POST',
             headers: buildServerProxyHeaders(authToken),
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        },
+    );
+}
+
+async function postPackageDiffDirect(
+    fetchImpl: FetchLike,
+    hubUrl: string,
+    hubPublishKey: string | undefined,
+    entityId: string,
+    payload: PackageDiffSubmitPayload,
+): Promise<FetchResponseLike> {
+    return fetchImpl(
+        `${hubUrl}/entities/id/${encodeURIComponent(entityId)}/package-diffs`,
+        {
+            method: 'POST',
+            headers: buildPromoteHeaders(hubPublishKey),
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(10_000),
         },
@@ -328,6 +361,49 @@ export async function submitDiffViaMarketplace(args: {
                 };
             }
         }
+    }
+
+    if (!response) {
+        return {
+            ok: false,
+            status: 0,
+            body: String(directError || 'Unknown network error'),
+            transport: 'direct-hub',
+        };
+    }
+
+    return {
+        ok: response.ok,
+        status: response.status,
+        body,
+        transport: 'direct-hub',
+    };
+}
+
+export async function submitPackageDiffViaMarketplace(args: {
+    entityId: string;
+    payload: PackageDiffSubmitPayload;
+    hubUrl?: string;
+    hubPublishKey?: string;
+    fetchImpl?: FetchLike;
+}): Promise<{
+    ok: boolean;
+    status: number;
+    body: string;
+    transport: 'direct-hub';
+}> {
+    const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
+    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+
+    let response: FetchResponseLike | null = null;
+    let body = '';
+    let directError: unknown = null;
+
+    try {
+        response = await postPackageDiffDirect(fetchImpl, hubUrl, args.hubPublishKey, args.entityId, args.payload);
+        body = await response.text().catch(() => '');
+    } catch (error) {
+        directError = error;
     }
 
     if (!response) {

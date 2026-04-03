@@ -41,7 +41,7 @@ import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
 import { projectSelfMirrorIdentity } from '../utils/runEnvelopeMirror';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
 import { getContextStatusReport } from '../utils/contextStatus';
-import { fetchAgentImage } from '../utils/fetchGenome';
+import { fetchAgentImage, fetchAgentPackage } from '../utils/fetchGenome';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
@@ -202,16 +202,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
     };
 
-    const parseTags = (tags?: string | null): string[] => {
-        if (!tags) return [];
-        try {
-            const parsed = JSON.parse(tags);
-            return Array.isArray(parsed) ? parsed.map(String) : [String(tags)];
-        } catch {
-            return [String(tags)];
-        }
-    };
-
     const normalizeMirrorJson = (value: unknown): unknown => {
         if (Array.isArray(value)) {
             return value.map((entry) => normalizeMirrorJson(entry));
@@ -229,6 +219,25 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     const mirrorJsonEquals = (left: unknown, right: unknown): boolean => (
         JSON.stringify(normalizeMirrorJson(left)) === JSON.stringify(normalizeMirrorJson(right))
     );
+
+    const collectChangedTopLevelManifestOps = (
+        currentSpec: Record<string, unknown>,
+        nextSpec: Record<string, unknown>,
+    ): Array<{ type: 'manifest_set'; path: string; value: unknown }> => {
+        const changedKeys = new Set([
+            ...Object.keys(currentSpec),
+            ...Object.keys(nextSpec),
+        ]);
+
+        return Array.from(changedKeys)
+            .filter((key) => !mirrorJsonEquals(currentSpec[key], nextSpec[key]))
+            .filter((key) => nextSpec[key] !== undefined)
+            .map((key) => ({
+                type: 'manifest_set' as const,
+                path: key,
+                value: nextSpec[key],
+            }));
+    };
 
     const fetchGenomeVersions = async (hubUrl: string, namespace: string, name: string): Promise<MarketplaceGenome[]> => {
         const res = await fetch(
@@ -2142,42 +2151,27 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+        const authToken = client.getAuthToken() ?? '';
+        const packageSpecId = `${args.genomeNamespace}/${args.genomeName}`;
 
         // 1. Fetch current genome
-        let genomeRecord: {
-            genome?: {
-                id?: string;
-                spec: string;
-                version?: number;
-                feedbackData?: string | null;
-                description?: string | null;
-                tags?: string | null;
-                category?: string | null;
-                isPublic?: boolean;
-            };
-        };
+        let agentPackage: Awaited<ReturnType<typeof fetchAgentPackage>> = null;
         try {
-            const res = await fetch(
-                `${hubUrl}/genomes/${encodeURIComponent(args.genomeNamespace)}/${encodeURIComponent(args.genomeName)}`,
-                { signal: AbortSignal.timeout(5_000) }
-            );
-            if (!res.ok) {
-                return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} not found: ${res.status}` }], isError: true };
-            }
-            genomeRecord = await res.json() as typeof genomeRecord;
+            agentPackage = await fetchAgentPackage(authToken, packageSpecId);
         } catch (error) {
-            return { content: [{ type: 'text', text: `Network error fetching genome: ${String(error)}` }], isError: true };
+            return { content: [{ type: 'text', text: `Network error fetching genome package: ${String(error)}` }], isError: true };
         }
 
-        if (!genomeRecord.genome) {
-            return { content: [{ type: 'text', text: 'Unexpected response from genome-hub.' }], isError: true };
+        if (!agentPackage) {
+            return { content: [{ type: 'text', text: `Genome ${args.genomeNamespace}/${args.genomeName} package not found.` }], isError: true };
         }
 
-        let currentSpec: Record<string, unknown>;
-        try {
-            currentSpec = JSON.parse(genomeRecord.genome.spec) as Record<string, unknown>;
-        } catch {
-            return { content: [{ type: 'text', text: 'Failed to parse current genome spec JSON.' }], isError: true };
+        const currentSpec = JSON.parse(JSON.stringify(agentPackage.manifest.genome ?? {})) as Record<string, unknown>;
+        const entityId = agentPackage.sourceEntityId;
+        const baseVersion = agentPackage.manifest.identity.version;
+
+        if (!entityId || !baseVersion) {
+            return { content: [{ type: 'text', text: 'Genome package is missing sourceEntityId or version.' }], isError: true };
         }
 
         // 2. Validate mutations against strategy
@@ -2282,6 +2276,25 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             },
         };
 
+        const existingTags = Array.isArray(currentSpec.tags)
+            ? currentSpec.tags.map(String)
+            : [];
+        mutatedSpec = {
+            ...mutatedSpec,
+            tags: Array.from(new Set([...existingTags, 'mutated', args.strategy])),
+            provenance: {
+                ...(
+                    currentSpec.provenance
+                    && typeof currentSpec.provenance === 'object'
+                    && !Array.isArray(currentSpec.provenance)
+                        ? currentSpec.provenance as Record<string, unknown>
+                        : {}
+                ),
+                origin: 'mutated',
+                mutationNote: args.mutationNote,
+            },
+        };
+
         if (args.dryRun) {
             const mutationSummary = args.mutations.map(m =>
                 `  ${m.action} ${m.field}${m.index !== undefined ? `[${m.index}]` : ''}: ${m.reason}`
@@ -2302,43 +2315,46 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         }
 
-        // 6. Create mutated genome version via genome-hub (with proxy fallback)
+        const packageOps = collectChangedTopLevelManifestOps(currentSpec, mutatedSpec);
+        if (packageOps.length === 0) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `No effective package manifest changes detected for ${args.genomeNamespace}/${args.genomeName}.`,
+                }],
+                isError: false,
+            };
+        }
+
+        // 6. Persist mutated package via genome-hub (with proxy fallback)
         try {
-            const { createGenomeViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
-            const createResult = await createGenomeViaMarketplace({
+            const { submitPackageDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
+            const diffResult = await submitPackageDiffViaMarketplace({
+                entityId,
                 payload: {
-                    namespace: args.genomeNamespace,
-                    name: args.genomeName,
-                    version: (genomeRecord.genome?.version ?? 0) + 1,
                     description: `Mutated from ${args.genomeNamespace}/${args.genomeName}: ${args.mutationNote}`,
-                    spec: JSON.stringify(mutatedSpec),
-                    isPublic: genomeRecord.genome?.isPublic ?? true,
-                    category: genomeRecord.genome?.category ?? (typeof currentSpec.category === 'string' ? currentSpec.category : undefined),
-                    tags: JSON.stringify(
-                        Array.from(
-                            new Set([
-                                ...parseTags(genomeRecord.genome?.tags),
-                                'mutated',
-                                args.strategy,
-                            ])
-                        )
-                    ),
+                    baseVersion,
+                    ops: packageOps,
+                    strategy: args.strategy,
+                    authorRole: callerRole,
+                    authorSession: client.sessionId,
                 },
                 hubUrl,
                 hubPublishKey: publishKey,
-                serverUrl: configuration.serverUrl,
-                authToken: client.getAuthToken(),
             });
 
-            if (!createResult.ok) {
-                return { content: [{ type: 'text', text: `Failed to create mutated genome: ${createResult.status} ${createResult.body}` }], isError: true };
+            if (!diffResult.ok) {
+                return { content: [{ type: 'text', text: `Failed to persist mutated package: ${diffResult.transport} ${diffResult.status} ${diffResult.body}` }], isError: true };
             }
 
-            let result: { genome?: { id?: string; name?: string; version?: number } } = {};
+            let result: {
+                entity?: { id?: string; name?: string; version?: number };
+                diff?: { id?: string };
+            } = {};
             try {
-                result = JSON.parse(createResult.body) as { genome?: { id?: string; name?: string; version?: number } };
+                result = JSON.parse(diffResult.body) as typeof result;
             } catch {
-                return { content: [{ type: 'text', text: `Mutated genome created but response was invalid JSON: ${createResult.body}` }], isError: true };
+                return { content: [{ type: 'text', text: `Mutated package persisted but response was invalid JSON: ${diffResult.body}` }], isError: true };
             }
 
             return {
@@ -2346,17 +2362,18 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     type: 'text',
                     text: [
                         `✅ Mutated ${args.genomeNamespace}/${args.genomeName} (${args.strategy} strategy)`,
-                        `New version: ${result.genome?.name ?? args.genomeName} v${result.genome?.version ?? '?'}`,
-                        `ID: ${result.genome?.id ?? '?'}`,
+                        `New version: ${result.entity?.name ?? args.genomeName} v${result.entity?.version ?? '?'}`,
+                        `Entity ID: ${result.entity?.id ?? entityId}`,
+                        `Diff ID: ${result.diff?.id ?? '?'}`,
                         `Mutations: ${args.mutations.length} applied`,
+                        `Package ops: ${packageOps.length}`,
                         `Note: ${args.mutationNote}`,
-                        ...(createResult.transport === 'server-proxy' ? ['(via happy-server proxy)'] : []),
                     ].join('\n'),
                 }],
                 isError: false,
             };
         } catch (error) {
-            return { content: [{ type: 'text', text: `Network error creating mutated genome: ${String(error)}` }], isError: true };
+            return { content: [{ type: 'text', text: `Network error persisting mutated package: ${String(error)}` }], isError: true };
         }
     });
 

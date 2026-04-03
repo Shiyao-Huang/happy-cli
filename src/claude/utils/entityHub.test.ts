@@ -3,8 +3,8 @@ import axios from 'axios';
 import { createEntityTrial, ensureEntityTrial } from './entityHub';
 
 describe('entityHub trial helpers', () => {
-    let postSpy: ReturnType<typeof vi.spyOn>;
-    let getSpy: ReturnType<typeof vi.spyOn>;
+    let postSpy: any;
+    let getSpy: any;
     const originalPublishKey = process.env.HUB_PUBLISH_KEY;
 
     beforeEach(() => {

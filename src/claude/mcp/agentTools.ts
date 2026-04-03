@@ -349,7 +349,6 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     publishedCorpsTemplate = await publishTeamCorpsTemplate({
                         api,
                         teamId: args.teamId,
-                        publisherId: client.sessionId,
                     });
                     if (publishedCorpsTemplate.published) {
                         logger.debug(`[create_agent] Published corps template ${publishedCorpsTemplate.templateName} for team ${args.teamId}`);

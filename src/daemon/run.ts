@@ -566,14 +566,14 @@ export async function startDaemon(): Promise<void> {
             return false;
           }
         } else if (axios.isAxiosError(error) && error.response?.status === 401) {
-          logger.debug(`[DAEMON RUN] Machine registration failed with 401 during ${reason}, attempting token refresh via create mode...`);
+          logger.debug(`[DAEMON RUN] Machine registration failed with 401 during ${reason}, attempting token refresh via reconnect mode...`);
 
           const reconnectSeed = getReconnectSeed(credentials);
           if (!reconnectSeed) {
             throw new Error('Cannot refresh token: no reconnect seed available in credentials');
           }
 
-          const newToken = await authGetToken(reconnectSeed, 'create');
+          const newToken = await authGetToken(reconnectSeed, 'reconnect');
           credentials = { ...credentials, token: newToken };
           await persistCredentials(credentials);
           logger.debug(`[DAEMON RUN] Token refreshed and persisted during ${reason}, retrying machine registration...`);

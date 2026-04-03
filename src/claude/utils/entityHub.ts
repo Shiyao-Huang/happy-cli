@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver';
-import type { DiffChange, Genome, AgentVerdict } from '@/api/types/genome';
+import type { AgentPackage, DiffChange, Genome, AgentVerdict } from '@/api/types/genome';
 
 export type EntityLogRef = {
     kind: 'claude' | 'codex' | 'team' | 'daemon' | 'git' | 'browser' | 'other';
@@ -207,4 +207,36 @@ export async function submitEntityDiff(args: {
         { headers: authHeaders(args.token) },
     );
     return response.data as { entity: Genome; diff: { id: string } };
+}
+
+export type PackageDiffOp =
+    | { type: 'manifest_set'; path: string; value: unknown }
+    | { type: 'file_put'; path: string; content?: string; hash?: string }
+    | { type: 'file_delete'; path: string };
+
+export async function submitAgentPackageDiff(args: {
+    token?: string;
+    entityId: string;
+    description: string;
+    ops: PackageDiffOp[];
+    baseVersion?: number;
+    verdictRefs?: string[];
+    strategy?: 'conservative' | 'moderate' | 'radical';
+    authorRole?: string;
+    authorSession?: string;
+}): Promise<{ entity: Genome; diff: { id: string }; package: AgentPackage | null }> {
+    const response = await axios.post(
+        `${genomeHubBaseUrl()}/entities/id/${encodeURIComponent(args.entityId)}/package-diffs`,
+        {
+            description: args.description,
+            ops: args.ops,
+            baseVersion: args.baseVersion,
+            verdictRefs: args.verdictRefs,
+            strategy: args.strategy,
+            authorRole: args.authorRole,
+            authorSession: args.authorSession,
+        },
+        { headers: authHeaders(args.token) },
+    );
+    return response.data as { entity: Genome; diff: { id: string }; package: AgentPackage | null };
 }

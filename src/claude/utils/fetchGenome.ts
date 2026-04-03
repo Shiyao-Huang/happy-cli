@@ -4,13 +4,22 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
  * 不再走 happy-server 代理，不再做离线磁盘 fallback。
  */
 import axios from 'axios';
-import { Genome, type AgentImage, type DiffLedgerEntry, parseGenomeSpec as parseAgentImage } from '@/api/types/genome';
+import {
+    Genome,
+    type AgentImage,
+    type AgentPackage,
+    type DiffLedgerEntry,
+    hydrateAgentImageFromPackage,
+    parseGenomeSpec as parseAgentImage,
+} from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 
 /** Compatibility alias for canonical diff-ledger rows returned by GET /genomes/:ns/:name/ledger. */
 export type AgentPlugLedgerEntry = DiffLedgerEntry;
 
 const memCache = new Map<string, { spec: AgentImage; expiresAt: number }>();
+const packageCache = new Map<string, { package: AgentPackage; expiresAt: number }>();
+const blobCache = new Map<string, { content: string; expiresAt: number }>();
 const LATEST_TTL_MS = 5 * 60 * 1000; // 5 分钟
 
 function genomeHubBaseUrl(): string {
@@ -35,6 +44,18 @@ export function resolveEntityUrl(specId: string): string {
     return `${genomeHubBaseUrl()}/entities/id/${encodeURIComponent(specId)}`;
 }
 
+export function resolveEntityPackageUrl(specId: string): string {
+    return `${resolveEntityUrl(specId)}/package`;
+}
+
+export function resolveBlobUrl(hash: string): string {
+    return `${genomeHubBaseUrl()}/blobs/${encodeURIComponent(hash)}`;
+}
+
+function authHeaders(token: string): Record<string, string> {
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /**
  * Fetch only the feedbackData string for an AgentImage / entity.
  * Returns null only for 404 (missing entity). Network / transport failures are rethrown.
@@ -48,7 +69,7 @@ export async function fetchAgentVerdictData(
         const response = await axios.get<{ entity: Genome }>(
             url,
             {
-                headers: { Authorization: `Bearer ${token}` },
+                headers: authHeaders(token),
                 validateStatus: (status) => status === 200 || status === 404,
             },
         );
@@ -71,11 +92,19 @@ export async function fetchAgentImage(
     }
 
     try {
+        const agentPackage = await fetchAgentPackage(token, specId);
+        if (agentPackage) {
+            const spec = hydrateAgentImageFromPackage(agentPackage);
+            memCache.set(specId, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
+            logger.debug(`[entity-package] Fetched ${specId}: ${agentPackage.manifest.identity.name} via ${resolveEntityPackageUrl(specId)}`);
+            return spec;
+        }
+
         const url = resolveEntityUrl(specId);
         const response = await axios.get<{ entity: Genome }>(
             url,
             {
-                headers: { Authorization: `Bearer ${token}` },
+                headers: authHeaders(token),
                 validateStatus: (status) => status === 200 || status === 404,
             },
         );
@@ -92,6 +121,91 @@ export async function fetchAgentImage(
         logger.debug(`[entity] Failed to fetch ${specId}: ${error}`);
         throw error;
     }
+}
+
+export async function fetchAgentPackage(
+    token: string,
+    specId: string,
+): Promise<AgentPackage | null> {
+    const cached = packageCache.get(specId);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.package;
+    }
+
+    try {
+        const url = resolveEntityPackageUrl(specId);
+        const response = await axios.get<{ package: AgentPackage }>(
+            url,
+            {
+                headers: authHeaders(token),
+                validateStatus: (status) => status === 200 || status === 404,
+            },
+        );
+
+        if (response.status === 404) {
+            return null;
+        }
+
+        const hydratedPackage = await hydratePackageBlobContent(token, response.data.package);
+        packageCache.set(specId, { package: hydratedPackage, expiresAt: Date.now() + LATEST_TTL_MS });
+        return hydratedPackage;
+    } catch (error) {
+        logger.debug(`[entity-package] Failed to fetch ${specId}: ${error}`);
+        throw error;
+    }
+}
+
+async function hydratePackageBlobContent(
+    token: string,
+    agentPackage: AgentPackage,
+): Promise<AgentPackage> {
+    if (!agentPackage.files) {
+        return agentPackage;
+    }
+
+    const hydratedEntries = await Promise.all(
+        Object.entries(agentPackage.files).map(async ([path, entry]) => {
+            if (typeof entry.inlineContent === 'string') {
+                return [path, entry] as const;
+            }
+            const content = await fetchBlobContent(token, entry.hash);
+            return [
+                path,
+                {
+                    ...entry,
+                    inlineContent: content,
+                },
+            ] as const;
+        }),
+    );
+
+    return {
+        ...agentPackage,
+        files: Object.fromEntries(hydratedEntries),
+    };
+}
+
+async function fetchBlobContent(token: string, hash: string): Promise<string> {
+    const cached = blobCache.get(hash);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.content;
+    }
+
+    const response = await axios.get<{ blob: { hash: string; content: string } }>(
+        resolveBlobUrl(hash),
+        {
+            headers: authHeaders(token),
+            validateStatus: (status) => status === 200 || status === 404,
+        },
+    );
+
+    if (response.status === 404) {
+        throw new Error(`Blob not found: ${hash}`);
+    }
+
+    const content = response.data.blob.content;
+    blobCache.set(hash, { content, expiresAt: Date.now() + LATEST_TTL_MS });
+    return content;
 }
 
 /**

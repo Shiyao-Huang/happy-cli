@@ -14,6 +14,7 @@
 - [agent-json-v1-complete-design.md](agent-json-v1-complete-design.md) — Complete v1 design doc
 - [agent-json-v1-review-round2.md](agent-json-v1-review-round2.md) — Design review round 2
 - [agent-runtime-materializer-v1.md](agent-runtime-materializer-v1.md) — Runtime materializer design
+- [agent-package-v1-design-2026-04-03.md](agent-package-v1-design-2026-04-03.md) — Accepted agent package, blob transport, and server contract
 - [launch-genome-architecture-2026-03-18.md](launch-genome-architecture-2026-03-18.md) — Genome system architecture
 - [launch-agent-workspace-marketplace-contract-2026-03-18.md](launch-agent-workspace-marketplace-contract-2026-03-18.md) — Workspace/marketplace contract
 - [launch-minimal-delta-addendum-2026-03-18.md](launch-minimal-delta-addendum-2026-03-18.md) — Minimal delta addendum
