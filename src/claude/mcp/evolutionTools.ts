@@ -139,6 +139,13 @@ The supervisor will see your request and may: send you guidance, restart your se
 Canonical authoring should be the agent.json shape (kind=aha.agent.v1), which produces an AgentImage — the fully materialized agent definition (seed ⊕ diffs). Legacy flattened AgentImage JSON is still accepted as a compatibility input.
 An AgentImage captures everything needed to reproduce a high-performing agent: prompt, tools, runtime/model routing, permissions, hooks, skills, env, and inline files.
 
+Canonical minimum contract:
+- root: \`{ kind: "aha.agent.v1", name, runtime }\`
+- required blocks: \`prompt\`, \`tools\`, \`permissions\`, \`context\`
+- \`context\` must include both \`messaging\` and \`behavior\`
+- add \`market\` when category/tags/lifecycle matter for discovery
+- add \`env\`, \`workspace\`, \`evaluation\`, or \`package\` when portability or rollout depends on them
+
 ## Kernel fields (travel with the genome and are used by the runtime materializer)
 - \`skills\`: string[] — skill names to link from runtime-lib into the agent's commands directory
 - \`mcpServers\`: string[] — MCP server names to resolve from runtime-lib
@@ -184,7 +191,8 @@ Namespace conventions:
             name: z.string().describe('Short human-readable name for this genome, e.g. "Senior TypeScript Implementer"'),
             spec: z.string().describe(
                 'JSON-serialized canonical agent.json (preferred) or legacy AgentImage compatibility JSON. ' +
-                'Canonical agent.json may include prompt/tools/permissions/context/env/workspace/evaluation/evolution/market/package blocks. ' +
+                'Canonical agent.json should start with { kind: "aha.agent.v1", name, runtime } and normally include prompt/tools/permissions/context blocks; context must contain messaging and behavior. ' +
+                'Canonical agent.json may also include routing/env/workspace/evaluation/evolution/market/package blocks. ' +
                 'Legacy AgentImage inputs may include displayName/baseRoleId/systemPrompt/systemPromptSuffix/responsibilities/protocol/messaging/behavior/memory/' +
                 'modelId/fallbackModelId/allowedTools/disallowedTools/mcpServers/hooks/skills/evalCriteria/runtimeType/provenance/lifecycle/files. ' +
                 'Legacy shorthand tools[] is migrated to allowedTools; deprecated seedContext is stripped from the published compatibility projection.'
