@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveEntityNsName, buildVerdictContent } from './supervisorTools';
+import { buildVisibleToolsPayload, resolveEntityNsName, buildVerdictContent } from './supervisorTools';
 
 describe('resolveEntityNsName', () => {
     it('returns explicit namespace and name when both are provided', () => {
@@ -135,5 +135,75 @@ describe('buildVerdictContent', () => {
         expect(dimLine).toBe(
             'Dimensions: delivery=100 integrity=100 efficiency=100 collaboration=100 reliability=100',
         );
+    });
+});
+
+describe('buildVisibleToolsPayload', () => {
+    it('preserves unknown visible inventory instead of collapsing it to an empty list', () => {
+        const payload = buildVisibleToolsPayload({
+            sessionId: 'sess-unknown',
+            snapshot: {
+                permissionMode: 'bypassPermissions',
+                allowedTools: null,
+                deniedTools: null,
+                visibleTools: null,
+                visibleEntries: [],
+                hiddenTools: null,
+                allowlistKnown: false,
+                denylistKnown: false,
+                visibleInventoryKnown: false,
+                warnings: ['Visible tool inventory unavailable in session metadata.'],
+            },
+        });
+
+        expect(payload).toEqual({
+            sessionId: 'sess-unknown',
+            total: null,
+            cursor: 0,
+            limit: 50,
+            nextCursor: null,
+            includeAll: true,
+            visibleInventoryKnown: false,
+            tools: null,
+            warnings: ['Visible tool inventory unavailable in session metadata.'],
+        });
+    });
+
+    it('filters and paginates visible tools when the inventory is known', () => {
+        const payload = buildVisibleToolsPayload({
+            sessionId: 'sess-known',
+            includeAll: false,
+            cursor: 0,
+            limit: 1,
+            snapshot: {
+                permissionMode: 'acceptEdits',
+                allowedTools: ['get_self_view'],
+                deniedTools: [],
+                visibleTools: ['Bash', 'get_self_view'],
+                visibleEntries: [
+                    { rawName: 'Bash', name: 'Bash', surface: 'native' },
+                    { rawName: 'mcp__aha__get_self_view', name: 'get_self_view', surface: 'mcp' },
+                ],
+                hiddenTools: [],
+                allowlistKnown: true,
+                denylistKnown: true,
+                visibleInventoryKnown: true,
+                warnings: [],
+            },
+        });
+
+        expect(payload).toEqual({
+            sessionId: 'sess-known',
+            total: 1,
+            cursor: 0,
+            limit: 1,
+            nextCursor: null,
+            includeAll: false,
+            visibleInventoryKnown: true,
+            tools: [
+                { rawName: 'mcp__aha__get_self_view', name: 'get_self_view', surface: 'mcp' },
+            ],
+            warnings: [],
+        });
     });
 });

@@ -17,6 +17,14 @@ interface QueueItem {
     sent: boolean;                 // Whether message has been sent
 }
 
+function shouldForwardLogMessage(logMessage: any): boolean {
+    if (logMessage?.type !== 'system') {
+        return true;
+    }
+
+    return logMessage?.subtype === 'init';
+}
+
 export class OutgoingMessageQueue {
     private queue: QueueItem[] = [];
     private nextId = 1;
@@ -121,7 +129,7 @@ export class OutgoingMessageQueue {
             
             // Send if not already sent
             if (!item.sent) {
-                if (item.logMessage.type !== 'system') {
+                if (shouldForwardLogMessage(item.logMessage)) {
                     this.sendFunction(item.logMessage);
                 }
                 item.sent = true;

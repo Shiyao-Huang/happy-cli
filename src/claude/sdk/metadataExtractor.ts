@@ -5,6 +5,7 @@
 
 import { query } from './query'
 import type { SDKSystemMessage } from './types'
+import type { QueryOptions } from './types'
 import { logger } from '@/ui/logger'
 
 export interface SDKMetadata {
@@ -12,23 +13,29 @@ export interface SDKMetadata {
     slashCommands?: string[]
 }
 
+export type SDKMetadataExtractionOptions = Pick<
+    QueryOptions,
+    'allowedTools' | 'disallowedTools' | 'cwd' | 'mcpServers' | 'permissionMode' | 'settingsPath' | 'strictMcpConfig'
+>;
+
 /**
  * Extract SDK metadata by running a minimal query and capturing the init message
  * @returns SDK metadata containing tools and slash commands
  */
-export async function extractSDKMetadata(): Promise<SDKMetadata> {
+export async function extractSDKMetadata(options: SDKMetadataExtractionOptions = {}): Promise<SDKMetadata> {
     const abortController = new AbortController()
     
     try {
         logger.debug('[metadataExtractor] Starting SDK metadata extraction')
         
-        // Run SDK with minimal tools allowed
+        // Run SDK with the same runtime inputs as the live session so surfaced-tool
+        // metadata reflects the real contract instead of a detached helper config.
         const sdkQuery = query({
             prompt: 'hello',
             options: {
-                allowedTools: ['Bash(echo)'],
                 maxTurns: 1,
-                abort: abortController.signal
+                abort: abortController.signal,
+                ...options,
             }
         })
 
@@ -69,8 +76,11 @@ export async function extractSDKMetadata(): Promise<SDKMetadata> {
  * Extract SDK metadata asynchronously without blocking
  * Fires the extraction and updates metadata when complete
  */
-export function extractSDKMetadataAsync(onComplete: (metadata: SDKMetadata) => void): void {
-    extractSDKMetadata()
+export function extractSDKMetadataAsync(
+    onComplete: (metadata: SDKMetadata) => void,
+    options: SDKMetadataExtractionOptions = {},
+): void {
+    extractSDKMetadata(options)
         .then(metadata => {
             if (metadata.tools || metadata.slashCommands) {
                 onComplete(metadata)

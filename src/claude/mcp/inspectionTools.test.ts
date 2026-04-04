@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildEffectivePermissionsReport, extractTeamConfigSnapshot } from './inspectionTools';
+import {
+    buildEffectivePermissionsReport,
+    buildRuntimePermissionSnapshot,
+    collectRuntimeVisibleTools,
+    explainRuntimeToolAccess,
+    extractTeamConfigSnapshot,
+} from './inspectionTools';
 
 describe('buildEffectivePermissionsReport', () => {
     it('grants task.create to coordinator roles while denying agent.spawn when genome explicitly disables it', () => {
@@ -44,6 +50,12 @@ describe('buildEffectivePermissionsReport', () => {
                 }),
             ]),
         );
+
+        expect(report.visibleTools).toBeNull();
+        expect(report.hiddenTools).toBeNull();
+        expect(report.warnings).toEqual([]);
+        expect(report.capabilityComputation).toBe('derived');
+        expect(report.capabilityInputs).toEqual(expect.arrayContaining(['rolePredicates']));
     });
 
     it('returns explicit denial metadata for non-governance worker roles', () => {
@@ -73,6 +85,9 @@ describe('buildEffectivePermissionsReport', () => {
                 }),
             ]),
         );
+
+        expect(report.allowedTools).toEqual(['edit', 'bash']);
+        expect(report.deniedTools).toEqual(['spawn_session']);
     });
 
     it('grants agent.spawn to legacy @official/master v2 via the compatibility shim', () => {
@@ -104,6 +119,110 @@ describe('buildEffectivePermissionsReport', () => {
                 }),
             ]),
         );
+
+        expect(report.permissionMode).toBe('plan');
+    });
+});
+
+describe('runtime self-inspection helpers', () => {
+    it('normalizes visible MCP tool names from session metadata', () => {
+        const visible = collectRuntimeVisibleTools({
+            path: '/tmp',
+            host: 'test-host',
+            tools: ['mcp__aha__get_self_view', 'Bash', 'mcp__aha__get_self_view'],
+        });
+
+        expect(visible).toEqual([
+            { rawName: 'Bash', name: 'Bash', surface: 'native' },
+            { rawName: 'mcp__aha__get_self_view', name: 'get_self_view', surface: 'mcp' },
+        ]);
+    });
+
+    it('builds runtime permission snapshot from metadata without static guessing', () => {
+        const snapshot = buildRuntimePermissionSnapshot({
+            path: '/tmp',
+            host: 'test-host',
+            tools: ['mcp__aha__get_self_view', 'mcp__aha__list_tasks'],
+            runtimePermissions: {
+                source: 'claude-runtime',
+                permissionMode: 'acceptEdits',
+                allowedTools: ['get_self_view', 'list_tasks', 'create_task'],
+                disallowedTools: ['kill_agent'],
+            },
+        });
+
+        expect(snapshot.permissionMode).toBe('acceptEdits');
+        expect(snapshot.allowedTools).toEqual(['get_self_view', 'list_tasks', 'create_task']);
+        expect(snapshot.deniedTools).toEqual(['kill_agent']);
+        expect(snapshot.visibleTools).toEqual(['get_self_view', 'list_tasks']);
+        expect(snapshot.hiddenTools).toEqual(['create_task']);
+        expect(snapshot.warnings).toEqual([]);
+    });
+
+    it('keeps allowlist and denylist unknown when the runtime does not surface them', () => {
+        const snapshot = buildRuntimePermissionSnapshot({
+            path: '/tmp',
+            host: 'test-host',
+            runtimePermissions: {
+                source: 'codex-runtime',
+                permissionMode: 'bypassPermissions',
+            },
+        });
+
+        expect(snapshot.permissionMode).toBe('bypassPermissions');
+        expect(snapshot.allowlistKnown).toBe(false);
+        expect(snapshot.denylistKnown).toBe(false);
+        expect(snapshot.allowedTools).toBeNull();
+        expect(snapshot.deniedTools).toBeNull();
+        expect(snapshot.hiddenTools).toBeNull();
+        expect(snapshot.warnings).toEqual(expect.arrayContaining([
+            'Visible tool inventory unavailable in session metadata.',
+            'Runtime allowlist snapshot unavailable in session metadata.',
+            'Runtime denylist snapshot unavailable in session metadata.',
+        ]));
+    });
+
+    it('explains hidden, denied, and unknown tool states distinctly', () => {
+        const snapshot = buildRuntimePermissionSnapshot({
+            path: '/tmp',
+            host: 'test-host',
+            tools: ['mcp__aha__get_self_view'],
+            runtimePermissions: {
+                source: 'claude-runtime',
+                permissionMode: 'acceptEdits',
+                allowedTools: ['get_self_view', 'create_task'],
+                disallowedTools: ['kill_agent'],
+            },
+        });
+
+        expect(explainRuntimeToolAccess('get_self_view', snapshot)).toMatchObject({
+            status: 'visible',
+            visible: true,
+            allowlisted: true,
+            denied: false,
+        });
+
+        expect(explainRuntimeToolAccess('create_task', snapshot)).toMatchObject({
+            status: 'hidden_by_allowlist',
+            visible: false,
+            allowlisted: true,
+            denied: false,
+        });
+
+        expect(explainRuntimeToolAccess('kill_agent', snapshot)).toMatchObject({
+            status: 'denied',
+            denied: true,
+        });
+
+        expect(explainRuntimeToolAccess('read_team_log', buildRuntimePermissionSnapshot({
+            path: '/tmp',
+            host: 'test-host',
+        }))).toMatchObject({
+            status: 'unknown',
+            visible: null,
+            allowlisted: null,
+            denied: null,
+        });
     });
 });
 

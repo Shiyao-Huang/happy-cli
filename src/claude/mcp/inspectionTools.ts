@@ -1,3 +1,4 @@
+import type { Metadata } from '@/api/types';
 import type { AgentImage, TeamAuthority } from '@/api/types/genome';
 import {
     canCreateTeamTasks,
@@ -27,11 +28,47 @@ export interface EffectivePermissionsReport {
     role: string;
     teamId: string | null;
     specId: string | null;
-    permissionMode: string;
-    allowedTools: string[];
-    deniedTools: string[];
+    capabilityComputation: 'derived';
+    capabilityInputs: string[];
+    permissionMode: string | null;
+    allowedTools: string[] | null;
+    deniedTools: string[] | null;
+    visibleTools: string[] | null;
+    hiddenTools: string[] | null;
+    warnings: string[];
     grantedCapabilities: CapabilityDecision[];
     deniedCapabilities: CapabilityDecision[];
+}
+
+export interface RuntimeVisibleTool {
+    rawName: string;
+    name: string;
+    surface: 'mcp' | 'native';
+}
+
+export interface RuntimePermissionSnapshot {
+    permissionMode: string | null;
+    allowedTools: string[] | null;
+    deniedTools: string[] | null;
+    visibleTools: string[] | null;
+    visibleEntries: RuntimeVisibleTool[];
+    hiddenTools: string[] | null;
+    allowlistKnown: boolean;
+    denylistKnown: boolean;
+    visibleInventoryKnown: boolean;
+    warnings: string[];
+}
+
+export interface ToolAccessExplanation {
+    tool: string;
+    normalizedTool: string;
+    permissionMode: string | null;
+    visible: boolean | null;
+    visibleMatches: string[];
+    allowlisted: boolean | null;
+    denied: boolean | null;
+    status: 'visible' | 'hidden_by_allowlist' | 'denied' | 'not_visible' | 'unknown';
+    warnings: string[];
 }
 
 export interface TeamConfigSnapshot {
@@ -51,12 +88,184 @@ interface EffectivePermissionsInput {
     role: string;
     teamId: string | null;
     specId: string | null;
-    permissionMode: string;
-    allowedTools: string[];
-    deniedTools: string[];
+    permissionMode: string | null;
+    allowedTools: string[] | null;
+    deniedTools: string[] | null;
+    visibleTools?: string[] | null;
+    hiddenTools?: string[] | null;
+    warnings?: string[];
     genomeSpec: AgentImage | null;
     memberAuthorities?: TeamAuthority[];
     teamOverlayAuthorities?: TeamAuthority[];
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    for (const value of values) {
+        if (typeof value !== 'string') continue;
+        const trimmed = value.trim();
+        if (!trimmed) continue;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(trimmed);
+    }
+
+    return result;
+}
+
+function includesToolName(values: string[], target: string): boolean {
+    const normalizedTarget = normalizeVisibleToolName(target).toLowerCase();
+    return values.some((value) => normalizeVisibleToolName(value).toLowerCase() === normalizedTarget);
+}
+
+function hasOwn(obj: object | null | undefined, key: string): boolean {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+export function normalizeVisibleToolName(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) return trimmed;
+
+    const mcpMatch = trimmed.match(/^mcp__.+?__(.+)$/);
+    return mcpMatch?.[1] ?? trimmed;
+}
+
+export function collectRuntimeVisibleTools(metadata?: Metadata | null): RuntimeVisibleTool[] {
+    const tools = Array.isArray(metadata?.tools) ? metadata.tools : [];
+    const seen = new Set<string>();
+    const entries: RuntimeVisibleTool[] = [];
+
+    for (const rawName of tools) {
+        if (typeof rawName !== 'string') continue;
+        const trimmed = rawName.trim();
+        if (!trimmed) continue;
+
+        const name = normalizeVisibleToolName(trimmed);
+        const key = `${trimmed.toLowerCase()}\u0000${name.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        entries.push({
+            rawName: trimmed,
+            name,
+            surface: trimmed.startsWith('mcp__') ? 'mcp' : 'native',
+        });
+    }
+
+    return entries.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function buildRuntimePermissionSnapshot(metadata?: Metadata | null): RuntimePermissionSnapshot {
+    const runtimePermissions = metadata?.runtimePermissions;
+    const allowlistKnown = hasOwn(runtimePermissions ?? null, 'allowedTools');
+    const denylistKnown = hasOwn(runtimePermissions ?? null, 'disallowedTools');
+    const visibleInventoryKnown = hasOwn(metadata ?? null, 'tools') && Array.isArray(metadata?.tools);
+    const visibleEntries = collectRuntimeVisibleTools(metadata);
+    const visibleTools = visibleInventoryKnown
+        ? uniqueStrings(visibleEntries.map((entry) => entry.name))
+        : null;
+    const warnings: string[] = [];
+
+    const permissionMode = typeof runtimePermissions?.permissionMode === 'string'
+        ? runtimePermissions.permissionMode
+        : null;
+    if (!permissionMode) {
+        warnings.push('Runtime permission mode unavailable in session metadata.');
+    }
+
+    const allowedTools = Array.isArray(runtimePermissions?.allowedTools)
+        ? uniqueStrings(runtimePermissions.allowedTools)
+        : allowlistKnown && runtimePermissions?.allowedTools === null
+            ? null
+            : null;
+
+    const deniedTools = Array.isArray(runtimePermissions?.disallowedTools)
+        ? uniqueStrings(runtimePermissions.disallowedTools)
+        : denylistKnown && runtimePermissions?.disallowedTools === null
+            ? []
+            : null;
+
+    if (!visibleInventoryKnown) {
+        warnings.push('Visible tool inventory unavailable in session metadata.');
+    }
+    if (!allowlistKnown) {
+        warnings.push('Runtime allowlist snapshot unavailable in session metadata.');
+    }
+    if (!denylistKnown) {
+        warnings.push('Runtime denylist snapshot unavailable in session metadata.');
+    }
+
+    const hiddenTools = !allowlistKnown
+        ? null
+        : allowedTools && visibleTools
+            ? allowedTools.filter((tool) => !includesToolName(visibleTools, tool))
+            : allowedTools && !visibleTools
+                ? null
+                : [];
+
+    return {
+        permissionMode,
+        allowedTools,
+        deniedTools,
+        visibleTools,
+        visibleEntries,
+        hiddenTools,
+        allowlistKnown,
+        denylistKnown,
+        visibleInventoryKnown,
+        warnings,
+    };
+}
+
+export function explainRuntimeToolAccess(tool: string, snapshot: RuntimePermissionSnapshot): ToolAccessExplanation {
+    const normalizedTool = normalizeVisibleToolName(tool);
+    const normalizedToolLower = normalizedTool.toLowerCase();
+    const visibleMatches = snapshot.visibleEntries
+        .filter((entry) => (
+            entry.name.toLowerCase() === normalizedToolLower
+            || entry.rawName.toLowerCase() === tool.toLowerCase()
+        ))
+        .map((entry) => entry.rawName);
+
+    const visible = !snapshot.visibleInventoryKnown
+        ? null
+        : visibleMatches.length > 0;
+    const allowlisted = !snapshot.allowlistKnown
+        ? null
+        : snapshot.allowedTools === null
+            ? false
+            : includesToolName(snapshot.allowedTools, normalizedTool);
+    const denied = !snapshot.denylistKnown
+        ? null
+        : snapshot.deniedTools === null
+            ? false
+            : includesToolName(snapshot.deniedTools, normalizedTool);
+
+    let status: ToolAccessExplanation['status'] = 'unknown';
+    if (denied === true) {
+        status = 'denied';
+    } else if (visible === true) {
+        status = 'visible';
+    } else if (allowlisted === true && visible === false) {
+        status = 'hidden_by_allowlist';
+    } else if (visible === false) {
+        status = 'not_visible';
+    }
+
+    return {
+        tool,
+        normalizedTool,
+        permissionMode: snapshot.permissionMode,
+        visible,
+        visibleMatches,
+        allowlisted,
+        denied,
+        status,
+        warnings: [...snapshot.warnings],
+    };
 }
 
 function formatAuthoritySource(authority: TeamAuthority, source: AuthoritySource): string {
@@ -316,9 +525,19 @@ export function buildEffectivePermissionsReport(input: EffectivePermissionsInput
         role: input.role,
         teamId: input.teamId,
         specId: input.specId,
+        capabilityComputation: 'derived',
+        capabilityInputs: [
+            'genome.authorities',
+            'member.authorities',
+            'teamOverlay.authorities',
+            'rolePredicates',
+        ],
         permissionMode: input.permissionMode,
         allowedTools: input.allowedTools,
         deniedTools: input.deniedTools,
+        visibleTools: input.visibleTools ?? null,
+        hiddenTools: input.hiddenTools ?? null,
+        warnings: input.warnings ?? [],
         grantedCapabilities: decisions.filter((entry) => entry.granted).map((entry) => entry.decision),
         deniedCapabilities: decisions.filter((entry) => !entry.granted).map((entry) => entry.decision),
     };

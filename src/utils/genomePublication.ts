@@ -19,6 +19,10 @@ export const CORE_TEAM_TOOLS = [
     'send_team_message',
     'get_team_info',
     'get_context_status',
+    'get_self_view',
+    'get_effective_permissions',
+    'list_visible_tools',
+    'explain_tool_access',
     'change_title',
     'request_help',
 ];

@@ -46,11 +46,16 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
 import { restartDaemonFlow } from '@/daemon/restartDaemon';
-import { getAllowedTools, getDeniedTools, getPermissionMode } from '@/claude/team/permissions';
 import { generateRolePrompt } from '@/claude/team/roles';
-import { buildEffectivePermissionsReport } from './inspectionTools';
+import {
+    buildEffectivePermissionsReport,
+    buildRuntimePermissionSnapshot,
+    explainRuntimeToolAccess,
+    type RuntimePermissionSnapshot,
+} from './inspectionTools';
 import { McpToolContext } from './mcpContext';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+import type { Metadata } from '@/api/types';
 
 /**
  * Resolve entity namespace + name from explicit params or a specRef string.
@@ -93,6 +98,61 @@ export function buildVerdictContent(args: {
     ].filter(Boolean).join('\n');
 }
 
+export function buildVisibleToolsPayload(args: {
+    sessionId: string;
+    snapshot: RuntimePermissionSnapshot;
+    cursor?: number;
+    limit?: number;
+    includeAll?: boolean;
+}): {
+    sessionId: string;
+    total: number | null;
+    cursor: number;
+    limit: number;
+    nextCursor: number | null;
+    includeAll: boolean;
+    visibleInventoryKnown: boolean;
+    tools: RuntimePermissionSnapshot['visibleEntries'] | null;
+    warnings: string[];
+} {
+    const includeAll = args.includeAll ?? true;
+    const cursor = args.cursor ?? 0;
+    const limit = args.limit ?? 50;
+
+    if (!args.snapshot.visibleInventoryKnown) {
+        return {
+            sessionId: args.sessionId,
+            total: null,
+            cursor,
+            limit,
+            nextCursor: null,
+            includeAll,
+            visibleInventoryKnown: false,
+            tools: null,
+            warnings: args.snapshot.warnings,
+        };
+    }
+
+    let entries = [...args.snapshot.visibleEntries];
+    if (!includeAll) {
+        entries = entries.filter((entry) => entry.rawName.startsWith('mcp__aha__'));
+    }
+
+    const page = entries.slice(cursor, cursor + limit);
+
+    return {
+        sessionId: args.sessionId,
+        total: entries.length,
+        cursor,
+        limit,
+        nextCursor: cursor + page.length < entries.length ? cursor + page.length : null,
+        includeAll,
+        visibleInventoryKnown: true,
+        tools: page,
+        warnings: args.snapshot.warnings,
+    };
+}
+
 export function registerSupervisorTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -110,6 +170,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         teamId: string | null;
         role: string;
         specId: string | null;
+        metadata: Metadata | null;
         genomeSpec: import('@/api/types/genome').AgentImage | null;
         memberAuthorities: import('@/api/types/genome').TeamAuthority[];
         teamOverlayAuthorities: import('@/api/types/genome').TeamAuthority[];
@@ -148,6 +209,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             : typeof targetSession?.metadata?.specId === 'string'
                 ? targetSession.metadata.specId
                 : null;
+        const metadata = (isSelf ? requesterMetadata : targetSession?.metadata) as Metadata | null | undefined;
 
         let genomeSpec = isSelf ? (genomeSpecRef?.current ?? null) : null;
         if (!genomeSpec && specId) {
@@ -159,9 +221,31 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             teamId,
             role,
             specId,
+            metadata: metadata ?? null,
             genomeSpec,
             memberAuthorities: Array.isArray(member?.authorities) ? member.authorities : [],
             teamOverlayAuthorities: Array.isArray(member?.teamOverlay?.authorities) ? member.teamOverlay.authorities : [],
+        };
+    };
+
+    const canInspectOtherSession = (requestedSessionId?: string): { requestedSessionId: string; isSelf: boolean; callerRole: string | undefined; error?: string } => {
+        const callerRole = client.getMetadata()?.role;
+        const resolvedSessionId = requestedSessionId || client.sessionId;
+        const isSelf = resolvedSessionId === client.sessionId;
+
+        if (!isSelf && callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
+            return {
+                requestedSessionId: resolvedSessionId,
+                isSelf,
+                callerRole,
+                error: `Role '${callerRole}' cannot inspect other sessions.`,
+            };
+        }
+
+        return {
+            requestedSessionId: resolvedSessionId,
+            isSelf,
+            callerRole,
         };
     };
 
@@ -613,8 +697,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             'Available to ALL team members.',
         ].join(' '),
         title: 'Self View (Mirror)',
-        inputSchema: {},
-    }, async () => {
+        inputSchema: {
+            section: z.enum(['overview', 'full']).optional().describe('Section to return. Use "overview" for the compact progressive-disclosure mirror.'),
+            reveal: z.string().optional().describe('Reserved progressive-disclosure hint. Currently unused.'),
+            format: z.enum(['text', 'json']).optional().describe('Response format. JSON currently supports the overview section.'),
+        },
+    }, async (args) => {
         // pingDaemonHeartbeat() now called automatically via registerTool wrapper in index.ts
         try {
             const meta = client.getMetadata();
@@ -647,6 +735,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 responsibilities: genomeSpec?.responsibilities || [],
                 capabilities: genomeSpec?.capabilities || [],
             };
+            const runtimeSnapshot = buildRuntimePermissionSnapshot(meta);
+            const runtimeBuild = meta?.runtimeBuild ?? null;
 
             // Behavior & messaging DNA
             const behavior = genomeSpec?.behavior;
@@ -666,6 +756,118 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 });
                 context = report as unknown as Record<string, unknown>;
             } catch { context = { error: 'Could not read context status' }; }
+
+            const requestedSection = args.section ?? (args.format === 'json' ? 'overview' : 'full');
+            if (requestedSection === 'overview') {
+                const overview = {
+                    section: 'overview',
+                    identity: {
+                        design: {
+                            role: genomeSpec?.baseRoleId || identity.role,
+                            genomeName: identity.genomeName,
+                            specId: identity.specId ?? null,
+                            candidateId: identity.candidateId ?? null,
+                        },
+                        binding: {
+                            sessionId: identity.sessionId,
+                            memberId: identity.memberId ?? null,
+                            runId: identity.runId ?? null,
+                            runStatus: identity.runStatus ?? null,
+                            executionPlane: identity.executionPlane ?? null,
+                            runtimeType: identity.runtimeType ?? null,
+                        },
+                    },
+                    runtime: {
+                        permissionMode: runtimeSnapshot.permissionMode,
+                        build: runtimeBuild
+                            ? {
+                                gitSha: runtimeBuild.gitSha ?? null,
+                                branch: runtimeBuild.branch ?? null,
+                                worktreeName: runtimeBuild.worktreeName ?? null,
+                                runtime: runtimeBuild.runtime ?? null,
+                                startedAt: runtimeBuild.startedAt ?? null,
+                                mirrorContractVersion: runtimeBuild.mirrorContractVersion ?? null,
+                            }
+                            : null,
+                        currentContextK: typeof context.currentContextK === 'number'
+                            ? context.currentContextK
+                            : typeof context.contextK === 'number'
+                                ? context.contextK
+                                : null,
+                        contextWindowTokens: typeof context.contextWindowTokens === 'number' ? context.contextWindowTokens : null,
+                        usedPercent: typeof context.usedPercent === 'number' ? context.usedPercent : null,
+                        status: typeof context.status === 'string' ? context.status : null,
+                        recommendation: typeof context.recommendation === 'string' ? context.recommendation : null,
+                    },
+                    tools: {
+                        summary: {
+                            visibleCount: runtimeSnapshot.visibleTools?.length ?? null,
+                            allowlistCount: runtimeSnapshot.allowedTools?.length ?? null,
+                            deniedCount: runtimeSnapshot.deniedTools?.length ?? null,
+                            hiddenCount: runtimeSnapshot.hiddenTools?.length ?? null,
+                        },
+                        visible: runtimeSnapshot.visibleTools,
+                        hidden: runtimeSnapshot.hiddenTools,
+                    },
+                    gaps: [
+                        ...(runtimeBuild === null
+                            ? [{ type: 'runtime_build_unknown', message: 'Runtime build metadata unavailable in session metadata.' }]
+                            : []),
+                        ...(runtimeSnapshot.permissionMode === null
+                            ? [{ type: 'runtime_permission_unknown', message: 'Runtime permission mode unavailable in session metadata.' }]
+                            : []),
+                        ...(runtimeSnapshot.visibleTools === null
+                            ? [{ type: 'runtime_visible_tools_unknown', message: 'Visible tool inventory unavailable in session metadata.' }]
+                            : []),
+                    ],
+                    warnings: [...runtimeSnapshot.warnings],
+                };
+
+                if (args.format === 'json') {
+                    return {
+                        content: [{ type: 'text', text: JSON.stringify(overview, null, 2) }],
+                        isError: false,
+                    };
+                }
+
+                const lines = [
+                    '═══ SELF VIEW OVERVIEW ═══',
+                    '',
+                    `[Identity] ${overview.identity.design.role} / ${overview.identity.design.genomeName}`,
+                    `  Spec ID: ${overview.identity.design.specId ?? 'unknown'}`,
+                    `  Session: ${overview.identity.binding.sessionId}`,
+                    '',
+                    `[Runtime]`,
+                    `  Permission Mode: ${overview.runtime.permissionMode ?? 'unknown'}`,
+                    `  Build: ${overview.runtime.build?.worktreeName ?? 'unknown'} @ ${overview.runtime.build?.gitSha?.slice(0, 12) ?? 'unknown'}`,
+                    `  Context: ${overview.runtime.usedPercent ?? 'unknown'}%`,
+                    `  Status: ${overview.runtime.status ?? 'unknown'}`,
+                    '',
+                    `[Tools]`,
+                    `  Visible: ${overview.tools.summary.visibleCount ?? 'unknown'}`,
+                    `  Allowlist: ${overview.tools.summary.allowlistCount ?? 'unrestricted/unknown'}`,
+                    `  Denied: ${overview.tools.summary.deniedCount ?? 'unknown'}`,
+                    `  Hidden: ${overview.tools.summary.hiddenCount ?? 'unknown'}`,
+                ];
+                if (overview.warnings.length > 0) {
+                    lines.push('', '[Warnings]');
+                    for (const warning of overview.warnings) {
+                        lines.push(`  - ${warning}`);
+                    }
+                }
+
+                return {
+                    content: [{ type: 'text', text: lines.join('\n') }],
+                    isError: false,
+                };
+            }
+
+            if (args.format === 'json') {
+                return {
+                    content: [{ type: 'text', text: 'Error: JSON format is currently supported only for section="overview".' }],
+                    isError: true,
+                };
+            }
 
             // ── HOW AM I DOING (genome-hub feedback) ──────────────────────
             let performanceSection: string[] = [];
@@ -1010,6 +1212,77 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
     });
 
+    mcp.registerTool('list_visible_tools', {
+        description: 'List tools currently visible to the session. Uses session metadata captured from the runtime; omitting sessionId inspects yourself.',
+        title: 'List Visible Tools',
+        inputSchema: {
+            sessionId: z.string().optional().describe('Optional session ID to inspect. Omit to inspect the calling session.'),
+            cursor: z.number().int().min(0).optional().describe('Offset for pagination. Defaults to 0.'),
+            limit: z.number().int().min(1).max(200).optional().describe('Maximum tools to return. Defaults to 50.'),
+            includeAll: z.boolean().optional().describe('When false, prefer Aha MCP tools only. Defaults to true.'),
+        },
+    }, async (args) => {
+        const inspection = canInspectOtherSession(args.sessionId);
+        if (inspection.error) {
+            return { content: [{ type: 'text', text: `Error: ${inspection.error}` }], isError: true };
+        }
+
+        try {
+            const subject = await resolveInspectionSubject(args.sessionId);
+            const snapshot = buildRuntimePermissionSnapshot(subject.metadata);
+            const payload = buildVisibleToolsPayload({
+                sessionId: subject.sessionId,
+                snapshot,
+                cursor: args.cursor,
+                limit: args.limit,
+                includeAll: args.includeAll,
+            });
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify(payload, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error listing visible tools: ${String(error)}` }], isError: true };
+        }
+    });
+
+    mcp.registerTool('explain_tool_access', {
+        description: 'Explain whether a specific tool is visible, hidden by allowlist, denied, or unknown for a session. Omitting sessionId inspects yourself.',
+        title: 'Explain Tool Access',
+        inputSchema: {
+            tool: z.string().describe('Tool name to inspect. Accepts either the logical name or raw MCP name.'),
+            sessionId: z.string().optional().describe('Optional session ID to inspect. Omit to inspect the calling session.'),
+        },
+    }, async (args) => {
+        const inspection = canInspectOtherSession(args.sessionId);
+        if (inspection.error) {
+            return { content: [{ type: 'text', text: `Error: ${inspection.error}` }], isError: true };
+        }
+
+        try {
+            const subject = await resolveInspectionSubject(args.sessionId);
+            const snapshot = buildRuntimePermissionSnapshot(subject.metadata);
+            const explanation = explainRuntimeToolAccess(args.tool, snapshot);
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        sessionId: subject.sessionId,
+                        ...explanation,
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error explaining tool access: ${String(error)}` }], isError: true };
+        }
+    });
+
     mcp.registerTool('get_effective_permissions', {
         description: 'Inspect computed permissions for a session. Returns granted and denied capabilities, tools, and denial reasons. Omitting sessionId inspects yourself.',
         title: 'Get Effective Permissions',
@@ -1017,23 +1290,25 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             sessionId: z.string().optional().describe('Optional session ID to inspect. Omit to inspect the calling session.'),
         },
     }, async (args) => {
-        const callerRole = client.getMetadata()?.role;
-        const requestedSessionId = args.sessionId || client.sessionId;
-        const isSelf = requestedSessionId === client.sessionId;
-        if (!isSelf && callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
-            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect other sessions' effective permissions.` }], isError: true };
+        const inspection = canInspectOtherSession(args.sessionId);
+        if (inspection.error) {
+            return { content: [{ type: 'text', text: `Error: ${inspection.error}` }], isError: true };
         }
 
         try {
             const subject = await resolveInspectionSubject(args.sessionId);
+            const runtimeSnapshot = buildRuntimePermissionSnapshot(subject.metadata);
             const report = buildEffectivePermissionsReport({
                 sessionId: subject.sessionId,
                 role: subject.role,
                 teamId: subject.teamId,
                 specId: subject.specId,
-                permissionMode: getPermissionMode(subject.role),
-                allowedTools: await getAllowedTools(subject.role),
-                deniedTools: await getDeniedTools(subject.role),
+                permissionMode: runtimeSnapshot.permissionMode,
+                allowedTools: runtimeSnapshot.allowedTools,
+                deniedTools: runtimeSnapshot.deniedTools,
+                visibleTools: runtimeSnapshot.visibleTools,
+                hiddenTools: runtimeSnapshot.hiddenTools,
+                warnings: runtimeSnapshot.warnings,
                 genomeSpec: subject.genomeSpec,
                 memberAuthorities: subject.memberAuthorities,
                 teamOverlayAuthorities: subject.teamOverlayAuthorities,

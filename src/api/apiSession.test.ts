@@ -229,4 +229,60 @@ describe('ApiSessionClient reconnect behavior', () => {
 
         expect(received).toEqual([pendingUserMessage]);
     });
+
+    it('syncs surfaced tools from Claude system init messages into metadata', async () => {
+        mocked.decryptMock.mockImplementation((_key, _variant, value) => value);
+        const client = new ApiSessionClient('token-123', buildSession());
+        const socket = mocked.state.socket!;
+        socket.emitWithAck.mockImplementation((async (_event: string, payload: any) => ({
+            result: 'success',
+            metadata: payload.metadata,
+            version: 2,
+            agentState: null,
+        })) as any);
+
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: 'system-init-1',
+            subtype: 'init',
+            tools: ['mcp__aha__get_self_view', 'Bash', 'Bash'],
+            slash_commands: ['/compact', '/compact'],
+        } as any);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(client.getMetadata()).toMatchObject({
+            tools: ['mcp__aha__get_self_view', 'Bash'],
+            slashCommands: ['/compact'],
+        });
+    });
+
+    it('clears stale surfaced tools when a new init message does not expose them', async () => {
+        mocked.decryptMock.mockImplementation((_key, _variant, value) => value);
+        const client = new ApiSessionClient('token-123', buildSession());
+        const socket = mocked.state.socket!;
+        socket.emitWithAck.mockImplementation((async (_event: string, payload: any) => ({
+            result: 'success',
+            metadata: payload.metadata,
+            version: 2,
+            agentState: null,
+        })) as any);
+
+        await client.updateMetadata((metadata) => ({
+            ...metadata,
+            tools: ['mcp__aha__list_tasks'],
+            slashCommands: ['/old'],
+        }));
+
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: 'system-init-2',
+            subtype: 'init',
+        } as any);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(client.getMetadata()).not.toHaveProperty('tools');
+        expect(client.getMetadata()).not.toHaveProperty('slashCommands');
+    });
 });

@@ -474,6 +474,21 @@ export type Metadata = {
   // Model override: set by master/supervisor to switch a running agent's model
   modelOverride?: string,
   fallbackModelOverride?: string,
+  runtimeBuild?: {
+    gitSha?: string | null,
+    branch?: string | null,
+    worktreeName?: string | null,
+    runtime?: 'claude' | 'codex' | string | null,
+    startedAt?: number | null,
+    mirrorContractVersion?: string | null,
+  },
+  runtimePermissions?: {
+    source?: 'claude-runtime' | 'codex-runtime' | string,
+    updatedAt?: number,
+    permissionMode?: PermissionMode | string | null,
+    allowedTools?: string[] | null,
+    disallowedTools?: string[] | null,
+  },
 };
 
 export type AgentState = {

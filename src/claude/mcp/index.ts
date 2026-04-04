@@ -253,6 +253,8 @@ export async function startAhaServer(
             'read_team_log',
             'get_context_status',
             'get_self_view',
+            'list_visible_tools',
+            'explain_tool_access',
             'get_effective_permissions',
             'get_genome_spec',
             'read_cc_log',

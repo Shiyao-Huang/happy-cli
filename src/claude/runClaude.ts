@@ -46,10 +46,12 @@ import { fetchAgentImage, fetchAgentVerdictData } from './utils/fetchGenome';
 import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
+import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
 import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
 
 export interface StartOptions {
     model?: string
@@ -227,6 +229,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         metadata: initialMachineMetadata
     });
 
+    const processStartedAt = Date.now();
     let metadata: Metadata = {
         path: workingDirectory,
         host: os.hostname(),
@@ -238,7 +241,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         ahaLibDir: projectPath(),
         ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: options.startedBy === 'daemon',
-        processStartedAt: Date.now(),
+        processStartedAt,
         hostPid: process.pid,
         startedBy: options.startedBy || 'terminal',
         // Initialize lifecycle state
@@ -246,6 +249,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         lifecycleStateSince: Date.now(),
         flavor: 'claude',
         sessionTag,
+        runtimeBuild: buildRuntimeBuildMetadata({
+            cwd: workingDirectory,
+            runtime: 'claude',
+            startedAt: processStartedAt,
+        }),
     };
     if (process.env.AHA_TEAM_MEMBER_ID) {
         metadata.memberId = process.env.AHA_TEAM_MEMBER_ID;
@@ -323,22 +331,6 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         logger.debug('[START] Failed to report to daemon (may not be running):', error);
     }
 
-    // Extract SDK metadata in background and update session when ready
-    extractSDKMetadataAsync(async (sdkMetadata) => {
-        logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
-        try {
-            // Update session metadata with tools and slash commands
-            api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
-                ...currentMetadata,
-                tools: sdkMetadata.tools,
-                slashCommands: sdkMetadata.slashCommands
-            }));
-            logger.debug('[start] Session metadata updated with SDK capabilities');
-        } catch (error) {
-            logger.debug('[start] Failed to update session metadata:', error);
-        }
-    });
-
     // Create message queue for managing state updates
     const messageQueue = new MessageQueue2<EnhancedMode>(
         (mode) => hashObject(mode)
@@ -396,6 +388,16 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentFallbackModel: string | undefined = initialModelOverrides.fallbackModel;
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
 
+    const sanitizeCurrentFallbackModel = (source: string) => {
+        const nextFallbackModel = sanitizeFallbackModel(currentModel, currentFallbackModel);
+        if (nextFallbackModel !== currentFallbackModel) {
+            logger.debug(
+                `[runClaude] Clearing fallback model from ${source} because it matches primary model: ${currentModel}`,
+            );
+            currentFallbackModel = nextFallbackModel;
+        }
+    };
+
     // Implant Context (Rules & Preferences)
     let currentAppendSystemPrompt: string | undefined = undefined;
     let currentModelAwarenessPrompt: string | undefined = undefined;
@@ -423,6 +425,21 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
+
+    const syncRuntimePermissionMetadata = () => {
+        void session.updateMetadata((currentMetadata) => ({
+            ...currentMetadata,
+            runtimePermissions: {
+                source: 'claude-runtime',
+                updatedAt: Date.now(),
+                permissionMode: currentPermissionMode ?? null,
+                allowedTools: currentAllowedTools ?? null,
+                disallowedTools: currentDisallowedTools ?? null,
+            },
+        })).catch((error) => {
+            logger.debug('[runClaude] Failed to sync runtime permission metadata:', error);
+        });
+    };
 
     const syncModelAwareness = () => {
         const contextWindowTokens = resolveContextWindowTokens(currentModel);
@@ -499,6 +516,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             currentFallbackModel = _agentImage.fallbackModelId;
             logger.debug(`[genome] Fallback model set from genome: ${currentFallbackModel}`);
         }
+        sanitizeCurrentFallbackModel('genome');
 
         // Tier 3 — 工具访问控制
         // Core team tools that EVERY agent must have — kanban, messaging, help.
@@ -544,6 +562,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
         logger.debug(`[genome] Genome spec applied at startup (specId=${_agentImageId})`);
     }
+    syncRuntimePermissionMetadata();
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── Genome Tier 8–9：Hooks + Skills + maxTurns + env 注入 ───────────────
@@ -645,6 +664,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         }
     }
+    sanitizeCurrentFallbackModel('startup');
     syncModelAwareness();
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1139,13 +1159,20 @@ ${instructions}
             logger.debug(`[runClaude] Team updated to: ${currentTeamId}`);
             changed = true;
         }
+        let modelSelectionChanged = false;
         if (metadata.modelOverride && metadata.modelOverride !== currentModel) {
             currentModel = metadata.modelOverride;
             logger.debug(`[runClaude] Model override updated via metadata: ${currentModel}`);
+            modelSelectionChanged = true;
         }
         if (metadata.fallbackModelOverride && metadata.fallbackModelOverride !== currentFallbackModel) {
             currentFallbackModel = metadata.fallbackModelOverride;
             logger.debug(`[runClaude] Fallback model override updated via metadata: ${currentFallbackModel}`);
+            modelSelectionChanged = true;
+        }
+        if (modelSelectionChanged) {
+            sanitizeCurrentFallbackModel('session metadata');
+            syncModelAwareness();
         }
 
         if (changed) {
@@ -1165,6 +1192,7 @@ ${instructions}
                 messagePermissionMode = message.meta.permissionMode as NonNullable<StartOptions['permissionMode']>;
                 currentPermissionMode = messagePermissionMode;
                 logger.debug(`[loop] Permission mode updated from user message to: ${currentPermissionMode}`);
+                syncRuntimePermissionMetadata();
 
             } else {
                 logger.debug(`[loop] Invalid permission mode received: ${message.meta.permissionMode}`);
@@ -1202,6 +1230,14 @@ ${instructions}
         } else {
             logger.debug(`[loop] User message received with no fallback model override, using current: ${currentFallbackModel || 'none'}`);
         }
+        const sanitizedMessageFallbackModel = sanitizeFallbackModel(messageModel, messageFallbackModel);
+        if (sanitizedMessageFallbackModel !== messageFallbackModel) {
+            logger.debug(
+                `[runClaude] Clearing message fallback model because it matches primary model: ${messageModel}`,
+            );
+        }
+        messageFallbackModel = sanitizedMessageFallbackModel;
+        currentFallbackModel = sanitizedMessageFallbackModel;
         syncModelAwareness();
 
         // Resolve append system prompt - use message.meta.appendSystemPrompt if provided, otherwise use current
@@ -1220,6 +1256,7 @@ ${instructions}
             messageAllowedTools = message.meta.allowedTools || undefined; // null becomes undefined
             currentAllowedTools = messageAllowedTools;
             logger.debug(`[loop] Allowed tools updated from user message: ${messageAllowedTools ? messageAllowedTools.join(', ') : 'reset to none'}`);
+            syncRuntimePermissionMetadata();
         } else {
             logger.debug(`[loop] User message received with no allowed tools override, using current: ${currentAllowedTools ? currentAllowedTools.join(', ') : 'none'}`);
         }
@@ -1230,6 +1267,7 @@ ${instructions}
             messageDisallowedTools = message.meta.disallowedTools || undefined; // null becomes undefined
             currentDisallowedTools = messageDisallowedTools;
             logger.debug(`[loop] Disallowed tools updated from user message: ${messageDisallowedTools ? messageDisallowedTools.join(', ') : 'reset to none'}`);
+            syncRuntimePermissionMetadata();
         } else {
             logger.debug(`[loop] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
         }
@@ -1361,6 +1399,31 @@ ${instructions}
         };
     }
     const mcpServers = filterMaterializedMcpServers(availableMcpServers, _prebuiltMcpServerNames);
+
+    // Extract SDK metadata in background using the same runtime inputs as the live
+    // Claude session so metadata.tools reflects the real surfaced contract.
+    setTimeout(() => {
+        extractSDKMetadataAsync(async (sdkMetadata) => {
+            logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+            try {
+                api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
+                    ...currentMetadata,
+                    tools: sdkMetadata.tools,
+                    slashCommands: sdkMetadata.slashCommands,
+                }));
+                logger.debug('[start] Session metadata updated with SDK capabilities');
+            } catch (error) {
+                logger.debug('[start] Failed to update session metadata:', error);
+            }
+        }, {
+            cwd: _workspacePlan?.effectiveCwd ?? workingDirectory,
+            allowedTools: currentAllowedTools,
+            disallowedTools: currentDisallowedTools,
+            permissionMode: currentPermissionMode,
+            settingsPath: _workspacePlan?.settingsPath ?? _prebuiltSettingsPath,
+            mcpServers,
+        });
+    }, 1500);
 
     // Initialize team handling after a delay to ensure loop is running
     // This allows handshake and context injection to work properly

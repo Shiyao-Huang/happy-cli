@@ -13,6 +13,59 @@ import { registerCommonHandlers } from '../modules/common/registerCommonHandlers
 import { buildSocketPath } from './socketPath';
 import { calculateCost } from '@/utils/tokenPricing';
 
+function hasOwn(obj: object, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function normalizeStringList(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const item of value) {
+        if (typeof item !== 'string') {
+            continue;
+        }
+        const trimmed = item.trim();
+        if (!trimmed) {
+            continue;
+        }
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        normalized.push(trimmed);
+    }
+
+    return normalized;
+}
+
+function extractSystemInitRuntimeMetadata(body: RawJSONLines): null | {
+    toolsKnown: boolean;
+    tools: string[] | undefined;
+    slashCommandsKnown: boolean;
+    slashCommands: string[] | undefined;
+} {
+    if (body.type !== 'system') {
+        return null;
+    }
+
+    const systemBody = body as RawJSONLines & Record<string, unknown>;
+    if (systemBody.subtype !== 'init') {
+        return null;
+    }
+
+    return {
+        toolsKnown: hasOwn(systemBody, 'tools'),
+        tools: normalizeStringList(systemBody.tools),
+        slashCommandsKnown: hasOwn(systemBody, 'slash_commands'),
+        slashCommands: normalizeStringList(systemBody.slash_commands),
+    };
+}
+
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string;
     readonly sessionId: string;
@@ -264,6 +317,29 @@ export class ApiSessionClient extends EventEmitter {
                     updatedAt: Date.now()
                 }
             }));
+        }
+
+        const runtimeMetadata = extractSystemInitRuntimeMetadata(body);
+        if (runtimeMetadata) {
+            void this.updateMetadata((metadata) => {
+                const nextMetadata = { ...(metadata || {}) };
+
+                if (runtimeMetadata.toolsKnown && runtimeMetadata.tools) {
+                    nextMetadata.tools = runtimeMetadata.tools;
+                } else {
+                    delete nextMetadata.tools;
+                }
+
+                if (runtimeMetadata.slashCommandsKnown && runtimeMetadata.slashCommands) {
+                    nextMetadata.slashCommands = runtimeMetadata.slashCommands;
+                } else {
+                    delete nextMetadata.slashCommands;
+                }
+
+                return nextMetadata;
+            }).catch((error) => {
+                logger.debug('[SOCKET] Failed to sync runtime tool metadata from system init:', error);
+            });
         }
     }
 

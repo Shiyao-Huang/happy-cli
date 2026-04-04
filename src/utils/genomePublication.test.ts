@@ -77,6 +77,10 @@ describe('normalizeAgentImageForPublication', () => {
             'Read',
             'send_team_message',
             'request_help',
+            'get_self_view',
+            'get_effective_permissions',
+            'list_visible_tools',
+            'explain_tool_access',
             'create_agent',
             'list_available_agents',
         ]));
@@ -155,7 +159,16 @@ describe('normalizeAgentImageForPublication', () => {
             }),
         });
 
-        expect(result.spec.allowedTools).toEqual(expect.arrayContaining(['Read', 'list_tasks', 'send_team_message', 'request_help']));
+        expect(result.spec.allowedTools).toEqual(expect.arrayContaining([
+            'Read',
+            'list_tasks',
+            'send_team_message',
+            'request_help',
+            'get_self_view',
+            'get_effective_permissions',
+            'list_visible_tools',
+            'explain_tool_access',
+        ]));
         // hooks are kernel fields (AgentKernel) and must travel with the genome
         expect(result.spec.hooks).toEqual(hooks);
         expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('hooks')]));
@@ -177,6 +190,10 @@ describe('normalizeAgentImageForPublication', () => {
             'list_tasks',
             'send_team_message',
             'request_help',
+            'get_self_view',
+            'get_effective_permissions',
+            'list_visible_tools',
+            'explain_tool_access',
         ]));
         expect((result.spec as any).tools).toBeUndefined();
         expect((result.spec as any).seedContext).toBeUndefined();
@@ -199,6 +216,10 @@ describe('normalizeAgentImageForPublication', () => {
 
         expect(result.spec.allowedTools).toEqual(expect.arrayContaining([
             'Read',
+            'get_self_view',
+            'get_effective_permissions',
+            'list_visible_tools',
+            'explain_tool_access',
             'create_agent',
             'list_available_agents',
             'list_team_agents',
@@ -209,6 +230,10 @@ describe('normalizeAgentImageForPublication', () => {
     it('supports runtime spawn-tool injection when role fallback allows spawning', () => {
         expect(getInjectedAllowedToolsForAgentImage(undefined, { spawnCapable: true })).toEqual(
             expect.arrayContaining([
+                'get_self_view',
+                'get_effective_permissions',
+                'list_visible_tools',
+                'explain_tool_access',
                 'create_agent',
                 'list_available_agents',
                 'list_team_agents',

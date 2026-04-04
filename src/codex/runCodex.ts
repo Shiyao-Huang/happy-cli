@@ -42,7 +42,9 @@ import { fetchAgentImage } from '@/claude/utils/fetchGenome';
 import { buildAgentImageInjection } from '@/claude/utils/buildGenomeInjection';
 import type { AgentImage } from '@/api/types/genome';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
 import { CODEX_BRIDGE_DEBUG_ENV, isCodexBridgeDebugEnabled, logCodexBridge, logCodexSignal } from './utils/bridgeDebug';
+import { buildCodexRuntimeMetadata } from './runtimeMetadata';
 import {
     materializeAgentImageSkillsToCodexHome,
     seedCodexHomeConfig,
@@ -681,6 +683,7 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false,
     }
+    const processStartedAt = Date.now();
     let metadata: Metadata = {
         path: process.cwd(),
         host: os.hostname(),
@@ -692,7 +695,7 @@ export async function runCodex(opts: {
         ahaLibDir: projectPath(),
         ahaToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
-        processStartedAt: Date.now(),
+        processStartedAt,
         hostPid: process.pid,
         startedBy: opts.startedBy || 'terminal',
         // Initialize lifecycle state
@@ -701,6 +704,11 @@ export async function runCodex(opts: {
         flavor: 'codex',
         codexCliVersion: codexCliVersion ?? undefined,
         sessionTag,
+        runtimeBuild: buildRuntimeBuildMetadata({
+            cwd: process.cwd(),
+            runtime: 'codex',
+            startedAt: processStartedAt,
+        }),
     };
     if (process.env.AHA_TEAM_MEMBER_ID) {
         metadata.memberId = process.env.AHA_TEAM_MEMBER_ID;
@@ -752,6 +760,16 @@ export async function runCodex(opts: {
     let currentPermissionMode: PermissionMode = resolvePermissionMode(process.env.AHA_PERMISSION_MODE);
     logger.debug(`[Codex] Permission mode initialized: ${currentPermissionMode}`);
     let currentModel: string | undefined = session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL || undefined;
+
+    const syncRuntimePermissionMetadata = () => {
+        void session.updateMetadata((currentMetadata) => buildCodexRuntimeMetadata(currentMetadata, {
+            permissionMode: currentPermissionMode,
+        })).catch((error) => {
+            logger.debug('[Codex] Failed to sync runtime permission metadata:', error);
+        });
+    };
+
+    syncRuntimePermissionMetadata();
 
     const getCurrentEnhancedMode = (): EnhancedMode => ({
         permissionMode: currentPermissionMode,
@@ -867,6 +885,7 @@ export async function runCodex(opts: {
             messagePermissionMode = resolvePermissionMode(message.meta.permissionMode);
             currentPermissionMode = messagePermissionMode;
             logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
+            syncRuntimePermissionMetadata();
         } else {
             logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode}`);
         }
@@ -1124,6 +1143,10 @@ export async function runCodex(opts: {
                 ? (rawMsg as Record<string, unknown>).type
                 : null
         });
+
+        // Do not infer metadata.tools from bridge registry or mcp server config.
+        // Only a runtime event that explicitly surfaces the final tool inventory to Codex
+        // is allowed to populate visible-tool truth. No such event is currently known here.
 
         // item_completed events duplicate content already delivered via agent_message / agent_reasoning.
         // Skip them entirely to prevent 2-3x message repetition in context.
