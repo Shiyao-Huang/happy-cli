@@ -1406,7 +1406,7 @@ ${instructions}
         extractSDKMetadataAsync(async (sdkMetadata) => {
             logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
             try {
-                api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
+                await session.updateMetadata((currentMetadata) => ({
                     ...currentMetadata,
                     tools: sdkMetadata.tools,
                     slashCommands: sdkMetadata.slashCommands,

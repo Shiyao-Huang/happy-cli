@@ -5,20 +5,21 @@
 
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import { logger } from '@/ui/logger'
-import { projectPath } from '@/projectPath'
 
 /**
  * Get the directory path of the current module
  */
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = join(__filename, '..')
+const require = createRequire(import.meta.url)
 
 /**
  * Get default path to Claude Code executable
  */
 export function getDefaultClaudeCodePath(): string {
-    return join(projectPath(), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
+    return require.resolve('@anthropic-ai/claude-code/cli.js')
 }
 
 /**
