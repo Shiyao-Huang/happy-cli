@@ -19,6 +19,7 @@ describe('CLI CRUD help surfaces', () => {
     expect(output).toContain('Aha Agents');
     expect(output).toContain('update');
     expect(output).toContain('archive');
+    expect(output).toContain('--dry-run');
   });
 
   it('shows the tasks command help', () => {
@@ -32,6 +33,7 @@ describe('CLI CRUD help surfaces', () => {
     expect(output).toContain('create');
     expect(output).toContain('start');
     expect(output).toContain('complete');
+    expect(output).toContain('--dry-run');
   });
 
   it('shows the expanded teams command help', () => {
@@ -46,6 +48,7 @@ describe('CLI CRUD help surfaces', () => {
     expect(output).toContain('publish-template');
     expect(output).toContain('add-member');
     expect(output).toContain('batch-delete');
+    expect(output).toContain('--dry-run');
   });
 
   it('shows the sessions command help', () => {
@@ -59,5 +62,6 @@ describe('CLI CRUD help surfaces', () => {
     expect(output).toContain('list');
     expect(output).toContain('archive');
     expect(output).toContain('delete');
+    expect(output).toContain('--dry-run');
   });
 });

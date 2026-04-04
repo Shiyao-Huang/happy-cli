@@ -28,6 +28,11 @@ import { handleConnectCommand } from './commands/connect'
 import { spawnAhaCLI } from './utils/spawnAhaCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
+import {
+  getCliCommandExitCode,
+  normalizeGlobalCliArgs,
+  printCliCommandError,
+} from './commands/globalCli'
 
 /**
  * Show general CLI help
@@ -50,6 +55,7 @@ ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
   ${chalk.yellow('auth')} [login|reconnect|restore|logout|status] Authentication management
   ${chalk.yellow('connect')} [list|remove|codex|claude|gemini] AI vendor API key management
+  ${chalk.yellow('schema')} [--all|path...]      Machine-readable CLI schema / command tree
   ${chalk.yellow('channel(s)')} [status|weixin] WeChat / IM channel bridge management
   ${chalk.yellow('task(s)')} [list|show|create|update|delete|start|complete|done|lock|unlock] Task management
   ${chalk.yellow('team(s)')} [list|show|status|create|spawn|publish-template|members|add-member|remove-member|rename|archive|unarchive|delete|batch-archive|batch-delete] Team management
@@ -66,6 +72,8 @@ ${chalk.bold('Available Commands:')}
 ${chalk.bold('Options:')}
   ${chalk.cyan('-h, --help')}              Show help information
   ${chalk.cyan('-v, --version')}           Show version number
+  ${chalk.cyan('--format <json|table>')}   Select machine or human output mode
+  ${chalk.cyan('--no-interactive')}        Fail fast instead of prompting for confirmation
   ${chalk.cyan('--debug')}                 Enable debug logging
 
 ${chalk.bold('Documentation:')}
@@ -88,10 +96,15 @@ ${chalk.bold('Examples:')}
   ${chalk.gray('# Team collaboration')}
   ${chalk.green('aha codex')}
 
+  ${chalk.gray('# CLI schema for agents')}
+  ${chalk.green('aha schema --all')}
+  ${chalk.green('aha schema teams status')}
+
   ${chalk.gray('# Team CRUD')}
   ${chalk.green('aha team create --name \"Sprint Crew\"')}
   ${chalk.green('aha team status team_123')}
   ${chalk.green('aha agent list --active')}
+  ${chalk.green('aha teams delete team_123 --dry-run --format json')}
   ${chalk.green('aha task done task_123 --team team_123')}
   ${chalk.green('aha sessions list --active')}
 
@@ -107,9 +120,20 @@ For supported command-specific help, run:
   process.exit(0)
 }
 
+function handleTopLevelCommandError(error: unknown): never {
+  printCliCommandError(error)
+  process.exit(getCliCommandExitCode(error))
+}
+
 
 (async () => {
-  const args = process.argv.slice(2)
+  let args = process.argv.slice(2)
+
+  try {
+    args = normalizeGlobalCliArgs(args)
+  } catch (error) {
+    handleTopLevelCommandError(error)
+  }
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
@@ -142,11 +166,7 @@ For supported command-specific help, run:
     try {
       await handleAuthCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'connect') {
@@ -154,11 +174,15 @@ For supported command-specific help, run:
     try {
       await handleConnectCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
+    }
+    return;
+  } else if (subcommand === 'schema') {
+    try {
+      const { handleSchemaCommand } = await import('./commands/schema');
+      await handleSchemaCommand(args.slice(1));
+    } catch (error) {
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'channels' || subcommand === 'channel') {
@@ -166,11 +190,7 @@ For supported command-specific help, run:
       const { handleChannelsCommand } = await import('./commands/channels');
       await handleChannelsCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'tasks' || subcommand === 'task') {
@@ -179,11 +199,7 @@ For supported command-specific help, run:
       const { handleTasksCommand } = await import('./commands/tasks');
       await handleTasksCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'teams' || subcommand === 'team') {
@@ -192,11 +208,7 @@ For supported command-specific help, run:
       const { handleTeamsCommand } = await import('./commands/teams');
       await handleTeamsCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'agents' || subcommand === 'agent') {
@@ -204,11 +216,7 @@ For supported command-specific help, run:
       const { handleAgentsCommand } = await import('./commands/agents');
       await handleAgentsCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'sessions' || subcommand === 'session') {
@@ -216,11 +224,7 @@ For supported command-specific help, run:
       const { handleSessionsCommand } = await import('./commands/sessions');
       await handleSessionsCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'roles' || subcommand === 'role') {
@@ -229,11 +233,7 @@ For supported command-specific help, run:
       const { handleRolesCommand } = await import('./commands/roles');
       await handleRolesCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'trace') {
@@ -241,11 +241,7 @@ For supported command-specific help, run:
       const { handleTraceCommand } = await import('./commands/trace');
       await handleTraceCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'usage') {
@@ -253,11 +249,7 @@ For supported command-specific help, run:
       const { handleUsageCommand } = await import('./commands/usage');
       await handleUsageCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'reflexivity') {
@@ -265,11 +257,7 @@ For supported command-specific help, run:
       const { handleReflexivityCommand } = await import('./reflexivity/command');
       await handleReflexivityCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'codex') {
@@ -294,11 +282,7 @@ For supported command-specific help, run:
       await runCodex({ credentials, startedBy, sessionTag });
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'ralph') {
@@ -307,11 +291,7 @@ For supported command-specific help, run:
       const { handleRalphCommand } = await import('./ralph/command.js');
       await handleRalphCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'logout') {
@@ -320,11 +300,7 @@ For supported command-specific help, run:
     try {
       await handleAuthCommand(['logout']);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'notify') {
@@ -332,11 +308,7 @@ For supported command-specific help, run:
     try {
       await handleNotifyCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      handleTopLevelCommandError(error)
     }
     return;
   } else if (subcommand === 'daemon') {
@@ -422,15 +394,13 @@ For supported command-specific help, run:
       try {
         await install()
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-        process.exit(1)
+        handleTopLevelCommandError(error)
       }
     } else if (daemonSubcommand === 'uninstall') {
       try {
         await uninstall()
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-        process.exit(1)
+        handleTopLevelCommandError(error)
       }
     } else {
       console.log(`

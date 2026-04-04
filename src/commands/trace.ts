@@ -183,6 +183,7 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Flags:')}
   --json          Machine-readable JSON output
+  --format <json|table>  Select JSON or human output mode
   --full          Expand payload references
   --since <dur>   Time filter: "30m", "2h", "1d"
   --limit <n>     Max events (default: 200)

@@ -4,6 +4,7 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 import { resolveContextWindowTokens } from '@/utils/modelContextWindows';
 
 function getOption(args: string[], name: string): string | undefined {
@@ -21,7 +22,7 @@ function hasFlag(args: string[], ...flags: string[]): boolean {
 
 function getPositionalArgs(args: string[]): string[] {
   const positional: string[] = [];
-  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--active', '--help', '-h']);
+  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--active', '--help', '-h', '--dry-run']);
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -38,18 +39,7 @@ function getPositionalArgs(args: string[]): string[] {
 }
 
 async function confirm(prompt: string): Promise<boolean> {
-  const { default: readline } = await import('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(chalk.cyan(prompt));
-    return answer.trim().toLowerCase() === 'y';
-  } finally {
-    rl.close();
-  }
+  return confirmPrompt(prompt, { forceFlagName: '--force' });
 }
 
 async function createApiClient(): Promise<ApiClient> {
@@ -139,10 +129,13 @@ ${chalk.bold('List options:')}
   ${chalk.cyan('--active')}                       Only show active sessions
   ${chalk.cyan('--team <teamId>')}                Filter by metadata.teamId
   ${chalk.cyan('--json')}                         Print raw JSON output
+  ${chalk.cyan('--format <json|table>')}         Select JSON or human output mode
   ${chalk.cyan('--verbose, -v')}                  Show extra metadata fields
 
 ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
+  ${chalk.cyan('--dry-run')}                      Preview archive/delete/unarchive without mutating the server
+  ${chalk.cyan('--no-interactive')}               Fail instead of prompting; pair with --force for agents
 
 ${chalk.bold('Examples:')}
   ${chalk.green('aha sessions list --active')}
@@ -165,6 +158,7 @@ export async function handleSessionsCommand(args: string[]): Promise<void> {
   const positional = getPositionalArgs(args);
   const asJson = hasFlag(args, '--json');
   const verbose = hasFlag(args, '--verbose', '-v');
+  const dryRun = hasFlag(args, '--dry-run');
 
   try {
     switch (subcommand) {
@@ -186,27 +180,27 @@ export async function handleSessionsCommand(args: string[]): Promise<void> {
         if (positional.length < 2) {
           throw new Error('Usage: aha sessions archive <sessionId> [--force]');
         }
-        await archiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson);
+        await archiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       case 'unarchive':
         if (positional.length < 2) {
           throw new Error('Usage: aha sessions unarchive <sessionId> [--force]');
         }
-        await unarchiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson);
+        await unarchiveSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       case 'delete':
         if (positional.length < 2) {
           throw new Error('Usage: aha sessions delete <sessionId> [--force]');
         }
-        await deleteSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson);
+        await deleteSession(api, positional[1], hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       default:
         throw new Error(`Unknown sessions command: ${subcommand}`);
     }
   } catch (error) {
     logger.debug('[SessionsCommand] Error:', error);
-    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
+    printCliCommandError(error);
+    process.exit(getCliCommandExitCode(error));
   }
 }
 
@@ -259,7 +253,19 @@ async function showSession(api: ApiClient, sessionId: string, asJson: boolean, v
   console.log();
 }
 
-async function archiveSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean): Promise<void> {
+async function archiveSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'sessions.archive',
+        summary: `Would archive session ${sessionId}.`,
+        target: { sessionId },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Archive session ${sessionId}? (y/N): `);
     if (!confirmed) {
@@ -284,7 +290,19 @@ async function archiveSession(api: ApiClient, sessionId: string, force: boolean,
   console.log();
 }
 
-async function unarchiveSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean): Promise<void> {
+async function unarchiveSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'sessions.unarchive',
+        summary: `Would restore archived session ${sessionId}.`,
+        target: { sessionId },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Restore archived session ${sessionId}? (y/N): `);
     if (!confirmed) {
@@ -309,7 +327,19 @@ async function unarchiveSession(api: ApiClient, sessionId: string, force: boolea
   console.log();
 }
 
-async function deleteSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean): Promise<void> {
+async function deleteSession(api: ApiClient, sessionId: string, force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'sessions.delete',
+        summary: `Would delete session ${sessionId}.`,
+        target: { sessionId },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Delete session ${sessionId}? This cannot be undone. (y/N): `);
     if (!confirmed) {

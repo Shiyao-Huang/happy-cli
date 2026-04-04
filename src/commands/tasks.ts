@@ -3,6 +3,7 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 
 const TASK_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'] as const;
 const TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
@@ -28,7 +29,7 @@ function hasFlag(args: string[], ...flags: string[]): boolean {
 
 function getPositionalArgs(args: string[]): string[] {
   const positional: string[] = [];
-  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--help', '-h']);
+  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--help', '-h', '--dry-run']);
 
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
@@ -136,18 +137,7 @@ function printTask(task: any, verbose = false): void {
 }
 
 async function confirm(prompt: string): Promise<boolean> {
-  const { default: readline } = await import('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(chalk.cyan(prompt));
-    return answer.trim().toLowerCase() === 'y';
-  } finally {
-    rl.close();
-  }
+  return confirmPrompt(prompt, { forceFlagName: '--force' });
 }
 
 async function createApiClient(): Promise<ApiClient> {
@@ -217,6 +207,7 @@ ${chalk.bold('Commands:')}
 ${chalk.bold('Common options:')}
   ${chalk.cyan('--team <teamId>')}                Team artifact ID (falls back to AHA_ROOM_ID)
   ${chalk.cyan('--json')}                         Print raw JSON response
+  ${chalk.cyan('--format <json|table>')}         Select JSON or human output mode
 
 ${chalk.bold('Create / update options:')}
   ${chalk.cyan('--title "<text>"')}               Task title
@@ -237,6 +228,8 @@ ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--reason <text>')}                Optional human-lock reason
   ${chalk.cyan('--comment <text>')}               Optional human-lock comment persisted on the task
   ${chalk.cyan('--force, -f')}                    Skip delete confirmation
+  ${chalk.cyan('--dry-run')}                      Preview delete without mutating the server
+  ${chalk.cyan('--no-interactive')}               Fail instead of prompting; pair with --force for agents
   ${chalk.cyan('--verbose, -v')}                  Show extra fields in list/show output
 
 ${chalk.bold('Examples:')}
@@ -292,7 +285,7 @@ export async function handleTasksCommand(args: string[]): Promise<void> {
         if (positional.length < 2) {
           throw new Error('Usage: aha tasks delete <taskId> --team <teamId> [--force]');
         }
-        await deleteTask(api, resolveTeamId(args), positional[1], hasFlag(args, '--force', '-f'));
+        await deleteTask(api, resolveTeamId(args), positional[1], hasFlag(args, '--force', '-f'), asJson, hasFlag(args, '--dry-run'));
         break;
       case 'start':
         if (positional.length < 2) {
@@ -336,8 +329,8 @@ export async function handleTasksCommand(args: string[]): Promise<void> {
     }
   } catch (error) {
     logger.debug('[TasksCommand] Error:', error);
-    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
+    printCliCommandError(error);
+    process.exit(getCliCommandExitCode(error));
   }
 }
 
@@ -439,7 +432,26 @@ async function updateTask(
   console.log();
 }
 
-async function deleteTask(api: ApiClient, teamId: string, taskId: string, force: boolean): Promise<void> {
+async function deleteTask(
+  api: ApiClient,
+  teamId: string,
+  taskId: string,
+  force: boolean,
+  asJson: boolean,
+  dryRun: boolean,
+): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'tasks.delete',
+        summary: `Would delete task ${taskId} from team ${teamId}.`,
+        target: { teamId, taskId },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Delete task ${taskId}? (y/N): `);
     if (!confirmed) {

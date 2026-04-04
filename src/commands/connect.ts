@@ -4,6 +4,7 @@ import { ApiClient } from '@/api/api';
 import { authenticateCodex } from './connect/authenticateCodex';
 import { authenticateClaude } from './connect/authenticateClaude';
 import { authenticateGemini } from './connect/authenticateGemini';
+import { confirmPrompt, printCliDryRunPreview } from './globalCli';
 
 type ConnectVendorInput = 'codex' | 'claude' | 'gemini' | 'openai' | 'anthropic';
 type ServerVendor = 'openai' | 'anthropic' | 'gemini';
@@ -19,6 +20,7 @@ type ServerVendor = 'openai' | 'anthropic' | 'gemini';
  */
 export async function handleConnectCommand(args: string[]): Promise<void> {
     const subcommand = args[0];
+    const asJson = args.includes('--json');
 
     if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
         showConnectHelp();
@@ -27,10 +29,10 @@ export async function handleConnectCommand(args: string[]): Promise<void> {
 
     switch (subcommand.toLowerCase()) {
         case 'list':
-            await handleListConnections();
+            await handleListConnections(asJson);
             break;
         case 'remove':
-            await handleRemoveConnection(args.slice(1));
+            await handleRemoveConnection(args.slice(1), asJson);
             break;
         case 'codex':
             await handleConnectVendor('codex', 'OpenAI');
@@ -54,11 +56,17 @@ ${chalk.bold('aha connect')} - Connect AI vendor API keys to Aha cloud
 
 ${chalk.bold('Usage:')}
   aha connect list         List stored AI vendor connections
-  aha connect remove <vendor> Remove a stored vendor connection
+  aha connect remove <vendor> [--force] [--dry-run] Remove a stored vendor connection
   aha connect codex        Store your Codex API key in Aha cloud
   aha connect claude       Store your Anthropic API key in Aha cloud
   aha connect gemini       Store your Gemini API key in Aha cloud
   aha connect help         Show this help message
+
+${chalk.bold('Flags:')}
+  --json                   Emit machine-readable JSON where supported
+  --format <json|table>    Select JSON or human output mode
+  --force, -f             Skip confirmation for remove
+  --dry-run               Preview removal without executing it
 
 ${chalk.bold('Description:')}
   The connect command allows you to securely store your AI vendor API keys
@@ -67,7 +75,9 @@ ${chalk.bold('Description:')}
 
 ${chalk.bold('Examples:')}
   aha connect list
-  aha connect remove codex
+  aha connect list --json
+  aha connect remove codex --dry-run --json
+  aha connect remove codex --force
   aha connect codex
   aha connect claude
   aha connect gemini
@@ -107,19 +117,8 @@ function getDisplayVendor(vendor: string): string {
     }
 }
 
-async function confirm(prompt: string): Promise<boolean> {
-    const { default: readline } = await import('node:readline/promises');
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
-    try {
-        const answer = await rl.question(chalk.cyan(prompt));
-        return answer.trim().toLowerCase() === 'y';
-    } finally {
-        rl.close();
-    }
+async function confirm(prompt: string, force = false): Promise<boolean> {
+    return confirmPrompt(prompt, { force, forceFlagName: '--force' });
 }
 
 async function createApiClient(): Promise<ApiClient> {
@@ -133,9 +132,14 @@ async function createApiClient(): Promise<ApiClient> {
     return ApiClient.create(credentials);
 }
 
-async function handleListConnections(): Promise<void> {
+async function handleListConnections(asJson: boolean): Promise<void> {
     const api = await createApiClient();
     const result = await api.listVendorTokens();
+
+    if (asJson) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+    }
 
     if (!result.tokens.length) {
         console.log(chalk.yellow('No vendor connections stored in Aha cloud.'));
@@ -150,16 +154,34 @@ async function handleListConnections(): Promise<void> {
     console.log();
 }
 
-async function handleRemoveConnection(args: string[]): Promise<void> {
-    const vendorInput = args[0] as ConnectVendorInput | undefined;
+async function handleRemoveConnection(args: string[], asJson: boolean): Promise<void> {
+    const vendorInput = args.find((value) => !value.startsWith('-')) as ConnectVendorInput | undefined;
     if (!vendorInput) {
-        console.error(chalk.red('Usage: aha connect remove <codex|claude|gemini>'));
+        console.error(chalk.red('Usage: aha connect remove <codex|claude|gemini> [--force]'));
         process.exit(1);
     }
 
     const serverVendor = resolveServerVendor(vendorInput);
     const displayVendor = getDisplayVendor(serverVendor);
-    const shouldRemove = await confirm(`Remove stored ${displayVendor} credentials from Aha cloud? (y/N): `);
+    const dryRun = args.includes('--dry-run');
+
+    if (dryRun) {
+        printCliDryRunPreview(
+            {
+                action: 'connect.remove',
+                summary: `Would remove stored ${displayVendor} credentials from Aha cloud.`,
+                target: { vendor: displayVendor },
+                payload: { serverVendor },
+            },
+            { asJson },
+        );
+        return;
+    }
+
+    const shouldRemove = await confirm(
+        `Remove stored ${displayVendor} credentials from Aha cloud? (y/N): `,
+        args.includes('--force') || args.includes('-f'),
+    );
     if (!shouldRemove) {
         console.log(chalk.yellow('Operation cancelled'));
         return;
@@ -167,6 +189,10 @@ async function handleRemoveConnection(args: string[]): Promise<void> {
 
     const api = await createApiClient();
     await api.removeVendorToken(serverVendor);
+    if (asJson) {
+        console.log(JSON.stringify({ ok: true, removed: true, vendor: displayVendor }, null, 2));
+        return;
+    }
     console.log(chalk.green(`✅ Removed ${displayVendor} credentials from Aha cloud`));
 }
 

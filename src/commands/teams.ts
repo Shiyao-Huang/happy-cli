@@ -17,11 +17,13 @@ import {
   fetchMarketplaceGenomeDetail,
   parseCorpsSpecFromGenome,
 } from '@/utils/genomeMarketplace';
+import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 
 interface TeamCommandOptions {
   force?: boolean;
   verbose?: boolean;
   asJson?: boolean;
+  dryRun?: boolean;
 }
 
 const TEAM_TASK_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'] as const;
@@ -42,7 +44,7 @@ function hasFlag(args: string[], ...flags: string[]): boolean {
 
 function getPositionalArgs(args: string[]): string[] {
   const positional: string[] = [];
-  const booleanFlags = new Set(['--force', '-f', '--verbose', '-v', '--json', '--help', '-h', '--no-spawn']);
+  const booleanFlags = new Set(['--force', '-f', '--verbose', '-v', '--json', '--help', '-h', '--no-spawn', '--dry-run']);
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -73,18 +75,7 @@ function parseCsvOption(args: string[], name: string): string[] | undefined {
 }
 
 async function confirm(prompt: string): Promise<boolean> {
-  const { default: readline } = await import('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(chalk.cyan(prompt));
-    return answer.trim().toLowerCase() === 'y';
-  } finally {
-    rl.close();
-  }
+  return confirmPrompt(prompt, { forceFlagName: '--force' });
 }
 
 async function createApiClient(): Promise<ApiClient> {
@@ -324,8 +315,11 @@ ${chalk.bold('Commands:')}
 
 ${chalk.bold('Common options:')}
   ${chalk.cyan('--json')}                         Print raw JSON output
+  ${chalk.cyan('--format <json|table>')}         Select JSON or human output mode
   ${chalk.cyan('--verbose, -v')}                  Show detailed member output
   ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
+  ${chalk.cyan('--dry-run')}                      Preview archive/delete/unarchive without mutating the server
+  ${chalk.cyan('--no-interactive')}               Fail instead of prompting; pair with --force for agents
 
 ${chalk.bold('Create options:')}
   ${chalk.cyan('--name "Team Name"')}            Team name (or pass as positional text)
@@ -390,6 +384,7 @@ export async function handleTeamsCommand(args: string[]) {
     force: hasFlag(args, '--force', '-f'),
     verbose: hasFlag(args, '--verbose', '-v'),
     asJson: hasFlag(args, '--json'),
+    dryRun: hasFlag(args, '--dry-run'),
   };
 
   const api = await createApiClient();
@@ -532,8 +527,8 @@ export async function handleTeamsCommand(args: string[]) {
     }
   } catch (error) {
     logger.debug('[TeamsCommand] Error:', error);
-    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
+    printCliCommandError(error);
+    process.exit(getCliCommandExitCode(error));
   }
 }
 
@@ -823,6 +818,19 @@ async function removeMember(api: ApiClient, teamId: string, args: string[], opti
 }
 
 async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (options.dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'teams.archive',
+        summary: `Would archive team ${teamId} and stop its local daemon sessions.`,
+        target: { teamId },
+        payload: { stopDaemonSessions: true, archiveMemberSessions: true },
+      },
+      { asJson: options.asJson },
+    );
+    return;
+  }
+
   if (!options.force) {
     const confirmed = await confirm(`Archive team ${teamId}? (y/N): `);
     if (!confirmed) {
@@ -846,6 +854,18 @@ async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandO
 }
 
 async function unarchiveTeamCmd(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (options.dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'teams.unarchive',
+        summary: `Would restore archived team ${teamId}.`,
+        target: { teamId },
+      },
+      { asJson: options.asJson },
+    );
+    return;
+  }
+
   if (!options.force) {
     const confirmed = await confirm(`Restore archived team ${teamId}? (y/N): `);
     if (!confirmed) {
@@ -867,6 +887,19 @@ async function unarchiveTeamCmd(api: ApiClient, teamId: string, options: TeamCom
 }
 
 async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOptions): Promise<void> {
+  if (options.dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'teams.delete',
+        summary: `Would delete team ${teamId} and stop its local daemon sessions.`,
+        target: { teamId },
+        payload: { stopDaemonSessions: true, deleteMemberSessions: true },
+      },
+      { asJson: options.asJson },
+    );
+    return;
+  }
+
   if (!options.force) {
     const confirmed = await confirm(`Delete team ${teamId}? This cannot be undone. (y/N): `);
     if (!confirmed) {
@@ -903,6 +936,19 @@ async function renameTeam(api: ApiClient, teamId: string, newName: string, optio
 }
 
 async function batchArchiveTeams(api: ApiClient, teamIds: string[], options: TeamCommandOptions): Promise<void> {
+  if (options.dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'teams.batch-archive',
+        summary: `Would archive ${teamIds.length} team(s).`,
+        target: { teamIds },
+        payload: { stopDaemonSessions: true, archiveMemberSessions: true },
+      },
+      { asJson: options.asJson },
+    );
+    return;
+  }
+
   if (!options.force) {
     const confirmed = await confirm(`Archive ${teamIds.length} team(s)? (y/N): `);
     if (!confirmed) {
@@ -1465,6 +1511,19 @@ async function spawnTeamWithPreset(
 }
 
 async function batchDeleteTeams(api: ApiClient, teamIds: string[], options: TeamCommandOptions): Promise<void> {
+  if (options.dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'teams.batch-delete',
+        summary: `Would delete ${teamIds.length} team(s).`,
+        target: { teamIds },
+        payload: { stopDaemonSessions: true, deleteMemberSessions: true },
+      },
+      { asJson: options.asJson },
+    );
+    return;
+  }
+
   if (!options.force) {
     const confirmed = await confirm(`Delete ${teamIds.length} team(s)? This cannot be undone. (y/N): `);
     if (!confirmed) {

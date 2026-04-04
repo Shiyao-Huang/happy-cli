@@ -130,6 +130,7 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Flags:')}
   --json          Machine-readable JSON output
+  --format <json|table>  Select JSON or human output mode
   --model <id>    Override model for cost calculation
   -h, --help      Show this help
 

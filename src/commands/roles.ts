@@ -7,6 +7,7 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { getCliCommandExitCode, printCliCommandError } from './globalCli';
 
 type ReviewSource = 'user' | 'master' | 'system';
 
@@ -175,8 +176,8 @@ export async function handleRolesCommand(args: string[]) {
     }
   } catch (error) {
     logger.debug('[RolesCommand] Error:', error);
-    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
+    printCliCommandError(error);
+    process.exit(getCliCommandExitCode(error));
   }
 }
 

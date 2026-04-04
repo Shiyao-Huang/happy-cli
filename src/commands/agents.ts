@@ -12,6 +12,7 @@ import {
   withDefaultAgentSkills,
 } from '@/agentDocker/materializer';
 import { buildMaterializedSpawnEnv } from '@/agentDocker/runtimeConfig';
+import { fetchAgentImage } from '@/claude/utils/fetchGenome';
 import { isRecognizedModelId } from '@/utils/modelContextWindows';
 import { publishTeamCorpsTemplate, resolvePreferredGenomeSpecId } from '@/utils/genomeMarketplace';
 import { normalizeAgentImageForPublication } from '@/utils/genomePublication';
@@ -23,6 +24,7 @@ import { readDaemonState } from '@/persistence';
 import { COORDINATION_ROLES } from '@/claude/team/roleConstants';
 import { findClaudeLogFile } from '@/claude/utils/runtimeLogReader';
 import { homedir } from 'os';
+import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -51,7 +53,7 @@ function hasFlag(args: string[], ...flags: string[]): boolean {
 
 function getPositionalArgs(args: string[]): string[] {
   const positional: string[] = [];
-  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--active', '--clear-team', '--help', '-h']);
+  const booleanFlags = new Set(['--json', '--force', '-f', '--verbose', '-v', '--active', '--clear-team', '--help', '-h', '--dry-run']);
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -82,18 +84,7 @@ function parseCsvOption(args: string[], name: string): string[] | undefined {
 }
 
 async function confirm(prompt: string): Promise<boolean> {
-  const { default: readline } = await import('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(chalk.cyan(prompt));
-    return answer.trim().toLowerCase() === 'y';
-  } finally {
-    rl.close();
-  }
+  return confirmPrompt(prompt, { forceFlagName: '--force' });
 }
 
 async function createApiClient(): Promise<ApiClient> {
@@ -268,6 +259,7 @@ ${chalk.bold('List options:')}
   ${chalk.cyan('--team <teamId>')}                Filter by metadata.teamId
   ${chalk.cyan('--role <roleId>')}                Filter by metadata.role
   ${chalk.cyan('--json')}                         Print raw JSON output
+  ${chalk.cyan('--format <json|table>')}         Select JSON or human output mode
   ${chalk.cyan('--verbose, -v')}                  Show extra metadata fields
 
 ${chalk.bold('Update options:')}
@@ -288,6 +280,8 @@ ${chalk.bold('Logs options:')}
 ${chalk.bold('Workflow options:')}
   ${chalk.cyan('--ids a,b,c')}                    Alternative to positional IDs for archive/delete
   ${chalk.cyan('--force, -f')}                    Skip archive/delete confirmation
+  ${chalk.cyan('--dry-run')}                      Preview archive/delete/unarchive without mutating the server
+  ${chalk.cyan('--no-interactive')}               Fail instead of prompting; pair with --force for agents
 
 ${chalk.bold('Create options (P0):')}
   ${chalk.cyan('--role <roleId>')}                Role to create (builder|qa-engineer|master|implementer|researcher|...)
@@ -328,6 +322,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
   const positional = getPositionalArgs(args);
   const asJson = hasFlag(args, '--json');
   const verbose = hasFlag(args, '--verbose', '-v');
+  const dryRun = hasFlag(args, '--dry-run');
 
   try {
     switch (subcommand) {
@@ -359,7 +354,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         if (sessionIds.length === 0) {
           throw new Error('Usage: aha agents kill <sessionId...>');
         }
-        await archiveAgents(api, sessionIds, true, asJson);
+        await archiveAgents(api, sessionIds, true, asJson, dryRun);
         break;
       }
       case 'logs': {
@@ -396,7 +391,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         if (sessionIds.length === 0) {
           throw new Error('Usage: aha agents archive <sessionId...> [--ids a,b,c]');
         }
-        await archiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
+        await archiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       }
       case 'unarchive': {
@@ -404,7 +399,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         if (sessionIds.length === 0) {
           throw new Error('Usage: aha agents unarchive <sessionId...> [--ids a,b,c]');
         }
-        await unarchiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
+        await unarchiveAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       }
       case 'delete': {
@@ -412,7 +407,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         if (sessionIds.length === 0) {
           throw new Error('Usage: aha agents delete <sessionId...> [--ids a,b,c]');
         }
-        await deleteAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson);
+        await deleteAgents(api, sessionIds, hasFlag(args, '--force', '-f'), asJson, dryRun);
         break;
       }
       case 'spawn': {
@@ -451,8 +446,8 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
     }
   } catch (error) {
     logger.debug('[AgentsCommand] Error:', error);
-    console.log(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
-    process.exit(1);
+    printCliCommandError(error);
+    process.exit(getCliCommandExitCode(error));
   }
 }
 
@@ -650,7 +645,19 @@ async function updateAgent(
   console.log();
 }
 
-async function archiveAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean): Promise<void> {
+async function archiveAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'agents.archive',
+        summary: `Would archive ${sessionIds.length} agent session(s).`,
+        target: { sessionIds },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Archive ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
@@ -676,7 +683,19 @@ async function archiveAgents(api: ApiClient, sessionIds: string[], force: boolea
   console.log();
 }
 
-async function unarchiveAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean): Promise<void> {
+async function unarchiveAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'agents.unarchive',
+        summary: `Would restore ${sessionIds.length} agent session(s).`,
+        target: { sessionIds },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Restore ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
@@ -702,7 +721,19 @@ async function unarchiveAgents(api: ApiClient, sessionIds: string[], force: bool
   console.log();
 }
 
-async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean): Promise<void> {
+async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean, asJson: boolean, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    printCliDryRunPreview(
+      {
+        action: 'agents.delete',
+        summary: `Would delete ${sessionIds.length} agent session(s).`,
+        target: { sessionIds },
+      },
+      { asJson },
+    );
+    return;
+  }
+
   if (!force) {
     const confirmed = await confirm(`Delete ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
@@ -839,6 +870,28 @@ export function buildBuiltinAgentImage(
   };
 }
 
+export async function resolveMaterializedAgentImageForCreate(options: {
+  builtinAgentImage: AgentImage;
+  specId?: string | null;
+  authToken?: string | null;
+}): Promise<AgentImage> {
+  if (!options.specId) {
+    return options.builtinAgentImage;
+  }
+
+  const authToken = options.authToken?.trim();
+  if (!authToken) {
+    throw new Error(`Cannot materialize published agent image ${options.specId}: missing auth token.`);
+  }
+
+  const publishedAgentImage = await fetchAgentImage(authToken, options.specId);
+  if (!publishedAgentImage) {
+    throw new Error(`Resolved published agent image ${options.specId} was not found in genome-hub.`);
+  }
+
+  return publishedAgentImage;
+}
+
 async function createAgent(
   api: ApiClient,
   roleId: string,
@@ -864,7 +917,14 @@ async function createAgent(
     strategy: 'best-rated',
   });
 
-  const plan = buildAgentWorkspacePlanFromAgentImage(built.agentImage, {
+  const credentials = await readCredentials();
+  const materializedAgentImage = await resolveMaterializedAgentImageForCreate({
+    builtinAgentImage: built.agentImage,
+    specId: specResolution.specId,
+    authToken: credentials?.token,
+  });
+
+  const plan = buildAgentWorkspacePlanFromAgentImage(materializedAgentImage, {
     agentId,
     repoRoot,
     specId: specResolution.specId ?? undefined,
@@ -895,7 +955,7 @@ async function createAgent(
 
   const spawnBody = {
     directory: plan.effectiveCwd,
-    agent: built.agentImage.runtimeType === 'codex' ? 'codex' : 'claude',
+    agent: materializedAgentImage.runtimeType === 'codex' ? 'codex' : 'claude',
     role: roleId,
     sessionName: displayName,
     teamId: opts.teamId,
