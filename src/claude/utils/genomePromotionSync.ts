@@ -159,6 +159,7 @@ export async function createGenomeViaMarketplace(args: {
         || !response
         || response.status === 401
         || response.status === 403
+        || response.status === 404
         || response.status >= 500
     )
 
@@ -330,6 +331,7 @@ export async function submitDiffViaMarketplace(args: {
         || !response
         || response.status === 401
         || response.status === 403
+        || response.status === 404
         || response.status >= 500
     );
 
@@ -458,6 +460,7 @@ export async function promoteGenomeViaMarketplace(args: {
         || !response
         || response.status === 401
         || response.status === 403
+        || response.status === 404
         || response.status >= 500
     )
 

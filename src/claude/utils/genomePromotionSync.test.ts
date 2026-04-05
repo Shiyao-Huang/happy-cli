@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { promoteGenomeViaMarketplace, submitPackageDiffViaMarketplace } from './genomePromotionSync'
+import { createGenomeViaMarketplace, promoteGenomeViaMarketplace, submitDiffViaMarketplace, submitPackageDiffViaMarketplace } from './genomePromotionSync'
 
 function response(status: number, body: string) {
     return {
