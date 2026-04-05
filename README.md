@@ -51,7 +51,8 @@ This will:
 
 - `aha-v3 auth` – Manage authentication
   - `aha-v3 auth reconnect` refreshes the currently cached account
-  - `aha-v3 auth restore --code <backup-key>` restores a known account explicitly
+  - `aha-v3 auth login --code <backup-key>` restores a known account from a one-time ticket
+  - `aha-v3 auth join --ticket <ticket>` joins an existing account from a join link
 - `aha-v3 codex` – Start Codex mode
 - `aha-v3 connect` – Store AI vendor API keys in Aha cloud
 - `aha-v3 notify` – Send a push notification to your devices

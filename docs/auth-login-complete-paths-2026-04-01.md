@@ -350,7 +350,7 @@ npm i aha-agi && npx aha auth login --code aha_join_xxxxxxxxxxxxxxxxxxxxxxxx
 - 备份命令：
 
 ```bash
-npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
+npm i aha-agi && npx aha auth login --code XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 - 结果：新设备能以更低阻力显式加入同一个账户
@@ -385,16 +385,16 @@ npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
 - 群聊连续性：保留
 - 当前是否成立：成立
 
-### C4. CLI 执行 `npx aha auth restore --code ...`
+### C4. CLI 执行 `npx aha auth login --code ...`
 
-- 起点：用户手上有 canonical restore key
-- 路径：CLI 解析 restore code，恢复 secret，清理旧 machineId，重新注册 machine，启动 daemon
+- 起点：用户手上有 canonical restore key 或一次性 join ticket
+- 路径：CLI 解析 code，若是 join ticket 则走 `auth join --ticket`；若是 restore code 则恢复 secret、清理旧 machineId、重新注册 machine、启动 daemon
 - 结果：显式恢复到原账户
 - restore key：不变
 - 群聊连续性：保留
 - 当前是否成立：成立
 
-这是当前最强、最稳的账户恢复路径。
+这是当前最强、最稳的账户恢复路径。注：旧文档中的 `aha auth restore --code` 子命令已合并到 `aha auth login --code`。
 
 ### C5. CLI 执行 `npx aha auth login --email`
 
@@ -421,7 +421,7 @@ npm i aha-agi && npx aha auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
 
 - 起点：用户已有 restore code，或已有一次性 join ticket
 - 路径：
-  - 如果是 restore code：转发到 `auth restore --code`
+  - 如果是 restore code：CLI 内部处理 restore 流程（`aha auth login --code` 统一入口）
   - 如果是 `aha_join_...`：转发到 `auth join --ticket ...`
 - 结果：都可以并入同一个账户
 - restore key：restore 路径不变；join ticket 是一次性的，不等于 restore key

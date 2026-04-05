@@ -31,7 +31,7 @@ aha-v3 auth reconnect
 Use this when the daemon / machine drifted to the wrong account.
 
 ```bash
-aha-v3 auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
+aha-v3 auth login --code XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 This will:

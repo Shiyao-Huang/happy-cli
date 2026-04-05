@@ -100,7 +100,7 @@ If you have a downloaded restore key JSON like:
 Open it and copy the `secretKeyFormatted` value, then run:
 
 ```bash
-aha-v3 auth restore --code XXXXX-XXXXX-XXXXX-XXXXX
+aha-v3 auth login --code XXXXX-XXXXX-XXXXX-XXXXX
 ```
 
 This does four important things:

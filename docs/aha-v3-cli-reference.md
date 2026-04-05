@@ -41,7 +41,8 @@ Authentication management.
 ```bash
 aha-v3 auth login                       # Default auth flow
 aha-v3 auth reconnect                   # Reconnect using current local credential material
-aha-v3 auth restore --code <backup-key> # Restore a known account directly from backup key
+aha-v3 auth login --code <backup-key>   # Restore a known account from a one-time ticket
+aha-v3 auth join --ticket <ticket>      # Join an existing account from a join link
 aha-v3 auth login --force              # Create or switch to a fresh account
 aha-v3 auth status                     # Show current auth + machine + daemon state
 aha-v3 auth logout                     # Clear stored credentials
