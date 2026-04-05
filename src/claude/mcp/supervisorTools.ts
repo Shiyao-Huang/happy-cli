@@ -2585,14 +2585,24 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         // 3. Apply mutations to spec (immutable — create new object)
+        // Uses dot-path traversal so fields like 'scopeOfResponsibility.forbiddenPaths'
+        // resolve into the correct nested object instead of creating a top-level key.
+        const getAtDotPath = (obj: Record<string, unknown>, path: string): unknown =>
+            path.split('.').reduce<unknown>((cur, key) => {
+                if (cur != null && typeof cur === 'object' && !Array.isArray(cur)) {
+                    return (cur as Record<string, unknown>)[key];
+                }
+                return undefined;
+            }, obj);
+
         let mutatedSpec = { ...currentSpec };
 
         for (const mutation of args.mutations) {
-            const fieldValue = mutatedSpec[mutation.field];
+            const fieldValue = getAtDotPath(mutatedSpec, mutation.field);
 
             if (mutation.action === 'rewrite') {
-                // Replace the entire field value
-                mutatedSpec = { ...mutatedSpec, [mutation.field]: mutation.value };
+                // Replace the entire field value (supports dot-path)
+                mutatedSpec = applyKvDiff(mutatedSpec, mutation.field, mutation.value);
             } else if (Array.isArray(fieldValue)) {
                 const arr = [...fieldValue] as string[];
                 if (mutation.action === 'append' && mutation.value) {
@@ -2606,13 +2616,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                         arr.splice(mutation.index, 1);
                     }
                 }
-                mutatedSpec = { ...mutatedSpec, [mutation.field]: arr };
+                mutatedSpec = applyKvDiff(mutatedSpec, mutation.field, arr);
             } else if (typeof fieldValue === 'string' || fieldValue === undefined) {
                 // Scalar string field (like systemPromptSuffix)
                 if (mutation.action === 'append' && mutation.value) {
-                    mutatedSpec = { ...mutatedSpec, [mutation.field]: (fieldValue ?? '') + '\n' + mutation.value };
+                    mutatedSpec = applyKvDiff(mutatedSpec, mutation.field, (fieldValue ?? '') + '\n' + mutation.value);
                 } else if (mutation.action === 'replace' && mutation.value) {
-                    mutatedSpec = { ...mutatedSpec, [mutation.field]: mutation.value };
+                    mutatedSpec = applyKvDiff(mutatedSpec, mutation.field, mutation.value);
                 }
             }
         }
