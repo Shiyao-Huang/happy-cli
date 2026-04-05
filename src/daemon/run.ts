@@ -650,7 +650,8 @@ export async function startDaemon(): Promise<void> {
             error.code === 'ECONNRESET' ||
             error.code === 'ETIMEDOUT' ||
             error.code === 'EPROTO' ||
-            error.code === 'ERR_NETWORK'
+            error.code === 'ERR_NETWORK' ||
+            error.code === 'ERR_INVALID_IP_ADDRESS'
           )
         ) {
           logger.warn(`[DAEMON RUN] Network error during machine registration (${error.code}) in ${reason}; starting in offline mode and will retry on a future heartbeat.`);
