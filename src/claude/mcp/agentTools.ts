@@ -468,7 +468,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 signal: AbortSignal.timeout(15_000),
             });
 
-            const result = await response.json() as { success?: boolean; sessionId?: string; error?: string };
+            const result = await response.json() as { success?: boolean; sessionId?: string; queued?: boolean; error?: string };
 
             if (!response.ok || !result.success) {
                 return {
@@ -477,8 +477,13 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
 
-            // Register spawned agent as a team member
-            const spawnedSessionId = result.sessionId;
+            // Register spawned agent as a team member.
+            // Skip registration for queued spawns — result.sessionId is a placeholder like "queued-<ulid>".
+            // The spawned agent will call ensureCurrentSessionRegisteredToTeam once it actually starts,
+            // which will register with the real sessionId. Registering with the placeholder would corrupt
+            // the roster: hasMember() matches by memberId and returns alreadyPresent:true, so the real
+            // sessionId would never replace the placeholder.
+            const spawnedSessionId = result.queued ? undefined : result.sessionId;
             let publishedCorpsTemplate: Awaited<ReturnType<typeof publishTeamCorpsTemplate>> | null = null;
             if (spawnedSessionId && args.teamId) {
                 try {
@@ -531,7 +536,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                                 templateId: publishedCorpsTemplate.templateId,
                             }
                             : null,
-                        status: 'spawned_and_registered',
+                        status: result.queued ? 'queued' : 'spawned_and_registered',
                     })
                 }],
                 isError: false,
