@@ -3358,15 +3358,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     // ========== Runtime-Aware Supervisor Log Tools ==========
 
     mcp.registerTool('list_team_runtime_logs', {
-        description: 'List runtime log files for team agents across Claude and Codex. Returns ahaSessionId, claudeLocalSessionId, and the exact readSessionId/cursorKey to use with read_runtime_log. For Claude, readSessionId is the claudeLocalSessionId (NOT the Aha sessionId). Supervisor/help-agent only.',
+        description: 'List runtime log files for team agents across Claude and Codex. Returns ahaSessionId, claudeLocalSessionId, and the exact readSessionId/cursorKey to use with read_runtime_log. For Claude, readSessionId is the claudeLocalSessionId (NOT the Aha sessionId). Available to supervisor/help-agent/org-manager/master.',
         title: 'List Team Runtime Logs',
         inputSchema: {
             teamId: z.string().describe('Team ID to list runtime logs for'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can use this tool.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use this tool.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
             return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
@@ -3418,8 +3418,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read runtime logs.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read runtime logs.' }], isError: true };
         }
         try {
             const result = readRuntimeLog({
