@@ -503,6 +503,19 @@ export function initSessionManagerDeadCallback(fn: (sessionIds: string[]) => voi
   _onSessionDead = fn;
 }
 
+// ── Task lock release callback ───────────────────────────────────────────────
+// Injected from run.ts so onChildExited can release task execution locks held
+// by the dying session before the next heartbeat cycle would catch it.
+let _onSessionTaskLockRelease: ((sessionId: string, teamId: string) => void) | null = null;
+
+/**
+ * Wire up the task-lock release callback from run.ts.
+ * Called once during daemon startup.
+ */
+export function initSessionManagerTaskLockRelease(fn: (sessionId: string, teamId: string) => void): void {
+  _onSessionTaskLockRelease = fn;
+}
+
 export function resetSessionManagerForTests(): void {
   pidToTrackedSession.clear();
   inFlightHelpRequestsByTeam.clear();
@@ -510,6 +523,7 @@ export function resetSessionManagerForTests(): void {
   pidToAwaiter.clear();
   _pingHeartbeat = null;
   _onSessionDead = null;
+  _onSessionTaskLockRelease = null;
 }
 
 // ── Webhook handler ────────────────────────────────────────────────────────────
@@ -1402,6 +1416,7 @@ export const onChildExited = (pid: number): void => {
   const teamId = tracked?.ahaSessionMetadataFromLocalWebhook?.teamId || tracked?.ahaSessionMetadataFromLocalWebhook?.roomId;
   if (teamId && tracked?.ahaSessionId) {
     helpAgentLeaseExpiryByTeam.get(teamId)?.delete(tracked.ahaSessionId);
+    _onSessionTaskLockRelease?.(tracked.ahaSessionId, teamId);
   }
 
   if (tracked?.ahaSessionId && _onSessionDead) {

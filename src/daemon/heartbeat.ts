@@ -37,6 +37,11 @@ export interface HeartbeatContext {
   /** Report dead session IDs to the backend */
   reportDeadSessions: (ids: string[]) => void;
   /**
+   * Release task execution locks for dead sessions.
+   * Called after a session is detected dead so other agents can claim its tasks.
+   */
+  releaseDeadSessionTaskLocks?: (deadSessions: Array<{ sessionId: string; teamId: string }>) => void;
+  /**
    * Called when a stale session is pruned during heartbeat.
    * Allows sessionManager to trigger respawn and drain the spawn queue.
    */
@@ -136,6 +141,7 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
     pidToTrackedSession,
     pingHeartbeat,
     reportDeadSessions,
+    releaseDeadSessionTaskLocks,
     onSessionDied,
     requestShutdown,
     startupDiskVersion,
@@ -146,6 +152,7 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
 
   // ── Step 1: Prune stale sessions ────────────────────────────────────────────
   const deadSessionIds: string[] = [];
+  const deadSessionsWithTeam: Array<{ sessionId: string; teamId: string }> = [];
   for (const [pid] of pidToTrackedSession.entries()) {
     try {
       process.kill(pid, 0); // signal 0: liveness check, no-op if alive
@@ -155,6 +162,11 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
       pidToTrackedSession.delete(pid);
       if (tracked?.ahaSessionId) {
         deadSessionIds.push(tracked.ahaSessionId);
+        const teamId = tracked.ahaSessionMetadataFromLocalWebhook?.teamId
+          ?? tracked.ahaSessionMetadataFromLocalWebhook?.roomId;
+        if (teamId) {
+          deadSessionsWithTeam.push({ sessionId: tracked.ahaSessionId, teamId });
+        }
       }
       // Notify sessionManager for potential respawn and queue drain
       if (tracked) {
@@ -164,6 +176,9 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
   }
   if (deadSessionIds.length > 0) {
     reportDeadSessions(deadSessionIds);
+  }
+  if (deadSessionsWithTeam.length > 0) {
+    releaseDeadSessionTaskLocks?.(deadSessionsWithTeam);
   }
 
   // ── Step 2: Cross-check MCP-layer heartbeat for zombie sessions ────────────

@@ -59,6 +59,7 @@ import {
   pidToTrackedSession,
   initSessionManagerHeartbeat,
   initSessionManagerDeadCallback,
+  initSessionManagerTaskLockRelease,
   onAhaSessionWebhook,
   spawnSession,
   stopSession,
@@ -392,6 +393,14 @@ export async function startDaemon(): Promise<void> {
       }
     });
 
+    // Wire task lock release so execution links held by crashed sessions are freed
+    // immediately on process exit rather than waiting for the next heartbeat cycle.
+    initSessionManagerTaskLockRelease((sessionId, teamId) => {
+      api.releaseSessionTaskLocks(teamId, sessionId).catch((err: unknown) => {
+        logger.debug(`[DAEMON RUN] Failed to release task locks for dead session ${sessionId}: ${err}`);
+      });
+    });
+
     // Helper for control server
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
@@ -683,6 +692,13 @@ export async function startDaemon(): Promise<void> {
               return;
             }
             apiMachine.reportDeadSessions(ids);
+          },
+          releaseDeadSessionTaskLocks: (deadSessions) => {
+            for (const { sessionId, teamId } of deadSessions) {
+              api.releaseSessionTaskLocks(teamId, sessionId).catch((err) => {
+                logger.debug(`[DAEMON RUN] Failed to release task locks for dead session ${sessionId}:`, err);
+              });
+            }
           },
           heartbeatIntervalHandle: restartOnStaleVersionAndHeartbeat!,
           requestShutdown,
