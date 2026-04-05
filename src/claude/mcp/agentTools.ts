@@ -63,6 +63,7 @@ async function collectPredecessorHandoffContext(
     api: McpToolContext['api'],
     teamId: string,
     predecessorSessionId: string,
+    authorSessionId?: string,
 ): Promise<string> {
     try {
         const tasksResult = await api.listTasks(teamId, { assigneeId: predecessorSessionId });
@@ -76,7 +77,8 @@ async function collectPredecessorHandoffContext(
                 const fullTask = await api.getTask(teamId, task.id);
                 if (!fullTask?.comments?.length) continue;
                 const handoffComments = fullTask.comments.filter(
-                    (c: any) => c.type === 'handoff',
+                    (c: any) => c.type === 'handoff' &&
+                        (!authorSessionId || c?.authorSessionId === authorSessionId),
                 );
                 if (handoffComments.length === 0) continue;
                 // Take the most recent handoff comment per task
@@ -1088,31 +1090,10 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
 
             // Collect predecessor handoff: aggregate type=handoff task comments from the retiring session
-            let predecessorHandoff: string | undefined;
-            try {
-                const predecessorTasks = await api.listTasks(inferredTeamId, { assigneeId: args.sessionId });
-                const handoffParts: string[] = [];
-                for (const task of predecessorTasks?.tasks ?? []) {
-                    if (task?.status === 'done') continue;
-                    try {
-                        const fullTask = await api.getTask(inferredTeamId, task.id);
-                        const handoffComments = (fullTask?.comments ?? []).filter(
-                            (c: any) => c?.type === 'handoff' && c?.authorSessionId === args.sessionId,
-                        );
-                        if (handoffComments.length > 0) {
-                            const latest = handoffComments[handoffComments.length - 1];
-                            handoffParts.push(`### Task ${task.id}: ${task.title || '(untitled)'}\n${latest.content}`);
-                        }
-                    } catch {
-                        // Best-effort per task
-                    }
-                }
-                if (handoffParts.length > 0) {
-                    predecessorHandoff = handoffParts.join('\n\n');
-                }
-            } catch {
-                // Best-effort: don't block replacement if handoff fetch fails
-            }
+            const predecessorHandoffText = await collectPredecessorHandoffContext(
+                api, inferredTeamId, args.sessionId, args.sessionId,
+            );
+            const predecessorHandoff = predecessorHandoffText || undefined;
 
             const replacement = await spawnReplacementSession({
                 teamId: inferredTeamId,
