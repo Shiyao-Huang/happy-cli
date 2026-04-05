@@ -477,7 +477,7 @@ ${teamInfo.myInfo.roleDefinition.boundaries.map((b: string) => `- ${b}`).join('\
 - **Currently collaborating**: ${teamInfo.roster.collaborating}
 - **Known inactive**: ${teamInfo.roster.inactive}
 - **Liveness known**: ${teamInfo.roster.pulseKnown ? 'yes' : 'no'}
-${teamInfo.roster.activeFilterApplied ? '- Inactive roster members are hidden by default. Call `list_inactive_team_members` to inspect dormant/artifact-only entries.' : ''}
+${teamInfo.roster.activeFilterApplied ? '- Inactive roster members are hidden by default. Call `list_inactive_team_members` to inspect dormant/artifact-only entries.' : ''}${!teamInfo.roster.pulseKnown ? '- ⚠ Liveness data unavailable (daemon pulse unreachable). Roster includes ALL known sessions; some may be inactive or dead.' : ''}
 
 ## Team Members (${teamInfo.teamMembers.length})
 ${teamInfo.teamMembers.map((m: any) => {
