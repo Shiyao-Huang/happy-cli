@@ -101,10 +101,15 @@ function buildDirectoryChain(projectRoot: string, directory: string): string[] {
 }
 
 function discoverAgentsInstructionDocs(directory: string, projectRoot: string): InstructionDoc[] {
-    const docs: InstructionDoc[] = [];
+    // Walk cwd→root so that when the 32 KB budget is exhausted the broadest-scope
+    // (root-level) docs are dropped first, not the closest-scope (cwd-level) docs.
+    const chain = buildDirectoryChain(projectRoot, directory);
+    const cwdFirstChain = [...chain].reverse();
+
+    const collected: InstructionDoc[] = [];
     let totalBytes = 0;
 
-    for (const dir of buildDirectoryChain(projectRoot, directory)) {
+    for (const dir of cwdFirstChain) {
         const candidate = path.join(dir, 'AGENTS.md');
         if (!fs.existsSync(candidate)) {
             continue;
@@ -125,14 +130,15 @@ function discoverAgentsInstructionDocs(directory: string, projectRoot: string): 
             break;
         }
 
-        docs.push({
+        collected.push({
             path: path.resolve(candidate),
             content,
         });
         totalBytes += contentBytes;
     }
 
-    return docs;
+    // Re-sort root→cwd so agents see context from broad to specific.
+    return collected.reverse();
 }
 
 function formatAgentsInstructionDocs(docs: InstructionDoc[]): string | null {
