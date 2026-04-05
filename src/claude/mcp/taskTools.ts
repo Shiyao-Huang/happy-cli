@@ -33,6 +33,61 @@ import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext } from './mcpContext';
 
+export type CreateTaskType = 'standard' | 'hypothesis';
+
+interface CreateTaskPolicyArgs {
+    role?: string;
+    effectiveGenome?: any;
+    requestedType?: CreateTaskType;
+    requestedAssigneeId?: string;
+}
+
+interface CreateTaskPolicyResult {
+    allowed: boolean;
+    taskType: CreateTaskType;
+    assigneeId: string | null;
+    labels?: string[];
+    denyMessage?: string;
+}
+
+export function resolveCreateTaskPolicy(args: CreateTaskPolicyArgs): CreateTaskPolicyResult {
+    const taskType: CreateTaskType = args.requestedType === 'hypothesis' ? 'hypothesis' : 'standard';
+    const hasFullTaskCreate = canCreateTeamTasks(args.role, args.effectiveGenome);
+
+    if (taskType === 'hypothesis') {
+        if (args.requestedAssigneeId) {
+            return {
+                allowed: false,
+                taskType,
+                assigneeId: null,
+                denyMessage: 'Error: Hypothesis tasks are capture-only and must be unassigned. Remove assigneeId and let a coordinator triage later.',
+            };
+        }
+
+        return {
+            allowed: true,
+            taskType,
+            assigneeId: null,
+            labels: ['hypothesis'],
+        };
+    }
+
+    if (!hasFullTaskCreate) {
+        return {
+            allowed: false,
+            taskType,
+            assigneeId: null,
+            denyMessage: `Error: Role "${args.role || 'unknown'}" cannot create team tasks. Use a coordinator/bootstrap role such as master, orchestrator, or org-manager. Non-coordinator roles may only capture unassigned hypothesis tasks via type="hypothesis".`,
+        };
+    }
+
+    return {
+        allowed: true,
+        taskType,
+        assigneeId: args.requestedAssigneeId || null,
+    };
+}
+
 export function registerTaskTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -45,11 +100,12 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
     // Create Task - Uses REST API for server-driven task orchestration with WebSocket events
     mcp.registerTool('create_task', {
-        description: 'Create a new task for the team. Use this to assign work to team members. Bootstrap/coordinator roles can use this.',
+        description: 'Create a new task for the team. Bootstrap/coordinator roles can create regular team tasks; any role may capture an unassigned hypothesis via type="hypothesis".',
         title: 'Create Task',
         inputSchema: {
             title: z.string().describe('Task title'),
             description: z.string().optional().describe('Detailed task description'),
+            type: z.enum(['standard', 'hypothesis']).optional().describe('Task type. Non-coordinator roles may only create type="hypothesis", which is always unassigned and labeled hypothesis.'),
             assigneeId: z.string().optional().describe('Session ID of the assignee'),
             priority: z.enum(['low', 'medium', 'high']).optional().describe('Task priority (default: medium)'),
         },
@@ -65,11 +121,17 @@ export function registerTaskTools(ctx: McpToolContext): void {
             }
 
             const { effectiveGenome } = await getCurrentTeamMemberContext(teamId);
-            if (!canCreateTeamTasks(role, effectiveGenome)) {
+            const creationPolicy = resolveCreateTaskPolicy({
+                role,
+                effectiveGenome,
+                requestedType: args.type,
+                requestedAssigneeId: args.assigneeId,
+            });
+            if (!creationPolicy.allowed) {
                 return {
-                    content: [{
-                        type: 'text',
-                        text: `Error: Role "${role || 'unknown'}" cannot create team tasks. Use a coordinator/bootstrap role such as master, orchestrator, or org-manager.`
+                        content: [{
+                            type: 'text',
+                        text: creationPolicy.denyMessage || 'Error: Task creation denied.'
                     }],
                     isError: true
                 };
@@ -80,9 +142,10 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 title: args.title,
                 description: args.description || '',
                 status: 'todo' as const,
-                assigneeId: args.assigneeId || null,
+                assigneeId: creationPolicy.assigneeId,
                 reporterId: client.sessionId,
                 priority: args.priority || 'medium',
+                labels: creationPolicy.labels,
             };
 
             const result = await api.createTask(teamId, taskData);
