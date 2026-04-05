@@ -107,7 +107,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             description: z.string().optional().describe('Detailed task description'),
             type: z.enum(['standard', 'hypothesis']).optional().describe('Task type. Non-coordinator roles may only create type="hypothesis", which is always unassigned and labeled hypothesis.'),
             assigneeId: z.string().optional().describe('Session ID of the assignee'),
-            priority: z.enum(['low', 'medium', 'high']).optional().describe('Task priority (default: medium)'),
+            priority: z.enum(['low', 'medium', 'high', 'urgent']).optional().describe('Task priority (default: medium)'),
         },
     }, async (args) => {
         try {
