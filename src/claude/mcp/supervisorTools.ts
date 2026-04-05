@@ -3180,16 +3180,17 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
         try {
             const meta = client.getMetadata();
-            const handoffTaskIds = args.handoffNote
-                ? await writeRetireHandoffTaskComments({
-                    api,
-                    teamId: meta?.teamId || meta?.roomId,
-                    sessionId: ownSessionId,
-                    role: meta?.role,
-                    displayName: meta?.displayName || meta?.name,
-                    handoffNote: args.handoffNote,
-                })
-                : [];
+            // PRIMARY path: always write handoff task comments to all in-progress tasks.
+            // Uses explicit handoffNote if provided, otherwise auto-generates from reason.
+            const handoffContent = args.handoffNote ?? `Agent retired. Reason: ${args.reason}`;
+            const handoffTaskIds = await writeRetireHandoffTaskComments({
+                api,
+                teamId: meta?.teamId || meta?.roomId,
+                sessionId: ownSessionId,
+                role: meta?.role,
+                displayName: meta?.displayName || meta?.name,
+                handoffNote: handoffContent,
+            });
             let handoffFile: string | undefined;
             if (args.handoffNote) {
                 // Fallback path: write handoff file (backup, in case task API fails)
