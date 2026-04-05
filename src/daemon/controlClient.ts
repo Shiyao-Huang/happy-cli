@@ -10,7 +10,7 @@ import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
-import { spawnAhaCLI } from '@/utils/spawnAhaCLI'
+import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
 import { stripSessionScopedAhaEnv } from '@/utils/sessionScopedAhaEnv';
 
 export async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
@@ -270,7 +270,7 @@ export async function startDaemonDetached(): Promise<boolean> {
   const child = spawnAhaCLI(['daemon', 'start-sync'], {
     detached: true,
     stdio: 'ignore',
-    env: process.env
+    env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true })
   });
   child.unref();
 

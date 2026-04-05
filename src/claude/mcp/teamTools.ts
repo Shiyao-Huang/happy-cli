@@ -358,7 +358,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
                     sessionId: mySessionId,
                     role: myRole || 'member',
                     metadata,
-                    taskStateManager: new TaskStateManager(api, teamId, mySessionId, myRole || 'member'),
+                    taskStateManager: new TaskStateManager(api, teamId, mySessionId, myRole || 'member', metadata),
                 })
 
                 logger.debug(

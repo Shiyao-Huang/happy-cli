@@ -56,6 +56,7 @@ type ListableTask = {
     status?: string;
     priority?: string | null;
     assigneeId?: string | null;
+    reporterId?: string | null;
     parentTaskId?: string | null;
     approvalStatus?: string | null;
     labels?: unknown[];
@@ -68,9 +69,11 @@ type ListableTask = {
     depth?: number;
 };
 
-interface ShowAllTaskSummaryArgs {
+interface ShowAllTaskPageArgs {
     tasks: ListableTask[];
     status?: string;
+    cursor?: number;
+    limit?: number;
     teamStats?: unknown;
     pendingApprovals?: ListableTask[] | unknown;
 }
@@ -113,6 +116,13 @@ export function resolveCreateTaskPolicy(args: CreateTaskPolicyArgs): CreateTaskP
     };
 }
 
+function clampPositiveInteger(value: number | undefined, fallback: number, max: number): number {
+    if (!Number.isFinite(value)) {
+        return fallback;
+    }
+    return Math.min(Math.max(Math.trunc(value as number), 0), max);
+}
+
 export function summarizeTaskForList(task: ListableTask): Record<string, unknown> {
     return {
         id: task.id,
@@ -120,6 +130,7 @@ export function summarizeTaskForList(task: ListableTask): Record<string, unknown
         status: typeof task.status === 'string' ? task.status : 'todo',
         priority: typeof task.priority === 'string' ? task.priority : null,
         assigneeId: typeof task.assigneeId === 'string' ? task.assigneeId : null,
+        reporterId: typeof task.reporterId === 'string' ? task.reporterId : null,
         parentTaskId: typeof task.parentTaskId === 'string' ? task.parentTaskId : null,
         approvalStatus: typeof task.approvalStatus === 'string' ? task.approvalStatus : null,
         labels: Array.isArray(task.labels)
@@ -135,10 +146,16 @@ export function summarizeTaskForList(task: ListableTask): Record<string, unknown
     };
 }
 
-export function buildShowAllTaskSummary(args: ShowAllTaskSummaryArgs): Record<string, unknown> {
+export function buildShowAllTaskPage(args: ShowAllTaskPageArgs): Record<string, unknown> {
     const filteredTasks = args.status
         ? args.tasks.filter((task) => task.status === args.status)
         : args.tasks;
+    const cursor = clampPositiveInteger(args.cursor, 0, Math.max(filteredTasks.length, 0));
+    const limit = Math.max(1, clampPositiveInteger(args.limit, 25, 100) || 25);
+    const pageTasks = filteredTasks.slice(cursor, cursor + limit);
+    const nextCursor = cursor + pageTasks.length < filteredTasks.length
+        ? cursor + pageTasks.length
+        : null;
 
     const statusCounts = {
         todo: 0,
@@ -161,18 +178,30 @@ export function buildShowAllTaskSummary(args: ShowAllTaskSummaryArgs): Record<st
 
     return {
         mode: 'board-overview',
-        filters: args.status ? { status: args.status } : {},
-        boardOverview: {
-            totalBoardTasks: args.tasks.length,
-            returnedTasks: filteredTasks.length,
-            pendingApprovalCount: pendingApprovals.length,
-            statusCounts,
+        filters: {
+            ...(args.status ? { status: args.status } : {}),
         },
-        allTasks: filteredTasks.map((task) => summarizeTaskForList(task)),
         teamStats: args.teamStats ?? null,
         pendingApprovals,
+        boardOverview: {
+            totalBoardTasks: args.tasks.length,
+            matchingTasks: filteredTasks.length,
+            returnedTasks: pageTasks.length,
+            statusCounts,
+            pendingApprovalCount: pendingApprovals.length,
+        },
+        allTasks: pageTasks.map((task) => summarizeTaskForList(task)),
+        pagination: {
+            cursor,
+            limit,
+            nextCursor,
+            hasMore: nextCursor !== null,
+        },
         guidance: {
-            details: 'Call get_task({ taskId }) for full task descriptions and complete comment history.',
+            next: nextCursor !== null
+                ? `Call list_tasks({ showAll: true, cursor: ${nextCursor}, limit: ${limit}${args.status ? `, status: "${args.status}"` : ''} }) for the next page.`
+                : 'No more tasks in this filtered view.',
+            details: 'Call get_task({ taskId }) for the full task description and complete comment history.',
         },
     };
 }
@@ -547,11 +576,13 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
     // List Tasks - Uses TaskStateManager for role-based filtering
     mcp.registerTool('list_tasks', {
-        description: 'List tasks for the current team. Default mode returns role-filtered context. When showAll=true, returns a compact board overview so large boards do not overflow context.',
+        description: 'List tasks for the current team. Default mode returns role-filtered context. When showAll=true, returns a paginated board overview with task summaries so large boards do not overflow context.',
         title: 'List Tasks',
         inputSchema: {
             status: z.enum(['todo', 'in-progress', 'review', 'done', 'blocked']).optional().describe('Filter by status'),
-            showAll: z.boolean().optional().describe('If true, returns a compact board-wide overview instead of role-filtered context.'),
+            showAll: z.boolean().optional().describe('If true, returns a paginated board-wide overview instead of role-filtered context.'),
+            cursor: z.number().int().min(0).optional().describe('When showAll=true, zero-based cursor for the next task page. Default 0.'),
+            limit: z.number().int().min(1).max(100).optional().describe('When showAll=true, max number of task summaries to return. Default 25.'),
         },
     }, async (args) => {
         try {
@@ -575,9 +606,11 @@ export function registerTaskTools(ctx: McpToolContext): void {
             let output: any;
             if (args.showAll) {
                 const board = await taskManager.getBoard();
-                output = buildShowAllTaskSummary({
+                output = buildShowAllTaskPage({
                     tasks: (board.tasks || []) as ListableTask[],
                     status: args.status,
+                    cursor: args.cursor,
+                    limit: args.limit,
                     teamStats: kanbanContext.teamStats,
                     pendingApprovals: kanbanContext.pendingApprovals,
                 });

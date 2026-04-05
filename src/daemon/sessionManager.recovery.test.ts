@@ -375,6 +375,74 @@ describe('sessionManager recovered session self-heal', () => {
         expect(spawnArgs.env.AHA_RECOVER_SESSION_ID).toBe(queued.sessionId);
     });
 
+    it('strips inherited session-scoped env before spawning a fresh child session', async () => {
+        process.env.AHA_RECOVER_SESSION_ID = 'cmn-stale-session';
+        process.env.AHA_ROOM_ID = 'team-stale';
+        process.env.AHA_AGENT_ROLE = 'master';
+        process.env.AHA_SESSION_NAME = 'Stale Master';
+        process.env.CLAUDECODE = '1';
+
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 76543,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+        });
+
+        const spawnPromise = spawnSession({
+            directory: process.cwd(),
+            agent: 'claude',
+            teamId: 'team-fresh',
+            role: 'builder',
+            sessionName: 'Builder Fresh',
+            sessionTag: 'team:team-fresh:member:member-fresh',
+            sessionPath: process.cwd(),
+            env: {
+                AHA_TEAM_MEMBER_ID: 'member-fresh',
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSpawnAhaCLI).toHaveBeenCalledTimes(1);
+        });
+
+        const spawnOptions = mockSpawnAhaCLI.mock.calls[0][1];
+        expect(spawnOptions.env.AHA_RECOVER_SESSION_ID).toBeUndefined();
+        expect(spawnOptions.env.AHA_ROOM_ID).toBe('team-fresh');
+        expect(spawnOptions.env.AHA_AGENT_ROLE).toBe('builder');
+        expect(spawnOptions.env.AHA_SESSION_NAME).toBe('Builder Fresh');
+        expect(spawnOptions.env.CLAUDECODE).toBeUndefined();
+
+        onAhaSessionWebhook('cmn-fresh-session', {
+            path: process.cwd(),
+            host: 'test-host',
+            homeDir: '/Users/copizza',
+            ahaHomeDir: '/Users/copizza/.aha',
+            ahaLibDir: '/Users/copizza/Desktop/happyhere/aha-cli-bug-fix-0324',
+            ahaToolsDir: '/Users/copizza/Desktop/happyhere/aha-cli-bug-fix-0324/tools/unpacked',
+            hostPid: 76543,
+            teamId: 'team-fresh',
+            roomId: 'team-fresh',
+            role: 'builder',
+            executionPlane: 'mainline',
+            memberId: 'member-fresh',
+            sessionTag: 'team:team-fresh:member:member-fresh',
+            flavor: 'claude',
+            name: 'Builder Fresh',
+        } as any);
+
+        await expect(spawnPromise).resolves.toEqual({
+            type: 'success',
+            sessionId: 'cmn-fresh-session',
+        });
+
+        delete process.env.AHA_RECOVER_SESSION_ID;
+        delete process.env.AHA_ROOM_ID;
+        delete process.env.AHA_AGENT_ROLE;
+        delete process.env.AHA_SESSION_NAME;
+        delete process.env.CLAUDECODE;
+    });
+
     it('kills orphaned processes whose memberId is missing from a non-empty team roster', async () => {
         mockExecSync.mockImplementation((command: string) => {
             if (command.startsWith('ps -eo pid,args')) {

@@ -54,6 +54,7 @@ import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
 import { computeEffectiveAllowedToolsFromMetadata, hasDynamicGrantOptIn } from './utils/temporaryToolGrants';
+import { buildSessionScopeFilters } from './team/sessionScope';
 
 export interface StartOptions {
     model?: string
@@ -769,7 +770,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug(`[runClaude] Session is part of team ${teamId} with role ${role}`);
 
             // Initialize TaskStateManager for Kanban context
-            taskStateManager = new TaskStateManager(api, teamId, response.id, role);
+            taskStateManager = new TaskStateManager(api, teamId, response.id, role, session.getMetadata() || metadata);
 
             // Set up state change callback for real-time updates
             taskStateManager.setOnStateChange((change) => {
@@ -831,7 +832,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Hydrate remote history when joining a team to avoid stale backlog
             if (isNewJoin) {
                 try {
-                    const remoteHistory = await api.getTeamMessages(teamId, { limit: 200 });
+                    const remoteHistory = await api.getTeamMessages(teamId, {
+                        limit: 200,
+                        ...buildSessionScopeFilters(session.getMetadata() || metadata),
+                    });
                     const messages = remoteHistory?.messages || [];
                     if (messages.length) {
                         await teamStorage.hydrateFromServer(teamId, messages);

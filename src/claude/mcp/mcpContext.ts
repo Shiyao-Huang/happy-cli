@@ -27,6 +27,7 @@ import { TaskStateManager } from '../utils/taskStateManager';
 import { readDaemonState } from '@/persistence';
 import { createReplacementTeamMemberIdentity, createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { resolvePreferredAgentImageId } from '@/utils/genomeMarketplace';
+import { buildSessionScopeFilters } from '@/claude/team/sessionScope';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -126,7 +127,7 @@ export function buildMcpHelpers(
         if (!teamId) {
             return null;
         }
-        return new TaskStateManager(api, teamId, client.sessionId, metadata?.role);
+        return new TaskStateManager(api, teamId, client.sessionId, metadata?.role, metadata);
     };
 
     const parseBoardFromArtifact = (artifact: any): any => {
@@ -263,7 +264,10 @@ export function buildMcpHelpers(
         quorumReached: boolean;
         recommendation: VoteDecision | 'no-decision';
     }> => {
-        const messagesResult = await api.getTeamMessages(params.teamId, { limit: params.limit ?? 200 });
+        const messagesResult = await api.getTeamMessages(params.teamId, {
+            limit: params.limit ?? 200,
+            ...buildSessionScopeFilters(client.getMetadata()),
+        });
         const messages = Array.isArray(messagesResult?.messages) ? messagesResult.messages : [];
         const latestVoteBySession = new Map<string, { fromSessionId: string; decision: VoteDecision; content: string; timestamp: number }>();
 

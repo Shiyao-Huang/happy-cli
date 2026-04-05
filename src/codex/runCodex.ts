@@ -1625,7 +1625,7 @@ export async function runCodex(opts: {
 
         try {
             // Initialize TaskStateManager
-            taskStateManager = new TaskStateManager(api, teamId, response.id, role);
+            taskStateManager = new TaskStateManager(api, teamId, response.id, role, metadata);
             logger.debug(`[Codex] TaskStateManager initialized for role ${role}`);
 
             // Set up state change notifications

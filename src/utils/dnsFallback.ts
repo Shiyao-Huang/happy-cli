@@ -42,6 +42,14 @@ function isPrivateHostname(hostname: string): boolean {
   return PRIVATE_TLDS.has(tld)
 }
 
+function normalizeLookupFamily(
+  family: dns.LookupOptions['family'] | undefined
+): number | undefined {
+  if (family === 'IPv4') return 4
+  if (family === 'IPv6') return 6
+  return typeof family === 'number' ? family : undefined
+}
+
 /**
  * Install a global dns.lookup fallback that uses Google/Cloudflare DNS
  * when the system resolver fails with ENOTFOUND.
@@ -62,7 +70,11 @@ export function installDnsFallback(): void {
   const resolver = new dns.Resolver()
   resolver.setServers(['8.8.8.8', '1.1.1.1'])
 
-  const originalLookup = dns.lookup
+  const originalLookup = dns.lookup as unknown as (
+    hostname: string,
+    options: dns.LookupOptions,
+    callback: (...args: unknown[]) => void
+  ) => void
 
   /** Resolve hostname via public DNS after system resolver ENOTFOUND */
   const fallbackResolve = (
@@ -132,18 +144,16 @@ export function installDnsFallback(): void {
       /^\d+\.\d+\.\d+\.\d+$/.test(hostname) ||
       isPrivateHostname(hostname)
     ) {
-      return originalLookup.call(
-        dns,
+      return originalLookup(
         hostname,
         options,
         callback as never
-      ) as never
+      )
     }
 
     // When options.all is true, callback signature is (err, [{address, family}])
     if (options.all) {
-      originalLookup.call(
-        dns,
+      originalLookup(
         hostname,
         options,
         ((
@@ -158,15 +168,14 @@ export function installDnsFallback(): void {
             callback(err, addresses)
             return
           }
-          fallbackResolve(hostname, options.family, err, callback, true)
+          fallbackResolve(hostname, normalizeLookupFamily(options.family), err, callback, true)
         }) as never
-      ) as never
+      )
       return
     }
 
     // Normal mode: callback signature is (err, address, family)
-    originalLookup.call(
-      dns,
+    originalLookup(
       hostname,
       options,
       ((
@@ -182,9 +191,9 @@ export function installDnsFallback(): void {
           callback(err, address, family)
           return
         }
-        fallbackResolve(hostname, options.family, err, callback, false)
+        fallbackResolve(hostname, normalizeLookupFamily(options.family), err, callback, false)
       }) as never
-    ) as never
+    )
   }
 
   logger.debug(

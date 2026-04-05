@@ -1315,7 +1315,13 @@ export class ApiClient {
   /**
    * List tasks for a team with optional filtering
    */
-  async listTasks(teamId: string, filters?: { status?: string; assigneeId?: string }): Promise<{ tasks: any[]; version: number }> {
+  async listTasks(teamId: string, filters?: {
+    status?: string;
+    assigneeId?: string;
+    scopePath?: string;
+    repoName?: string;
+    includeGlobal?: boolean;
+  }): Promise<{ tasks: any[]; version: number }> {
     try {
       const response = await axios.get(
         `${configuration.serverUrl}/v1/teams/${teamId}/tasks`,

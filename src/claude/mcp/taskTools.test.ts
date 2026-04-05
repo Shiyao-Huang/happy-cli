@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveCreateTaskPolicy } from './taskTools';
+import { buildShowAllTaskPage, resolveCreateTaskPolicy, summarizeTaskForList } from './taskTools';
 
 describe('resolveCreateTaskPolicy', () => {
     it('allows coordinator roles to create standard tasks with assignees', () => {
@@ -70,5 +70,122 @@ describe('resolveCreateTaskPolicy', () => {
             taskType: 'standard',
             assigneeId: null,
         });
+    });
+});
+
+describe('summarizeTaskForList', () => {
+    it('keeps only compact fields needed for list views', () => {
+        const summary = summarizeTaskForList({
+            id: 'task-1',
+            title: 'Fix scope noise',
+            status: 'review',
+            priority: 'high',
+            assigneeId: 'session-1',
+            parentTaskId: 'parent-1',
+            approvalStatus: 'pending',
+            labels: ['scope', 'repo', 1 as any],
+            updatedAt: 123,
+            createdAt: 100,
+            depth: 2,
+            comments: [{}, {}],
+            blockers: [{}],
+            acceptanceCriteria: ['a', 'b'],
+            subtaskIds: ['sub-1'],
+        });
+
+        expect(summary).toEqual({
+            id: 'task-1',
+            title: 'Fix scope noise',
+            status: 'review',
+            priority: 'high',
+            assigneeId: 'session-1',
+            parentTaskId: 'parent-1',
+            approvalStatus: 'pending',
+            labels: ['scope', 'repo'],
+            depth: 2,
+            updatedAt: 123,
+            createdAt: 100,
+            commentCount: 2,
+            blockerCount: 1,
+            acceptanceCriteriaCount: 2,
+            subtaskCount: 1,
+        });
+    });
+});
+
+describe('buildShowAllTaskPage', () => {
+    const tasks = Array.from({ length: 4 }, (_, index) => ({
+        id: `task-${index + 1}`,
+        title: `Task ${index + 1}`,
+        status: index % 2 === 0 ? 'todo' : 'review',
+        comments: Array.from({ length: index }, () => ({ content: 'x'.repeat(1000) })),
+        blockers: [],
+        acceptanceCriteria: [],
+        subtaskIds: [],
+    }));
+
+    it('returns compact board summaries instead of raw full tasks', () => {
+        const result = buildShowAllTaskPage({
+            tasks,
+            teamStats: { totalTasks: 4 },
+            pendingApprovals: [{
+                id: 'task-2',
+                title: 'Task 2',
+                status: 'review',
+                comments: [{}, {}],
+            }],
+        }) as any;
+
+        expect(result.mode).toBe('board-overview');
+        expect(result.teamStats).toEqual({ totalTasks: 4 });
+        expect(result.pendingApprovals).toEqual([{
+            id: 'task-2',
+            title: 'Task 2',
+            status: 'review',
+            priority: null,
+            assigneeId: null,
+            parentTaskId: null,
+            approvalStatus: null,
+            labels: [],
+            depth: 0,
+            updatedAt: null,
+            createdAt: null,
+            commentCount: 2,
+            blockerCount: 0,
+            acceptanceCriteriaCount: 0,
+            subtaskCount: 0,
+        }]);
+        expect(result.boardOverview).toMatchObject({
+            totalBoardTasks: 4,
+            returnedTasks: 4,
+            pendingApprovalCount: 1,
+        });
+        expect(result.allTasks).toHaveLength(4);
+        expect(result.allTasks[1]).toMatchObject({ id: 'task-2', commentCount: 1 });
+        expect(result.allTasks[1]).not.toHaveProperty('comments');
+        expect(result.guidance.details).toContain('get_task');
+    });
+
+    it('keeps status filtering while staying compact', () => {
+        const result = buildShowAllTaskPage({
+            tasks,
+            status: 'review',
+        }) as any;
+
+        expect(result.filters).toEqual({ status: 'review' });
+        expect(result.boardOverview).toMatchObject({
+            totalBoardTasks: 4,
+            returnedTasks: 2,
+            pendingApprovalCount: 0,
+            statusCounts: {
+                todo: 0,
+                'in-progress': 0,
+                review: 2,
+                blocked: 0,
+                done: 0,
+            },
+        });
+        expect(result.allTasks).toHaveLength(2);
+        expect(result.allTasks.every((task: any) => task.status === 'review')).toBe(true);
     });
 });

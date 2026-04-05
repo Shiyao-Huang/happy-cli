@@ -18,6 +18,8 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { filterTasksForRole } from '@/claude/team/taskFilter';
 import { KanbanContext } from '@/claude/team/roles';
+import { buildSessionScope, buildSessionScopeFilters, type SessionScope, type SessionScopeFilters, resolveSessionCommitHash } from '@/claude/team/sessionScope';
+import type { Metadata } from '@/api/types';
 
 // === State Change Broadcasting Types ===
 
@@ -132,12 +134,18 @@ export class TaskStateManager {
     private sessionId: string;
     private roleId?: string;
     private onStateChange?: StateChangeCallback;
+    private scope: SessionScope | null;
+    private scopeFilters?: SessionScopeFilters;
+    private metadata?: Metadata | null;
 
-    constructor(api: ApiClient, teamId: string, sessionId: string, roleId?: string) {
+    constructor(api: ApiClient, teamId: string, sessionId: string, roleId?: string, metadata?: Metadata | null) {
         this.api = api;
         this.teamId = teamId;
         this.sessionId = sessionId;
         this.roleId = roleId;
+        this.metadata = metadata ?? null;
+        this.scope = buildSessionScope(metadata);
+        this.scopeFilters = buildSessionScopeFilters(metadata);
     }
 
     /**
@@ -184,6 +192,9 @@ export class TaskStateManager {
      */
     private async sendStateChangeMessage(change: KanbanStateChange): Promise<void> {
         const message = await this.formatStateChangeMessage(change);
+        const commitHash = change.type === 'execution-completed'
+            ? await resolveSessionCommitHash(this.metadata)
+            : null;
 
         await this.api.sendTeamMessage(this.teamId, {
             id: randomUUID(),
@@ -196,6 +207,14 @@ export class TaskStateManager {
             metadata: {
                 taskId: change.taskId,
                 changeType: change.type,
+                ...(this.scope ? { scope: this.scope } : {}),
+                ...(commitHash ? {
+                    reviewContext: {
+                        commitHash,
+                        scopePath: this.scope?.scopePath,
+                        repoName: this.scope?.repoName,
+                    }
+                } : {}),
                 ...change.details
             }
         });
@@ -271,7 +290,7 @@ export class TaskStateManager {
 
         // Step 2: Now use server API (artifact is guaranteed to exist)
         try {
-            const result = await this.api.listTasks(this.teamId);
+            const result = await this.api.listTasks(this.teamId, this.scopeFilters);
             return {
                 columns: DEFAULT_COLUMNS,
                 tasks: result.tasks

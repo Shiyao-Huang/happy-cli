@@ -38,6 +38,13 @@ import { writeScore, readScores } from '@/claude/utils/scoreStorage';
 import { aggregateScores } from '@/claude/utils/feedbackPrivacy';
 import { resolveFeedbackUploadTarget, scoreMatchesFeedbackTarget, deriveFeedbackTargetFromScores } from '../utils/supervisorAgentVerdict';
 import { syncGenomeFeedbackToMarketplace } from '../utils/genomeFeedbackSync';
+import { buildSessionScopeFilters, matchesSessionScopeFilter } from '@/claude/team/sessionScope';
+import { stripSessionScopedAhaEnv } from '@/utils/sessionScopedAhaEnv';
+
+function canUseSupervisorObservationTools(role?: string): boolean {
+    return typeof role === 'string'
+        && (SUPERVISOR_OBSERVATION_ROLES as readonly string[]).includes(role);
+}
 import { projectSelfMirrorIdentity } from '../utils/runEnvelopeMirror';
 import { readRuntimeLog, resolveTeamRuntimeLogs } from '../utils/runtimeLogReader';
 import { getContextStatusReport } from '../utils/contextStatus';
@@ -630,10 +637,13 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             teamId: z.string().describe('Team ID to read logs for'),
             limit: z.number().default(100).describe('Max messages to return'),
             fromCursor: z.number().default(-1).describe('Line index to read from. -1 = use env AHA_SUPERVISOR_TEAM_LOG_CURSOR (auto-incremental). 0 = read all.'),
+            scopePath: z.string().optional().describe('Optional explicit scope path. Defaults to the current session scope when available.'),
+            repoName: z.string().optional().describe('Optional explicit repo family filter. Defaults to the current session repo when available.'),
+            includeGlobal: z.boolean().optional().describe('Include global or unscoped messages alongside scoped ones. Defaults to true when scope filtering is active.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read team logs.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
@@ -643,6 +653,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const fs = await import('node:fs');
             const path = await import('node:path');
             const localPath = path.join(process.cwd(), '.aha', 'teams', args.teamId, 'messages.jsonl');
+            const scopeFilters = {
+                ...buildSessionScopeFilters(client.getMetadata()),
+                ...(args.scopePath ? { scopePath: args.scopePath } : {}),
+                ...(args.repoName ? { repoName: args.repoName } : {}),
+                ...(args.includeGlobal !== undefined ? { includeGlobal: args.includeGlobal } : {}),
+            };
 
             const cursor = args.fromCursor >= 0
                 ? args.fromCursor
@@ -666,7 +682,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             : null;
                         const afterTs = lastLocalMsg?.timestamp ?? 0;
 
-                        const serverResult = await api.getTeamMessages(args.teamId, { limit: args.limit });
+                        const serverResult = await api.getTeamMessages(args.teamId, { limit: args.limit, ...scopeFilters });
                         const serverMessages = (serverResult?.messages ?? []) as Array<{ timestamp?: number; id?: string }>;
                         const newServerMessages = afterTs > 0
                             ? serverMessages.filter(m => (m.timestamp ?? 0) > afterTs)
@@ -705,13 +721,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             nextCursor: newCursor,
                             totalLines: lines.length,
                             hasNewContent: hasNew,
-                            messages: newLines.map(l => { try { return JSON.parse(l); } catch { return l; } }),
+                            messages: newLines
+                                .map(l => { try { return JSON.parse(l); } catch { return l; } })
+                                .filter((message) => matchesSessionScopeFilter((message as any)?.metadata?.scope, scopeFilters)),
                         }, null, 2)
                     }],
                     isError: false
                 };
             }
-            const messages = await api.getTeamMessages(args.teamId, { limit: args.limit });
+            const messages = await api.getTeamMessages(args.teamId, { limit: args.limit, ...scopeFilters });
             return { content: [{ type: 'text', text: JSON.stringify(messages, null, 2) }], isError: false };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error reading team log: ${String(error)}` }], isError: true };
@@ -1484,7 +1502,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read CC logs.' }], isError: true };
         }
         try {
@@ -3386,7 +3404,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use this tool.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
@@ -3439,7 +3457,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read runtime logs.' }], isError: true };
         }
         try {
@@ -3474,7 +3492,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use this tool.' }], isError: true };
         }
         try {
@@ -3566,7 +3584,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can save supervisor state.' }], isError: true };
         }
         try {
@@ -3826,6 +3844,7 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
                     const child = spawnAhaCLI(['daemon', 'start-sync'], {
                         detached: true,
                         stdio: 'ignore',
+                        env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true }),
                     });
                     child.unref();
                 },
@@ -3919,7 +3938,7 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use git_diff_summary.' }], isError: true };
         }
         try {
@@ -3973,7 +3992,7 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+        if (!canUseSupervisorObservationTools(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read unified logs.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {

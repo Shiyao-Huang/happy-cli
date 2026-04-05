@@ -34,6 +34,7 @@ import { ApiClient } from '@/api/api';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
+import { stripSessionScopedAhaEnv } from '@/utils/sessionScopedAhaEnv';
 import { buildAgentLaunchContext } from '@/utils/agentLaunchContext';
 import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
@@ -866,7 +867,7 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       args.push('--session-tag', options.sessionTag);
     }
 
-    const { CLAUDECODE: _, ...cleanEnv } = process.env;
+    const cleanEnv = stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true });
     const ahaProcess = spawnAhaCLI(args, {
       cwd: directory,
       detached: true,
