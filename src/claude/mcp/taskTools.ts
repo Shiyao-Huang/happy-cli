@@ -865,7 +865,8 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const message = error instanceof Error ? error.message : String(error);
             const normalized = message.replace(/^Error:\s*/, '');
             if (normalized.includes('TASK_LOCKED_BY_HUMAN')) {
-                return { content: [{ type: 'text', text: normalized.replace(/^Failed to start task:\s*/, '') }], isError: true };
+                const hint = '\nOptions: (1) add_task_comment to leave notes while locked, (2) wait for human to release, (3) pick a different available task.';
+                return { content: [{ type: 'text', text: normalized.replace(/^Failed to start task:\s*/, '') + hint }], isError: true };
             }
             return { content: [{ type: 'text', text: `Error starting task: ${normalized}` }], isError: true };
         }
