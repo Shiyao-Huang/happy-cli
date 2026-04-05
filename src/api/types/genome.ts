@@ -251,6 +251,7 @@ export interface AgentImage {
          *                   写入 task comment 和/或 .aha/handoffs/{sessionId}.md
          */
         onRetire?: 'silent' | 'write-handoff';
+        onContextHigh?: 'compact' | 'delegate' | 'summarize';
     };
 
     // =========================================================================

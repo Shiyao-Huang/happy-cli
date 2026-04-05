@@ -775,34 +775,34 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   builder: {
     description: 'Code builder — implements tasks and drives them to completion',
     systemPromptSuffix: 'Implement assigned tasks. Keep diffs small. Report blockers immediately.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false, onRetire: 'write-handoff', onContextHigh: 'compact' },
   },
   'qa-engineer': {
     description: 'Quality assurance engineer — tests features and validates functionality',
     systemPromptSuffix: 'Run tests, verify acceptance criteria, report bugs with repro steps.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false, onContextHigh: 'compact' },
   },
   master: {
     description: 'Master coordinator — shapes delivery plan and keeps Kanban accurate',
     systemPromptSuffix: 'Translate goals into Kanban tasks. Sequence work, surface blockers, coordinate the team.',
     // canSpawnAgents: true — master is a coordinator role and must be able to spawn agents via create_agent.
     // Old templates had canSpawnAgents: false here, which incorrectly blocked agent topology management.
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: true, requireExplicitAssignment: false },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: true, requireExplicitAssignment: false, onContextHigh: 'summarize' },
   },
   implementer: {
     description: 'Implementer — executes implementation tasks end-to-end',
     systemPromptSuffix: 'Implement the assigned task fully. Signal when ready for review.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false, onRetire: 'write-handoff', onContextHigh: 'compact' },
   },
   researcher: {
     description: 'Researcher — explores codebase, gathers information, provides context',
     systemPromptSuffix: 'Search and analyze code. Present findings with file citations. Read-only.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false, onContextHigh: 'summarize' },
   },
   'devops-builder': {
     description: 'DevOps builder — handles SSH deployment, CI/CD, infrastructure',
     systemPromptSuffix: 'Handle server deployments, SSH operations, nginx config, PM2 management.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
+    behavior: { onIdle: 'self-assign', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: false, onRetire: 'write-handoff', onContextHigh: 'compact' },
   },
 };
 

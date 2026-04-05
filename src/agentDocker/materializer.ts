@@ -79,6 +79,7 @@ export interface AgentDockerConfig {
         canSpawnAgents?: boolean;
         requireExplicitAssignment?: boolean;
         onRetire?: 'silent' | 'write-handoff';
+        onContextHigh?: 'compact' | 'delegate' | 'summarize';
     };
     scopeOfResponsibility?: {
         ownedPaths?: string[];

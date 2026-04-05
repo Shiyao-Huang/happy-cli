@@ -649,6 +649,7 @@ export async function startDaemon(): Promise<void> {
             error.code === 'ECONNREFUSED' ||
             error.code === 'ECONNRESET' ||
             error.code === 'ETIMEDOUT' ||
+            error.code === 'EPROTO' ||
             error.code === 'ERR_NETWORK'
           )
         ) {

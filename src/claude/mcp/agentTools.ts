@@ -71,7 +71,6 @@ async function collectPredecessorHandoffContext(
         const tasksResult = await api.listTasks(teamId, { assigneeId: predecessorSessionId });
         const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
         const nonDoneTasks = tasks.filter((t: any) => t?.id && t.status !== 'done');
-
         if (nonDoneTasks.length > 0) {
             const handoffBlocks: string[] = [];
             for (const task of nonDoneTasks.slice(0, 5)) {

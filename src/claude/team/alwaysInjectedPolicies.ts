@@ -104,6 +104,35 @@ function buildBehaviorDnaRules(genomeSpec: AgentImage | null | undefined): Share
         });
     }
 
+    // behavior.onContextHigh → what to do when context window is filling up
+    const onContextHigh = genomeSpec.behavior?.onContextHigh;
+    if (onContextHigh === 'delegate') {
+        rules.push({
+            title: 'Context High Behavior',
+            body: [
+                'When your context usage exceeds 70%, write a handoff note on your current task and call `retire_self` so a fresh agent can continue.',
+                'Do not wait for external compact — proactively delegate before quality degrades.',
+            ],
+        });
+    } else if (onContextHigh === 'summarize') {
+        rules.push({
+            title: 'Context High Behavior',
+            body: [
+                'When your context usage exceeds 70%, proactively compress your working context: summarize findings so far, drop stale details, and continue.',
+                'Call `get_context_status` periodically to monitor your usage.',
+            ],
+        });
+    } else {
+        // Default: 'compact' or unset
+        rules.push({
+            title: 'Context High Behavior',
+            body: [
+                'When your context usage exceeds 70%, the system may trigger an automatic compact to free up space.',
+                'Call `get_context_status` periodically to monitor your usage and plan work accordingly.',
+            ],
+        });
+    }
+
     // scopeOfResponsibility → file ownership from genome
     const scope = (genomeSpec as any).scopeOfResponsibility;
     if (scope?.ownedPaths?.length) {

@@ -76,7 +76,15 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
         try {
             const artifact = await api.getArtifact(teamId)
             const board = parseArtifactBoard(artifact)
-            if (hasMember(board, sessionId, metadata.memberId)) {
+            const members: any[] = Array.isArray(board?.team?.members) ? board.team.members : []
+            // Find member by memberId — but only treat as "already present" if the sessionId is real.
+            // A queued-* sessionId is a daemon-side placeholder; if found, fall through to re-register
+            // with the actual sessionId so the roster entry is healed.
+            const existingByMemberId = metadata.memberId
+                ? members.find((m: any) => m?.memberId === metadata.memberId)
+                : null
+            const hasPlaceholderSessionId = Boolean(existingByMemberId?.sessionId?.startsWith('queued-'))
+            if (hasMember(board, sessionId, metadata.memberId) && !hasPlaceholderSessionId) {
                 return { registered: false, alreadyPresent: true }
             }
         } catch (artifactError) {
