@@ -55,6 +55,55 @@ import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext, ReplaceAgentStageError } from './mcpContext';
 
+/**
+ * Collect handoff comments from a predecessor's tasks to inject into the new agent's context.
+ * Best-effort: never throws — returns empty string on any failure.
+ */
+async function collectPredecessorHandoffContext(
+    api: McpToolContext['api'],
+    teamId: string,
+    predecessorSessionId: string,
+): Promise<string> {
+    try {
+        const tasksResult = await api.listTasks(teamId, { assigneeId: predecessorSessionId });
+        const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
+        const nonDoneTasks = tasks.filter((t: any) => t?.id && t.status !== 'done');
+        if (nonDoneTasks.length === 0) return '';
+
+        const handoffBlocks: string[] = [];
+        for (const task of nonDoneTasks.slice(0, 5)) {
+            try {
+                const fullTask = await api.getTask(teamId, task.id);
+                if (!fullTask?.comments?.length) continue;
+                const handoffComments = fullTask.comments.filter(
+                    (c: any) => c.type === 'handoff',
+                );
+                if (handoffComments.length === 0) continue;
+                // Take the most recent handoff comment per task
+                const latest = handoffComments[handoffComments.length - 1];
+                handoffBlocks.push(
+                    `### Task: ${fullTask.title} (${fullTask.id})\n` +
+                    `Status: ${fullTask.status} | Priority: ${fullTask.priority || 'medium'}\n` +
+                    `Handoff from ${latest.authorDisplayName || latest.authorRole || 'predecessor'}:\n` +
+                    `${latest.content}`,
+                );
+            } catch {
+                // Best-effort per task
+            }
+        }
+
+        if (handoffBlocks.length === 0) return '';
+        return (
+            '## Predecessor Handoff Context\n\n' +
+            'The following handoff notes were left by your predecessor. ' +
+            'Read these before starting work — they contain task context, blockers, and next-step recommendations.\n\n' +
+            handoffBlocks.join('\n\n---\n\n')
+        );
+    } catch {
+        return '';
+    }
+}
+
 export function registerAgentTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -1038,6 +1087,33 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 }
             }
 
+            // Collect predecessor handoff: aggregate type=handoff task comments from the retiring session
+            let predecessorHandoff: string | undefined;
+            try {
+                const predecessorTasks = await api.listTasks(inferredTeamId, { assigneeId: args.sessionId });
+                const handoffParts: string[] = [];
+                for (const task of predecessorTasks?.tasks ?? []) {
+                    if (task?.status === 'done') continue;
+                    try {
+                        const fullTask = await api.getTask(inferredTeamId, task.id);
+                        const handoffComments = (fullTask?.comments ?? []).filter(
+                            (c: any) => c?.type === 'handoff' && c?.authorSessionId === args.sessionId,
+                        );
+                        if (handoffComments.length > 0) {
+                            const latest = handoffComments[handoffComments.length - 1];
+                            handoffParts.push(`### Task ${task.id}: ${task.title || '(untitled)'}\n${latest.content}`);
+                        }
+                    } catch {
+                        // Best-effort per task
+                    }
+                }
+                if (handoffParts.length > 0) {
+                    predecessorHandoff = handoffParts.join('\n\n');
+                }
+            } catch {
+                // Best-effort: don't block replacement if handoff fetch fails
+            }
+
             const replacement = await spawnReplacementSession({
                 teamId: inferredTeamId,
                 targetSessionId: args.sessionId,
@@ -1051,6 +1127,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 parentSessionId: args.sessionId,
                 modelId: args.modelId,
                 fallbackModelId: args.fallbackModelId,
+                predecessorHandoff,
             });
 
             let reassignedTasks = 0;

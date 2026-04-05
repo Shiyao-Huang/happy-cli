@@ -825,6 +825,8 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       predecessorSessionId: options.parentSessionId,
     });
     extraEnv.AHA_AGENT_PROMPT = launchContext.prompt;
+    // AHA_PREDECESSOR_HANDOFF has been folded into AHA_AGENT_PROMPT — don't pass it separately.
+    delete extraEnv.AHA_PREDECESSOR_HANDOFF;
     if (!extraEnv.AHA_AGENT_SCOPE_SUMMARY && launchContext.scopeSummary) {
       extraEnv.AHA_AGENT_SCOPE_SUMMARY = launchContext.scopeSummary;
     }
