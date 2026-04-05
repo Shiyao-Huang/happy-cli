@@ -1159,6 +1159,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 if (behavior?.onIdle) lines.push(`  On Idle: ${behavior.onIdle}`);
                 if (behavior?.onBlocked) lines.push(`  On Blocked: ${behavior.onBlocked}`);
                 if (behavior?.onRetire) lines.push(`  On Retire: ${behavior.onRetire}`);
+                if (behavior?.onContextHigh) lines.push(`  On Context High: ${behavior.onContextHigh}`);
                 if (behavior?.canSpawnAgents != null) lines.push(`  Can Spawn Agents: ${behavior.canSpawnAgents}`);
                 if (behavior?.requireExplicitAssignment != null) lines.push(`  Require Explicit Assignment: ${behavior.requireExplicitAssignment}`);
                 if (messaging?.listenFrom) lines.push(`  Listen From: ${Array.isArray(messaging.listenFrom) ? messaging.listenFrom.join(', ') : messaging.listenFrom}`);

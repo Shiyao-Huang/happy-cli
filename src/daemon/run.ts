@@ -27,6 +27,7 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 
 import os from 'os';
 
+import { installDnsFallback } from '@/utils/dnsFallback';
 import { ApiClient } from '@/api/api';
 import { ApiMachineClient } from '@/api/apiMachine';
 import { AgentHeartbeat, AgentHealthStatus } from '@/claude/team/heartbeat';
@@ -107,6 +108,13 @@ async function ensureGenomeHubAccess(): Promise<number> {
   }
   if (!publishKey) {
     logger.warn('[GENOME HUB] HUB_PUBLISH_KEY not set and genomeHubPublishKey missing from settings — genome feedback uploads will fail with 401');
+  }
+
+  // 1b. Inject genome-hub URL from settings if not in env
+  const settingsHubUrl = settings.genomeHubUrl || '';
+  if (settingsHubUrl && !process.env.GENOME_HUB_URL) {
+    process.env.GENOME_HUB_URL = settingsHubUrl;
+    logger.debug(`[GENOME HUB] Loaded GENOME_HUB_URL from settings: ${settingsHubUrl}`);
   }
 
   // 2. Check reachability and optionally create SSH tunnel
@@ -243,6 +251,11 @@ export async function startDaemon(): Promise<void> {
   process.on('beforeExit', (code) => {
     logger.debug(`[DAEMON RUN] Process about to exit with code: ${code}`);
   });
+
+  // Install DNS fallback before any network calls.
+  // When the system DNS resolver fails (ENOTFOUND), this falls back to
+  // Google/Cloudflare public DNS. Prevents daemon crashes from transient DNS issues.
+  installDnsFallback();
 
   logger.debug('[DAEMON RUN] Starting daemon process...');
   logger.debugLargeJson('[DAEMON RUN] Environment', getEnvironmentInfo());

@@ -33,6 +33,12 @@ interface Settings {
    * agent sessions inherit it without manual env-var setup.
    */
   genomeHubPublishKey?: string
+  /**
+   * Direct URL override for genome-hub.
+   * Injected into process.env.GENOME_HUB_URL at daemon startup.
+   * Example: "http://localhost:3006" for local development.
+   */
+  genomeHubUrl?: string
 }
 
 const defaultSettings: Settings = {
@@ -95,6 +101,7 @@ export async function readSettings(): Promise<Settings> {
         ...current,
         genomeHubSshHost: current.genomeHubSshHost ?? legacy.genomeHubSshHost,
         genomeHubPublishKey: current.genomeHubPublishKey ?? legacy.genomeHubPublishKey,
+        genomeHubUrl: current.genomeHubUrl ?? legacy.genomeHubUrl,
       };
     }
   }
