@@ -213,7 +213,7 @@ export function getContextStatusReport(options: {
         // 1. metadata.codexTranscriptPath — stored at session start from session_meta event (most reliable)
         // 2. findCodexTranscriptFile by aha session ID — works only if Codex files happen to use the aha CUID (rare)
         // 3. findMostRecentCodexTranscriptFile — fallback for sessions that predate the path-capture fix
-        const codexFile = ((metadata as any)?.codexTranscriptPath as string | undefined)
+        const codexFile = metadata?.codexTranscriptPath
             || findCodexTranscriptFile(homeDir, options.ahaSessionId)
             || findMostRecentCodexTranscriptFile(homeDir);
         if (!codexFile) {
