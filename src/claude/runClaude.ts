@@ -616,7 +616,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     if (_agentImageId) {
         let _hotEvolutionKnownVersion = _agentImage?.version ?? 0;
         const _hotEvolutionIntervalMs =
-            Number(process.env.AHA_HOT_EVOLUTION_INTERVAL_MS || '') || 5 * 60 * 1000;
+            Number(process.env.AHA_HOT_EVOLUTION_INTERVAL_MS || '') || 6 * 60 * 1000;
         const _hotEvolutionTick = createHotEvolutionTick({
             token: credentials.token,
             specId: _agentImageId,

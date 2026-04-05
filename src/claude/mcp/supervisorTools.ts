@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
 import type { RunEnvelope } from '@/daemon/runEnvelope'
 /**
  * @module supervisorTools
@@ -3126,7 +3126,6 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 try {
                     const fs = await import('node:fs');
                     const path = await import('node:path');
-                    const { resolveAhaHomeDir } = await import('@/configurationResolver');
                     const ahaHomeDir = resolveAhaHomeDir();
                     const handoffsDir = path.join(ahaHomeDir, 'handoffs');
                     await fs.promises.mkdir(handoffsDir, { recursive: true });
