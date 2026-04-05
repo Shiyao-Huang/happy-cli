@@ -10,7 +10,8 @@ import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
-import { spawnAhaCLI } from '@/utils/spawnAhaCLI';
+import { spawnAhaCLI } from '@/utils/spawnAhaCLI'
+import { stripSessionScopedAhaEnv } from '@/utils/sessionScopedAhaEnv';
 
 export async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();

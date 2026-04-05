@@ -50,6 +50,31 @@ interface CreateTaskPolicyResult {
     denyMessage?: string;
 }
 
+type ListableTask = {
+    id: string;
+    title?: string;
+    status?: string;
+    priority?: string | null;
+    assigneeId?: string | null;
+    parentTaskId?: string | null;
+    approvalStatus?: string | null;
+    labels?: unknown[];
+    updatedAt?: number;
+    createdAt?: number;
+    comments?: unknown[];
+    blockers?: unknown[];
+    acceptanceCriteria?: unknown[];
+    subtaskIds?: unknown[];
+    depth?: number;
+};
+
+interface ShowAllTaskSummaryArgs {
+    tasks: ListableTask[];
+    status?: string;
+    teamStats?: unknown;
+    pendingApprovals?: ListableTask[] | unknown;
+}
+
 export function resolveCreateTaskPolicy(args: CreateTaskPolicyArgs): CreateTaskPolicyResult {
     const taskType: CreateTaskType = args.requestedType === 'hypothesis' ? 'hypothesis' : 'standard';
     const hasFullTaskCreate = canCreateTeamTasks(args.role, args.effectiveGenome);
@@ -85,6 +110,70 @@ export function resolveCreateTaskPolicy(args: CreateTaskPolicyArgs): CreateTaskP
         allowed: true,
         taskType,
         assigneeId: args.requestedAssigneeId || null,
+    };
+}
+
+export function summarizeTaskForList(task: ListableTask): Record<string, unknown> {
+    return {
+        id: task.id,
+        title: typeof task.title === 'string' ? task.title : task.id,
+        status: typeof task.status === 'string' ? task.status : 'todo',
+        priority: typeof task.priority === 'string' ? task.priority : null,
+        assigneeId: typeof task.assigneeId === 'string' ? task.assigneeId : null,
+        parentTaskId: typeof task.parentTaskId === 'string' ? task.parentTaskId : null,
+        approvalStatus: typeof task.approvalStatus === 'string' ? task.approvalStatus : null,
+        labels: Array.isArray(task.labels)
+            ? task.labels.filter((value): value is string => typeof value === 'string')
+            : [],
+        depth: typeof task.depth === 'number' ? task.depth : 0,
+        updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : null,
+        createdAt: typeof task.createdAt === 'number' ? task.createdAt : null,
+        commentCount: Array.isArray(task.comments) ? task.comments.length : 0,
+        blockerCount: Array.isArray(task.blockers) ? task.blockers.length : 0,
+        acceptanceCriteriaCount: Array.isArray(task.acceptanceCriteria) ? task.acceptanceCriteria.length : 0,
+        subtaskCount: Array.isArray(task.subtaskIds) ? task.subtaskIds.length : 0,
+    };
+}
+
+export function buildShowAllTaskSummary(args: ShowAllTaskSummaryArgs): Record<string, unknown> {
+    const filteredTasks = args.status
+        ? args.tasks.filter((task) => task.status === args.status)
+        : args.tasks;
+
+    const statusCounts = {
+        todo: 0,
+        'in-progress': 0,
+        review: 0,
+        blocked: 0,
+        done: 0,
+    };
+
+    for (const task of filteredTasks) {
+        const status = task.status;
+        if (status === 'todo' || status === 'in-progress' || status === 'review' || status === 'blocked' || status === 'done') {
+            statusCounts[status] += 1;
+        }
+    }
+
+    const pendingApprovals = Array.isArray(args.pendingApprovals)
+        ? args.pendingApprovals.map((task) => summarizeTaskForList(task as ListableTask))
+        : [];
+
+    return {
+        mode: 'board-overview',
+        filters: args.status ? { status: args.status } : {},
+        boardOverview: {
+            totalBoardTasks: args.tasks.length,
+            returnedTasks: filteredTasks.length,
+            pendingApprovalCount: pendingApprovals.length,
+            statusCounts,
+        },
+        allTasks: filteredTasks.map((task) => summarizeTaskForList(task)),
+        teamStats: args.teamStats ?? null,
+        pendingApprovals,
+        guidance: {
+            details: 'Call get_task({ taskId }) for full task descriptions and complete comment history.',
+        },
     };
 }
 
@@ -458,11 +547,11 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
     // List Tasks - Uses TaskStateManager for role-based filtering
     mcp.registerTool('list_tasks', {
-        description: 'List tasks for the current team. Returns role-filtered context including your assigned tasks, available tasks, and team stats.',
+        description: 'List tasks for the current team. Default mode returns role-filtered context. When showAll=true, returns a compact board overview so large boards do not overflow context.',
         title: 'List Tasks',
         inputSchema: {
             status: z.enum(['todo', 'in-progress', 'review', 'done', 'blocked']).optional().describe('Filter by status'),
-            showAll: z.boolean().optional().describe('If true, shows all tasks (for coordinators only). Default shows role-filtered context.'),
+            showAll: z.boolean().optional().describe('If true, returns a compact board-wide overview instead of role-filtered context.'),
         },
     }, async (args) => {
         try {
@@ -485,17 +574,13 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Format output based on role and args
             let output: any;
             if (args.showAll) {
-                // Any agent can request full board view when explicitly using showAll
                 const board = await taskManager.getBoard();
-                let tasks = board.tasks || [];
-                if (args.status) {
-                    tasks = tasks.filter((t: any) => t.status === args.status);
-                }
-                output = {
-                    allTasks: tasks,
+                output = buildShowAllTaskSummary({
+                    tasks: (board.tasks || []) as ListableTask[],
+                    status: args.status,
                     teamStats: kanbanContext.teamStats,
-                    pendingApprovals: kanbanContext.pendingApprovals
-                };
+                    pendingApprovals: kanbanContext.pendingApprovals,
+                });
             } else {
                 // Role-filtered context
                 let myTasks = kanbanContext.myTasks;
