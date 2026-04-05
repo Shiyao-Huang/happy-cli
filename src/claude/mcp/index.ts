@@ -237,6 +237,7 @@ export async function startAhaServer(
             'complete_task',
             'report_blocker',
             'resolve_blocker',
+            'release_task_locks',
             // Agent spawning tools
             'list_available_agents',
             'create_agent',
