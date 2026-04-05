@@ -2362,7 +2362,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             'The preferred input is a full Plug object: description + verdictRefs + changes[].',
             'changes[] supports heterogeneous kv / string / narrative diff entries written to the diff ledger.',
             'Legacy newLearnings are converted into string-append changes on memory.learnings.',
-            'Requires feedbackData.avgScore >= minPromoteScore (default 60). Supervisor only.',
+            'Requires feedbackData.avgScore >= minPromoteScore (default 60); supervisor/org-manager/master skip score gate.',
         ].join(' '),
         title: 'Evolve Agent Docker (Apply Plug → next Image)',
         inputSchema: {
@@ -2437,7 +2437,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const minScore = args.minPromoteScore ?? 60;
-        const skipScoreGate = callerRole === 'supervisor' || callerRole === 'org-manager';
+        const skipScoreGate = callerRole === 'supervisor' || callerRole === 'org-manager' || callerRole === 'master';
         if (!skipScoreGate && avgScore < minScore) {
             return {
                 content: [{ type: 'text', text: `Cannot evolve: avgScore=${Math.round(avgScore)} < minPromoteScore=${minScore}. Accumulate more evaluations via score_agent + update_genome_feedback first.` }],
