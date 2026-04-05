@@ -151,7 +151,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const result = await api.createTask(teamId, taskData);
 
             if (!result.success || !result.task) {
-                return { content: [{ type: 'text', text: 'Error: Failed to create task via server API.' }], isError: true };
+                return { content: [{ type: 'text', text: `Error: Failed to create task via server API. Verify: title is non-empty, priority is one of [low, medium, high, urgent], assigneeId (if provided) is a valid session ID. Team: ${teamId}, role: ${role}.` }], isError: true };
             }
 
             // ── Trace: task_created ─────────────────────────────────────
@@ -230,7 +230,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const isReviewer = role === 'reviewer' && !hasTeamWideTaskWrite;
 
             if (isReviewer) {
-                return { content: [{ type: 'text', text: 'Error: REVIEWER role is read-only and cannot update tasks.' }], isError: true };
+                return { content: [{ type: 'text', text: 'Error: REVIEWER role is read-only and cannot update tasks. Use add_task_comment with type="review-feedback" to leave review notes instead.' }], isError: true };
             }
 
             if (args.status === 'in-progress') {
@@ -253,14 +253,14 @@ export function registerTaskTools(ctx: McpToolContext): void {
 
                         if (!assignedToSelf && !claimingSelf) {
                             return {
-                                content: [{ type: 'text', text: 'Error: Workers can only update tasks assigned to them.' }],
+                                content: [{ type: 'text', text: `Error: Workers can only update tasks assigned to them. This task is assigned to ${existingTask.assigneeId ?? '(unassigned)'}, your session is ${sessionId} (role: ${role}). Options: (1) ask a coordinator to reassign, (2) use add_task_comment to leave notes, (3) use send_team_message to request the change.` }],
                                 isError: true
                             };
                         }
 
                         if (args.assigneeId && args.assigneeId !== sessionId) {
                             return {
-                                content: [{ type: 'text', text: 'Error: Workers cannot reassign tasks to other members.' }],
+                                content: [{ type: 'text', text: `Error: Workers cannot reassign tasks to other members. Your session: ${sessionId}. Use send_team_message to request a coordinator to reassign task ${args.taskId}.` }],
                                 isError: true
                             };
                         }
@@ -304,7 +304,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const result = await api.updateTask(teamId, args.taskId, updates);
 
             if (!result.success || !result.task) {
-                return { content: [{ type: 'text', text: `Error: Failed to update task via server API.` }], isError: true };
+                return { content: [{ type: 'text', text: `Error: Failed to update task ${args.taskId} via server API. Valid status: [todo, in-progress, review, done, blocked]. Valid priority: [low, medium, high, urgent]. Team: ${teamId}, role: ${role}.` }], isError: true };
             }
 
             // Notify Team

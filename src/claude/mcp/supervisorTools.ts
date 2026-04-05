@@ -2406,7 +2406,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
         if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can evolve genomes.' }], isError: true };
+            return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can evolve genomes. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
         const hasNewLearnings = Array.isArray(args.newLearnings) && args.newLearnings.length > 0;
@@ -2603,7 +2603,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
         if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can mutate genomes.' }], isError: true };
+            return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can mutate genomes. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
