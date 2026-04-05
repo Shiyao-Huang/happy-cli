@@ -43,4 +43,26 @@ describe('buildAgentLaunchContext', () => {
         expect(result.prompt).toContain('nearest SYSTEM.md / AGENTS.md');
         expect(result.guidanceFiles).toEqual([]);
     });
+
+    it('injects root-to-cwd AGENTS.md instructions when explicitly enabled', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-launch-context-agents-chain-'));
+        mkdirSync(join(root, '.git'));
+        mkdirSync(join(root, 'apps', 'worker', 'src'), { recursive: true });
+        writeFileSync(join(root, 'AGENTS.md'), '# root agents\nRoot instructions', 'utf-8');
+        writeFileSync(join(root, 'apps', 'AGENTS.md'), '# apps agents\nApps instructions', 'utf-8');
+
+        const result = buildAgentLaunchContext({
+            directory: join(root, 'apps', 'worker', 'src'),
+            includeProjectInstructions: true,
+        });
+
+        const rootHeader = `# AGENTS.md instructions for ${root}`;
+        const appsHeader = `# AGENTS.md instructions for ${join(root, 'apps')}`;
+
+        expect(result.prompt).toContain(rootHeader);
+        expect(result.prompt).toContain('Root instructions');
+        expect(result.prompt).toContain(appsHeader);
+        expect(result.prompt).toContain('Apps instructions');
+        expect(result.prompt.indexOf(rootHeader)).toBeLessThan(result.prompt.indexOf(appsHeader));
+    });
 });

@@ -806,6 +806,7 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       directory,
       existingPrompt: extraEnv.AHA_AGENT_PROMPT,
       includeTeamHelpLane: Boolean(options.teamId),
+      includeProjectInstructions: options.agent !== 'codex',
     });
     extraEnv.AHA_AGENT_PROMPT = launchContext.prompt;
     if (!extraEnv.AHA_AGENT_SCOPE_SUMMARY && launchContext.scopeSummary) {
