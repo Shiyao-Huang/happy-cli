@@ -82,6 +82,7 @@ export interface McpToolContext {
         parentSessionId?: string;
         modelId?: string;
         fallbackModelId?: string;
+        predecessorHandoff?: string;
     }) => Promise<{ sessionId: string; memberId: string; sessionTag: string; specId: string | null; specSource: string }>;
     triggerHelpLane: (params: {
         teamId: string;
@@ -317,6 +318,7 @@ export function buildMcpHelpers(
         parentSessionId?: string;
         modelId?: string;
         fallbackModelId?: string;
+        predecessorHandoff?: string;
     }): Promise<{ sessionId: string; memberId: string; sessionTag: string; specId: string | null; specSource: string }> => {
         const daemonState = await readDaemonState();
         if (!daemonState?.httpPort) {
@@ -362,6 +364,7 @@ export function buildMcpHelpers(
                 AHA_TEAM_MEMBER_ID: memberId,
                 ...(params.modelId ? { AHA_AGENT_MODEL: params.modelId } : {}),
                 ...(params.fallbackModelId ? { AHA_FALLBACK_AGENT_MODEL: params.fallbackModelId } : {}),
+                ...(params.predecessorHandoff ? { AHA_PREDECESSOR_HANDOFF: params.predecessorHandoff } : {}),
             },
         };
 
