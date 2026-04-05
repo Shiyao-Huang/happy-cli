@@ -43,6 +43,9 @@ describe('genome runtime metadata validation', () => {
                     mode: 'event',
                     conditions: ['PR opened'],
                 },
+                behavior: {
+                    onRetire: 'write-handoff',
+                },
                 provenance: {
                     origin: 'forked',
                     parentId: 'parent-1',
@@ -60,6 +63,7 @@ describe('genome runtime metadata validation', () => {
         expect(parsed.runtimeType).toBe('claude');
         expect(parsed.lifecycle).toBe('active');
         expect(parsed.trigger?.mode).toBe('event');
+        expect(parsed.behavior?.onRetire).toBe('write-handoff');
         expect(parsed.provenance?.origin).toBe('forked');
     });
 

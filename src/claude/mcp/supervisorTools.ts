@@ -1093,6 +1093,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 lines.push('', `[Behavior DNA]`);
                 if (behavior?.onIdle) lines.push(`  On Idle: ${behavior.onIdle}`);
                 if (behavior?.onBlocked) lines.push(`  On Blocked: ${behavior.onBlocked}`);
+                if (behavior?.onRetire) lines.push(`  On Retire: ${behavior.onRetire}`);
                 if (behavior?.canSpawnAgents != null) lines.push(`  Can Spawn Agents: ${behavior.canSpawnAgents}`);
                 if (behavior?.requireExplicitAssignment != null) lines.push(`  Require Explicit Assignment: ${behavior.requireExplicitAssignment}`);
                 if (messaging?.listenFrom) lines.push(`  Listen From: ${Array.isArray(messaging.listenFrom) ? messaging.listenFrom.join(', ') : messaging.listenFrom}`);
@@ -3112,6 +3113,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         title: 'Retire Self',
         inputSchema: {
             reason: z.string().describe('Why this agent is retiring'),
+            handoffNote: z.string().optional().describe('Optional handoff note for the next agent. Include: in-progress task IDs, uncommitted file changes, and next-step recommendations. Required when genome behavior.onRetire is "write-handoff".'),
         },
     }, async (args) => {
         const ownSessionId = client.sessionId;
@@ -3119,6 +3121,25 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: 'Error: No session ID found for this agent.' }], isError: true };
         }
         try {
+            let handoffFile: string | undefined;
+            if (args.handoffNote) {
+                try {
+                    const fs = await import('node:fs');
+                    const path = await import('node:path');
+                    const { resolveAhaHomeDir } = await import('@/configurationResolver');
+                    const ahaHomeDir = resolveAhaHomeDir();
+                    const handoffsDir = path.join(ahaHomeDir, 'handoffs');
+                    await fs.promises.mkdir(handoffsDir, { recursive: true });
+                    handoffFile = path.join(handoffsDir, `${ownSessionId}.md`);
+                    const timestamp = new Date().toISOString();
+                    const content = `# Agent Handoff — ${ownSessionId}\n\n**Retired at:** ${timestamp}  \n**Reason:** ${args.reason}\n\n## Handoff Note\n\n${args.handoffNote}\n`;
+                    await fs.promises.writeFile(handoffFile, content, 'utf8');
+                } catch {
+                    // Best-effort: don't block retirement if handoff file write fails
+                    handoffFile = undefined;
+                }
+            }
+
             const result = await api.batchArchiveSessions([ownSessionId]);
 
             let processTerminated = false;
@@ -3138,7 +3159,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
 
             return {
-                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated }) }],
+                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, handoffFile }) }],
                 isError: false,
             };
         } catch (error) {
