@@ -355,45 +355,76 @@ export async function startDaemon(): Promise<void> {
         return (meta?.teamId || meta?.roomId) === teamId && c.ahaSessionId;
       });
 
-      if (!hb) {
-        return teamChildren.map(c => ({
-          sessionId: c.ahaSessionId!,
-          role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
-          status: 'alive' as AgentHealthStatus,
-          lastSeenMs: 0,
-          pid: c.pid,
-          runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
-        }));
-      }
+      type PulseMember = {
+        sessionId: string;
+        role: string;
+        status: AgentHealthStatus;
+        lastSeenMs: number;
+        pid?: number;
+        runtimeType?: string;
+        contextUsedPercent?: number;
+      };
 
-      const allAgents = hb.getAllAgents();
-      const agentMap = new Map(allAgents.map(a => [a.agentId, a]));
-
-      return teamChildren.map(c => {
-        const entry = agentMap.get(c.ahaSessionId!);
-        let status: AgentHealthStatus = entry?.status ?? 'alive';
-
-        // PID-aware override: if heartbeat says "dead" but process is still alive,
-        // the agent is idle (no MCP tool calls), not actually dead.
-        if (status === 'dead' && c.pid) {
-          try {
-            process.kill(c.pid, 0); // signal 0 = liveness probe, no-op if alive
-            status = 'suspect'; // Alive process + stale heartbeat = idle, not dead
-          } catch {
-            // PID gone — confirmed dead
-          }
+      const buildMembers = (): PulseMember[] => {
+        if (!hb) {
+          return teamChildren.map(c => ({
+            sessionId: c.ahaSessionId!,
+            role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
+            status: 'alive' as AgentHealthStatus,
+            lastSeenMs: 0,
+            pid: c.pid,
+            runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+          }));
         }
 
-        return {
-          sessionId: c.ahaSessionId!,
-          role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
-          status,
-          lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
-          pid: c.pid,
-          runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
-          contextUsedPercent: entry?.contextUsedPercent,
-        };
-      });
+        const allAgents = hb.getAllAgents();
+        const agentMap = new Map(allAgents.map(a => [a.agentId, a]));
+
+        return teamChildren.map(c => {
+          const entry = agentMap.get(c.ahaSessionId!);
+          let status: AgentHealthStatus = entry?.status ?? 'alive';
+
+          // PID-aware override: if heartbeat says "dead" but process is still alive,
+          // the agent is idle (no MCP tool calls), not actually dead.
+          if (status === 'dead' && c.pid) {
+            try {
+              process.kill(c.pid, 0); // signal 0 = liveness probe, no-op if alive
+              status = 'suspect'; // Alive process + stale heartbeat = idle, not dead
+            } catch {
+              // PID gone — confirmed dead
+            }
+          }
+
+          return {
+            sessionId: c.ahaSessionId!,
+            role: c.ahaSessionMetadataFromLocalWebhook?.role || 'unknown',
+            status,
+            lastSeenMs: entry ? Date.now() - entry.lastSeen : 0,
+            pid: c.pid,
+            runtimeType: c.ahaSessionMetadataFromLocalWebhook?.flavor,
+            contextUsedPercent: entry?.contextUsedPercent,
+          };
+        });
+      };
+
+      // Deduplicate by sessionId — multiple PIDs can share the same ahaSessionId
+      // (session reuse bug). Keep the best entry: prefer alive > suspect > dead,
+      // then lowest lastSeenMs (most recently active).
+      const statusPriority: Record<string, number> = { alive: 0, suspect: 1, dead: 2 };
+      const deduped = new Map<string, PulseMember>();
+      for (const member of buildMembers()) {
+        const existing = deduped.get(member.sessionId);
+        if (!existing) {
+          deduped.set(member.sessionId, member);
+          continue;
+        }
+        const existingPri = statusPriority[existing.status] ?? 3;
+        const memberPri = statusPriority[member.status] ?? 3;
+        if (memberPri < existingPri || (memberPri === existingPri && member.lastSeenMs < existing.lastSeenMs)) {
+          deduped.set(member.sessionId, member);
+        }
+      }
+      return Array.from(deduped.values());
     };
 
     // Wire heartbeat ping into sessionManager
