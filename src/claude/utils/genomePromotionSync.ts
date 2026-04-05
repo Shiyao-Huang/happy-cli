@@ -387,15 +387,19 @@ export async function submitPackageDiffViaMarketplace(args: {
     payload: PackageDiffSubmitPayload;
     hubUrl?: string;
     hubPublishKey?: string;
+    serverUrl?: string;
+    authToken?: string;
     fetchImpl?: FetchLike;
 }): Promise<{
     ok: boolean;
     status: number;
     body: string;
-    transport: 'direct-hub';
+    transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
     const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
+    const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
 
     let response: FetchResponseLike | null = null;
     let body = '';
@@ -406,6 +410,47 @@ export async function submitPackageDiffViaMarketplace(args: {
         body = await response.text().catch(() => '');
     } catch (error) {
         directError = error;
+    }
+
+    // Fallback to server proxy when direct hub access fails
+    const shouldTryServerProxy = Boolean(args.authToken) && (
+        directError
+        || !response
+        || response.status === 401
+        || response.status === 403
+        || response.status === 404
+        || response.status >= 500
+    );
+
+    if (shouldTryServerProxy) {
+        try {
+            const proxiedResponse = await fetchImpl(
+                `${serverUrl}/v1/genomes/id/${encodeURIComponent(args.entityId)}/package-diffs`,
+                {
+                    method: 'POST',
+                    headers: buildServerProxyHeaders(args.authToken),
+                    body: JSON.stringify(args.payload),
+                    signal: AbortSignal.timeout(10_000),
+                },
+            );
+            const proxiedBody = await proxiedResponse.text().catch(() => '');
+
+            return {
+                ok: proxiedResponse.ok,
+                status: proxiedResponse.status,
+                body: proxiedBody,
+                transport: 'server-proxy',
+            };
+        } catch (proxyError) {
+            if (!response) {
+                return {
+                    ok: false,
+                    status: 0,
+                    body: String(proxyError || directError || 'Unknown network error'),
+                    transport: 'server-proxy',
+                };
+            }
+        }
     }
 
     if (!response) {

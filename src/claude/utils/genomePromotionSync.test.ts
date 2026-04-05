@@ -126,7 +126,7 @@ describe('submitPackageDiffViaMarketplace', () => {
         ])
     })
 
-    it('does not fall back to happy-server proxy when direct package diff submit is rejected', async () => {
+    it('falls back to server proxy when direct hub returns 403 and authToken is provided', async () => {
         const calls: Array<{ input: string; method?: string; auth?: string | null }> = []
         const fetchImpl = async (input: string, init?: RequestInit) => {
             calls.push({
@@ -137,6 +137,41 @@ describe('submitPackageDiffViaMarketplace', () => {
                     : null,
             })
 
+            if (input.includes('aha-agi.com')) {
+                return response(403, '{"error":"Forbidden"}')
+            }
+            return response(201, '{"entity":{"id":"e-1","version":2},"diff":{"id":"d-1"}}')
+        }
+
+        const result = await submitPackageDiffViaMarketplace({
+            entityId: 'entity-1',
+            payload: {
+                description: 'Mutate package manifest',
+                baseVersion: 1,
+                ops: [
+                    { type: 'manifest_set', path: 'behavior.onIdle', value: 'self-assign' },
+                ],
+            },
+            authToken: 'test-token',
+            serverUrl: 'https://api.test.com',
+            fetchImpl: fetchImpl as any,
+        })
+
+        expect(result).toMatchObject({
+            ok: true,
+            status: 201,
+            transport: 'server-proxy',
+        })
+        expect(calls).toHaveLength(2)
+        expect(calls[0].input).toContain('aha-agi.com')
+        expect(calls[1].input).toContain('api.test.com')
+        expect(calls[1].auth).toBe('Bearer test-token')
+    })
+
+    it('does not fall back when no authToken is provided', async () => {
+        const calls: Array<{ input: string; method?: string }> = []
+        const fetchImpl = async (input: string, init?: RequestInit) => {
+            calls.push({ input, method: init?.method })
             return response(403, '{"error":"Forbidden"}')
         }
 
@@ -157,12 +192,6 @@ describe('submitPackageDiffViaMarketplace', () => {
             status: 403,
             transport: 'direct-hub',
         })
-        expect(calls).toEqual([
-            {
-                input: 'https://aha-agi.com/genome/entities/id/entity-1/package-diffs',
-                method: 'POST',
-                auth: null,
-            },
-        ])
+        expect(calls).toHaveLength(1)
     })
 })
