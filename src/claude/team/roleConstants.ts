@@ -86,6 +86,9 @@ export const TOOL_GRANT_ROLES = ['supervisor', 'master'] as const;
 /** Roles that can respawn / replace agents. */
 export const AGENT_REPLACE_ROLES = ['supervisor', 'master', 'help-agent'] as const;
 
+/** Roles that can inspect genome specs for QA/review purposes (read-only, limited to non-private namespaces). */
+export const QA_INSPECTOR_ROLES = ['qa-engineer', 'qa', 'engineering-code-reviewer'] as const;
+
 export const NON_TASK_OWNING_ROLES = [
     'org-manager',
     ...DEPRECATED_ROLES,

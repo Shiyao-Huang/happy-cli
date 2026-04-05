@@ -7,6 +7,7 @@ import {
     isBootstrapRole,
     isCoordinatorRole,
 } from '@/claude/team/roles';
+import { INSPECT_PRIVILEGED_ROLES, QA_INSPECTOR_ROLES } from '@/claude/team/roleConstants';
 
 export type CapabilityId =
     | 'task.create'
@@ -139,14 +140,10 @@ export function canInspectGenomeSpec(input: GenomeSpecInspectionInput): boolean 
     const isSelfSpec = callerSpecId != null && callerSpecId === input.targetSpecId;
     if (isSelfSpec) return true;
 
-    const isPrivilegedInspector = callerRole === 'supervisor'
-        || callerRole === 'org-manager'
-        || callerRole === 'master'
-        || callerRole === 'agent-builder';
+    const isPrivilegedInspector = !!callerRole && (INSPECT_PRIVILEGED_ROLES as readonly string[]).includes(callerRole);
     if (isPrivilegedInspector) return true;
 
-    const isQaInspector = callerRole === 'qa-engineer' || callerRole === 'qa'
-        || callerRole === 'engineering-code-reviewer';
+    const isQaInspector = !!callerRole && (QA_INSPECTOR_ROLES as readonly string[]).includes(callerRole);
     if (!isQaInspector) return false;
 
     const targetNamespace = input.targetNamespace?.trim() || null;

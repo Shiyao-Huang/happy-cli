@@ -48,6 +48,13 @@ import { readDaemonState } from '@/persistence';
 import { restartDaemonFlow } from '@/daemon/restartDaemon';
 import { generateRolePrompt } from '@/claude/team/roles';
 import {
+    INSPECT_PRIVILEGED_ROLES,
+    SCORING_ROLES,
+    GENOME_EDIT_ROLES,
+    TOOL_GRANT_ROLES,
+    AGENT_REPLACE_ROLES,
+} from '@/claude/team/roleConstants';
+import {
     buildEffectivePermissionsReport,
     buildRuntimePermissionSnapshot,
     canInspectGenomeSpec,
@@ -234,7 +241,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const resolvedSessionId = requestedSessionId || client.sessionId;
         const isSelf = resolvedSessionId === client.sessionId;
 
-        if (!isSelf && callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'master') {
+        if (!isSelf && (!callerRole || !(INSPECT_PRIVILEGED_ROLES as readonly string[]).includes(callerRole))) {
             return {
                 requestedSessionId: resolvedSessionId,
                 isSelf,
@@ -1625,8 +1632,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         // Master needs this to close the scoring feedback loop when no supervisor
         // is available (e.g., master cannot spawn supervisor due to genome constraints).
         // Without this, the entire scoring pipeline is blocked.
-        const scoringAllowedRoles = ['supervisor', 'help-agent', 'master', 'orchestrator', 'org-manager'];
-        if (!role || !scoringAllowedRoles.includes(role)) {
+        if (!role || !(SCORING_ROLES as readonly string[]).includes(role)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, help-agent, or coordinator roles can score agents.' }], isError: true };
         }
 
@@ -2254,7 +2260,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+        if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can evolve genomes.' }], isError: true };
         }
 
@@ -2451,7 +2457,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+        if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can mutate genomes.' }], isError: true };
         }
 
@@ -2700,7 +2706,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+        if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can compare genome versions.' }], isError: true };
         }
 
@@ -2871,7 +2877,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'org-manager' && callerRole !== 'agent-builder') {
+        if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can rollback genomes.' }], isError: true };
         }
 
