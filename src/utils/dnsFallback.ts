@@ -15,6 +15,9 @@ let installed = false
 /**
  * Install a global dns.lookup fallback that uses Google/Cloudflare DNS
  * when the system resolver fails with ENOTFOUND.
+ *
+ * Handles both normal mode (callback: err, address, family) and
+ * all mode (callback: err, [{address, family}]) which Node's HTTPS uses.
  */
 export function installDnsFallback(): void {
   if (installed) return
@@ -25,17 +28,44 @@ export function installDnsFallback(): void {
 
   const originalLookup = dns.lookup
 
+  /** Resolve hostname via public DNS after system resolver ENOTFOUND */
+  const fallbackResolve = (
+    hostname: string,
+    family: number | undefined,
+    originalErr: NodeJS.ErrnoException,
+    cb: (...args: unknown[]) => void,
+    allMode: boolean
+  ): void => {
+    const resolveMethod = (!family || family === 4) ? 'resolve4' as const : 'resolve6' as const
+    resolver[resolveMethod](hostname, (resolveErr, addresses) => {
+      if (resolveErr || !addresses || addresses.length === 0) {
+        logger.debug(`[DNS FALLBACK] Public DNS also failed for ${hostname}: ${resolveErr?.message ?? 'no addresses'}`)
+        cb(originalErr)
+        return
+      }
+
+      const resolvedFamily = resolveMethod === 'resolve4' ? 4 : 6
+      logger.debug(`[DNS FALLBACK] Resolved ${hostname} via public DNS: ${addresses[0]}`)
+
+      if (allMode) {
+        cb(null, addresses.map((addr: string) => ({ address: addr, family: resolvedFamily })))
+      } else {
+        cb(null, addresses[0], resolvedFamily)
+      }
+    })
+  }
+
   // @ts-expect-error — overloaded signatures make typing messy; runtime behavior is correct
   dns.lookup = function fallbackLookup(
     hostname: string,
-    optionsOrCallback: dns.LookupOptions | number | ((err: NodeJS.ErrnoException | null, address: string, family: number) => void),
-    maybeCallback?: (err: NodeJS.ErrnoException | null, address: string, family: number) => void
+    optionsOrCallback: dns.LookupOptions | number | ((...args: unknown[]) => void),
+    maybeCallback?: (...args: unknown[]) => void
   ): void {
     let options: dns.LookupOptions
-    let callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void
+    let callback: (...args: unknown[]) => void
 
     if (typeof optionsOrCallback === 'function') {
-      callback = optionsOrCallback as typeof callback
+      callback = optionsOrCallback
       options = {}
     } else if (typeof optionsOrCallback === 'number') {
       options = { family: optionsOrCallback }
@@ -50,37 +80,21 @@ export function installDnsFallback(): void {
       return originalLookup.call(dns, hostname, options, callback as never) as never
     }
 
-    // When options.all is true, the callback signature is different —
-    // (err, addresses: {address, family}[]) instead of (err, address, family).
-    // Delegate to original lookup entirely for all-mode to avoid signature mismatches.
+    // When options.all is true, callback signature is (err, [{address, family}])
     if (options.all) {
-      return originalLookup.call(dns, hostname, options, callback as never) as never
+      originalLookup.call(dns, hostname, options, ((err: NodeJS.ErrnoException | null, addresses: Array<{ address: string; family: number }>) => {
+        if (!err) { callback(null, addresses); return }
+        if (err.code !== 'ENOTFOUND') { callback(err, addresses); return }
+        fallbackResolve(hostname, options.family, err, callback, true)
+      }) as never) as never
+      return
     }
 
-    // Try system resolver first
+    // Normal mode: callback signature is (err, address, family)
     originalLookup.call(dns, hostname, options, ((err: NodeJS.ErrnoException | null, address: string, family: number) => {
-      if (!err) {
-        callback(null, address, family)
-        return
-      }
-
-      if (err.code !== 'ENOTFOUND') {
-        callback(err, address, family)
-        return
-      }
-
-      // System resolver failed with ENOTFOUND — try public DNS
-      const resolveMethod = (!options.family || options.family === 4) ? 'resolve4' : 'resolve6'
-      resolver[resolveMethod](hostname, (resolveErr, addresses) => {
-        if (resolveErr || !addresses || addresses.length === 0) {
-          logger.debug(`[DNS FALLBACK] Public DNS also failed for ${hostname}: ${resolveErr?.message ?? 'no addresses'}`)
-          callback(err, address, family) // return original error
-          return
-        }
-
-        logger.debug(`[DNS FALLBACK] Resolved ${hostname} via public DNS: ${addresses[0]}`)
-        callback(null, addresses[0], resolveMethod === 'resolve4' ? 4 : 6)
-      })
+      if (!err) { callback(null, address, family); return }
+      if (err.code !== 'ENOTFOUND') { callback(err, address, family); return }
+      fallbackResolve(hostname, options.family, err, callback, false)
     }) as never) as never
   }
 
