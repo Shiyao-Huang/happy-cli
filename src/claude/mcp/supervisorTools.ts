@@ -1905,57 +1905,73 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
         } catch { /* trace must never break main flow */ }
 
-        // ── Phase 3-B Change 3: Auto-trigger feedback upload on every scored cycle ──
-        // Skip if this cycle was unscorable (e.g. system rate-limits) — don't pollute avgScore
+        // ── Auto-trigger feedback upload when enough evaluations have accumulated ──
+        // Gated by AHA_MIN_AUTO_FEEDBACK_SCORES (default 3) so early sparse scores
+        // don't push unreliable aggregates to the marketplace.
+        // Uses deriveFeedbackTargetFromScores to pin feedback to the evaluated entity
+        // version, not the current-latest (which may already be a newer evolved version).
+        // Skip if this cycle was unscorable (e.g. system rate-limits) — don't pollute avgScore.
+        let autoFeedbackNote = '';
         if (feedbackTarget && !args.unscoreableCycle) {
             try {
+                const minAutoFeedbackScores = Number(process.env.AHA_MIN_AUTO_FEEDBACK_SCORES ?? '') || 3;
                 const { readScores } = await import('@/claude/utils/scoreStorage');
                 const { scores: allScores } = readScores();
                 const genomeScores = allScores.filter((score) =>
                     scoreMatchesFeedbackTarget(score, feedbackTarget)
                 );
-                const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
-                const feedback = aggScores(genomeScores);
-                if (!feedback) {
+                if (genomeScores.length < minAutoFeedbackScores) {
+                    autoFeedbackNote = ` [auto-feedback deferred: ${genomeScores.length}/${minAutoFeedbackScores} evaluations]`;
                     logger.debug(
-                        `[score_agent] Auto-feedback upload skipped for ${feedbackTarget.namespace}/${feedbackTarget.name}: failed to aggregate ${genomeScores.length} score(s)`,
+                        `[score_agent] Auto-feedback upload deferred for ${feedbackTarget.namespace}/${feedbackTarget.name}: ${genomeScores.length}/${minAutoFeedbackScores} evaluations needed`,
                     );
                 } else {
-                    const upload = await syncGenomeFeedbackToMarketplace({
-                        target: feedbackTarget,
-                        role: args.role,
-                        feedback,
-                        hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
-                        hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
-                        serverUrl: configuration.serverUrl,
-                        authToken: client.getAuthToken(),
-                    });
-
-                    if (!upload.ok) {
+                    const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
+                    const feedback = aggScores(genomeScores);
+                    if (!feedback) {
                         logger.debug(
-                            `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport}: ${upload.status} ${upload.body}`,
+                            `[score_agent] Auto-feedback upload skipped for ${feedbackTarget.namespace}/${feedbackTarget.name}: failed to aggregate ${genomeScores.length} score(s)`,
                         );
                     } else {
-                        logger.debug(
-                            `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport} (${genomeScores.length} scores, source=${feedbackTarget.source}, createdGenome=${upload.createdGenome})`,
-                        );
+                        const effectiveFeedbackTarget = deriveFeedbackTargetFromScores(feedbackTarget, genomeScores);
+                        const upload = await syncGenomeFeedbackToMarketplace({
+                            target: effectiveFeedbackTarget,
+                            role: args.role,
+                            feedback,
+                            hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                            hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                            serverUrl: configuration.serverUrl,
+                            authToken: client.getAuthToken(),
+                        });
 
-                        // ── Trace: feedback_uploaded ────────────────────────
-                        try {
-                            const feedbackEventId = emitTraceEvent(
-                                TraceEventKind.feedback_uploaded,
-                                'mcp',
-                                {
-                                    team_id: args.teamId,
-                                    session_id: args.sessionId,
-                                },
-                                `Feedback uploaded for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, createdGenome=${upload.createdGenome})`,
-                                { attrs: { namespace: feedbackTarget.namespace, name: feedbackTarget.name, scoreCount: genomeScores.length } },
+                        if (!upload.ok) {
+                            autoFeedbackNote = ` [auto-feedback failed: ${upload.status}]`;
+                            logger.debug(
+                                `[score_agent] Auto-feedback upload failed for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport}: ${upload.status} ${upload.body}`,
                             );
-                            if (feedbackEventId && scoreCompletedEventId) {
-                                emitTraceLink(feedbackEventId, scoreCompletedEventId, 'caused_by');
-                            }
-                        } catch { /* trace must never break main flow */ }
+                        } else {
+                            autoFeedbackNote = ` [auto-feedback uploaded: ${genomeScores.length} evaluations, avgScore=${feedback.avgScore}]`;
+                            logger.debug(
+                                `[score_agent] Auto-triggered feedback upload for ${feedbackTarget.namespace}/${feedbackTarget.name} via ${upload.transport} (${genomeScores.length} scores, source=${feedbackTarget.source}, createdGenome=${upload.createdGenome})`,
+                            );
+
+                            // ── Trace: feedback_uploaded ────────────────────────
+                            try {
+                                const feedbackEventId = emitTraceEvent(
+                                    TraceEventKind.feedback_uploaded,
+                                    'mcp',
+                                    {
+                                        team_id: args.teamId,
+                                        session_id: args.sessionId,
+                                    },
+                                    `Feedback uploaded for ${feedbackTarget.namespace}/${feedbackTarget.name} (${genomeScores.length} scores, createdGenome=${upload.createdGenome})`,
+                                    { attrs: { namespace: feedbackTarget.namespace, name: feedbackTarget.name, scoreCount: genomeScores.length } },
+                                );
+                                if (feedbackEventId && scoreCompletedEventId) {
+                                    emitTraceLink(feedbackEventId, scoreCompletedEventId, 'caused_by');
+                                }
+                            } catch { /* trace must never break main flow */ }
+                        }
                     }
                 }
             } catch (error) {
@@ -2057,7 +2073,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         return {
             content: [{
                 type: 'text',
-                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}${verdictInfo}\n${dimSummary}`,
+                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}${verdictInfo}${autoFeedbackNote}\n${dimSummary}`,
             }],
             isError: false,
         };
@@ -2505,7 +2521,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 field: z.string().describe("Spec field to mutate, e.g. 'protocol', 'responsibilities', 'systemPromptSuffix'."),
                 action: z.enum(['append', 'replace', 'remove', 'rewrite']).describe('Mutation action type.'),
                 index: z.number().optional().describe('For replace/remove: array index to target.'),
-                value: z.string().optional().describe('New value for append/replace/rewrite.'),
+                value: z.union([z.string(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional().describe('New value for append/replace/rewrite. Use string for scalar/string-field mutations; array or object for rewrite action on structured fields.'),
                 reason: z.string().describe('Reason for this mutation (traceability).'),
             })).min(1).max(20).describe('List of targeted mutations to apply.'),
             newLearnings: z.array(z.string().max(300)).max(10).optional().describe(
@@ -2606,10 +2622,10 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             } else if (Array.isArray(fieldValue)) {
                 const arr = [...fieldValue] as string[];
                 if (mutation.action === 'append' && mutation.value) {
-                    arr.push(mutation.value);
+                    arr.push(mutation.value as string);
                 } else if (mutation.action === 'replace' && mutation.index !== undefined && mutation.value) {
                     if (mutation.index >= 0 && mutation.index < arr.length) {
-                        arr[mutation.index] = mutation.value;
+                        arr[mutation.index] = mutation.value as string;
                     }
                 } else if (mutation.action === 'remove' && mutation.index !== undefined) {
                     if (mutation.index >= 0 && mutation.index < arr.length) {
