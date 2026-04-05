@@ -1647,6 +1647,27 @@ export class ApiClient {
     }
   }
 
+  async releaseSessionTaskLocks(teamId: string, sessionId: string): Promise<{ success: boolean; unlockedTaskIds: string[] }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams/${teamId}/sessions/${sessionId}/release-task-locks`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Released task locks for session ${sessionId}`);
+      return response.data;
+    } catch (error) {
+      logger.debug(`[API] [ERROR] Failed to release task locks:`, error);
+      throw new Error(`Failed to release task locks: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async addTaskComment(teamId: string, taskId: string, comment: {
     sessionId: string;
     role?: string;
