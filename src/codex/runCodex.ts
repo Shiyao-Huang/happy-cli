@@ -50,6 +50,7 @@ import {
     seedCodexHomeConfig,
     seedCodexHomeSkillUnion,
 } from './codexHome';
+import { findCodexTranscriptFile, findMostRecentCodexTranscriptFile } from '@/claude/utils/runtimeLogReader';
 
 // Helper functions for role metadata — agent-image-first, empty fallback
 function getRoleTitle(roleId: string): string {
@@ -1154,6 +1155,28 @@ export async function runCodex(opts: {
             logCodexSignal('skipped', msg, {
                 reason: 'item_completed duplicates already-forwarded content'
             });
+            return;
+        }
+
+        // session_meta: capture Codex's internal session UUID to resolve the transcript file path.
+        // The aha session ID (CUID) does not match the Codex internal UUID (UUIDv7) used in
+        // transcript filenames. Storing the resolved path in metadata enables get_context_status
+        // to locate the correct transcript without a UUID mismatch.
+        if (msg.type === 'session_meta') {
+            const codexInternalId = (msg as any)?.id ?? (msg as any)?.payload?.id;
+            if (typeof codexInternalId === 'string' && codexInternalId.length > 0) {
+                const homeDir = process.env.HOME || os.homedir();
+                const resolvedPath = findCodexTranscriptFile(homeDir, codexInternalId)
+                    ?? findMostRecentCodexTranscriptFile(homeDir);
+                if (resolvedPath) {
+                    void session.updateMetadata((current) => ({
+                        ...current,
+                        codexTranscriptPath: resolvedPath,
+                    })).catch((err) => {
+                        logger.debug('[Codex] Failed to store codexTranscriptPath in metadata:', err);
+                    });
+                }
+            }
             return;
         }
 

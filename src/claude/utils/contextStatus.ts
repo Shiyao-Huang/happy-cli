@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { Metadata } from '@/api/types';
-import { findClaudeLogFile, findCodexTranscriptFile, findMostRecentClaudeLogFile } from './runtimeLogReader';
+import { findClaudeLogFile, findCodexTranscriptFile, findMostRecentClaudeLogFile, findMostRecentCodexTranscriptFile } from './runtimeLogReader';
 import { DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS, resolveContextWindowTokens } from '@/utils/modelContextWindows';
 
 type ContextStatusReport = {
@@ -209,7 +209,13 @@ export function getContextStatusReport(options: {
 
     const runtimeType = metadata?.flavor === 'codex' ? 'codex' : 'claude';
     if (runtimeType === 'codex') {
-        const codexFile = findCodexTranscriptFile(homeDir, options.ahaSessionId);
+        // Priority order for Codex transcript discovery:
+        // 1. metadata.codexTranscriptPath — stored at session start from session_meta event (most reliable)
+        // 2. findCodexTranscriptFile by aha session ID — works only if Codex files happen to use the aha CUID (rare)
+        // 3. findMostRecentCodexTranscriptFile — fallback for sessions that predate the path-capture fix
+        const codexFile = ((metadata as any)?.codexTranscriptPath as string | undefined)
+            || findCodexTranscriptFile(homeDir, options.ahaSessionId)
+            || findMostRecentCodexTranscriptFile(homeDir);
         if (!codexFile) {
             throw new Error('Codex transcript not found. Cannot determine context status.');
         }

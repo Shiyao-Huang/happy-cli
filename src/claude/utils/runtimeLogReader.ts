@@ -193,6 +193,38 @@ export function findCodexTranscriptFile(homeDir: string, sessionId: string): str
     return candidates[0] || null;
 }
 
+/**
+ * Finds the most recently modified Codex session transcript file.
+ * Used as a fallback when the aha session ID does not match the Codex internal UUID
+ * (which is the typical case: Codex files are named with their own UUID, not the aha session ID).
+ *
+ * @param homeDir   Home directory (defaults to process.env.HOME)
+ * @param maxAgeMs  Only consider files modified within this window (default: 12 hours)
+ */
+export function findMostRecentCodexTranscriptFile(homeDir: string, maxAgeMs = 12 * 60 * 60 * 1000): string | null {
+    const roots = [
+        path.join(homeDir, '.codex', 'sessions'),
+    ];
+    const cutoff = Date.now() - maxAgeMs;
+    let best: { path: string; mtime: number } | null = null;
+
+    for (const root of roots) {
+        for (const filePath of collectFilesRecursive(root)) {
+            if (!filePath.endsWith('.jsonl')) continue;
+            try {
+                const { mtimeMs } = fs.statSync(filePath);
+                if (mtimeMs >= cutoff && (!best || mtimeMs > best.mtime)) {
+                    best = { path: filePath, mtime: mtimeMs };
+                }
+            } catch {
+                // skip unreadable files
+            }
+        }
+    }
+
+    return best?.path ?? null;
+}
+
 export function readRuntimeLog(options: {
     homeDir?: string;
     runtimeType: RuntimeType;
