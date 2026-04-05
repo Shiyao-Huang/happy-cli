@@ -43,6 +43,7 @@ import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchAgentImage, fetchAgentVerdictData } from './utils/fetchGenome';
+import { createHotEvolutionTick } from './utils/hotEvolutionTick';
 import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
@@ -604,6 +605,31 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         logger.debug(`[genome] Genome spec applied at startup (specId=${_agentImageId})`);
     }
     recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'startup');
+
+    // ── Hot Evolution：background genome version poll ─────────────────────────
+    // Poll genome-hub every AHA_HOT_EVOLUTION_INTERVAL_MS ms (default 5 min).
+    // If entity.version has increased, update _agentImageRef.current so the
+    // NEXT message turn picks up the evolved systemPrompt without a restart.
+    // Startup-time config (tools, model, permissions) is intentionally NOT
+    // hot-swapped — only systemPrompt + systemPromptSuffix (narrative behavior).
+    let _hotEvolutionInterval: ReturnType<typeof setInterval> | undefined;
+    if (_agentImageId) {
+        let _hotEvolutionKnownVersion = _agentImage?.version ?? 0;
+        const _hotEvolutionIntervalMs =
+            Number(process.env.AHA_HOT_EVOLUTION_INTERVAL_MS || '') || 5 * 60 * 1000;
+        const _hotEvolutionTick = createHotEvolutionTick({
+            token: credentials.token,
+            specId: _agentImageId,
+            agentImageRef: _agentImageRef,
+            initialVersion: _hotEvolutionKnownVersion,
+            fetchFn: fetchAgentImage,
+            onVersionBump: (latest) => {
+                allowDynamicToolGrants = hasDynamicGrantOptIn(latest);
+            },
+        });
+        _hotEvolutionInterval = setInterval(_hotEvolutionTick, _hotEvolutionIntervalMs);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     syncRuntimePermissionMetadata();
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1049,12 +1075,13 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
                 let instructions: string;
 
-                // ── Genome Tier 1：Prompt 注入（复用启动阶段已 fetch 的 _agentImage）──
-                // _agentImage 在启动时已 fetch 并缓存，这里直接用，不重复请求。
-                // If genome supplies a full system prompt, use it directly and
-                // skip the compiled role prompt below.
-                if (_agentImage?.systemPrompt) {
-                    instructions = resolvePromptTemplateVars(_agentImage.systemPrompt, {
+                // ── Genome Tier 1：Prompt 注入 ───────────────────────────────────────
+                // Use _agentImageRef.current (updated by hot-evolution interval) so
+                // an evolved systemPrompt takes effect on the next turn without restart.
+                // Falls back to startup _agentImage if ref was not set (ad-hoc agents).
+                const _currentGenome = _agentImageRef.current ?? _agentImage;
+                if (_currentGenome?.systemPrompt) {
+                    instructions = resolvePromptTemplateVars(_currentGenome.systemPrompt, {
                         AHA_SUPERVISOR_TEAM_LOG_CURSOR: process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0',
                         AHA_SUPERVISOR_LAST_CONCLUSION: process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '(none — this is the first run)',
                         AHA_SUPERVISOR_PENDING_ACTION: process.env.AHA_SUPERVISOR_PENDING_ACTION || '(none)',
@@ -1066,10 +1093,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
                         AHA_AGENT_ROLE: role || 'agent',
                     });
-                    if (_agentImage.systemPromptSuffix) {
-                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
+                    if (_currentGenome.systemPromptSuffix) {
+                        instructions += '\n\n' + _currentGenome.systemPromptSuffix;
                     }
-                    logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId})`);
+                    logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId}, v${_currentGenome.version ?? '?'})`);
                 } else if (_agentImageId || _agentImage) {
                     throw new Error(
                         `[runClaude] Missing required genome systemPrompt for role=${role ?? 'agent'} specId=${_agentImageId ?? 'unknown'}`,
@@ -1387,6 +1414,7 @@ ${instructions}
             // Update lifecycle state to archived before closing
             if (session) {
                 clearInterval(keepAliveInterval);
+                if (_hotEvolutionInterval) clearInterval(_hotEvolutionInterval);
                 session.updateMetadata((currentMetadata) => ({
                     ...currentMetadata,
                     lifecycleState: 'archived',
