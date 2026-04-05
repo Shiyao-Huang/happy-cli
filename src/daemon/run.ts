@@ -628,6 +628,20 @@ export async function startDaemon(): Promise<void> {
           logger.warn(`[DAEMON RUN] Remote machine registration failed (${error.response?.status}) during ${reason}; starting in offline mode and will retry on a future heartbeat.`);
           machine = null;
           return false;
+        } else if (
+          // Network-level errors (DNS failure, connection refused, timeout) should not crash the daemon.
+          // Treat them the same as 5xx — start in offline mode and retry on future heartbeats.
+          axios.isAxiosError(error) && !error.response && (
+            error.code === 'ENOTFOUND' ||
+            error.code === 'ECONNREFUSED' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ERR_NETWORK'
+          )
+        ) {
+          logger.warn(`[DAEMON RUN] Network error during machine registration (${error.code}) in ${reason}; starting in offline mode and will retry on a future heartbeat.`);
+          machine = null;
+          return false;
         } else {
           throw error;
         }
