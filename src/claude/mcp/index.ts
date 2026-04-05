@@ -222,6 +222,7 @@ export async function startAhaServer(
             // Team tools
             'send_team_message',
             'get_team_info',
+            'list_inactive_team_members',
             'get_team_pulse',
             // Task tools
             'create_task',

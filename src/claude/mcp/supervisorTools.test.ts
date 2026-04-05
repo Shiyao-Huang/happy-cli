@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { buildVisibleToolsPayload, resolveEntityNsName, buildVerdictContent } from './supervisorTools';
+import { describe, expect, it, vi } from 'vitest';
+import {
+    buildVisibleToolsPayload,
+    resolveEntityNsName,
+    buildVerdictContent,
+    writeRetireHandoffTaskComments,
+    type RetireHandoffTaskApi,
+} from './supervisorTools';
 
 describe('resolveEntityNsName', () => {
     it('returns explicit namespace and name when both are provided', () => {
@@ -205,5 +211,88 @@ describe('buildVisibleToolsPayload', () => {
             ],
             warnings: [],
         });
+    });
+});
+
+describe('writeRetireHandoffTaskComments', () => {
+    it('writes a handoff comment to every in-progress task for the retiring session', async () => {
+        const api: RetireHandoffTaskApi = {
+            listTasks: vi.fn().mockResolvedValue({
+                tasks: [{ id: 'task-1' }, { id: 'task-2' }],
+                version: 1,
+            }),
+            addTaskComment: vi.fn().mockResolvedValue({ success: true }),
+        };
+
+        const result = await writeRetireHandoffTaskComments({
+            api,
+            teamId: 'team-1',
+            sessionId: 'sess-1',
+            role: 'implementer',
+            displayName: 'Implementer',
+            handoffNote: 'Continue from checkpoint B.',
+        });
+
+        expect(api.listTasks).toHaveBeenCalledWith('team-1', {
+            assigneeId: 'sess-1',
+            status: 'in-progress',
+        });
+        expect(api.addTaskComment).toHaveBeenNthCalledWith(1, 'team-1', 'task-1', {
+            sessionId: 'sess-1',
+            role: 'implementer',
+            displayName: 'Implementer',
+            type: 'handoff',
+            content: 'Continue from checkpoint B.',
+        });
+        expect(api.addTaskComment).toHaveBeenNthCalledWith(2, 'team-1', 'task-2', {
+            sessionId: 'sess-1',
+            role: 'implementer',
+            displayName: 'Implementer',
+            type: 'handoff',
+            content: 'Continue from checkpoint B.',
+        });
+        expect(result).toEqual(['task-1', 'task-2']);
+    });
+
+    it('continues writing handoff comments when one task write fails', async () => {
+        const api: RetireHandoffTaskApi = {
+            listTasks: vi.fn().mockResolvedValue({
+                tasks: [{ id: 'task-1' }, { id: 'task-2' }],
+                version: 1,
+            }),
+            addTaskComment: vi.fn()
+                .mockRejectedValueOnce(new Error('task-1 unavailable'))
+                .mockResolvedValueOnce({ success: true }),
+        };
+
+        const result = await writeRetireHandoffTaskComments({
+            api,
+            teamId: 'team-1',
+            sessionId: 'sess-1',
+            role: 'implementer',
+            displayName: 'Implementer',
+            handoffNote: 'Resume after test harness fix.',
+        });
+
+        expect(api.addTaskComment).toHaveBeenCalledTimes(2);
+        expect(result).toEqual(['task-2']);
+    });
+
+    it('returns an empty list without touching the API when team context is missing', async () => {
+        const api: RetireHandoffTaskApi = {
+            listTasks: vi.fn(),
+            addTaskComment: vi.fn(),
+        };
+
+        const result = await writeRetireHandoffTaskComments({
+            api,
+            teamId: undefined,
+            sessionId: 'sess-1',
+            handoffNote: 'No team context available.',
+        });
+
+        expect(result).toEqual([]);
+        expect(api.listTasks).not.toHaveBeenCalled();
+        expect(api.addTaskComment).not.toHaveBeenCalled();
     });
 });

@@ -161,6 +161,64 @@ export function buildVisibleToolsPayload(args: {
     };
 }
 
+export type RetireHandoffTaskApi = {
+    listTasks(
+        teamId: string,
+        filters?: { status?: string; assigneeId?: string },
+    ): Promise<{ tasks: Array<{ id: string }>; version?: number }>;
+    addTaskComment(
+        teamId: string,
+        taskId: string,
+        comment: {
+            sessionId: string;
+            role?: string;
+            displayName?: string;
+            type?: 'handoff';
+            content: string;
+        },
+    ): Promise<unknown>;
+};
+
+export async function writeRetireHandoffTaskComments(args: {
+    api: RetireHandoffTaskApi;
+    teamId?: string | null;
+    sessionId: string;
+    role?: string;
+    displayName?: string;
+    handoffNote: string;
+}): Promise<string[]> {
+    if (!args.teamId) return [];
+
+    try {
+        const { tasks } = await args.api.listTasks(args.teamId, {
+            assigneeId: args.sessionId,
+            status: 'in-progress',
+        });
+
+        const handoffTaskIds: string[] = [];
+        for (const task of tasks) {
+            if (!task?.id) continue;
+            try {
+                await args.api.addTaskComment(args.teamId, task.id, {
+                    sessionId: args.sessionId,
+                    role: args.role,
+                    displayName: args.displayName,
+                    type: 'handoff',
+                    content: args.handoffNote,
+                });
+                handoffTaskIds.push(task.id);
+            } catch {
+                // Best-effort per task: continue with the remaining in-progress tasks.
+            }
+        }
+
+        return handoffTaskIds;
+    } catch {
+        // Best-effort: retire_self should not fail just because task comment persistence failed.
+        return [];
+    }
+}
+
 export function registerSupervisorTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -3121,8 +3179,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: 'Error: No session ID found for this agent.' }], isError: true };
         }
         try {
+            const meta = client.getMetadata();
+            const handoffTaskIds = args.handoffNote
+                ? await writeRetireHandoffTaskComments({
+                    api,
+                    teamId: meta?.teamId || meta?.roomId,
+                    sessionId: ownSessionId,
+                    role: meta?.role,
+                    displayName: meta?.displayName || meta?.name,
+                    handoffNote: args.handoffNote,
+                })
+                : [];
             let handoffFile: string | undefined;
             if (args.handoffNote) {
+                // Fallback path: write handoff file (backup, in case task API fails)
                 try {
                     const fs = await import('node:fs');
                     const path = await import('node:path');
@@ -3158,7 +3228,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             }
 
             return {
-                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, handoffFile }) }],
+                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, handoffFile, handoffTaskIds }) }],
                 isError: false,
             };
         } catch (error) {

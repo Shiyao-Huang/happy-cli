@@ -40,7 +40,8 @@ export function buildTeamStartupContext(teamId: string, roleId: string): string 
 ## Team Context
 - Team ID: ${teamId}
 - Your role: ${roleId}
-- On startup: call get_team_info then list_tasks
+- On startup: call get_team_info for overview, then list_tasks
+- Call list_inactive_team_members only if you need dormant roster detail
 - Kanban protocol: start_task before work, complete_task after done
 - Help lane: call request_help with evidence, or use @help in team chat for the same escalation path
 - Report blockers via send_team_message @master`);
@@ -54,8 +55,10 @@ export function buildMissingTeamContextInstruction(): string {
     return trimIdent(`IMPORTANT: You are part of a team but don't have full team context yet.
 Before starting any work, you MUST call the get_team_info tool from the "aha" MCP server to:
 1. Understand your role and responsibilities
-2. See who else is on the team
+2. See the currently collaborating roster
 3. Learn the communication and workflow protocols
+
+If you specifically need dormant or artifact-only roster detail, call list_inactive_team_members after the overview.
 
 If restoring team context fails, call request_help with evidence. @help in team chat triggers the same escalation lane.
 

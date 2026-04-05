@@ -12,7 +12,7 @@
  * ```
  *
  * ## Tools registered
- * - send_team_message, get_team_info, get_team_pulse
+ * - send_team_message, get_team_info, list_inactive_team_members, get_team_pulse
  *
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
@@ -29,6 +29,121 @@ import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembersh
 import { readDaemonState } from '@/persistence';
 import { McpToolContext } from './mcpContext';
 
+type TeamRosterMember = {
+    sessionId: string;
+    roleId?: string;
+    role?: string;
+    displayName?: string;
+    memberId?: string;
+    sessionTag?: string;
+    runtimeType?: string;
+};
+
+type TeamPulseMemberSnapshot = {
+    sessionId: string;
+    role: string;
+    status: string;
+    lastSeenMs: number;
+    pid?: number;
+    runtimeType?: string;
+    contextUsedPercent?: number;
+};
+
+type ResolvedTeamRosterMember = TeamRosterMember & {
+    liveness: 'alive' | 'suspect' | 'inactive' | 'unknown';
+    isCollaborating: boolean;
+    lastSeenMs: number | null;
+    contextUsedPercent: number | null;
+};
+
+export function buildTeamRosterView(input: {
+    boardMembers: TeamRosterMember[];
+    headerSessions: string[];
+    pulseMembers: TeamPulseMemberSnapshot[] | null;
+    mySessionId: string;
+    includeInactive?: boolean;
+}): {
+    members: ResolvedTeamRosterMember[];
+    pulseKnown: boolean;
+    activeFilterApplied: boolean;
+    counts: {
+        totalKnown: number;
+        collaborating: number;
+        inactive: number;
+        unknown: number;
+        returned: number;
+    };
+} {
+    const memberMap = new Map<string, TeamRosterMember>();
+
+    for (const member of input.boardMembers) {
+        if (!member?.sessionId) continue;
+        memberMap.set(member.sessionId, member);
+    }
+
+    for (const sessionId of input.headerSessions) {
+        if (!sessionId || memberMap.has(sessionId)) continue;
+        memberMap.set(sessionId, { sessionId, roleId: '', displayName: sessionId });
+    }
+
+    const pulseMembers = input.pulseMembers ?? [];
+    const pulseBySession = new Map(pulseMembers.map((member) => [member.sessionId, member]));
+
+    for (const pulseMember of pulseMembers) {
+        if (memberMap.has(pulseMember.sessionId)) continue;
+        memberMap.set(pulseMember.sessionId, {
+            sessionId: pulseMember.sessionId,
+            roleId: pulseMember.role,
+            displayName: pulseMember.sessionId,
+            runtimeType: pulseMember.runtimeType,
+        });
+    }
+
+    const pulseKnown = input.pulseMembers !== null;
+    const allMembers = Array.from(memberMap.values()).map((member) => {
+        const pulse = pulseBySession.get(member.sessionId);
+        const isSelf = member.sessionId === input.mySessionId;
+        const liveness: ResolvedTeamRosterMember['liveness'] = isSelf
+            ? 'alive'
+            : pulse?.status === 'alive' || pulse?.status === 'suspect'
+                ? pulse.status
+                : pulseKnown
+                    ? 'inactive'
+                    : 'unknown';
+
+        return {
+            ...member,
+            roleId: member.roleId || pulse?.role || '',
+            liveness,
+            isCollaborating: isSelf || liveness === 'alive' || liveness === 'suspect',
+            lastSeenMs: pulse?.lastSeenMs ?? null,
+            runtimeType: member.runtimeType || pulse?.runtimeType || undefined,
+            contextUsedPercent: pulse?.contextUsedPercent ?? null,
+        };
+    });
+
+    const counts = {
+        totalKnown: allMembers.length,
+        collaborating: allMembers.filter((member) => member.isCollaborating).length,
+        inactive: allMembers.filter((member) => member.liveness === 'inactive').length,
+        unknown: allMembers.filter((member) => member.liveness === 'unknown').length,
+        returned: 0,
+    };
+
+    const activeFilterApplied = pulseKnown && !input.includeInactive;
+    const members = activeFilterApplied
+        ? allMembers.filter((member) => member.isCollaborating)
+        : allMembers;
+    counts.returned = members.length;
+
+    return {
+        members,
+        pulseKnown,
+        activeFilterApplied,
+        counts,
+    };
+}
+
 export function registerTeamTools(ctx: McpToolContext): void {
     const {
         mcp,
@@ -39,6 +154,63 @@ export function registerTeamTools(ctx: McpToolContext): void {
         toHelpSeverity,
         triggerHelpLane,
     } = ctx;
+
+    const loadArtifactRoster = async (teamId: string) => {
+        let boardMembers: TeamRosterMember[] = [];
+        let headerSessions: string[] = [];
+
+        try {
+            const artifact = await api.getArtifact(teamId);
+
+            let board: any = null;
+            if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
+                const bodyValue = (artifact.body as { body?: unknown }).body;
+                if (typeof bodyValue === 'string') {
+                    try {
+                        board = JSON.parse(bodyValue);
+                    } catch { /* ignore */ }
+                } else if (bodyValue && typeof bodyValue === 'object') {
+                    board = bodyValue;
+                }
+            } else {
+                board = artifact.body;
+            }
+
+            boardMembers = (board && board.team && Array.isArray(board.team.members))
+                ? board.team.members
+                : [];
+            headerSessions = (artifact.header && Array.isArray(artifact.header.sessions))
+                ? artifact.header.sessions
+                : [];
+
+            logger.debug(`[ahaMCP] team roster: found ${Math.max(boardMembers.length, headerSessions.length)}+ members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
+        } catch (e) {
+            logger.debug('[ahaMCP] Failed to fetch team artifact:', e);
+        }
+
+        return { boardMembers, headerSessions };
+    };
+
+    const loadPulseMembers = async (teamId: string): Promise<TeamPulseMemberSnapshot[] | null> => {
+        try {
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) return null;
+
+            const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/team-pulse`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ teamId }),
+                signal: AbortSignal.timeout(3_000),
+            });
+
+            if (!response.ok) return null;
+            const pulse = await response.json() as { members?: TeamPulseMemberSnapshot[] };
+            return Array.isArray(pulse.members) ? pulse.members : [];
+        } catch (e) {
+            logger.debug('[ahaMCP] pulse lookup unavailable:', e);
+            return null;
+        }
+    };
 
     // Team messaging tool
     mcp.registerTool('send_team_message', {
@@ -143,7 +315,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
 
     // Team info tool - provides agent with context about their team, role, and collaboration protocols
     mcp.registerTool('get_team_info', {
-        description: 'Get information about your current team, including your role, team members, role definitions, and collaboration protocols. Essential for understanding how to work with your team.',
+        description: 'Get an overview of your current team, including your role, active collaborators, role definitions, and collaboration protocols. Inactive roster members are hidden by default.',
         title: 'Get Team Info',
         inputSchema: {},
     }, async () => {
@@ -164,58 +336,15 @@ export function registerTeamTools(ctx: McpToolContext): void {
                 };
             }
 
-            // Fetch team artifact to get members
-            // Members come from TWO sources (like the mobile kanban app):
-            // 1. board.team.members - detailed member info with roleId
-            // 2. artifact.header.sessions - session IDs of team members
-            let teamMembers: any[] = [];
-            try {
-                const artifact = await api.getArtifact(teamId);
+            let { boardMembers, headerSessions } = await loadArtifactRoster(teamId);
 
-                // Parse the board body
-                let board: any = null;
-                if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
-                    const bodyValue = (artifact.body as { body?: unknown }).body;
-                    if (typeof bodyValue === 'string') {
-                        try {
-                            board = JSON.parse(bodyValue);
-                        } catch (e) { /* ignore */ }
-                    } else if (bodyValue && typeof bodyValue === 'object') {
-                        board = bodyValue;
-                    }
-                } else {
-                    board = artifact.body;
-                }
-
-                // Combine members from both sources (like mobile app's roster computation)
-                const boardMembers = (board && board.team && Array.isArray(board.team.members))
-                    ? board.team.members
-                    : [];
-                const headerSessions = (artifact.header && Array.isArray(artifact.header.sessions))
-                    ? artifact.header.sessions
-                    : [];
-
-                // Create a map of existing members from board.team.members
-                const memberMap = new Map(boardMembers.map((m: any) => [m.sessionId, m]));
-
-                // Add all session IDs from header (these are the actual team members)
-                const allSessionIds = new Set([
-                    ...headerSessions,
-                    ...boardMembers.map((m: any) => m.sessionId)
-                ]);
-
-                // Build the final member list, preferring board member data when available
-                teamMembers = Array.from(allSessionIds).map((sessionId: string) => {
-                    const existing = memberMap.get(sessionId);
-                    return existing || { sessionId, roleId: '', displayName: sessionId };
-                });
-
-                logger.debug(`[ahaMCP] get_team_info: Found ${teamMembers.length} members (board: ${boardMembers.length}, header: ${headerSessions.length})`);
-            } catch (e) {
-                logger.debug('[ahaMCP] Failed to fetch team artifact:', e);
-            }
-
-            const selfAlreadyPresent = teamMembers.some((member: any) => {
+            const selfAlreadyPresent = buildTeamRosterView({
+                boardMembers,
+                headerSessions,
+                pulseMembers: null,
+                mySessionId,
+                includeInactive: true,
+            }).members.some((member: any) => {
                 if (metadata?.memberId && member?.memberId) {
                     return member.memberId === metadata.memberId
                 }
@@ -236,19 +365,30 @@ export function registerTeamTools(ctx: McpToolContext): void {
                     `[ahaMCP] get_team_info self-heal membership: registered=${membershipResult.registered}, alreadyPresent=${membershipResult.alreadyPresent}`
                 )
 
-                teamMembers.push({
-                    ...(metadata?.memberId ? { memberId: metadata.memberId } : {}),
-                    sessionId: mySessionId,
-                    ...(metadata?.sessionTag ? { sessionTag: metadata.sessionTag } : {}),
-                    roleId: myRole || 'member',
-                    displayName: metadata?.name || mySessionId,
-                    ...(metadata?.flavor ? { runtimeType: metadata.flavor } : {}),
-                })
+                boardMembers = [
+                    ...boardMembers,
+                    {
+                        ...(metadata?.memberId ? { memberId: metadata.memberId } : {}),
+                        sessionId: mySessionId,
+                        ...(metadata?.sessionTag ? { sessionTag: metadata.sessionTag } : {}),
+                        roleId: myRole || 'member',
+                        displayName: metadata?.name || mySessionId,
+                        ...(metadata?.flavor ? { runtimeType: metadata.flavor } : {}),
+                    },
+                ];
+                if (!headerSessions.includes(mySessionId)) {
+                    headerSessions = [...headerSessions, mySessionId];
+                }
             }
 
-            // ... (existing imports)
-
-            // ... inside get_team_info ...
+            const pulseMembers = await loadPulseMembers(teamId);
+            const rosterView = buildTeamRosterView({
+                boardMembers,
+                headerSessions,
+                pulseMembers,
+                mySessionId,
+                includeInactive: false,
+            });
 
             // Role definitions — from DEFAULT_ROLES fallback (genome is primary)
             const roleDefinitions: Record<string, any> = {};
@@ -292,7 +432,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
                     role: myRole || 'unassigned',
                     roleDefinition: roleDefinitions[myRole || ''] || { title: 'Unassigned', responsibilities: [], boundaries: [] }
                 },
-                teamMembers: teamMembers.map(m => {
+                teamMembers: rosterView.members.map(m => {
                     // Members use roleId (from kanban), resolve to role title
                     const roleId = m.roleId || m.role || '';
                     const roleDef = roleDefinitions[roleId];
@@ -300,9 +440,21 @@ export function registerTeamTools(ctx: McpToolContext): void {
                         sessionId: m.sessionId,
                         role: roleDef?.title || roleId || 'unknown',
                         roleId: roleId,
-                        displayName: m.displayName || m.sessionId?.substring(0, 8)
+                        displayName: m.displayName || m.sessionId?.substring(0, 8),
+                        liveness: m.liveness,
+                        lastSeenMs: m.lastSeenMs,
+                        contextUsedPercent: m.contextUsedPercent,
                     };
                 }),
+                roster: {
+                    pulseKnown: rosterView.pulseKnown,
+                    activeFilterApplied: rosterView.activeFilterApplied,
+                    totalKnown: rosterView.counts.totalKnown,
+                    collaborating: rosterView.counts.collaborating,
+                    inactive: rosterView.counts.inactive,
+                    unknown: rosterView.counts.unknown,
+                    returned: rosterView.counts.returned,
+                },
                 protocols,
                 teamId
             };
@@ -320,8 +472,19 @@ ${teamInfo.myInfo.roleDefinition.responsibilities.map((r: string) => `- ${r}`).j
 ## Your Boundaries
 ${teamInfo.myInfo.roleDefinition.boundaries.map((b: string) => `- ${b}`).join('\n')}
 
+## Team Roster
+- **Visible members**: ${teamInfo.roster.returned}
+- **Currently collaborating**: ${teamInfo.roster.collaborating}
+- **Known inactive**: ${teamInfo.roster.inactive}
+- **Liveness known**: ${teamInfo.roster.pulseKnown ? 'yes' : 'no'}
+${teamInfo.roster.activeFilterApplied ? '- Inactive roster members are hidden by default. Call `list_inactive_team_members` to inspect dormant/artifact-only entries.' : ''}
+
 ## Team Members (${teamInfo.teamMembers.length})
-${teamInfo.teamMembers.map((m: any) => `- **${m.displayName || m.sessionId.substring(0, 8)}** (${m.role}) - ID: ${m.sessionId}`).join('\n')}
+${teamInfo.teamMembers.map((m: any) => {
+    const stale = typeof m.lastSeenMs === 'number' ? `, last seen ${Math.round(m.lastSeenMs / 1000)}s ago` : '';
+    const ctx = typeof m.contextUsedPercent === 'number' ? `, ctx ${m.contextUsedPercent}%` : '';
+    return `- **${m.displayName || m.sessionId.substring(0, 8)}** (${m.role}) [${m.liveness}] - ID: ${m.sessionId}${stale}${ctx}`;
+}).join('\n')}
 
 ## Communication Protocol
 ${teamInfo.protocols.communication.map((p: string) => `- ${p}`).join('\n')}
@@ -350,6 +513,115 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 content: [{
                     type: 'text',
                     text: `Failed to get team info: ${String(error)}`,
+                }],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool('list_inactive_team_members', {
+        description: 'List inactive or artifact-only team members hidden from get_team_info by default. Use this for dormant roster detail only when needed.',
+        title: 'List Inactive Team Members',
+        inputSchema: {},
+    }, async () => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const myRole = metadata?.role;
+            const mySessionId = client.sessionId;
+
+            if (!teamId) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: 'You are not currently part of a team. This is a solo session.',
+                    }],
+                    isError: false,
+                };
+            }
+
+            let { boardMembers, headerSessions } = await loadArtifactRoster(teamId);
+            const selfAlreadyPresent = buildTeamRosterView({
+                boardMembers,
+                headerSessions,
+                pulseMembers: null,
+                mySessionId,
+                includeInactive: true,
+            }).members.some((member: any) => {
+                if (metadata?.memberId && member?.memberId) {
+                    return member.memberId === metadata.memberId;
+                }
+                return member?.sessionId === mySessionId;
+            });
+
+            if (!selfAlreadyPresent) {
+                boardMembers = [
+                    ...boardMembers,
+                    {
+                        ...(metadata?.memberId ? { memberId: metadata.memberId } : {}),
+                        sessionId: mySessionId,
+                        ...(metadata?.sessionTag ? { sessionTag: metadata.sessionTag } : {}),
+                        roleId: myRole || 'member',
+                        displayName: metadata?.name || mySessionId,
+                        ...(metadata?.flavor ? { runtimeType: metadata.flavor } : {}),
+                    },
+                ];
+                if (!headerSessions.includes(mySessionId)) {
+                    headerSessions = [...headerSessions, mySessionId];
+                }
+            }
+
+            const pulseMembers = await loadPulseMembers(teamId);
+            const rosterView = buildTeamRosterView({
+                boardMembers,
+                headerSessions,
+                pulseMembers,
+                mySessionId,
+                includeInactive: true,
+            });
+
+            if (!rosterView.pulseKnown) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: 'Inactive team member detail is unavailable because live pulse truth is not available. Use get_team_info() for the overview until daemon pulse recovers.',
+                    }],
+                    isError: false,
+                };
+            }
+
+            const inactiveMembers = rosterView.members.filter((member) => member.liveness === 'inactive');
+            if (inactiveMembers.length === 0) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `No inactive team members found for team ${teamId}.`,
+                    }],
+                    isError: false,
+                };
+            }
+
+            const text = `
+# Inactive Team Members
+
+- **Team ID**: ${teamId}
+- **Inactive count**: ${inactiveMembers.length}
+
+${inactiveMembers.map((member) => `- **${member.displayName || member.sessionId.substring(0, 8)}** (${member.roleId || member.role || 'unknown'}) [inactive] - ID: ${member.sessionId}`).join('\n')}
+            `.trim();
+
+            return {
+                content: [{
+                    type: 'text',
+                    text,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Failed to list inactive team members: ${String(error)}`,
                 }],
                 isError: true,
             };

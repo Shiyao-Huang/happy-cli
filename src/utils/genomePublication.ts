@@ -18,6 +18,7 @@ export const CORE_TEAM_TOOLS = [
     'delete_task',
     'send_team_message',
     'get_team_info',
+    'list_inactive_team_members',
     'get_context_status',
     'get_self_view',
     'get_effective_permissions',

@@ -254,9 +254,10 @@ function buildPhase1CoordinatorSection(): string {
 
 ### Team Assembly (When roster is incomplete):
 1. Inspect the team roster via 'get_team_info'
-2. **If org-manager is present and in standby**: send it a message describing what roles you need — it is the HR coordinator and will call create_agent on your behalf
-3. **If org-manager is absent**: call 'create_agent' directly to spawn the needed roles
-4. Assemble team members BEFORE creating tasks when the team cannot execute the request as-is
+2. If you need dormant or artifact-only roster detail, call 'list_inactive_team_members' explicitly
+3. **If org-manager is present and in standby**: send it a message describing what roles you need — it is the HR coordinator and will call create_agent on your behalf
+4. **If org-manager is absent**: call 'create_agent' directly to spawn the needed roles
+5. Assemble team members BEFORE creating tasks when the team cannot execute the request as-is
 
 ### Task Creation (ONLY when user asks):
 1. Break down user request into atomic tasks via 'create_task'
@@ -285,6 +286,7 @@ function buildTaskManagementSection(roleKey: string): string {
 
 - The Kanban board is the team's source of truth.
 - Every agent must be able to read team state from \`get_team_info\` and \`list_tasks\`.
+- Treat \`get_team_info\` as an overview. Only call \`list_inactive_team_members\` when you specifically need dormant roster detail.
 - If you are assigned a task, your progress must be visible on the board, not only in chat.
 - Routine team work should move through task lifecycle tools rather than vague discussion.
 - Review feedback, handoff rationale, blocker context, and key decisions should be left as task comments so the next agent inherits the task memory.
@@ -699,6 +701,7 @@ Before you assemble anything, inspect the current environment:
 
 \`\`\`
 get_team_info()
+list_inactive_team_members()   // only if you need dormant roster detail
 list_tasks()
 \`\`\`
 

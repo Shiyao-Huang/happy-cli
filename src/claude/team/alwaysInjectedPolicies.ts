@@ -200,11 +200,13 @@ export function buildSharedOperatingRulesSection(
                 ? [
                     'The Kanban board is visible shared context for the whole team, including system agents.',
                     'Use `get_team_info` and `list_tasks` to understand current team state before intervening.',
+                    'Treat `get_team_info` as the overview mirror; inspect dormant roster entries only when needed via `list_inactive_team_members`.',
                     'You usually do not own routine delivery tasks, but you must stay aware of board state.',
                 ]
                 : [
                     'The Kanban board is the default work surface for the team.',
                     'Use `get_team_info` and `list_tasks` as your first source of truth before inferring work from files or chat.',
+                    'Treat `get_team_info` as the overview mirror; inspect dormant roster entries only when needed via `list_inactive_team_members`.',
                     'If a task is assigned to you, move it through the task lifecycle visibly instead of working only in discussion threads.',
                     'When you review, hand off, reject, or send work back for rework, leave a task comment so the task carries memory across agents.',
                     ...taskDelegationLines,
