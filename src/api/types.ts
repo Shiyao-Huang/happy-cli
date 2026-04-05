@@ -489,6 +489,24 @@ export type Metadata = {
     allowedTools?: string[] | null,
     disallowedTools?: string[] | null,
   },
+  temporaryToolGrants?: Array<{
+    id: string,
+    tool: string,
+    grantedBy: string,
+    grantedByRole?: string | null,
+    reason: string,
+    taskId?: string | null,
+    expiresAt: string,
+    revokedAt?: string | null,
+    revokedBy?: string | null,
+    createdAt?: string,
+    updatedAt?: string,
+  }>,
+  temporaryToolGrantState?: {
+    source?: 'genome-hub' | string,
+    updatedAt?: number,
+    nonce?: string,
+  },
 };
 
 export type AgentState = {
