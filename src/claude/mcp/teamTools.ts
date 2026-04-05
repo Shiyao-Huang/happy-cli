@@ -405,6 +405,39 @@ export function registerTeamTools(ctx: McpToolContext): void {
                 roleDefinitions[myRole || ''] = { title: myRole || 'Unassigned', responsibilities: [], boundaries: [] };
             }
 
+            // Enrich own role from genome spec (primary) and spawn-time env (secondary)
+            const genome = ctx.genomeSpecRef?.current;
+            if (genome && myRole) {
+                const roleDef = roleDefinitions[myRole] || { title: myRole, responsibilities: [], boundaries: [] };
+                if (Array.isArray(genome.responsibilities) && genome.responsibilities.length > 0) {
+                    roleDef.responsibilities = genome.responsibilities;
+                }
+                const scope = genome.scopeOfResponsibility;
+                if (scope) {
+                    const scopeBoundaries: string[] = [];
+                    if (Array.isArray(scope.ownedPaths) && scope.ownedPaths.length > 0) {
+                        scopeBoundaries.push(`Owned paths: ${scope.ownedPaths.join(', ')}`);
+                    }
+                    if (Array.isArray(scope.forbiddenPaths) && scope.forbiddenPaths.length > 0) {
+                        scopeBoundaries.push(`Forbidden paths: ${scope.forbiddenPaths.join(', ')}`);
+                    }
+                    if (scopeBoundaries.length > 0) {
+                        roleDef.boundaries = scopeBoundaries;
+                    }
+                }
+                roleDefinitions[myRole] = roleDef;
+            }
+            // Fallback: spawn-time scope summary from env
+            if (myRole && (!roleDefinitions[myRole]?.boundaries?.length)) {
+                const scopeSummary = process.env.AHA_AGENT_SCOPE_SUMMARY;
+                if (scopeSummary) {
+                    roleDefinitions[myRole] = {
+                        ...roleDefinitions[myRole],
+                        boundaries: scopeSummary.split(';').map((s: string) => s.trim()).filter(Boolean),
+                    };
+                }
+            }
+
             // Collaboration protocols
             const protocols = {
                 communication: [
