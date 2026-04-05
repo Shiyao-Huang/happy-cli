@@ -86,10 +86,13 @@ function readPid() {
 
 function killOld() {
   const pid = readPid();
+  // Use absolute path to avoid killing other aha-cli installations on the same machine
+  const distIndexAbsPath = join(ROOT, 'dist', 'index.mjs');
+
   if (!pid) {
-    try { execSync('pkill -f "dist/index.mjs daemon start-sync" 2>/dev/null || true'); } catch {}
+    try { execSync(`pkill -f "${distIndexAbsPath} daemon start-sync" 2>/dev/null || true`); } catch {}
     // Also clean up any orphaned agent session processes from a prior build
-    try { execSync('pkill -f "dist/index.mjs" 2>/dev/null || true'); } catch {}
+    try { execSync(`pkill -f "${distIndexAbsPath}" 2>/dev/null || true`); } catch {}
     return null;
   }
 
@@ -97,7 +100,7 @@ function killOld() {
     process.kill(pid, 'SIGTERM');
     console.log(`[bootstrap] Sent SIGTERM to old daemon PID ${pid}`);
     // Also kill any orphaned agent session processes still referencing old dist chunks
-    try { execSync('pkill -f "dist/index.mjs" 2>/dev/null || true'); } catch {}
+    try { execSync(`pkill -f "${distIndexAbsPath}" 2>/dev/null || true`); } catch {}
     return pid;
   } catch (error) {
     console.log(`[bootstrap] PID ${pid} already gone: ${error.message}`);
