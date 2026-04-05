@@ -349,6 +349,8 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
         }
       }
 
+      const rosterFetchedSuccessfully = teamMembers.length > 0 || api != null;
+
       for (const { pid, memberId, runtimeType } of entries) {
         // Try to find this member in the team roster
         const rosterMember = teamMembers.find(m => m.memberId === memberId);
@@ -363,6 +365,17 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
           logger.debug(
             `[SESSION MANAGER] Skipping recovery of PID ${pid} (member: ${memberId}) — ` +
             `lifecycleState=${rosterLifecycle}; terminating orphaned process`
+          );
+          try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+          continue;
+        }
+
+        // If we successfully fetched the roster but this member is not in it,
+        // it was removed (e.g. by replace_agent or kill_agent) — treat as orphan.
+        if (!rosterMember && rosterFetchedSuccessfully && teamMembers.length > 0) {
+          logger.debug(
+            `[SESSION MANAGER] Skipping recovery of PID ${pid} (member: ${memberId}) — ` +
+            `not found in team roster; terminating orphaned process`
           );
           try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
           continue;

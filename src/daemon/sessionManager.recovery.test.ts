@@ -375,6 +375,51 @@ describe('sessionManager recovered session self-heal', () => {
         expect(spawnArgs.env.AHA_RECOVER_SESSION_ID).toBe(queued.sessionId);
     });
 
+    it('kills orphaned processes whose memberId is missing from a non-empty team roster', async () => {
+        mockExecSync.mockImplementation((command: string) => {
+            if (command.startsWith('ps -eo pid,args')) {
+                return [
+                    '2001 node /cli/index.mjs claude --session-tag team:team-1:member:member-active',
+                    '2002 node /cli/index.mjs claude --session-tag team:team-1:member:member-removed',
+                ].join('\n');
+            }
+            if (command.startsWith('lsof -a -d cwd -Fn -p ')) {
+                return 'p12345\nn/Users/copizza/Desktop/happyhere/project\n';
+            }
+            if (command.startsWith('git rev-parse')) return 'true\n';
+            if (command.startsWith('git status --porcelain')) return '';
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+
+        const api = {
+            getTeam: vi.fn().mockResolvedValue({
+                team: {
+                    members: [
+                        {
+                            memberId: 'member-active',
+                            sessionId: 'cmn-active-session',
+                            roleId: 'builder',
+                            runtimeType: 'claude',
+                            displayName: 'Active Builder',
+                            sessionTag: 'team:team-1:member:member-active',
+                        },
+                        // member-removed is NOT in roster (was removed by replace_agent)
+                    ],
+                },
+            }),
+        };
+
+        const recovered = await recoverExistingSessions(api as any);
+
+        // Only the active member should be recovered
+        expect(recovered).toBe(1);
+        expect(pidToTrackedSession.has(2001)).toBe(true);
+        expect(pidToTrackedSession.has(2002)).toBe(false);
+
+        // The orphaned process should have been killed
+        expect(process.kill).toHaveBeenCalledWith(2002, 'SIGTERM');
+    });
+
     it('returns pending instead of error when the child process starts but the webhook does not arrive in time', async () => {
         process.env.AHA_SESSION_WEBHOOK_TIMEOUT_MS = '1';
         mockSpawnAhaCLI.mockReturnValue({
