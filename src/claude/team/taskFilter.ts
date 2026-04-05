@@ -270,12 +270,14 @@ export function filterTasksForRole(
     }
 
     // Calculate team statistics
+    const todoTasks = allTasks.filter(t => t.status === 'todo');
     const teamStats = {
-        todo: allTasks.filter(t => t.status === 'todo').length,
+        todo: todoTasks.length,
         inProgress: allTasks.filter(t => t.status === 'in-progress').length,
         review: allTasks.filter(t => t.status === 'review').length,
         done: allTasks.filter(t => t.status === 'done').length,
-        blocked: allTasks.filter(t => t.status === 'blocked').length
+        blocked: allTasks.filter(t => t.status === 'blocked').length,
+        todoAssignedToOthers: todoTasks.filter(t => t.assigneeId && t.assigneeId !== sessionId).length,
     };
 
     // Pending Approvals: Only for coordinators

@@ -88,6 +88,7 @@ export interface KanbanContext {
         review: number;
         done: number;
         blocked: number;
+        todoAssignedToOthers?: number; // todo tasks assigned to other agents (not claimable by me)
     };
     pendingApprovals?: KanbanTaskSummary[]; // Master only: tasks awaiting approval
     recentActivity?: string[];               // Recent task updates for context
@@ -446,7 +447,7 @@ function buildKanbanContextSection(
 ## [KANBAN CONTEXT]
 
 ### Team Statistics
-📊 Todo: ${kanbanContext.teamStats.todo} | In Progress: ${kanbanContext.teamStats.inProgress} | Review: ${kanbanContext.teamStats.review} | Done: ${kanbanContext.teamStats.done}${kanbanContext.teamStats.blocked > 0 ? ` | ⚠️ Blocked: ${kanbanContext.teamStats.blocked}` : ''}
+📊 Todo: ${kanbanContext.teamStats.todo} | In Progress: ${kanbanContext.teamStats.inProgress} | Review: ${kanbanContext.teamStats.review} | Done: ${kanbanContext.teamStats.done}${kanbanContext.teamStats.blocked > 0 ? ` | ⚠️ Blocked: ${kanbanContext.teamStats.blocked}` : ''}${kanbanContext.teamStats.todoAssignedToOthers ? ` | 🔒 ${kanbanContext.teamStats.todoAssignedToOthers} todo task(s) assigned to others` : ''}
 
 `;
 
