@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractLifecycleDirectiveFromContent } from './claudeRemoteLauncher';
+import {
+    buildApiRetryDiagnosticMessage,
+    extractAnthropicBaseUrlHost,
+    extractLifecycleDirectiveFromContent,
+} from './claudeRemoteLauncher';
 
 describe('extractLifecycleDirectiveFromContent', () => {
     it('extracts an explicit retire directive from a text block array', () => {
@@ -33,5 +37,57 @@ describe('extractLifecycleDirectiveFromContent', () => {
         ]);
 
         expect(directive).toBeNull();
+    });
+});
+
+describe('extractAnthropicBaseUrlHost', () => {
+    it('returns host for valid base url', () => {
+        expect(extractAnthropicBaseUrlHost('http://168.231.73.244:8081')).toBe('168.231.73.244:8081');
+    });
+
+    it('returns null for invalid base url', () => {
+        expect(extractAnthropicBaseUrlHost('not-a-url')).toBeNull();
+    });
+});
+
+describe('buildApiRetryDiagnosticMessage', () => {
+    it('explains custom relay exhaustion when 502 retries are exhausted', () => {
+        const message = buildApiRetryDiagnosticMessage({
+            type: 'system',
+            subtype: 'api_retry',
+            attempt: 10,
+            max_retries: 10,
+            error_status: 502,
+            error: 'server_error',
+        } as any, 'http://168.231.73.244:8081');
+
+        expect(message).toContain('自定义 relay 168.231.73.244:8081');
+    });
+
+    it('does not emit a diagnostic before retries are exhausted', () => {
+        const message = buildApiRetryDiagnosticMessage({
+            type: 'system',
+            subtype: 'api_retry',
+            attempt: 3,
+            max_retries: 10,
+            error_status: 502,
+            error: 'server_error',
+        } as any, 'http://168.231.73.244:8081');
+
+        expect(message).toBeNull();
+    });
+
+    it('treats Anthropic first-party host as upstream instead of custom relay', () => {
+        const message = buildApiRetryDiagnosticMessage({
+            type: 'system',
+            subtype: 'api_retry',
+            attempt: 10,
+            max_retries: 10,
+            error_status: 502,
+            error: 'server_error',
+        } as any, 'https://api.anthropic.com');
+
+        expect(message).toContain('api.anthropic.com');
+        expect(message).not.toContain('自定义 relay');
     });
 });

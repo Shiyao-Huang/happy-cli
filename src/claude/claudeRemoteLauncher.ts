@@ -39,6 +39,11 @@ const LEGACY_LIFECYCLE_SENTINELS = [
     'ORG_MANAGER_COMPLETE',
 ] as const;
 
+const FIRST_PARTY_ANTHROPIC_HOSTS = new Set([
+    'api.anthropic.com',
+    'api-staging.anthropic.com',
+]);
+
 function collectAssistantTextBlocks(content: unknown): string[] {
     if (typeof content === 'string') {
         return [content];
@@ -80,6 +85,58 @@ function findLegacyLifecycleSentinels(content: unknown): string[] {
     }
 
     return LEGACY_LIFECYCLE_SENTINELS.filter((sentinel) => joined.includes(sentinel));
+}
+
+export function extractAnthropicBaseUrlHost(
+    rawBaseUrl: string | undefined = process.env.ANTHROPIC_BASE_URL,
+): string | null {
+    if (!rawBaseUrl || rawBaseUrl.trim() === '') {
+        return null;
+    }
+
+    try {
+        return new URL(rawBaseUrl).host || null;
+    } catch {
+        return null;
+    }
+}
+
+export function buildApiRetryDiagnosticMessage(
+    message: Pick<SDKMessage & {
+        subtype?: string;
+        attempt?: number;
+        max_retries?: number;
+        error_status?: number;
+        error?: string;
+    }, 'type' | 'subtype' | 'attempt' | 'max_retries' | 'error_status' | 'error'>,
+    rawBaseUrl: string | undefined = process.env.ANTHROPIC_BASE_URL,
+): string | null {
+    if (message.type !== 'system' || message.subtype !== 'api_retry') {
+        return null;
+    }
+
+    if (message.error_status !== 502 || message.error !== 'server_error') {
+        return null;
+    }
+
+    if (
+        typeof message.attempt !== 'number'
+        || typeof message.max_retries !== 'number'
+        || message.attempt < message.max_retries
+    ) {
+        return null;
+    }
+
+    const host = extractAnthropicBaseUrlHost(rawBaseUrl);
+    if (host && !FIRST_PARTY_ANTHROPIC_HOSTS.has(host)) {
+        return `Claude API 连续 ${message.max_retries} 次重试后仍收到 502。当前走的是自定义 relay ${host}，不是 Anthropic 官方直连；请先检查 relay 的上游、配额和模型映射。`;
+    }
+
+    if (host) {
+        return `Claude API 连续 ${message.max_retries} 次重试后仍收到 502。当前命中上游 ${host}；这是上游 server_error，不是 Aha 本地队列或 daemon 自身故障。`;
+    }
+
+    return `Claude API 连续 ${message.max_retries} 次重试后仍收到 502。当前未检测到自定义 ANTHROPIC_BASE_URL；这更像上游服务抖动，不是 Aha 本地队列或 daemon 自身故障。`;
 }
 
 function parseStandbyAutoExitMs(envName: string, fallbackMs: number): number | null {
@@ -229,6 +286,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     // Handle messages
     let planModeToolCalls = new Set<string>();
     let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
+    const reportedApiRetryDiagnostics = new Set<string>();
 
     function onMessage(message: SDKMessage) {
 
@@ -240,6 +298,17 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
         if (message.type === 'user') {
             clearStandbyTimer('new inbound message');
+        }
+
+        const apiRetryDiagnostic = buildApiRetryDiagnosticMessage(message);
+        if (apiRetryDiagnostic) {
+            const diagnosticKey = (message as any).uuid || `${(message as any).session_id || 'unknown'}:${(message as any).attempt}/${(message as any).max_retries}`;
+            if (!reportedApiRetryDiagnostics.has(diagnosticKey)) {
+                reportedApiRetryDiagnostics.add(diagnosticKey);
+                logger.debug(`[remote]: ${apiRetryDiagnostic}`);
+                messageBuffer.addMessage(apiRetryDiagnostic, 'status');
+                session.client.sendSessionEvent({ type: 'message', message: apiRetryDiagnostic });
+            }
         }
 
         // Lifecycle is agent-controlled via explicit directives, never via loose substring matching.
