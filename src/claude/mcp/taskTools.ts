@@ -816,9 +816,9 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const taskTitle = task?.title || args.taskId;
 
             // ── Trace: task_started ─────────────────────────────────────
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
             try {
-                const metadata = client.getMetadata();
-                const teamId = metadata?.teamId || metadata?.roomId;
                 emitTraceEvent(
                     TraceEventKind.task_started,
                     'mcp',
@@ -831,8 +831,34 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 );
             } catch { /* trace must never break main flow */ }
 
+            // ── Pending handoff context ──────────────────────────────────
+            // Surface the most recent handoff comment so the successor agent
+            // can immediately read context without a separate get_task call.
+            let pendingHandoff: { content: string; authorRole?: string; authorDisplayName?: string; createdAt?: number } | null = null;
+            if (teamId) {
+                try {
+                    const fullTask = await api.getTask(teamId, args.taskId);
+                    const comments: Array<any> = fullTask?.comments ?? [];
+                    const handoffComment = comments
+                        .filter((c: any) => c.type === 'handoff')
+                        .sort((a: any, b: any) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0] ?? null;
+                    if (handoffComment) {
+                        pendingHandoff = {
+                            content: handoffComment.content,
+                            authorRole: handoffComment.authorRole,
+                            authorDisplayName: handoffComment.authorDisplayName,
+                            createdAt: handoffComment.createdAt,
+                        };
+                    }
+                } catch { /* handoff fetch must never break start_task */ }
+            }
+
+            const responseText = pendingHandoff
+                ? `Started working on: "${taskTitle}"\nStatus: in-progress\n\n📋 Pending handoff:\n${pendingHandoff.content}`
+                : `Started working on: "${taskTitle}"\nStatus: in-progress`;
+
             return {
-                content: [{ type: 'text', text: `Started working on: "${taskTitle}"\nStatus: in-progress` }],
+                content: [{ type: 'text', text: responseText }],
                 isError: false,
             };
         } catch (error) {
@@ -1072,6 +1098,51 @@ export function registerTaskTools(ctx: McpToolContext): void {
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error resolving blocker: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ========== Release Task Locks ==========
+
+    mcp.registerTool('release_task_locks', {
+        description: 'Release all active task execution locks for a dead or stuck session. Coordinator roles can release locks so other agents can claim the tasks. Use this when start_task fails because a dead session still holds the lock.',
+        title: 'Release Task Locks',
+        inputSchema: {
+            sessionId: z.string().describe('Session ID whose task locks should be released'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const role = metadata?.role;
+            const teamId = metadata?.teamId || metadata?.roomId;
+
+            if (!teamId) {
+                return { content: [{ type: 'text', text: 'Error: No team context found.' }], isError: true };
+            }
+
+            const { effectiveGenome } = await getCurrentTeamMemberContext(teamId);
+            if (!canManageExistingTasks(role, effectiveGenome)) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot release task locks. Only coordinator roles can do this.`,
+                    }],
+                    isError: true,
+                };
+            }
+
+            const result = await api.releaseSessionTaskLocks(teamId, args.sessionId);
+            const count = result.unlockedTaskIds?.length ?? 0;
+            return {
+                content: [{
+                    type: 'text',
+                    text: count > 0
+                        ? `Released ${count} task lock(s) for session ${args.sessionId}. Unlocked tasks: ${result.unlockedTaskIds.join(', ')}`
+                        : `No active task locks found for session ${args.sessionId}.`,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error releasing task locks: ${String(error)}` }], isError: true };
         }
     });
 
