@@ -44,6 +44,7 @@ describe('normalizeAgentImageForPublication', () => {
                         onBlocked: 'report',
                         canSpawnAgents: true,
                         requireExplicitAssignment: true,
+                        onRetire: 'write-handoff',
                     },
                 },
                 env: {
@@ -103,6 +104,7 @@ describe('normalizeAgentImageForPublication', () => {
             onBlocked: 'report',
             canSpawnAgents: true,
             requireExplicitAssignment: true,
+            onRetire: 'write-handoff',
         });
         expect(result.spec.evalCriteria).toEqual(['Ship tested changes']);
         expect(result.spec.provenance).toEqual({

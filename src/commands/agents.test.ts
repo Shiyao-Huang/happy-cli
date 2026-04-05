@@ -70,6 +70,17 @@ describe('buildBuiltinAgentImage', () => {
             expect.arrayContaining(['task.create', 'agent.spawn']),
         );
     });
+
+    it('gives implementation-heavy builtin workers a retire handoff policy', () => {
+        const result = buildBuiltinAgentImage({
+            roleId: 'implementer',
+            displayName: 'Implementer Agent',
+            runtime: 'codex',
+            teamId: 'team-123',
+        });
+
+        expect(result.agentImage.behavior?.onRetire).toBe('write-handoff');
+    });
 });
 
 describe('resolveMaterializedAgentImageForCreate', () => {

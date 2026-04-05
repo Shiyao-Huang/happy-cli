@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildSharedOperatingRulesSection } from './alwaysInjectedPolicies';
 import { DEFAULT_ORG_RULES } from '@/orgDocker/orgRulesLoader';
+import type { AgentImage } from '@/api/types/genome';
 
 describe('buildSharedOperatingRulesSection', () => {
     it('reflects org-rules escalation, help-lane, failover, and replacement settings', () => {
@@ -67,5 +68,27 @@ describe('buildSharedOperatingRulesSection', () => {
         expect(text).toContain('call `start_task` first');
         expect(text).toContain('This checklist is enforced by org policy');
         expect(text).toContain('create the follow-up task without waiting for Master to notice');
+    });
+
+    it('injects retire handoff rules when the genome requires write-handoff on retire', () => {
+        const genomeSpec: AgentImage = {
+            behavior: {
+                onRetire: 'write-handoff',
+            },
+        };
+
+        const text = buildSharedOperatingRulesSection({
+            roleKey: 'implementer',
+            isCoordinator: false,
+            isBypass: false,
+            orgRules: DEFAULT_ORG_RULES,
+            genomeSpec,
+        });
+
+        expect(text).toContain('### Retire Handoff Protocol');
+        expect(text).toContain('write a handoff note');
+        expect(text).toContain('`add_task_comment` with type "handoff"');
+        expect(text).toContain('`retire_self.handoffNote`');
+        expect(text).toContain('call `retire_self` with both a short `reason` and the mirrored `handoffNote`');
     });
 });

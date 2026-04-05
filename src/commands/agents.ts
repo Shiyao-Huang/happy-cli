@@ -775,7 +775,7 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   builder: {
     description: 'Code builder — implements tasks and drives them to completion',
     systemPromptSuffix: 'Implement assigned tasks. Keep diffs small. Report blockers immediately.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
   },
   'qa-engineer': {
     description: 'Quality assurance engineer — tests features and validates functionality',
@@ -792,7 +792,7 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   implementer: {
     description: 'Implementer — executes implementation tasks end-to-end',
     systemPromptSuffix: 'Implement the assigned task fully. Signal when ready for review.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
   },
   researcher: {
     description: 'Researcher — explores codebase, gathers information, provides context',
@@ -802,7 +802,7 @@ const BUILTIN_ROLE_CONFIGS: Record<string, Partial<AgentDockerConfig>> = {
   'devops-builder': {
     description: 'DevOps builder — handles SSH deployment, CI/CD, infrastructure',
     systemPromptSuffix: 'Handle server deployments, SSH operations, nginx config, PM2 management.',
-    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true },
+    behavior: { onIdle: 'wait', onBlocked: 'report', canSpawnAgents: false, requireExplicitAssignment: true, onRetire: 'write-handoff' },
   },
 };
 

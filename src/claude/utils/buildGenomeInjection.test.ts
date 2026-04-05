@@ -42,4 +42,15 @@ describe('buildAgentImageInjection', () => {
         expect(injection).not.toContain('## Runtime Identity');
         expect(injection).not.toContain('## Activation Rules');
     });
+
+    it('includes retire behavior in the injected role config', () => {
+        const injection = buildAgentImageInjection({
+            behavior: {
+                onRetire: 'write-handoff',
+            },
+        });
+
+        expect(injection).toContain('## Agent Role Config');
+        expect(injection).toContain('"onRetire":"write-handoff"');
+    });
 });

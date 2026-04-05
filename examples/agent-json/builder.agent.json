@@ -25,7 +25,8 @@
       "onIdle": "self-assign",
       "onBlocked": "report",
       "canSpawnAgents": false,
-      "requireExplicitAssignment": true
+      "requireExplicitAssignment": true,
+      "onRetire": "write-handoff"
     }
   },
   "env": {

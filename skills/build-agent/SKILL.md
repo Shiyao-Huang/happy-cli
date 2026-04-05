@@ -147,3 +147,7 @@ agent 可以通过 Read 工具按需读取，不需要全部塞入 context。
 - 有没有新的"坏模式"值得加入减法检查表？
 
 用 `evolve_genome` 把新经验追加到 `memory.learnings`，或直接修改本文件。
+
+### 新近反模式补充
+
+- **会退休的 worker genome 却没有 retire handoff 协议**：如果 agent 可能在任务中途 retire / replace，但 genome 没要求它在退出前写 task handoff，下一任 owner 会被迫从零重建上下文。对 builder / implementer 一类角色，优先加 `behavior.onRetire: "write-handoff"`，并明确 handoff 至少包含：任务 ID、未提交改动摘要、下一步建议。

@@ -227,6 +227,14 @@
             "requireExplicitAssignment": {
               "type": "boolean"
             },
+            "onRetire": {
+              "type": "string",
+              "enum": [
+                "silent",
+                "write-handoff"
+              ],
+              "description": "Behavior before retirement: silent = retire immediately; write-handoff = persist task handoff context before retiring"
+            },
             "lifecycle": {
               "type": "string",
               "enum": [

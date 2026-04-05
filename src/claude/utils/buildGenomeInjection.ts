@@ -177,7 +177,8 @@ function formatMessagingBehavior(spec: AgentImage): string {
         behavior.onIdle !== undefined ||
         behavior.onBlocked !== undefined ||
         behavior.canSpawnAgents !== undefined ||
-        behavior.requireExplicitAssignment !== undefined
+        behavior.requireExplicitAssignment !== undefined ||
+        behavior.onRetire !== undefined
     );
     const hasAuthorities = Array.isArray(authorities) && authorities.length > 0;
 
@@ -197,6 +198,7 @@ function formatMessagingBehavior(spec: AgentImage): string {
             ...(behavior!.onBlocked !== undefined ? { onBlocked: behavior!.onBlocked } : {}),
             ...(behavior!.canSpawnAgents !== undefined ? { canSpawnAgents: behavior!.canSpawnAgents } : {}),
             ...(behavior!.requireExplicitAssignment !== undefined ? { requireExplicitAssignment: behavior!.requireExplicitAssignment } : {}),
+            ...(behavior!.onRetire !== undefined ? { onRetire: behavior!.onRetire } : {}),
         };
     }
     if (hasAuthorities) {

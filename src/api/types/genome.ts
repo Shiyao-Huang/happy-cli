@@ -244,6 +244,13 @@ export interface AgentImage {
          * false = 可自取 available tasks（proactive 变种）
          */
         requireExplicitAssignment?: boolean;
+        /**
+         * 退休前的行为：
+         * - 'silent'       直接退休，不留任何记录（默认）
+         * - 'write-handoff' 退休前写 handoff：未完成任务摘要 + 下一步建议
+         *                   写入 task comment 和/或 .aha/handoffs/{sessionId}.md
+         */
+        onRetire?: 'silent' | 'write-handoff';
     };
 
     // =========================================================================

@@ -70,6 +70,22 @@ function buildBehaviorDnaRules(genomeSpec: AgentImage | null | undefined): Share
         });
     }
 
+    // behavior.onRetire → what to do before retiring
+    const onRetire = genomeSpec.behavior?.onRetire;
+    if (onRetire === 'write-handoff') {
+        rules.push({
+            title: 'Retire Handoff Protocol',
+            body: [
+                'Before calling `retire_self`, you MUST write a handoff note so the next agent can pick up without rebuilding context from scratch.',
+                'Required handoff content: (1) list of in-progress task IDs with current status, (2) summary of uncommitted or in-flight file changes, (3) concrete next-step recommendation.',
+                'Write the handoff as a task comment on each in-progress task using `add_task_comment` with type "handoff".',
+                'Mirror the same summary into `retire_self.handoffNote` so the runtime also persists `.aha/handoffs/{sessionId}.md`.',
+                'If you cannot write the handoff comment, do not silently retire; call `request_help` or notify the team first.',
+                'Only after writing the handoff note should you call `retire_self` with both a short `reason` and the mirrored `handoffNote`.',
+            ],
+        });
+    }
+
     // behavior.onBlocked → escalation behavior
     const onBlocked = genomeSpec.behavior?.onBlocked;
     if (onBlocked === 'escalate') {
