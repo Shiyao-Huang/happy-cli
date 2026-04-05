@@ -7,9 +7,13 @@
  */
 
 
+import { installDnsFallback } from '@/utils/dnsFallback'
 import chalk from 'chalk'
 import { runClaude, StartOptions } from '@/claude/runClaude'
 import { logger } from './ui/logger'
+
+// Install DNS fallback before any network calls — affects all code paths (daemon + sessions)
+installDnsFallback()
 import { readCredentials } from './persistence'
 import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
