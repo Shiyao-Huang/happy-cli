@@ -149,11 +149,28 @@ function formatAgentsInstructionDocs(docs: InstructionDoc[]): string | null {
     ].join('\n')).join('\n\n');
 }
 
+function formatPredecessorHandoff(content: string, sessionId?: string): string {
+    const header = sessionId
+        ? `## Predecessor Handoff (from session ${sessionId})`
+        : '## Predecessor Handoff';
+    return [
+        '<attached_predecessor_handoff>',
+        header,
+        '',
+        content,
+        '</attached_predecessor_handoff>',
+    ].join('\n');
+}
+
 export function buildAgentLaunchContext(options: {
     directory: string;
     existingPrompt?: string;
     includeTeamHelpLane?: boolean;
     includeProjectInstructions?: boolean;
+    /** Handoff note from a predecessor session — injected as read-only context for the new agent. */
+    predecessorHandoff?: string;
+    /** Session ID of the predecessor, used for display only. */
+    predecessorSessionId?: string;
 }): AgentLaunchContext {
     const directory = path.resolve(options.directory);
     const systemPath = toDisplayPath(findNearestFile(directory, 'SYSTEM.md'));
@@ -193,9 +210,13 @@ export function buildAgentLaunchContext(options: {
         ? formatAgentsInstructionDocs(discoverAgentsInstructionDocs(directory, projectRoot))
         : null;
 
+    const predecessorHandoffSection = options.predecessorHandoff?.trim()
+        ? formatPredecessorHandoff(options.predecessorHandoff.trim(), options.predecessorSessionId)
+        : null;
+
     return {
         scopeSummary: scopeParts.join('; '),
-        prompt: [existingPrompt, projectInstructions, promptLines.join('\n')]
+        prompt: [existingPrompt, predecessorHandoffSection, projectInstructions, promptLines.join('\n')]
             .filter((value): value is string => Boolean(value?.trim()))
             .join('\n\n'),
         guidanceFiles,

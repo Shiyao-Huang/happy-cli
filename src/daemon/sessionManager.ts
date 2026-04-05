@@ -23,7 +23,7 @@
  */
 
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import * as tmp from 'tmp';
 import { join } from 'path';
 
@@ -41,6 +41,7 @@ import { execSync } from 'child_process';
 import { ulid } from 'ulid';
 import { buildPendingRunId, finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
 import { chooseHelpAgentForRequest } from './helpAgentPool';
+import { resolveAhaHomeDir } from '@/configurationResolver';
 import { seedCodexHomeConfig, seedCodexHomeSkillUnion } from '@/codex/codexHome';
 
 // ── Central shared state ───────────────────────────────────────────────────────
@@ -820,6 +821,8 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       existingPrompt: extraEnv.AHA_AGENT_PROMPT,
       includeTeamHelpLane: Boolean(options.teamId),
       includeProjectInstructions: options.agent !== 'codex',
+      predecessorHandoff: extraEnv.AHA_PREDECESSOR_HANDOFF,
+      predecessorSessionId: options.parentSessionId,
     });
     extraEnv.AHA_AGENT_PROMPT = launchContext.prompt;
     if (!extraEnv.AHA_AGENT_SCOPE_SUMMARY && launchContext.scopeSummary) {
@@ -1305,6 +1308,21 @@ function isRespawnEligible(session: TrackedSession): boolean {
 }
 
 /**
+ * Try to read a handoff note left by a predecessor session.
+ * Returns the file contents if found, null otherwise (best-effort, never throws).
+ */
+function tryReadPredecessorHandoff(predecessorSessionId: string): string | null {
+  if (!predecessorSessionId) return null;
+  try {
+    const handoffPath = join(resolveAhaHomeDir(), 'handoffs', `${predecessorSessionId}.md`);
+    if (!existsSync(handoffPath)) return null;
+    return readFileSync(handoffPath, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Schedule a respawn with exponential backoff.
  * Master agents get priority: RESPAWN_BASE_DELAY_MS / 2 base delay.
  * Other agents: RESPAWN_BASE_DELAY_MS * 2^respawnCount (5s, 10s, 20s by default).
@@ -1322,14 +1340,24 @@ function scheduleRespawn(session: TrackedSession): void {
     `for role=${role} team=${teamId} in ${delayMs}ms`
   );
 
+  const predecessorSessionId = session.ahaSessionId;
+  const predecessorHandoff = predecessorSessionId
+    ? tryReadPredecessorHandoff(predecessorSessionId)
+    : null;
+  if (predecessorHandoff) {
+    logger.debug(`[SESSION MANAGER] Found handoff note for predecessor ${predecessorSessionId}, will inject into respawn context`);
+  }
+
   setTimeout(async () => {
     try {
       const respawnOptions: SpawnSessionOptions = {
         ...session.spawnOptions!,
         sessionId: undefined, // New session, don't recover the old one
+        parentSessionId: predecessorSessionId ?? session.spawnOptions!.parentSessionId,
         env: {
           ...session.spawnOptions!.env,
           AHA_RESPAWN_COUNT: String(respawnCount),
+          ...(predecessorHandoff ? { AHA_PREDECESSOR_HANDOFF: predecessorHandoff } : {}),
         },
       };
 

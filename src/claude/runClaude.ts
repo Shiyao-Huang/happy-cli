@@ -1082,6 +1082,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 const _currentGenome = _agentImageRef.current ?? _agentImage;
                 if (_currentGenome?.systemPrompt) {
                     instructions = resolvePromptTemplateVars(_currentGenome.systemPrompt, {
+                        // Self-mirror: identity fields so genome prompts can reference the agent's own state
+                        AHA_SESSION_ID: response.id,
+                        AHA_SPEC_ID: _agentImageId || '(none)',
+                        AHA_SPEC_VERSION: String(_currentGenome.version ?? '?'),
+                        AHA_DISPLAY_NAME: (metadata as { displayName?: string } | undefined)?.displayName || role || 'agent',
+                        AHA_AGENT_ROLE: role || 'agent',
+                        AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
+                        // Supervisor cursor state
                         AHA_SUPERVISOR_TEAM_LOG_CURSOR: process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0',
                         AHA_SUPERVISOR_LAST_CONCLUSION: process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '(none — this is the first run)',
                         AHA_SUPERVISOR_PENDING_ACTION: process.env.AHA_SUPERVISOR_PENDING_ACTION || '(none)',
@@ -1090,8 +1098,6 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         AHA_SUPERVISOR_CODEX_SESSION_CURSORS: process.env.AHA_SUPERVISOR_CODEX_SESSION_CURSORS || '{}',
                         AHA_SUPERVISOR_LAST_SESSION_ID: process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '(none)',
                         AHA_SUPERVISOR_PENDING_ACTION_BLOCK: buildPendingActionBlock(),
-                        AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
-                        AHA_AGENT_ROLE: role || 'agent',
                     });
                     if (_currentGenome.systemPromptSuffix) {
                         instructions += '\n\n' + _currentGenome.systemPromptSuffix;

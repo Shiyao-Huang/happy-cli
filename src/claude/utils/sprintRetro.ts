@@ -177,8 +177,9 @@ export async function summarizeRetroWithAI(rawText: string): Promise<RetroAiOutp
         const { default: Anthropic } = await import('@anthropic-ai/sdk');
         const client = new Anthropic({ apiKey });
 
+        const model = process.env.AHA_RETRO_SUMMARIZE_MODEL || 'claude-haiku-4-6';
         const response = await client.messages.create({
-            model: 'claude-haiku-4-6',
+            model,
             max_tokens: 1200,
             messages: [{
                 role: 'user',
