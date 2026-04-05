@@ -125,6 +125,8 @@ describe('runtime adapter E2E', () => {
             'list_visible_tools',
             'explain_tool_access',
             'get_effective_permissions',
+            'grant_tool_access',
+            'revoke_tool_access',
         ]));
 
         const selfView = await callJsonTool(server.url, 'get_self_view', {
