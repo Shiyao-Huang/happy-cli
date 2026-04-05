@@ -194,6 +194,71 @@ describe('AgentHeartbeat', () => {
         });
     });
 
+    describe('context alert', () => {
+        it('should fire context alert for any role above threshold', () => {
+            hb = new AgentHeartbeat(60_000, 45_000);
+            const callback = vi.fn();
+            hb.onContextAlert(callback);
+
+            // implementer at 75% should trigger (threshold default 70)
+            hb.ping('session-1', 'implementer', [], 75);
+
+            expect(callback).toHaveBeenCalledTimes(1);
+            expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+                agentId: 'session-1',
+                role: 'implementer',
+                contextUsedPercent: 75,
+            }));
+        });
+
+        it('should fire context alert for master role', () => {
+            hb = new AgentHeartbeat(60_000, 45_000);
+            const callback = vi.fn();
+            hb.onContextAlert(callback);
+
+            hb.ping('session-1', 'master', [], 80);
+
+            expect(callback).toHaveBeenCalledTimes(1);
+            expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+                agentId: 'session-1',
+                role: 'master',
+            }));
+        });
+
+        it('should NOT fire alert below threshold', () => {
+            hb = new AgentHeartbeat(60_000, 45_000);
+            const callback = vi.fn();
+            hb.onContextAlert(callback);
+
+            hb.ping('session-1', 'implementer', [], 50);
+
+            expect(callback).not.toHaveBeenCalled();
+        });
+
+        it('should NOT fire alert twice for same agent', () => {
+            hb = new AgentHeartbeat(60_000, 45_000);
+            const callback = vi.fn();
+            hb.onContextAlert(callback);
+
+            hb.ping('session-1', 'implementer', [], 75);
+            hb.ping('session-1', 'implementer', [], 80);
+
+            expect(callback).toHaveBeenCalledTimes(1);
+        });
+
+        it('should re-fire after context drops below threshold and rises again', () => {
+            hb = new AgentHeartbeat(60_000, 45_000);
+            const callback = vi.fn();
+            hb.onContextAlert(callback);
+
+            hb.ping('session-1', 'implementer', [], 75); // fires
+            hb.ping('session-1', 'implementer', [], 40); // reset
+            hb.ping('session-1', 'implementer', [], 80); // fires again
+
+            expect(callback).toHaveBeenCalledTimes(2);
+        });
+    });
+
     describe('multiple teams isolation', () => {
         it('should track agents independently per instance', () => {
             const team1 = new AgentHeartbeat(60_000, 45_000);

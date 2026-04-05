@@ -92,12 +92,11 @@ export class AgentHeartbeat {
         });
         logger.debug(`[Heartbeat] Ping from ${agentId} (${role})${contextUsedPercent !== undefined ? ` ctx=${contextUsedPercent}%` : ''}`);
 
-        // Auto-compact trigger: fire alert when Master context exceeds 70%
+        // Auto-compact trigger: fire alert when ANY agent context exceeds threshold
         const CONTEXT_ALERT_THRESHOLD = parseInt(process.env.AHA_CONTEXT_ALERT_THRESHOLD || '70', 10);
         if (
             contextUsedPercent !== undefined &&
             contextUsedPercent >= CONTEXT_ALERT_THRESHOLD &&
-            role === 'master' &&
             !this.contextAlertFired.has(agentId) &&
             this.onContextAlertCallback
         ) {
