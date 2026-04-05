@@ -129,12 +129,10 @@ export function registerAgentTools(ctx: McpToolContext): void {
         );
 
         return {
-            allowed: fallbackAllowed || metadata?.role === 'supervisor',
+            allowed: fallbackAllowed,
             explanation: fallbackAllowed
                 ? 'Caller genome allowlist includes the tool.'
-                : metadata?.role === 'supervisor'
-                    ? 'Caller runtime snapshot is unavailable; allowing supervisor fallback.'
-                    : `Caller tool inventory is unavailable and ${normalizeGrantedToolName(tool)} is not present in the genome allowlist fallback.`,
+                : `Caller tool inventory is unavailable and ${normalizeGrantedToolName(tool)} is not present in the genome allowlist fallback. Grant denied to enforce upper-bound constraint.`,
         };
     };
 

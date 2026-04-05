@@ -1299,10 +1299,7 @@ ${instructions}
         let messageAllowedTools = currentAllowedTools;
         if (message.meta?.hasOwnProperty('allowedTools')) {
             baselineAllowedTools = message.meta.allowedTools || undefined; // null becomes undefined
-            recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-allowed-tools');
-            messageAllowedTools = currentAllowedTools;
-            logger.debug(`[loop] Allowed tools updated from user message: ${messageAllowedTools ? messageAllowedTools.join(', ') : 'reset to none'}`);
-            syncRuntimePermissionMetadata();
+            logger.debug(`[loop] Allowed tools baseline updated from user message`);
         } else {
             logger.debug(`[loop] User message received with no allowed tools override, using current: ${currentAllowedTools ? currentAllowedTools.join(', ') : 'none'}`);
         }
@@ -1311,10 +1308,7 @@ ${instructions}
         let messageDisallowedTools = currentDisallowedTools;
         if (message.meta?.hasOwnProperty('disallowedTools')) {
             baselineDisallowedTools = message.meta.disallowedTools || undefined; // null becomes undefined
-            recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-disallowed-tools');
-            messageDisallowedTools = currentDisallowedTools;
-            logger.debug(`[loop] Disallowed tools updated from user message: ${messageDisallowedTools ? messageDisallowedTools.join(', ') : 'reset to none'}`);
-            syncRuntimePermissionMetadata();
+            logger.debug(`[loop] Disallowed tools baseline updated from user message`);
         } else {
             logger.debug(`[loop] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
         }
@@ -1322,6 +1316,7 @@ ${instructions}
         recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-dispatch');
         messageAllowedTools = currentAllowedTools;
         messageDisallowedTools = currentDisallowedTools;
+        syncRuntimePermissionMetadata();
 
         // Check for special commands before processing
         const specialCommand = parseSpecialCommand(message.content.text);
