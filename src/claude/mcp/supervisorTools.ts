@@ -3446,15 +3446,15 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     // ========== List Team CC Logs (supervisor only) ==========
 
     mcp.registerTool('list_team_cc_logs', {
-        description: 'Legacy Claude-only alias for list_team_runtime_logs. Returns ahaSessionId → claudeLocalSessionId + log file path. Prefer list_team_runtime_logs + read_runtime_log; if you use this tool, pass the returned claudeLocalSessionId (not the Aha sessionId) into read_cc_log. Supervisor/help-agent only.',
+        description: 'Legacy Claude-only alias for list_team_runtime_logs. Returns ahaSessionId → claudeLocalSessionId + log file path. Prefer list_team_runtime_logs + read_runtime_log; if you use this tool, pass the returned claudeLocalSessionId (not the Aha sessionId) into read_cc_log. Available to supervisor/help-agent/org-manager/master.',
         title: 'List Team CC Logs',
         inputSchema: {
             teamId: z.string().describe('Team ID to list CC logs for'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can use this tool.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use this tool.' }], isError: true };
         }
         try {
             const daemonState = await readDaemonState();
@@ -3545,8 +3545,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor or help-agent can save supervisor state.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can save supervisor state.' }], isError: true };
         }
         try {
             const { readSupervisorState, updateSupervisorState } = await import('@/daemon/supervisorState');
@@ -3898,8 +3898,8 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent' && role !== 'org-manager') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager can use git_diff_summary.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can use git_diff_summary.' }], isError: true };
         }
         try {
             const { execSync } = await import('node:child_process');
@@ -3952,8 +3952,8 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read unified logs.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read unified logs.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
             return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
