@@ -53,8 +53,8 @@ describe('configurationResolver', () => {
       AHA_SERVER_URL: 'http://localhost:3005',
       AHA_WEBAPP_URL: 'http://localhost:8081'
     }, {
-      serverUrl: 'https://aha-agi.com/api',
-      webappUrl: 'https://aha-agi.com/webappv3',
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
       enableModelSelection: false,
     })).toEqual({
       serverUrl: 'http://localhost:3005',
@@ -62,10 +62,10 @@ describe('configurationResolver', () => {
     })
   })
 
-  it('uses aha-agi production defaults when nothing is configured', () => {
+  it('uses ahaagi production defaults when nothing is configured', () => {
     expect(resolveServerConfig({}, { enableModelSelection: false })).toEqual({
-      serverUrl: 'https://aha-agi.com/api',
-      webappUrl: 'https://aha-agi.com/webappv3'
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3'
     })
   })
 
