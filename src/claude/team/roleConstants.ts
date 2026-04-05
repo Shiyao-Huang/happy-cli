@@ -16,7 +16,8 @@
  *   RESEARCH_ROLES, PRODUCT_ROLES, DESIGN_ROLES, DOCUMENTATION_ROLES
  * - RBAC capability constants (single source of truth for role checks):
  *   INSPECT_PRIVILEGED_ROLES, SCORING_ROLES, GENOME_EDIT_ROLES,
- *   TASK_CREATE_ROLES, TOOL_GRANT_ROLES, AGENT_REPLACE_ROLES
+ *   TASK_CREATE_ROLES, TOOL_GRANT_ROLES, AGENT_REPLACE_ROLES,
+ *   SUPERVISOR_OBSERVATION_ROLES
  * - ROLE_COLLABORATION_MAP, getRoleCollaborators()
  * - isTaskOwningRole() (internal helper re-exported for promptBuilder)
  */
@@ -85,6 +86,9 @@ export const TOOL_GRANT_ROLES = ['supervisor', 'master'] as const;
 
 /** Roles that can respawn / replace agents. */
 export const AGENT_REPLACE_ROLES = ['supervisor', 'master', 'help-agent'] as const;
+
+/** Roles that can read team logs, CC logs, and runtime logs (observation-only, no mutation). */
+export const SUPERVISOR_OBSERVATION_ROLES = ['supervisor', 'help-agent', 'org-manager', 'master'] as const;
 
 /** Roles that can inspect genome specs for QA/review purposes (read-only, limited to non-private namespaces). */
 export const QA_INSPECTOR_ROLES = ['qa-engineer', 'qa', 'engineering-code-reviewer'] as const;

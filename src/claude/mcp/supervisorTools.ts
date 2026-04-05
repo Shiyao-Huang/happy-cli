@@ -53,13 +53,8 @@ import {
     GENOME_EDIT_ROLES,
     TOOL_GRANT_ROLES,
     AGENT_REPLACE_ROLES,
+    SUPERVISOR_OBSERVATION_ROLES,
 } from '@/claude/team/roleConstants';
-
-/**
- * Roles that can read team/agent logs, save supervisor state, and access
- * git diff summaries. Required for complete evolution cycles.
- */
-const SUPERVISOR_OBSERVATION_ROLES: readonly string[] = ['supervisor', 'help-agent', 'org-manager', 'master'];
 
 import {
     buildEffectivePermissionsReport,
@@ -2635,7 +2630,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const conservativeFields = new Set(['memory', 'systemPromptSuffix']);
         const moderateFields = new Set([
             ...conservativeFields, 'protocol', 'responsibilities', 'evalCriteria',
-            'handoffProtocol', 'capabilities',
+            'handoffProtocol', 'capabilities', 'allowedTools', 'disallowedTools',
         ]);
         // radical: all fields allowed
 
@@ -2862,7 +2857,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
         if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can compare genome versions.' }], isError: true };
+            return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can compare genome versions. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
@@ -3033,7 +3028,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     }, async (args) => {
         const callerRole = client.getMetadata()?.role;
         if (!callerRole || !(GENOME_EDIT_ROLES as readonly string[]).includes(callerRole)) {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor, org-manager, or agent-builder can rollback genomes.' }], isError: true };
+            return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can rollback genomes. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
@@ -3253,8 +3248,21 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 // Best-effort: daemon may not be running or session may not be tracked locally
             }
 
+            // Remove from team roster artifact so dead sessions don't accumulate.
+            // Best-effort: archive still succeeds even if roster cleanup fails.
+            let rosterRemoved = false;
+            try {
+                const teamId = client.getMetadata()?.teamId || client.getMetadata()?.roomId;
+                if (teamId) {
+                    await api.removeTeamMember(teamId, args.sessionId);
+                    rosterRemoved = true;
+                }
+            } catch {
+                // Best-effort: server may be down or member already removed
+            }
+
             return {
-                content: [{ type: 'text', text: JSON.stringify({ archived: result.archived, reason: args.reason, processTerminated }) }],
+                content: [{ type: 'text', text: JSON.stringify({ archived: result.archived, reason: args.reason, processTerminated, rosterRemoved }) }],
                 isError: false,
             };
         } catch (error) {
@@ -3324,8 +3332,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 // Best-effort: daemon may not be running
             }
 
+            // Remove from team roster artifact so dead sessions don't accumulate.
+            let rosterRemoved = false;
+            try {
+                const teamId = meta?.teamId || meta?.roomId;
+                if (teamId) {
+                    await api.removeTeamMember(teamId, ownSessionId);
+                    rosterRemoved = true;
+                }
+            } catch {
+                // Best-effort: server may be down or member already removed
+            }
+
             return {
-                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, handoffFile, handoffTaskIds }) }],
+                content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, rosterRemoved, handoffFile, handoffTaskIds }) }],
                 isError: false,
             };
         } catch (error) {
