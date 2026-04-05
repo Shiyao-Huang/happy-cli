@@ -1650,7 +1650,7 @@ export class ApiClient {
   async releaseSessionTaskLocks(teamId: string, sessionId: string): Promise<{ success: boolean; unlockedTaskIds: string[] }> {
     try {
       const response = await axios.post(
-        `${configuration.serverUrl}/v1/teams/${teamId}/sessions/${sessionId}/release-task-locks`,
+        `${configuration.serverUrl}/v1/teams/${teamId}/sessions/${sessionId}/release-locks`,
         {},
         {
           headers: {
