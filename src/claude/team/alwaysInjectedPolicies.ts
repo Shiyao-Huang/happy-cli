@@ -276,6 +276,14 @@ export function buildSharedOperatingRulesSection(
                 'Before touching shared or high-conflict files, broadcast your intent in team chat so peers can avoid collisions and challenge the plan early if needed.',
             ],
         },
+        {
+            title: 'Layered Compression',
+            body: [
+                'Use layered compression for all team messages and task comments: lead with 1 sentence (the verdict), then 3 sentences (the evidence), then 5+ sentences only when full detail is requested.',
+                'Never dump raw data. Filter and summarize so the reader gets the signal, not the noise.',
+                'When iterating on a question or problem, assume your first formulation is the normal distribution — ask 3 times, refining each round, before acting on the answer.',
+            ],
+        },
     ];
 
     if (orgRules.masterFailover.enabled) {
