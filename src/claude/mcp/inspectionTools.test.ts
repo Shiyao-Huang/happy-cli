@@ -143,6 +143,13 @@ describe('runtime self-inspection helpers', () => {
         })).toBe(true);
 
         expect(canInspectGenomeSpec({
+            callerRole: 'engineering-code-reviewer',
+            callerSpecId: 'spec-reviewer',
+            targetSpecId: 'spec-other',
+            targetNamespace: '@official',
+        })).toBe(true);
+
+        expect(canInspectGenomeSpec({
             callerRole: 'implementer',
             callerSpecId: 'spec-self',
             targetSpecId: 'spec-self',

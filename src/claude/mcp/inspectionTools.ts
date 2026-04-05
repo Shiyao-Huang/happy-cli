@@ -145,7 +145,8 @@ export function canInspectGenomeSpec(input: GenomeSpecInspectionInput): boolean 
         || callerRole === 'agent-builder';
     if (isPrivilegedInspector) return true;
 
-    const isQaInspector = callerRole === 'qa-engineer' || callerRole === 'qa';
+    const isQaInspector = callerRole === 'qa-engineer' || callerRole === 'qa'
+        || callerRole === 'engineering-code-reviewer';
     if (!isQaInspector) return false;
 
     const targetNamespace = input.targetNamespace?.trim() || null;
