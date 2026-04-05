@@ -44,6 +44,8 @@ type PublishTeamCorpsTemplateOptions = {
     hubUrl?: string;
     publishKey?: string;
     namespace?: string;
+    /** Whether the published corps is publicly visible in the marketplace. Defaults to false. */
+    isPublic?: boolean;
 };
 
 const ROLE_MARKET_ALIASES: Record<string, string[]> = {
@@ -544,17 +546,22 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
         const teamName = (team.name || options.teamId).trim();
         const templateName = `${slugifyMarketplaceName(teamName)}-${options.teamId.slice(0, 8)}`;
         const roleTags = uniqueStrings(publishedMembers.map((member) => member.roleAlias));
+        // Strip internal operational fields (initialObjective, sharedContext, commandChain, taskPolicy)
+        // from the published spec when isPublic=true — these are team-private config, not marketplace info.
+        const publiclyVisible = options.isPublic ?? false;
         const corps = buildPublishedCorpsSpec({
             namespace: options.namespace ?? '@public',
             name: templateName,
             description: `Auto-published corps template for ${teamName}`,
             teamDescription: board?.team?.bootContext?.teamDescription?.trim() || `${teamName} team template`,
-            initialObjective: deriveInitialObjective(board),
-            sharedContext: Array.isArray(board?.team?.bootContext?.sharedContext) ? board.team.bootContext.sharedContext : undefined,
-            commandChain: Array.isArray(board?.team?.bootContext?.commandChain) ? board.team.bootContext.commandChain : undefined,
-            taskPolicy: board?.team?.bootContext?.taskPolicy && typeof board.team.bootContext.taskPolicy === 'object'
-                ? board.team.bootContext.taskPolicy
-                : undefined,
+            ...(!publiclyVisible ? {
+                initialObjective: deriveInitialObjective(board),
+                sharedContext: Array.isArray(board?.team?.bootContext?.sharedContext) ? board.team.bootContext.sharedContext : undefined,
+                commandChain: Array.isArray(board?.team?.bootContext?.commandChain) ? board.team.bootContext.commandChain : undefined,
+                taskPolicy: board?.team?.bootContext?.taskPolicy && typeof board.team.bootContext.taskPolicy === 'object'
+                    ? board.team.bootContext.taskPolicy
+                    : undefined,
+            } : {}),
             tags: roleTags,
             members: publishedMembers,
         });
@@ -572,7 +579,7 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
                 description: corps.description,
                 spec: JSON.stringify(corps),
                 tags: corps.tags,
-                isPublic: true,
+                isPublic: options.isPublic ?? false,
                 publisherId: options.publisherId ?? null,
             }),
             signal: AbortSignal.timeout(8_000),

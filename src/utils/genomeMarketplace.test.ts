@@ -147,6 +147,33 @@ describe('genomeMarketplace helpers', () => {
         expect(corps.members.every((member) => member.count === 1)).toBe(true);
     });
 
+    it('strips internal bootContext fields from public corps specs', () => {
+        // Private publish: internal fields included
+        const privateCorps = buildPublishedCorpsSpec({
+            name: 'squad',
+            description: 'Private corps',
+            initialObjective: 'Sensitive team objective',
+            sharedContext: ['internal-repo-url'],
+            commandChain: ['ceo', 'cto'],
+            taskPolicy: { requireApproval: true },
+            members: [{ genome: '@official/master', roleAlias: 'master', required: true }],
+        });
+        expect(privateCorps.bootContext?.initialObjective).toBe('Sensitive team objective');
+        expect(privateCorps.bootContext?.sharedContext).toEqual(['internal-repo-url']);
+
+        // Public publish: internal fields must be absent (stripped by caller)
+        const publicCorps = buildPublishedCorpsSpec({
+            name: 'squad',
+            description: 'Public corps',
+            // caller omits internal fields for public publish
+            members: [{ genome: '@official/master', roleAlias: 'master', required: true }],
+        });
+        expect(publicCorps.bootContext?.initialObjective).toBeUndefined();
+        expect(publicCorps.bootContext?.sharedContext).toBeUndefined();
+        expect(publicCorps.bootContext?.commandChain).toBeUndefined();
+        expect(publicCorps.bootContext?.taskPolicy).toBeUndefined();
+    });
+
     it('formats pinned genome refs for corps publishing and template spawn', () => {
         expect(formatMarketplaceGenomeRef({
             namespace: '@public',
