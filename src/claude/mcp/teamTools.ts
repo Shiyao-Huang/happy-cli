@@ -28,6 +28,7 @@ import { TaskStateManager } from '../utils/taskStateManager';
 import { ensureCurrentSessionRegisteredToTeam } from '../team/ensureTeamMembership';
 import { readDaemonState } from '@/persistence';
 import { McpToolContext } from './mcpContext';
+import { fetchAgentImage } from '../utils/fetchGenome';
 
 type TeamRosterMember = {
     sessionId: string;
@@ -406,13 +407,24 @@ export function registerTeamTools(ctx: McpToolContext): void {
             }
 
             // Enrich own role from genome spec (primary) and spawn-time env (secondary)
-            const genome = ctx.genomeSpecRef?.current;
+            // Primary: use already-loaded genomeSpecRef if available
+            // Fallback: fetch from hub on-demand using AHA_SPEC_ID or @official/{role}
+            let genome = ctx.genomeSpecRef?.current ?? null;
+            if (!genome && myRole) {
+                const specId = process.env.AHA_SPEC_ID || `@official/${myRole}`;
+                const authToken = client.getAuthToken?.() ?? '';
+                genome = await fetchAgentImage(authToken, specId).catch((err) => {
+                    logger.debug(`[get_team_info] Failed to fetch genome for role=${myRole}: ${err?.message ?? err}`);
+                    return null;
+                });
+            }
+            let genomeSuffixSummary: string | null = null;
             if (genome && myRole) {
                 const roleDef = roleDefinitions[myRole] || { title: myRole, responsibilities: [], boundaries: [] };
                 if (Array.isArray(genome.responsibilities) && genome.responsibilities.length > 0) {
                     roleDef.responsibilities = genome.responsibilities;
                 }
-                const scope = genome.scopeOfResponsibility;
+                const scope = (genome as any).scopeOfResponsibility;
                 if (scope) {
                     const scopeBoundaries: string[] = [];
                     if (Array.isArray(scope.ownedPaths) && scope.ownedPaths.length > 0) {
@@ -426,6 +438,11 @@ export function registerTeamTools(ctx: McpToolContext): void {
                     }
                 }
                 roleDefinitions[myRole] = roleDef;
+                // Capture systemPromptSuffix for mirror display
+                const suffix = (genome as any).systemPromptSuffix as string | undefined;
+                if (suffix && suffix.trim().length > 0) {
+                    genomeSuffixSummary = suffix.trim();
+                }
             }
             // Fallback: spawn-time scope summary from env
             if (myRole && (!roleDefinitions[myRole]?.boundaries?.length)) {
@@ -500,10 +517,19 @@ export function registerTeamTools(ctx: McpToolContext): void {
 - **Role**: ${teamInfo.myInfo.roleDefinition.title}
 
 ## Your Responsibilities
-${teamInfo.myInfo.roleDefinition.responsibilities.map((r: string) => `- ${r}`).join('\n')}
+${teamInfo.myInfo.roleDefinition.responsibilities.length > 0
+    ? teamInfo.myInfo.roleDefinition.responsibilities.map((r: string) => `- ${r}`).join('\n')
+    : '_(not set — genome responsibilities empty or spec unavailable)_'}
 
 ## Your Boundaries
-${teamInfo.myInfo.roleDefinition.boundaries.map((b: string) => `- ${b}`).join('\n')}
+${teamInfo.myInfo.roleDefinition.boundaries.length > 0
+    ? teamInfo.myInfo.roleDefinition.boundaries.map((b: string) => `- ${b}`).join('\n')
+    : '_(not set)_'}
+
+## Genome Mirror
+${genomeSuffixSummary
+    ? genomeSuffixSummary
+    : '_(no genome suffix loaded — run `get_self_view` for full spec)_'}
 
 ## Team Roster
 - **Visible members**: ${teamInfo.roster.returned}
