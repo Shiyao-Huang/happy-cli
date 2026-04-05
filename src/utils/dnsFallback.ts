@@ -50,6 +50,13 @@ export function installDnsFallback(): void {
       return originalLookup.call(dns, hostname, options, callback as never) as never
     }
 
+    // When options.all is true, the callback signature is different —
+    // (err, addresses: {address, family}[]) instead of (err, address, family).
+    // Delegate to original lookup entirely for all-mode to avoid signature mismatches.
+    if (options.all) {
+      return originalLookup.call(dns, hostname, options, callback as never) as never
+    }
+
     // Try system resolver first
     originalLookup.call(dns, hostname, options, ((err: NodeJS.ErrnoException | null, address: string, family: number) => {
       if (!err) {
