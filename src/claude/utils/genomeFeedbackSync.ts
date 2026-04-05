@@ -200,7 +200,7 @@ function buildPlaceholderGenomeBody(target: FeedbackUploadTarget, role: string):
         }),
         tags: JSON.stringify(config.tags),
         category: config.category,
-        isPublic: true,
+        isPublic: false,
     });
 }
 

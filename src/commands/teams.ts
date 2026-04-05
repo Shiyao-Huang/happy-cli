@@ -1185,7 +1185,7 @@ async function publishTemplateFromFile(
     namespace,
     version,
     tags,
-    isPublic: true,
+    isPublic: hasFlag(args, '--public'),
     publisherId: null,
   });
 

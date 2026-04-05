@@ -2899,7 +2899,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     spec: targetGenome.spec,
                     tags: targetGenome.tags ?? undefined,
                     category: targetGenome.category ?? undefined,
-                    isPublic: targetGenome.isPublic ?? true,
+                    isPublic: targetGenome.isPublic ?? false,
                 }),
                 signal: AbortSignal.timeout(10_000),
             });

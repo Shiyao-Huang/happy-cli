@@ -2532,7 +2532,7 @@ export class ApiClient {
           description: corps.description,
           spec: corps.spec,
           tags: corps.tags,
-          isPublic: corps.isPublic ?? true,
+          isPublic: corps.isPublic ?? false,
           publisherId: corps.publisherId ?? null,
         },
         {

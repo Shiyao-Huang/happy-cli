@@ -303,7 +303,7 @@ Best practice:
             namespace: z.string().optional().describe('Namespace scope, e.g. "@official", "@acme", or omit for @public'),
             version: z.number().int().min(1).optional().describe('Template version override; defaults to the spec version or 1'),
             tags: z.string().optional().describe('JSON-serialized string array of discovery tags'),
-            isPublic: z.boolean().default(true).describe('Whether the template is public in the marketplace'),
+            isPublic: z.boolean().default(false).describe('Whether the template is public in the marketplace'),
         },
     }, async (args) => {
         try {
