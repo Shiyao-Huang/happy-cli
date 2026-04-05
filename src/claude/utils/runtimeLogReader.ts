@@ -119,6 +119,46 @@ export function findClaudeLogFile(homeDir: string, sessionId: string): string | 
     return null;
 }
 
+/**
+ * Finds the most recently modified Claude session log file under ~/.claude/projects/.
+ * Used as a fallback when claudeSessionId has not yet been captured from the SDK stream
+ * (race condition at session startup).
+ *
+ * @param homeDir   Home directory (defaults to process.env.HOME)
+ * @param maxAgeMs  Only consider files modified within this window (default: 120 000 ms)
+ */
+export function findMostRecentClaudeLogFile(homeDir: string, maxAgeMs = 120_000): string | null {
+    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+    if (!fs.existsSync(claudeProjectsDir)) return null;
+
+    const cutoff = Date.now() - maxAgeMs;
+    let best: { path: string; mtime: number } | null = null;
+
+    for (const dir of fs.readdirSync(claudeProjectsDir)) {
+        const projectDir = path.join(claudeProjectsDir, dir);
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(projectDir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+            const full = path.join(projectDir, entry.name);
+            try {
+                const { mtimeMs } = fs.statSync(full);
+                if (mtimeMs >= cutoff && (!best || mtimeMs > best.mtime)) {
+                    best = { path: full, mtime: mtimeMs };
+                }
+            } catch {
+                // skip unreadable files
+            }
+        }
+    }
+
+    return best?.path ?? null;
+}
+
 function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
     let entries: fs.Dirent[];
     try {

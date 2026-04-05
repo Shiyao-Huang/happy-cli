@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { Metadata } from '@/api/types';
-import { findClaudeLogFile, findCodexTranscriptFile } from './runtimeLogReader';
+import { findClaudeLogFile, findCodexTranscriptFile, findMostRecentClaudeLogFile } from './runtimeLogReader';
 import { DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS, resolveContextWindowTokens } from '@/utils/modelContextWindows';
 
 type ContextStatusReport = {
@@ -218,7 +218,13 @@ export function getContextStatusReport(options: {
 
     const claudeSessionId = requestedSessionId || metadata?.claudeSessionId;
     if (!claudeSessionId) {
-        throw new Error('Claude session ID not found. Cannot determine context status.');
+        // Race condition: session just started and SDK has not yet emitted the session ID.
+        // Fall back to the most recently modified log file (within 2 min window).
+        const fallbackFile = findMostRecentClaudeLogFile(homeDir);
+        if (!fallbackFile) {
+            throw new Error('Claude session ID not found and no recent log file available. Cannot determine context status.');
+        }
+        return buildClaudeContextStatus(fallbackFile, resolveClaudeContextLimitTokens(metadata));
     }
     const claudeFile = findClaudeLogFile(homeDir, claudeSessionId);
     if (!claudeFile) {
