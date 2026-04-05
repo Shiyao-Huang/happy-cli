@@ -30,6 +30,7 @@ import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
 import { spawnAhaCLI } from './utils/spawnAhaCLI'
+import { stripSessionScopedAhaEnv } from './utils/sessionScopedAhaEnv'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 import {
@@ -354,7 +355,7 @@ function handleTopLevelCommandError(error: unknown): never {
       const child = spawnAhaCLI(['daemon', 'start-sync'], {
         detached: true,
         stdio: 'ignore',
-        env: process.env
+        env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true })
       });
       child.unref();
 
@@ -541,7 +542,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
         const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
           detached: true,
           stdio: 'ignore',
-          env: process.env
+          env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true })
         })
         daemonProcess.unref();
 
