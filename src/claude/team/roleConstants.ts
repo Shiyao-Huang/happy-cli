@@ -14,6 +14,9 @@
  * - COORDINATION_ROLES, BYPASS_ROLES, IMPLEMENTATION_ROLES,
  *   REVIEW_ROLES, DEPRECATED_ROLES, NON_TASK_OWNING_ROLES,
  *   RESEARCH_ROLES, PRODUCT_ROLES, DESIGN_ROLES, DOCUMENTATION_ROLES
+ * - RBAC capability constants (single source of truth for role checks):
+ *   INSPECT_PRIVILEGED_ROLES, SCORING_ROLES, GENOME_EDIT_ROLES,
+ *   TASK_CREATE_ROLES, TOOL_GRANT_ROLES, AGENT_REPLACE_ROLES
  * - ROLE_COLLABORATION_MAP, getRoleCollaborators()
  * - isTaskOwningRole() (internal helper re-exported for promptBuilder)
  */
@@ -58,6 +61,30 @@ export const DEPRECATED_ROLES = ['observer'];
 // Bypass roles: operate outside the normal task workflow.
 // They observe, score, and intervene but never execute implementation tasks.
 export const BYPASS_ROLES = ['supervisor', 'help-agent'];
+
+// =============================================================================
+// RBAC CAPABILITY CONSTANTS — single source of truth for role-based access checks.
+// All inline role checks in supervisorTools / inspectionTools / agentTools /
+// taskFilter should import from here instead of repeating string literals.
+// =============================================================================
+
+/** Roles that can inspect other agents' sessions and read all genome specs. */
+export const INSPECT_PRIVILEGED_ROLES = ['supervisor', 'org-manager', 'master', 'agent-builder'] as const;
+
+/** Roles that can score agents (score_agent, score_supervisor_self, etc.). */
+export const SCORING_ROLES = ['supervisor', 'help-agent', 'master', 'orchestrator', 'org-manager'] as const;
+
+/** Roles that can edit / evolve / mutate genome specs. */
+export const GENOME_EDIT_ROLES = ['supervisor', 'org-manager', 'agent-builder'] as const;
+
+/** Roles that can create team tasks on behalf of the team. */
+export const TASK_CREATE_ROLES = ['master', 'orchestrator'] as const;
+
+/** Roles that can grant or revoke temporary tool access for other sessions. */
+export const TOOL_GRANT_ROLES = ['supervisor', 'master'] as const;
+
+/** Roles that can respawn / replace agents. */
+export const AGENT_REPLACE_ROLES = ['supervisor', 'master', 'help-agent'] as const;
 
 export const NON_TASK_OWNING_ROLES = [
     'org-manager',

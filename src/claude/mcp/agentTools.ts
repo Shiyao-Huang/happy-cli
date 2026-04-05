@@ -29,6 +29,7 @@ import { logger } from "@/ui/logger";
 import { configuration } from '@/configuration';
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
+import { TOOL_GRANT_ROLES, AGENT_REPLACE_ROLES } from '@/claude/team/roleConstants';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { projectTeamAgentMirror } from '../utils/runEnvelopeMirror';
 import { readDaemonState } from '@/persistence';
@@ -710,7 +711,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const callerSessionId = client.sessionId;
         const callerTeamId = metadata?.teamId || metadata?.roomId;
 
-        if (callerRole !== 'supervisor' && callerRole !== 'master') {
+        if (!callerRole || !(TOOL_GRANT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot grant tool access. Only supervisor/master can use this tool.` }], isError: true };
         }
         if (!callerSessionId) {
@@ -824,7 +825,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         const callerRole = metadata?.role;
         const callerSessionId = client.sessionId;
 
-        if (callerRole !== 'supervisor' && callerRole !== 'master') {
+        if (!callerRole || !(TOOL_GRANT_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot revoke tool access.` }], isError: true };
         }
         if (!callerSessionId) {
@@ -979,7 +980,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
     }, async (args) => {
         const metadata = client.getMetadata();
         const callerRole = metadata?.role;
-        if (callerRole !== 'supervisor' && callerRole !== 'master' && callerRole !== 'help-agent') {
+        if (!callerRole || !(AGENT_REPLACE_ROLES as readonly string[]).includes(callerRole)) {
             return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot replace agents.` }], isError: true };
         }
         if (args.sessionId === client.sessionId) {
