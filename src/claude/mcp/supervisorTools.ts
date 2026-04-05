@@ -54,6 +54,13 @@ import {
     TOOL_GRANT_ROLES,
     AGENT_REPLACE_ROLES,
 } from '@/claude/team/roleConstants';
+
+/**
+ * Roles that can read team/agent logs, save supervisor state, and access
+ * git diff summaries. Required for complete evolution cycles.
+ */
+const SUPERVISOR_OBSERVATION_ROLES: readonly string[] = ['supervisor', 'help-agent', 'org-manager', 'master'];
+
 import {
     buildEffectivePermissionsReport,
     buildRuntimePermissionSnapshot,
@@ -631,8 +638,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read team logs.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read team logs.' }], isError: true };
         }
         if (!/^[a-zA-Z0-9_-]+$/.test(args.teamId)) {
             return { content: [{ type: 'text', text: 'Error: Invalid teamId format.' }], isError: true };
@@ -1481,8 +1488,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
-        if (role !== 'supervisor' && role !== 'help-agent') {
-            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent can read CC logs.' }], isError: true };
+        if (!role || !SUPERVISOR_OBSERVATION_ROLES.includes(role)) {
+            return { content: [{ type: 'text', text: 'Error: Only supervisor/help-agent/org-manager/master can read CC logs.' }], isError: true };
         }
         try {
             const metadata = client.getMetadata();
@@ -2065,6 +2072,68 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             logger.debug(`[score_agent] Hub verdict write failed: ${String(hubError)}`);
         }
 
+        // ── Auto-evolution suggestion: close the scores → evolve loop ──
+        // After scoring, if we have a resolved genome identity AND sufficient evaluations,
+        // generate a concrete evolution suggestion so the supervisor knows what to do next.
+        // This is the missing link: without it, supervisors score agents but never evolve them.
+        let evolutionSuggestion = '';
+        if (resolvedSpecId && !args.unscoreableCycle) {
+            try {
+                const { readScores } = await import('@/claude/utils/scoreStorage');
+                const { scores: allScores } = readScores();
+                const genomeScores = feedbackTarget
+                    ? allScores.filter((score) => scoreMatchesFeedbackTarget(score, feedbackTarget))
+                    : allScores.filter((score) => score.specId === resolvedSpecId);
+                const evalCount = genomeScores.length;
+                const minEvolutionEvals = Number(process.env.AHA_MIN_EVOLUTION_EVALS ?? '') || 3;
+
+                if (evalCount >= minEvolutionEvals) {
+                    const { aggregateScores: aggScores } = await import('@/claude/utils/feedbackPrivacy');
+                    const aggregated = aggScores(genomeScores);
+                    const avgScore = aggregated?.avgScore ?? overall;
+
+                    // Determine strategy based on performance tier
+                    const negSignals = args.signals?.negative ?? [];
+                    const posSignals = args.signals?.positive ?? [];
+
+                    let strategy: 'conservative' | 'moderate' | 'radical';
+                    let suggestion: string;
+
+                    if (avgScore < 40 || args.action === 'discard') {
+                        strategy = 'radical';
+                        suggestion = `Agent underperforming (avgScore=${avgScore}, ${evalCount} evals). Recommend radical mutation.`;
+                    } else if (avgScore < 70 || args.action === 'mutate') {
+                        strategy = 'moderate';
+                        suggestion = `Agent average performance (avgScore=${avgScore}, ${evalCount} evals). Recommend moderate mutation.`;
+                    } else {
+                        strategy = 'conservative';
+                        suggestion = `Agent performing well (avgScore=${avgScore}, ${evalCount} evals). Recommend conservative evolution (learnings only).`;
+                    }
+
+                    const targetNs = feedbackTarget?.namespace ?? '@official';
+                    const targetName = feedbackTarget?.name ?? args.role;
+                    const signalContext = [
+                        negSignals.length > 0 ? `negatives=[${negSignals.join(',')}]` : '',
+                        posSignals.length > 0 ? `positives=[${posSignals.join(',')}]` : '',
+                    ].filter(Boolean).join(' ');
+
+                    evolutionSuggestion = `\n\n🧬 EVOLUTION SUGGESTION: ${suggestion}${signalContext ? ` ${signalContext}` : ''}`
+                        + `\n→ Run: evolve_genome(genomeNamespace="${targetNs}", genomeName="${targetName}", strategy="${strategy}")`
+                        + (args.recommendations?.length
+                            ? `\n→ Recommended learnings: ${args.recommendations.slice(0, 3).map(r => `"${r.slice(0, 100)}"`).join(', ')}`
+                            : '');
+
+                    logger.debug(
+                        `[score_agent] Evolution suggestion: strategy=${strategy} avgScore=${avgScore} evals=${evalCount} for ${targetNs}/${targetName}`,
+                    );
+                } else {
+                    evolutionSuggestion = `\n\n🧬 Evolution deferred: ${evalCount}/${minEvolutionEvals} evaluations needed before evolve_genome can run.`;
+                }
+            } catch (error) {
+                logger.debug(`[score_agent] Evolution suggestion error: ${String(error)}`);
+            }
+        }
+
         const dimSummary = `delivery=${dimensions.delivery} integrity=${dimensions.integrity} efficiency=${dimensions.efficiency} collaboration=${dimensions.collaboration} reliability=${dimensions.reliability}`;
         const hardInfo = hardMetricsScore !== undefined ? ` hardMetricsScore=${hardMetricsScore}` : '';
         const sessionInfo = ` sessionScore(task_completion=${sessionScore.taskCompletion}, code_quality=${sessionScore.codeQuality}, collaboration=${sessionScore.collaboration}, overall=${sessionScore.overall})`;
@@ -2073,7 +2142,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         return {
             content: [{
                 type: 'text',
-                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}${verdictInfo}${autoFeedbackNote}\n${dimSummary}`,
+                text: `Scored ${args.role}${resolvedSpecId ? ` (specId=${resolvedSpecId}${autoResolvedNote})` : ''} session=${args.sessionId}: overall=${overall},${hardInfo}${sessionInfo} action=${args.action}, mode=${scoringMode}${verdictInfo}${autoFeedbackNote}\n${dimSummary}${evolutionSuggestion}`,
             }],
             isError: false,
         };
