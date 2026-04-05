@@ -140,6 +140,64 @@ describe('controlServer /team-pulse', () => {
     });
 });
 
+describe('controlServer /health + /version', () => {
+    let stopServer: () => Promise<void>;
+    let port: number;
+
+    beforeEach(async () => {
+        const result = await startDaemonControlServer({
+            getChildren: () => [],
+            stopSession: () => false,
+            spawnSession: async () => ({ type: 'error' as const, errorMessage: 'not implemented' }),
+            getDaemonStatus: () => ({
+                pid: 4242,
+                httpPort: 3000,
+                startTime: '2026-04-05T00:00:00.000Z',
+                startedWithCliVersion: '1.2.3',
+                startedWithBuildHash: 'hash1234',
+                runtimeEntrypoint: 'index-hash1234.mjs',
+            }),
+            requestShutdown: () => {},
+            onAhaSessionWebhook: () => {},
+        });
+
+        port = result.port;
+        stopServer = result.stop;
+    });
+
+    afterEach(async () => {
+        await stopServer();
+    });
+
+    it('serves /health with the daemon contract surface', async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        expect(response.ok).toBe(true);
+        await expect(response.json()).resolves.toEqual({
+            ok: true,
+            pid: 4242,
+            httpPort: 3000,
+            version: '1.2.3',
+            buildHash: 'hash1234',
+            runtimeEntrypoint: 'index-hash1234.mjs',
+            startTime: '2026-04-05T00:00:00.000Z',
+        });
+    });
+
+    it('serves /version with build identity details', async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/version`);
+        expect(response.ok).toBe(true);
+        await expect(response.json()).resolves.toEqual({
+            ok: true,
+            pid: 4242,
+            httpPort: 3000,
+            version: '1.2.3',
+            buildHash: 'hash1234',
+            runtimeEntrypoint: 'index-hash1234.mjs',
+            startTime: '2026-04-05T00:00:00.000Z',
+        });
+    });
+});
+
 describe('controlServer /list', () => {
     let stopServer: () => Promise<void>;
     let port: number;

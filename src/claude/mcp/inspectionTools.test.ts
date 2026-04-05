@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     buildEffectivePermissionsReport,
     buildRuntimePermissionSnapshot,
+    canInspectGenomeSpec,
     collectRuntimeVisibleTools,
     explainRuntimeToolAccess,
     extractTeamConfigSnapshot,
@@ -125,6 +126,60 @@ describe('buildEffectivePermissionsReport', () => {
 });
 
 describe('runtime self-inspection helpers', () => {
+    it('allows qa roles to inspect @official and same-team specs while keeping worker self-inspection', () => {
+        expect(canInspectGenomeSpec({
+            callerRole: 'qa-engineer',
+            callerSpecId: 'spec-qa',
+            targetSpecId: 'spec-other',
+            targetNamespace: '@official',
+        })).toBe(true);
+
+        expect(canInspectGenomeSpec({
+            callerRole: 'qa',
+            callerSpecId: 'spec-qa',
+            targetSpecId: 'spec-other',
+            targetNamespace: '@team-private',
+            targetBelongsToCallerTeam: true,
+        })).toBe(true);
+
+        expect(canInspectGenomeSpec({
+            callerRole: 'implementer',
+            callerSpecId: 'spec-self',
+            targetSpecId: 'spec-self',
+        })).toBe(true);
+    });
+
+    it('denies qa roles from inspecting cross-team private specs', () => {
+        expect(canInspectGenomeSpec({
+            callerRole: 'qa-engineer',
+            callerSpecId: 'spec-qa',
+            targetSpecId: 'spec-other',
+            targetNamespace: '@team-b',
+            targetBelongsToCallerTeam: false,
+        })).toBe(false);
+
+        expect(canInspectGenomeSpec({
+            callerRole: 'qa',
+            callerSpecId: 'spec-qa',
+            targetSpecId: 'spec-other',
+            targetNamespace: null,
+        })).toBe(false);
+    });
+
+    it('keeps non-qa non-coordinator roles from inspecting other genome specs', () => {
+        expect(canInspectGenomeSpec({
+            callerRole: 'reviewer',
+            callerSpecId: 'spec-reviewer',
+            targetSpecId: 'spec-other',
+        })).toBe(false);
+
+        expect(canInspectGenomeSpec({
+            callerRole: 'implementer',
+            callerSpecId: 'spec-impl',
+            targetSpecId: 'spec-other',
+        })).toBe(false);
+    });
+
     it('normalizes visible MCP tool names from session metadata', () => {
         const visible = collectRuntimeVisibleTools({
             path: '/tmp',

@@ -17,6 +17,7 @@ export function startDaemonControlServer({
   stopSession,
   stopTeamSessions,
   spawnSession,
+  getDaemonStatus,
   requestShutdown,
   onAhaSessionWebhook,
   onClaudeLocalSessionFound,
@@ -33,6 +34,14 @@ export function startDaemonControlServer({
   stopSession: (sessionId: string) => boolean;
   stopTeamSessions?: (teamId: string) => { stopped: number; errors: string[] };
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
+  getDaemonStatus?: () => {
+    pid: number;
+    httpPort: number;
+    startTime?: string | null;
+    startedWithCliVersion?: string | null;
+    startedWithBuildHash?: string | null;
+    runtimeEntrypoint?: string | null;
+  };
   requestShutdown: () => void;
   onAhaSessionWebhook: (sessionId: string, metadata: Metadata) => void;
   onClaudeLocalSessionFound?: (ahaSessionId: string, claudeLocalSessionId: string) => void;
@@ -74,6 +83,54 @@ export function startDaemonControlServer({
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>();
+
+    const daemonStatusSchema = z.object({
+      ok: z.literal(true),
+      pid: z.number(),
+      httpPort: z.number(),
+      version: z.string().nullable(),
+      buildHash: z.string().nullable(),
+      runtimeEntrypoint: z.string().nullable(),
+      startTime: z.string().nullable(),
+    });
+
+    typed.get('/health', {
+      schema: {
+        response: {
+          200: daemonStatusSchema,
+        },
+      },
+    }, async () => {
+      const status = getDaemonStatus?.();
+      return {
+        ok: true as const,
+        pid: status?.pid ?? process.pid,
+        httpPort: status?.httpPort ?? 0,
+        version: status?.startedWithCliVersion ?? null,
+        buildHash: status?.startedWithBuildHash ?? null,
+        runtimeEntrypoint: status?.runtimeEntrypoint ?? null,
+        startTime: status?.startTime ?? null,
+      };
+    });
+
+    typed.get('/version', {
+      schema: {
+        response: {
+          200: daemonStatusSchema,
+        },
+      },
+    }, async () => {
+      const status = getDaemonStatus?.();
+      return {
+        ok: true as const,
+        pid: status?.pid ?? process.pid,
+        httpPort: status?.httpPort ?? 0,
+        version: status?.startedWithCliVersion ?? null,
+        buildHash: status?.startedWithBuildHash ?? null,
+        runtimeEntrypoint: status?.runtimeEntrypoint ?? null,
+        startTime: status?.startTime ?? null,
+      };
+    });
 
     // Session reports itself after creation
     typed.post('/session-started', {

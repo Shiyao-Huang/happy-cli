@@ -65,6 +65,8 @@ export interface DaemonLocallyPersistedState {
   httpPort: number;
   startTime: string;
   startedWithCliVersion: string;
+  startedWithBuildHash?: string | null;
+  runtimeEntrypoint?: string | null;
   lastHeartbeat?: string;
   daemonLogPath?: string;
   state?: 'running' | 'stopped';

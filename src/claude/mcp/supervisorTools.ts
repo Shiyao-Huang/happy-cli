@@ -50,6 +50,7 @@ import { generateRolePrompt } from '@/claude/team/roles';
 import {
     buildEffectivePermissionsReport,
     buildRuntimePermissionSnapshot,
+    canInspectGenomeSpec,
     explainRuntimeToolAccess,
     type RuntimePermissionSnapshot,
 } from './inspectionTools';
@@ -1323,7 +1324,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
     });
 
     mcp.registerTool('get_genome_spec', {
-        description: 'Inspect an AgentImage (Entity / genome spec) by ID at runtime. Returns the canonical views: view (current materialized AgentImage = seed ⊕ all AgentPlugs applied), view-diff (ordered AgentPlug history), view-ledger (canonical atomic ledger rows), and view-not-diff (seed/original spec before any evolution), plus replayedSpec for self-verification. Self-inspection is allowed for your own specId; coordinators may inspect any spec.',
+        description: 'Inspect an AgentImage (Entity / genome spec) by ID at runtime. Returns the canonical views: view (current materialized AgentImage = seed ⊕ all AgentPlugs applied), view-diff (ordered AgentPlug history), view-ledger (canonical atomic ledger rows), and view-not-diff (seed/original spec before any evolution), plus replayedSpec for self-verification. Self-inspection is allowed for your own specId; coordinators and agent-builder may inspect any spec; QA is limited to @official and current-team member specs.',
         title: 'Get AgentImage Spec',
         inputSchema: {
             specId: z.string().describe('AgentImage spec ID (Entity ID) to inspect'),
@@ -1332,15 +1333,45 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const callerMetadata = client.getMetadata();
         const callerRole = callerMetadata?.role;
         const callerSpecId = callerMetadata?.specId || process.env.AHA_SPEC_ID || null;
-        const canInspectAny = callerRole === 'supervisor' || callerRole === 'org-manager' || callerRole === 'master' || callerRole === 'agent-builder';
-        const isSelfSpec = callerSpecId != null && callerSpecId === args.specId;
-        if (!canInspectAny && !isSelfSpec) {
-            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot inspect genome specs.` }], isError: true };
-        }
-
         try {
-            const mirror = await fetchEntityMirror(args.specId);
-            const spec = mirror.spec as AgentImage;
+            const isQaInspector = callerRole === 'qa-engineer' || callerRole === 'qa';
+            const teamId = callerMetadata?.teamId || callerMetadata?.roomId || null;
+            let mirror: Awaited<ReturnType<typeof fetchEntityMirror>> | null = null;
+            let targetNamespace: string | null = null;
+            let targetBelongsToCallerTeam = false;
+
+            if (isQaInspector && callerSpecId !== args.specId) {
+                mirror = await fetchEntityMirror(args.specId);
+                targetNamespace = mirror.entity.namespace ?? null;
+                if (teamId && targetNamespace !== '@official') {
+                    const artifact = await api.getArtifact(teamId).catch(() => null);
+                    const board = parseBoardFromArtifact(artifact);
+                    const members = Array.isArray(board?.team?.members) ? board.team.members : [];
+                    targetBelongsToCallerTeam = members.some((member: any) => {
+                        const memberSpecId = typeof member?.specId === 'string' ? member.specId : null;
+                        return !!memberSpecId && (
+                            memberSpecId === args.specId
+                            || memberSpecId === mirror?.entity.id
+                        );
+                    });
+                }
+            }
+
+            if (!canInspectGenomeSpec({
+                callerRole,
+                callerSpecId,
+                targetSpecId: args.specId,
+                targetNamespace,
+                targetBelongsToCallerTeam,
+            })) {
+                const text = isQaInspector
+                    ? 'Error: QA can only inspect @official specs or specs belonging to the same team.'
+                    : `Error: Role '${callerRole}' cannot inspect genome specs.`;
+                return { content: [{ type: 'text', text }], isError: true };
+            }
+
+            const resolvedMirror = mirror ?? await fetchEntityMirror(args.specId);
+            const spec = resolvedMirror.spec as AgentImage;
             const { buildAgentImageInjection } = await import('@/claude/utils/buildGenomeInjection');
             const injectedPrompt = buildAgentImageInjection(spec);
 
@@ -1350,20 +1381,20 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     text: JSON.stringify({
                         specId: args.specId,
                         entity: {
-                            id: mirror.entity.id,
-                            namespace: mirror.entity.namespace ?? null,
-                            name: mirror.entity.name,
-                            version: mirror.entity.version,
-                            description: mirror.entity.description ?? null,
-                            category: mirror.entity.category ?? null,
-                            tags: mirror.entity.tags ?? null,
+                            id: resolvedMirror.entity.id,
+                            namespace: resolvedMirror.entity.namespace ?? null,
+                            name: resolvedMirror.entity.name,
+                            version: resolvedMirror.entity.version,
+                            description: resolvedMirror.entity.description ?? null,
+                            category: resolvedMirror.entity.category ?? null,
+                            tags: resolvedMirror.entity.tags ?? null,
                         },
                         view: spec,
-                        viewDiff: mirror.diffHistory,
-                        viewLedger: mirror.ledgerEntries,
-                        viewNotDiff: mirror.seedSpec,
-                        replayedSpec: mirror.replayedSpec,
-                        replayMatchesView: mirror.replayMatchesView,
+                        viewDiff: resolvedMirror.diffHistory,
+                        viewLedger: resolvedMirror.ledgerEntries,
+                        viewNotDiff: resolvedMirror.seedSpec,
+                        replayedSpec: resolvedMirror.replayedSpec,
+                        replayMatchesView: resolvedMirror.replayMatchesView,
                         injectedPrompt,
                     }, null, 2),
                 }],

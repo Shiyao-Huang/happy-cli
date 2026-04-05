@@ -99,6 +99,14 @@ interface EffectivePermissionsInput {
     teamOverlayAuthorities?: TeamAuthority[];
 }
 
+interface GenomeSpecInspectionInput {
+    callerRole?: string | null;
+    callerSpecId?: string | null;
+    targetSpecId: string;
+    targetNamespace?: string | null;
+    targetBelongsToCallerTeam?: boolean;
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
     const seen = new Set<string>();
     const result: string[] = [];
@@ -123,6 +131,25 @@ function includesToolName(values: string[], target: string): boolean {
 
 function hasOwn(obj: object | null | undefined, key: string): boolean {
     return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+export function canInspectGenomeSpec(input: GenomeSpecInspectionInput): boolean {
+    const callerRole = input.callerRole ?? null;
+    const callerSpecId = input.callerSpecId ?? null;
+    const isSelfSpec = callerSpecId != null && callerSpecId === input.targetSpecId;
+    if (isSelfSpec) return true;
+
+    const isPrivilegedInspector = callerRole === 'supervisor'
+        || callerRole === 'org-manager'
+        || callerRole === 'master'
+        || callerRole === 'agent-builder';
+    if (isPrivilegedInspector) return true;
+
+    const isQaInspector = callerRole === 'qa-engineer' || callerRole === 'qa';
+    if (!isQaInspector) return false;
+
+    const targetNamespace = input.targetNamespace?.trim() || null;
+    return targetNamespace === '@official' || input.targetBelongsToCallerTeam === true;
 }
 
 export function normalizeVisibleToolName(value: string): string {

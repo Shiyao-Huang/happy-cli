@@ -276,6 +276,8 @@ export async function runHeartbeatCycle(ctx: HeartbeatContext): Promise<Heartbea
       httpPort: controlPort,
       startTime: fileState.startTime,
       startedWithCliVersion: startupDiskVersion,
+      startedWithBuildHash: fileState.startedWithBuildHash ?? null,
+      runtimeEntrypoint: fileState.runtimeEntrypoint ?? null,
       lastHeartbeat: new Date().toLocaleString(),
       daemonLogPath: fileState.daemonLogPath,
     };

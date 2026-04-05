@@ -49,6 +49,7 @@ import { join } from 'path';
 import { spawn, type SpawnOptions } from 'child_process';
 import { projectPath } from '@/projectPath';
 import { withWindowsHide } from '@/utils/windowsProcessOptions';
+import { resolveRuntimeBuildInfo } from './runtimeBuildInfo';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
@@ -463,11 +464,31 @@ export async function startDaemon(): Promise<void> {
     };
 
     // ── Start control server ───────────────────────────────────────────────────
+    const runtimeBuildInfo = resolveRuntimeBuildInfo(import.meta.url);
+    let currentControlPort = 0;
+    let currentFileState: DaemonLocallyPersistedState = {
+      pid: process.pid,
+      httpPort: 0,
+      startTime: new Date().toLocaleString(),
+      startedWithCliVersion: configuration.currentCliVersion,
+      startedWithBuildHash: runtimeBuildInfo.buildHash,
+      runtimeEntrypoint: runtimeBuildInfo.runtimeEntrypoint,
+      daemonLogPath: logger.logFilePath,
+    };
+
     const { port: controlPort, stop: nextStopControlServer } = await startDaemonControlServer({
       getChildren: getCurrentChildren,
       stopSession,
       stopTeamSessions,
       spawnSession,
+      getDaemonStatus: () => ({
+        pid: process.pid,
+        httpPort: currentControlPort,
+        startTime: currentFileState.startTime,
+        startedWithCliVersion: currentFileState.startedWithCliVersion,
+        startedWithBuildHash: currentFileState.startedWithBuildHash ?? null,
+        runtimeEntrypoint: currentFileState.runtimeEntrypoint ?? null,
+      }),
       requestShutdown: () => requestShutdown('aha-cli'),
       onAhaSessionWebhook,
       getTeamPulse,
@@ -492,6 +513,7 @@ export async function startDaemon(): Promise<void> {
       },
     });
     stopControlServer = nextStopControlServer;
+    currentControlPort = controlPort;
 
     // Read version from disk (not compiled import) to avoid build/publish desync.
     const diskVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
@@ -502,8 +524,11 @@ export async function startDaemon(): Promise<void> {
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: diskVersion,
+      startedWithBuildHash: runtimeBuildInfo.buildHash,
+      runtimeEntrypoint: runtimeBuildInfo.runtimeEntrypoint,
       daemonLogPath: logger.logFilePath
     };
+    currentFileState = fileState;
     writeDaemonState(fileState);
     logger.debug(`[DAEMON RUN] Daemon state written (version: ${diskVersion})`);
 
