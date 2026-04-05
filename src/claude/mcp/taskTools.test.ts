@@ -81,6 +81,7 @@ describe('summarizeTaskForList', () => {
             status: 'review',
             priority: 'high',
             assigneeId: 'session-1',
+            reporterId: null,
             parentTaskId: 'parent-1',
             approvalStatus: 'pending',
             labels: ['scope', 'repo', 1 as any],
@@ -99,6 +100,7 @@ describe('summarizeTaskForList', () => {
             status: 'review',
             priority: 'high',
             assigneeId: 'session-1',
+            reporterId: null,
             parentTaskId: 'parent-1',
             approvalStatus: 'pending',
             labels: ['scope', 'repo'],
@@ -144,6 +146,7 @@ describe('buildShowAllTaskPage', () => {
             status: 'review',
             priority: null,
             assigneeId: null,
+            reporterId: null,
             parentTaskId: null,
             approvalStatus: null,
             labels: [],
@@ -157,6 +160,7 @@ describe('buildShowAllTaskPage', () => {
         }]);
         expect(result.boardOverview).toMatchObject({
             totalBoardTasks: 4,
+            matchingTasks: 4,
             returnedTasks: 4,
             pendingApprovalCount: 1,
         });
@@ -175,6 +179,7 @@ describe('buildShowAllTaskPage', () => {
         expect(result.filters).toEqual({ status: 'review' });
         expect(result.boardOverview).toMatchObject({
             totalBoardTasks: 4,
+            matchingTasks: 2,
             returnedTasks: 2,
             pendingApprovalCount: 0,
             statusCounts: {
