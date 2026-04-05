@@ -53,7 +53,7 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Available Commands:')}
   ${chalk.yellow('doctor')} [clean]           Run diagnostics or cleanup stray processes
-  ${chalk.yellow('auth')} [login|reconnect|restore|logout|status] Authentication management
+  ${chalk.yellow('auth')} [login|reconnect|join|show-join-code|logout|status] Authentication management
   ${chalk.yellow('connect')} [list|remove|codex|claude|gemini] AI vendor API key management
   ${chalk.yellow('schema')} [--all|path...]      Machine-readable CLI schema / command tree
   ${chalk.yellow('channel(s)')} [status|weixin] WeChat / IM channel bridge management
