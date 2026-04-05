@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver'
 /**
  * @module agentTools
  * @description MCP tool registrations for agent spawning and management.
@@ -26,18 +26,30 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
+import { configuration } from '@/configuration';
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
 import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { projectTeamAgentMirror } from '../utils/runEnvelopeMirror';
 import { readDaemonState } from '@/persistence';
-import { extractTeamConfigSnapshot } from './inspectionTools';
+import { extractTeamConfigSnapshot, buildRuntimePermissionSnapshot, explainRuntimeToolAccess } from './inspectionTools';
 import {
     publishTeamCorpsTemplate,
     resolvePreferredAgentImageId,
     resolveSpawnRuntimeForRole,
     searchMarketplaceGenomes,
 } from '@/utils/genomeMarketplace';
+import { fetchAgentImage } from '../utils/fetchGenome';
+import {
+    DEFAULT_DYNAMIC_TOOL_GRANT_TTL_MINUTES,
+    TemporaryToolGrantRecord,
+    grantTemporaryToolAccess,
+    hasDynamicGrantOptIn,
+    isHardDeniedDynamicGrantTool,
+    listTemporaryToolGrants,
+    normalizeGrantedToolName,
+    revokeTemporaryToolAccess,
+} from '../utils/temporaryToolGrants';
 import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext, ReplaceAgentStageError } from './mcpContext';
@@ -55,6 +67,76 @@ export function registerAgentTools(ctx: McpToolContext): void {
         parseBoardFromArtifact,
         spawnReplacementSession,
     } = ctx;
+
+    const getHubPublishKey = () => process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+
+    const syncTargetSessionTemporaryGrants = async (sessionId: string): Promise<{
+        session: any;
+        grants: TemporaryToolGrantRecord[];
+    }> => {
+        const session = await api.getSession(sessionId);
+        if (!session) {
+            throw new Error(`Session ${sessionId} not found.`);
+        }
+        const listResult = await listTemporaryToolGrants({
+            sessionId,
+            activeOnly: true,
+            hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+            hubPublishKey: getHubPublishKey(),
+        });
+        if (!listResult.ok) {
+            throw new Error(`Failed to sync temporary grants for ${sessionId}: HTTP ${listResult.status} ${listResult.body}`);
+        }
+
+        const nextMetadata = {
+            ...(session.metadata ?? {}),
+            temporaryToolGrants: listResult.grants,
+            temporaryToolGrantState: {
+                source: 'genome-hub',
+                updatedAt: Date.now(),
+                nonce: randomUUID(),
+            },
+        };
+        await api.updateSessionMetadata(sessionId, nextMetadata, session.metadataVersion);
+
+        return {
+            session,
+            grants: listResult.grants,
+        };
+    };
+
+    const callerCanGrantTool = (tool: string): { allowed: boolean; explanation: string } => {
+        const metadata = client.getMetadata();
+        const snapshot = buildRuntimePermissionSnapshot(metadata);
+        const access = explainRuntimeToolAccess(tool, snapshot);
+
+        if (snapshot.visibleInventoryKnown || snapshot.allowlistKnown) {
+            const allowed = access.visible === true || access.allowlisted === true;
+            return {
+                allowed,
+                explanation: allowed
+                    ? 'Caller runtime snapshot includes the tool.'
+                    : `Caller runtime snapshot does not currently include ${normalizeGrantedToolName(tool)}.`,
+            };
+        }
+
+        const fallbackAllowedTools = Array.isArray(genomeSpecRef?.current?.allowedTools)
+            ? genomeSpecRef?.current?.allowedTools
+            : [];
+        const normalizedRequested = normalizeGrantedToolName(tool).toLowerCase();
+        const fallbackAllowed = fallbackAllowedTools.some(
+            (value) => normalizeGrantedToolName(String(value)).toLowerCase() === normalizedRequested,
+        );
+
+        return {
+            allowed: fallbackAllowed || metadata?.role === 'supervisor',
+            explanation: fallbackAllowed
+                ? 'Caller genome allowlist includes the tool.'
+                : metadata?.role === 'supervisor'
+                    ? 'Caller runtime snapshot is unavailable; allowing supervisor fallback.'
+                    : `Caller tool inventory is unavailable and ${normalizeGrantedToolName(tool)} is not present in the genome allowlist fallback.`,
+        };
+    };
 
     // List Available Agents — browse genome marketplace before create_agent
     mcp.registerTool('list_available_agents', {
@@ -609,6 +691,179 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         } catch (error) {
             return {
                 content: [{ type: 'text', text: `Error updating agent model: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool('grant_tool_access', {
+        description: 'Temporarily grant one additional non-destructive tool to another session. Supervisor/master only. Requires target genome opt-in via @granted token and enforces TTL + audit fields.',
+        title: 'Grant Tool Access',
+        inputSchema: {
+            sessionId: z.string().describe('Target session ID receiving the temporary grant'),
+            tool: z.string().describe('Logical tool name to grant, e.g. get_genome_spec'),
+            ttl_minutes: z.number().int().min(1).max(DEFAULT_DYNAMIC_TOOL_GRANT_TTL_MINUTES).default(DEFAULT_DYNAMIC_TOOL_GRANT_TTL_MINUTES).describe('Grant TTL in minutes (max 30)'),
+            reason: z.string().min(1).describe('Why this temporary grant is needed'),
+            taskId: z.string().optional().describe('Optional task ID for the audit chain'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const callerRole = metadata?.role;
+        const callerSessionId = client.sessionId;
+        const callerTeamId = metadata?.teamId || metadata?.roomId;
+
+        if (callerRole !== 'supervisor' && callerRole !== 'master') {
+            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot grant tool access. Only supervisor/master can use this tool.` }], isError: true };
+        }
+        if (!callerSessionId) {
+            return { content: [{ type: 'text', text: 'Error: Caller session ID unavailable.' }], isError: true };
+        }
+        if (args.sessionId === callerSessionId) {
+            return { content: [{ type: 'text', text: 'Error: Self-grant is forbidden.' }], isError: true };
+        }
+
+        const normalizedTool = normalizeGrantedToolName(args.tool);
+        if (isHardDeniedDynamicGrantTool(normalizedTool)) {
+            return {
+                content: [{ type: 'text', text: `Error: ${normalizedTool} is permanently excluded from dynamic grants.` }],
+                isError: true,
+            };
+        }
+
+        const callerGrantCheck = callerCanGrantTool(normalizedTool);
+        if (!callerGrantCheck.allowed) {
+            return {
+                content: [{ type: 'text', text: `Error: Caller may only grant tools it already has. ${callerGrantCheck.explanation}` }],
+                isError: true,
+            };
+        }
+
+        try {
+            const targetSession = await api.getSession(args.sessionId);
+            if (!targetSession) {
+                return { content: [{ type: 'text', text: `Error: Session ${args.sessionId} not found.` }], isError: true };
+            }
+
+            const targetTeamId = targetSession.metadata?.teamId || targetSession.metadata?.roomId;
+            if (!callerTeamId || !targetTeamId || callerTeamId !== targetTeamId) {
+                return { content: [{ type: 'text', text: 'Error: Temporary grants are limited to sessions in the same team.' }], isError: true };
+            }
+
+            const targetSpecId = targetSession.metadata?.specId;
+            if (!targetSpecId) {
+                return { content: [{ type: 'text', text: `Error: Target session ${args.sessionId} has no specId; cannot verify @granted opt-in.` }], isError: true };
+            }
+
+            const targetGenome = await fetchAgentImage(client.getAuthToken(), targetSpecId).catch(() => null);
+            if (!targetGenome || !hasDynamicGrantOptIn(targetGenome)) {
+                return {
+                    content: [{ type: 'text', text: `Error: Target genome ${targetSpecId} has not opted into dynamic grants. Add '${'@granted'}' to a lightweight string-array field such as tags or capabilities.` }],
+                    isError: true,
+                };
+            }
+
+            const targetDisallowedTools = Array.isArray(targetGenome.disallowedTools)
+                ? targetGenome.disallowedTools.map((tool) => normalizeGrantedToolName(String(tool)).toLowerCase())
+                : [];
+            if (targetDisallowedTools.includes(normalizedTool.toLowerCase())) {
+                return {
+                    content: [{ type: 'text', text: `Error: Target genome permanently disallows ${normalizedTool}; disallowedTools takes precedence over temporal grants.` }],
+                    isError: true,
+                };
+            }
+
+            const expiresAt = new Date(Date.now() + args.ttl_minutes * 60_000).toISOString();
+            const grantResult = await grantTemporaryToolAccess({
+                sessionId: args.sessionId,
+                tool: normalizedTool,
+                grantedBy: callerSessionId,
+                grantedByRole: callerRole,
+                reason: args.reason,
+                taskId: args.taskId,
+                expiresAt,
+                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                hubPublishKey: getHubPublishKey(),
+            });
+            if (!grantResult.ok || !grantResult.grant) {
+                return {
+                    content: [{ type: 'text', text: `Error granting tool access: HTTP ${grantResult.status} ${grantResult.body}` }],
+                    isError: true,
+                };
+            }
+
+            const synced = await syncTargetSessionTemporaryGrants(args.sessionId);
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        granted: true,
+                        grantId: grantResult.grant.id,
+                        sessionId: args.sessionId,
+                        tool: normalizedTool,
+                        expiresAt,
+                        replacedGrantIds: grantResult.replacedGrantIds,
+                        activeGrantTools: synced.grants.map((grant) => grant.tool),
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error granting tool access: ${String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool('revoke_tool_access', {
+        description: 'Revoke an existing temporary tool grant before its TTL expires. Supervisor/master only.',
+        title: 'Revoke Tool Access',
+        inputSchema: {
+            grantId: z.string().describe('Temporary grant ID to revoke'),
+        },
+    }, async (args) => {
+        const metadata = client.getMetadata();
+        const callerRole = metadata?.role;
+        const callerSessionId = client.sessionId;
+
+        if (callerRole !== 'supervisor' && callerRole !== 'master') {
+            return { content: [{ type: 'text', text: `Error: Role '${callerRole}' cannot revoke tool access.` }], isError: true };
+        }
+        if (!callerSessionId) {
+            return { content: [{ type: 'text', text: 'Error: Caller session ID unavailable.' }], isError: true };
+        }
+
+        try {
+            const revokeResult = await revokeTemporaryToolAccess({
+                grantId: args.grantId,
+                revokedBy: callerSessionId,
+                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                hubPublishKey: getHubPublishKey(),
+            });
+            if (!revokeResult.ok || !revokeResult.grant) {
+                return {
+                    content: [{ type: 'text', text: `Error revoking tool access: HTTP ${revokeResult.status} ${revokeResult.body}` }],
+                    isError: true,
+                };
+            }
+
+            const synced = await syncTargetSessionTemporaryGrants(revokeResult.grant.sessionId);
+            return {
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        revoked: true,
+                        grantId: revokeResult.grant.id,
+                        sessionId: revokeResult.grant.sessionId,
+                        tool: revokeResult.grant.tool,
+                        remainingGrantTools: synced.grants.map((grant) => grant.tool),
+                    }, null, 2),
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error revoking tool access: ${String(error)}` }],
                 isError: true,
             };
         }

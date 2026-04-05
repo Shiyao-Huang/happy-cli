@@ -52,6 +52,7 @@ import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAU
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
+import { computeEffectiveAllowedToolsFromMetadata, hasDynamicGrantOptIn } from './utils/temporaryToolGrants';
 
 export interface StartOptions {
     model?: string
@@ -423,10 +424,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             : mountedAgentPrompt;
         logger.debug('[runClaude] Mounted launch-time agent context into system prompt');
     }
-    let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
-    let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
+    let currentAllowedTools: string[] | undefined = undefined; // Effective allowed tools (baseline ⊕ temporal grants)
+    let currentDisallowedTools: string[] | undefined = undefined; // Effective disallowed tools
+    let baselineAllowedTools: string[] | undefined = undefined; // Static/session override allowlist before grants
+    let baselineDisallowedTools: string[] | undefined = undefined; // Static/session override denylist before grants
+    let allowDynamicToolGrants = false;
+    let lastRuntimePermissionSignature: string | null = null;
+    let lastEffectiveToolAccessSignature: string | null = null;
 
     const syncRuntimePermissionMetadata = () => {
+        const signature = JSON.stringify({
+            permissionMode: currentPermissionMode ?? null,
+            allowedTools: currentAllowedTools ?? null,
+            disallowedTools: currentDisallowedTools ?? null,
+        });
+        if (signature === lastRuntimePermissionSignature) {
+            return;
+        }
+        lastRuntimePermissionSignature = signature;
         void session.updateMetadata((currentMetadata) => ({
             ...currentMetadata,
             runtimePermissions: {
@@ -439,6 +454,31 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         })).catch((error) => {
             logger.debug('[runClaude] Failed to sync runtime permission metadata:', error);
         });
+    };
+
+    const recomputeEffectiveRuntimeToolAccess = (metadataOverride?: Metadata | null, reason: string = 'runtime-refresh') => {
+        const metadataForComputation = metadataOverride ?? session.getMetadata();
+        const computed = computeEffectiveAllowedToolsFromMetadata({
+            baseAllowedTools: baselineAllowedTools,
+            baseDisallowedTools: baselineDisallowedTools,
+            metadata: allowDynamicToolGrants ? metadataForComputation : null,
+            dynamicGrantOptIn: allowDynamicToolGrants,
+        });
+
+        currentAllowedTools = computed.allowedTools;
+        currentDisallowedTools = computed.disallowedTools;
+
+        const signature = JSON.stringify({
+            allowedTools: currentAllowedTools ?? null,
+            disallowedTools: currentDisallowedTools ?? null,
+            activeGrantTools: computed.activeGrantTools,
+        });
+        if (signature !== lastEffectiveToolAccessSignature) {
+            lastEffectiveToolAccessSignature = signature;
+            logger.debug(
+                `[runClaude] Effective tool access recomputed (${reason}): allow=${currentAllowedTools ? currentAllowedTools.join(', ') : 'none'} deny=${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'} grants=${computed.activeGrantTools.join(', ') || 'none'}`,
+            );
+        }
     };
 
     const syncModelAwareness = () => {
@@ -505,6 +545,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Write into the ref so startAhaServer's tools (create_agent etc.) can use genome data
     _agentImageRef.current = _agentImage;
     const startupRole = process.env.AHA_AGENT_ROLE || session.getMetadata()?.role;
+    allowDynamicToolGrants = hasDynamicGrantOptIn(_agentImage);
 
     if (_agentImage) {
         // Tier 2 — 模型覆盖
@@ -535,7 +576,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     }),
                     ..._agentImage.allowedTools,
                 ]));
-                currentAllowedTools = merged;
+                baselineAllowedTools = merged;
                 logger.debug(`[agent-image] Allowed tools set from agent image (${_agentImage.allowedTools.length} custom + injected team tools = ${merged.length} total)`);
             }
         }
@@ -543,8 +584,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (ignoreGenomeToolConstraints) {
                 logger.debug('[genome] Ignoring genome disallowedTools for supervisor so it can inspect raw logs directly');
             } else {
-                currentDisallowedTools = _agentImage.disallowedTools;
-                logger.debug(`[genome] Disallowed tools set from genome: ${currentDisallowedTools.join(', ')}`);
+                baselineDisallowedTools = _agentImage.disallowedTools;
+                logger.debug(`[genome] Disallowed tools set from genome: ${baselineDisallowedTools.join(', ')}`);
             }
         }
 
@@ -552,7 +593,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Without this, agents confuse SendMessage (CC native) with send_team_message (Aha MCP),
         // causing "Not in a team context" errors.
         const CC_NATIVE_TEAM_TOOLS = ['SendMessage', 'TeamCreate', 'TeamDelete'];
-        currentDisallowedTools = [...(currentDisallowedTools || []), ...CC_NATIVE_TEAM_TOOLS];
+        baselineDisallowedTools = [...(baselineDisallowedTools || []), ...CC_NATIVE_TEAM_TOOLS];
 
         // Tier 4 — 权限模式（优先级低于 CLI 参数）
         if (_agentImage.permissionMode && !currentPermissionMode) {
@@ -562,6 +603,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
         logger.debug(`[genome] Genome spec applied at startup (specId=${_agentImageId})`);
     }
+    recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'startup');
     syncRuntimePermissionMetadata();
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -1175,6 +1217,9 @@ ${instructions}
             syncModelAwareness();
         }
 
+        recomputeEffectiveRuntimeToolAccess(metadata, 'metadata-update');
+        syncRuntimePermissionMetadata();
+
         if (changed) {
             updateTeamHandling(currentTeamId, currentRole, isNewJoin);
         }
@@ -1253,8 +1298,9 @@ ${instructions}
         // Resolve allowed tools - use message.meta.allowedTools if provided, otherwise use current
         let messageAllowedTools = currentAllowedTools;
         if (message.meta?.hasOwnProperty('allowedTools')) {
-            messageAllowedTools = message.meta.allowedTools || undefined; // null becomes undefined
-            currentAllowedTools = messageAllowedTools;
+            baselineAllowedTools = message.meta.allowedTools || undefined; // null becomes undefined
+            recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-allowed-tools');
+            messageAllowedTools = currentAllowedTools;
             logger.debug(`[loop] Allowed tools updated from user message: ${messageAllowedTools ? messageAllowedTools.join(', ') : 'reset to none'}`);
             syncRuntimePermissionMetadata();
         } else {
@@ -1264,13 +1310,18 @@ ${instructions}
         // Resolve disallowed tools - use message.meta.disallowedTools if provided, otherwise use current
         let messageDisallowedTools = currentDisallowedTools;
         if (message.meta?.hasOwnProperty('disallowedTools')) {
-            messageDisallowedTools = message.meta.disallowedTools || undefined; // null becomes undefined
-            currentDisallowedTools = messageDisallowedTools;
+            baselineDisallowedTools = message.meta.disallowedTools || undefined; // null becomes undefined
+            recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-disallowed-tools');
+            messageDisallowedTools = currentDisallowedTools;
             logger.debug(`[loop] Disallowed tools updated from user message: ${messageDisallowedTools ? messageDisallowedTools.join(', ') : 'reset to none'}`);
             syncRuntimePermissionMetadata();
         } else {
             logger.debug(`[loop] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
         }
+
+        recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-dispatch');
+        messageAllowedTools = currentAllowedTools;
+        messageDisallowedTools = currentDisallowedTools;
 
         // Check for special commands before processing
         const specialCommand = parseSpecialCommand(message.content.text);

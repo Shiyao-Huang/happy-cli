@@ -242,6 +242,8 @@ export async function startAhaServer(
             'list_team_agents',
             'get_team_config',
             'request_help',
+            'grant_tool_access',
+            'revoke_tool_access',
             'replace_agent',
             'evaluate_replacement_votes',
             'update_agent_model',
