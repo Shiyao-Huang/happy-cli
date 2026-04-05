@@ -1,4 +1,6 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 /**
  * @module agentTools
  * @description MCP tool registrations for agent spawning and management.
@@ -69,41 +71,61 @@ async function collectPredecessorHandoffContext(
         const tasksResult = await api.listTasks(teamId, { assigneeId: predecessorSessionId });
         const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
         const nonDoneTasks = tasks.filter((t: any) => t?.id && t.status !== 'done');
-        if (nonDoneTasks.length === 0) return '';
 
-        const handoffBlocks: string[] = [];
-        for (const task of nonDoneTasks.slice(0, 5)) {
-            try {
-                const fullTask = await api.getTask(teamId, task.id);
-                if (!fullTask?.comments?.length) continue;
-                const handoffComments = fullTask.comments.filter(
-                    (c: any) => c.type === 'handoff' &&
-                        (!authorSessionId || c?.authorSessionId === authorSessionId),
+        if (nonDoneTasks.length > 0) {
+            const handoffBlocks: string[] = [];
+            for (const task of nonDoneTasks.slice(0, 5)) {
+                try {
+                    const fullTask = await api.getTask(teamId, task.id);
+                    if (!fullTask?.comments?.length) continue;
+                    const handoffComments = fullTask.comments.filter(
+                        (c: any) => c.type === 'handoff' &&
+                            (!authorSessionId || c?.authorSessionId === authorSessionId),
+                    );
+                    if (handoffComments.length === 0) continue;
+                    // Take the most recent handoff comment per task
+                    const latest = handoffComments[handoffComments.length - 1];
+                    handoffBlocks.push(
+                        `### Task: ${fullTask.title} (${fullTask.id})\n` +
+                        `Status: ${fullTask.status} | Priority: ${fullTask.priority || 'medium'}\n` +
+                        `Handoff from ${latest.authorDisplayName || latest.authorRole || 'predecessor'}:\n` +
+                        `${latest.content}`,
+                    );
+                } catch {
+                    // Best-effort per task
+                }
+            }
+
+            if (handoffBlocks.length > 0) {
+                return (
+                    '## Predecessor Handoff Context\n\n' +
+                    'The following handoff notes were left by your predecessor. ' +
+                    'Read these before starting work — they contain task context, blockers, and next-step recommendations.\n\n' +
+                    handoffBlocks.join('\n\n---\n\n')
                 );
-                if (handoffComments.length === 0) continue;
-                // Take the most recent handoff comment per task
-                const latest = handoffComments[handoffComments.length - 1];
-                handoffBlocks.push(
-                    `### Task: ${fullTask.title} (${fullTask.id})\n` +
-                    `Status: ${fullTask.status} | Priority: ${fullTask.priority || 'medium'}\n` +
-                    `Handoff from ${latest.authorDisplayName || latest.authorRole || 'predecessor'}:\n` +
-                    `${latest.content}`,
-                );
-            } catch {
-                // Best-effort per task
             }
         }
-
-        if (handoffBlocks.length === 0) return '';
-        return (
-            '## Predecessor Handoff Context\n\n' +
-            'The following handoff notes were left by your predecessor. ' +
-            'Read these before starting work — they contain task context, blockers, and next-step recommendations.\n\n' +
-            handoffBlocks.join('\n\n---\n\n')
-        );
     } catch {
-        return '';
+        // fall through to file-based fallback
     }
+
+    // Fallback: read the handoff file written by retire_self(handoffNote=...)
+    try {
+        const handoffPath = join(resolveAhaHomeDir(), 'handoffs', `${predecessorSessionId}.md`);
+        if (existsSync(handoffPath)) {
+            const content = readFileSync(handoffPath, 'utf-8').trim();
+            if (content) {
+                return (
+                    '## Predecessor Handoff Context (from handoff file)\n\n' +
+                    'The following handoff note was written by your predecessor before retiring.\n\n' +
+                    content
+                );
+            }
+        }
+    } catch {
+        // best-effort, never throws
+    }
+    return '';
 }
 
 export function registerAgentTools(ctx: McpToolContext): void {
