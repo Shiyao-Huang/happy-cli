@@ -9,6 +9,7 @@
 
 import { installDnsFallback } from '@/utils/dnsFallback'
 import chalk from 'chalk'
+import { t } from '@/i18n'
 import { runClaude, StartOptions } from '@/claude/runClaude'
 import { logger } from './ui/logger'
 
@@ -82,8 +83,8 @@ ${chalk.bold('Options:')}
   ${chalk.cyan('--debug')}                 Enable debug logging
 
 ${chalk.bold('Documentation:')}
-  GitHub: ${chalk.blue.underline('https://github.com/slopus/aha')}
-  Docs:  ${chalk.blue.underline('https://github.com/slopus/aha/blob/main/README.md')}
+  GitHub: ${chalk.blue.underline('https://github.com/aha-agi/aha-cli')}
+  Docs:  ${chalk.blue.underline('https://github.com/aha-agi/aha-cli/blob/main/README.md')}
 
 ${chalk.bold('Examples:')}
   ${chalk.gray('# Diagnose and clean up')}
@@ -325,28 +326,28 @@ function handleTopLevelCommandError(error: unknown): never {
         const sessions = await listDaemonSessions()
 
         if (sessions.length === 0) {
-          console.log('No active sessions this daemon is aware of (they might have been started by a previous version of the daemon)')
+          console.log(t('daemon.noSessions'))
         } else {
-          console.log('Active sessions:')
+          console.log(t('daemon.activeSessions'))
           console.log(JSON.stringify(sessions, null, 2))
         }
       } catch (error) {
-        console.log('No daemon running')
+        console.log(t('daemon.notRunning'))
       }
       return
 
     } else if (daemonSubcommand === 'stop-session') {
       const sessionId = args[2]
       if (!sessionId) {
-        console.error('Session ID required')
+        console.error(t('daemon.sessionIdRequired'))
         process.exit(1)
       }
 
       try {
         const success = await stopDaemonSession(sessionId)
-        console.log(success ? 'Session stopped' : 'Failed to stop session')
+        console.log(success ? t('daemon.sessionStopped') : t('daemon.sessionStopFailed'))
       } catch (error) {
-        console.log('No daemon running')
+        console.log(t('daemon.notRunning'))
       }
       return
 
@@ -370,9 +371,9 @@ function handleTopLevelCommandError(error: unknown): never {
       }
 
       if (started) {
-        console.log('Daemon started successfully');
+        console.log(t('daemon.startedSuccess'));
       } else {
-        console.error('Failed to start daemon');
+        console.error(t('daemon.startFailed'));
         process.exit(1);
       }
       process.exit(0);

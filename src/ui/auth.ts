@@ -98,7 +98,7 @@ async function doWebAuth(keypair: tweetnacl.BoxKeyPair, options: DoAuthOptions):
     // I changed this to always show the URL because we got a report from
     // someone running aha inside a devcontainer that they saw the
     // "Complete authentication in your browser window." but nothing opened.
-    // https://github.com/slopus/aha/issues/19
+    // https://github.com/aha-agi/aha-cli/issues/19
     console.log(t('auth.manualUrl'));
     console.log(webUrl);
     console.log('');

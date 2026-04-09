@@ -108,7 +108,7 @@ function validateConfiguration(): void {
       console.error(chalk.cyan('\n💡 To fix this issue:'))
       console.error(chalk.gray('  1. Check your .env file or environment variables'))
       console.error(chalk.gray('  2. Run "aha doctor" for system diagnostics'))
-      console.error(chalk.gray('  3. See documentation at https://github.com/slopus/aha'))
+      console.error(chalk.gray('  3. See documentation at https://github.com/aha-agi/aha-cli'))
 
       process.exit(1)
     } else {
