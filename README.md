@@ -9,20 +9,18 @@ Free. Open source. Code anywhere.
 ### 1. Install
 
 ```bash
-npm install -g cc-aha-cli-v3
+npm install -g aha-agi
 ```
-
-> **Note:** This v3 package intentionally uses the versioned `aha-v3` binary (with `kanban-v3` as an alias) and stores data under `~/.aha-v3`, so it can coexist with the legacy `cc-aha-cli` package.
 
 ### 2. Start the Daemon
 
 ```bash
-aha-v3 daemon start
+aha daemon start
 ```
 
 ### 3. Open Web App
 
-Visit **https://top1vibe.com/webappv2** in your browser or mobile device to:
+Visit **https://ahaagi.com/webappv3** in your browser or mobile device to:
 - Control Claude Code remotely from any device
 - Create multi-agent teams (Master, Builder, QA, etc.)
 - **No local configuration needed** - enjoy full team collaboration out of the box!
@@ -39,7 +37,7 @@ Visit **https://top1vibe.com/webappv2** in your browser or mobile device to:
 ## Basic Usage
 
 ```bash
-aha-v3
+aha
 ```
 
 This will:
@@ -49,15 +47,15 @@ This will:
 
 ## Commands
 
-- `aha-v3 auth` – Manage authentication
-  - `aha-v3 auth reconnect` refreshes the currently cached account
-  - `aha-v3 auth login --code <backup-key>` restores a known account from a one-time ticket
-  - `aha-v3 auth join --ticket <ticket>` joins an existing account from a join link
-- `aha-v3 codex` – Start Codex mode
-- `aha-v3 connect` – Store AI vendor API keys in Aha cloud
-- `aha-v3 notify` – Send a push notification to your devices
-- `aha-v3 daemon` – Manage background service
-- `aha-v3 doctor` – System diagnostics & troubleshooting
+- `aha auth` – Manage authentication
+  - `aha auth reconnect` refreshes the currently cached account
+  - `aha auth login --code <backup-key>` restores a known account from a one-time ticket
+  - `aha auth join --ticket <ticket>` joins an existing account from a join link
+- `aha codex` – Start Codex mode
+- `aha connect` – Store AI vendor API keys in Aha cloud
+- `aha notify` – Send a push notification to your devices
+- `aha daemon` – Manage background service
+- `aha doctor` – System diagnostics & troubleshooting
 
 ## Daemon
 
@@ -67,16 +65,16 @@ The daemon is a background service that enables remote control from the mobile a
 
 ```bash
 # Start daemon with default server
-aha-v3 daemon start
+aha daemon start
 
 # Start daemon with custom server URL (for local development)
-AHA_SERVER_URL=http://localhost:3005 aha-v3 daemon start
+AHA_SERVER_URL=http://localhost:3005 aha daemon start
 
 # Check daemon status
-aha-v3 daemon status
+aha daemon status
 
 # Stop daemon
-aha-v3 daemon stop
+aha daemon stop
 ```
 
 ### Daemon for Teams
@@ -90,17 +88,17 @@ aha-v3 daemon stop
 
 ### Daemon Logs
 
-Daemon logs are stored in `~/.aha-v3/logs/` (or `$AHA_HOME_DIR/logs/`):
+Daemon logs are stored in `~/.aha/logs/` (or `$AHA_HOME_DIR/logs/`):
 - Format: `YYYY-MM-DD-HH-MM-SS-pid-PID-daemon.log`
 - Session logs: `YYYY-MM-DD-HH-MM-SS-pid-PID.log`
 
 View logs for debugging:
 ```bash
 # View daemon logs
-tail -f ~/.aha-v3/logs/*-daemon.log
+tail -f ~/.aha/logs/*-daemon.log
 
 # View specific session logs
-tail -f ~/.aha-v3/logs/2026-01-17-12-49-59-pid-20555.log
+tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
 ```
 
 ## Options
@@ -114,14 +112,14 @@ tail -f ~/.aha-v3/logs/2026-01-17-12-49-59-pid-20555.log
 
 ## Environment Variables
 
-- `AHA_SERVER_URL` - Custom server URL (default: https://top1vibe.com/api/v2)
-- `AHA_WEBAPP_URL` - Custom web app URL (default: https://top1vibe.com/webappv2)
-- `AHA_HOME_DIR` - Custom home directory for Aha data (default: ~/.aha-v3)
+- `AHA_SERVER_URL` - Custom server URL (default: https://ahaagi.com/api)
+- `AHA_WEBAPP_URL` - Custom web app URL (default: https://ahaagi.com/webappv3)
+- `AHA_HOME_DIR` - Custom home directory for Aha data (default: ~/.aha)
 - `AHA_CONFIG_FILE` - Path to persistent CLI config JSON. Environment variables still take priority.
 - `AHA_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
 - `AHA_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
 
-Persistent config can also live in `~/.aha-v3/config.json`:
+Persistent config can also live in `~/.aha/config.json`:
 
 ```json
 {
@@ -140,7 +138,7 @@ Persistent config can also live in `~/.aha-v3/config.json`:
 
 ## 📚 Documentation
 
-- **[CLI v3 Reference](./docs/aha-v3-cli-reference.md)** - Complete command syntax, workflows, and configuration reference
+- **[CLI Reference](./docs/aha-cli-reference.md)** - Complete command syntax, workflows, and configuration reference
 - **[Auth Quickstart](./docs/auth-quickstart.md)** - Shortest path for reconnect, restore, and new-account flows
 - **[Auth Recovery & Account Consistency](./docs/auth-recovery-account-consistency.md)** - Restore-key recovery, reconnect semantics, and machine/team account mismatch diagnosis
 - **[CHANGELOG](./CHANGELOG.md)** - Release notes for npm package versions
