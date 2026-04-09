@@ -206,8 +206,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     if (options.startedBy === 'daemon' && options.startingMode === 'local') {
         logger.debug('Daemon spawn requested with local mode - forcing remote mode');
         options.startingMode = 'remote';
-        // TODO: Eventually we should error here instead of silently switching
-        // throw new Error('Daemon-spawned sessions cannot use local/interactive mode');
+        // Silently coerce for backwards compatibility; callers should pass 'remote' explicitly.
     }
 
     // Create session service
@@ -221,7 +220,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const settings = await readSettings();
     let machineId = settings?.machineId
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/aha/issues/new/choose`);
+        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/aha-agi/aha-cli/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);

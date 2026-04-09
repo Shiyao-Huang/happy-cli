@@ -4,20 +4,40 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-09
+
+This is the first public open-source release of aha-cli. The codebase has been cleaned, licensed, and prepared for community contribution.
+
 ### Added
-- Supervisor ops now include `read_unified_log`, which aggregates team messages, supervisor score logs, help-request events, and trace events into one ordered stream for faster incident debugging.
-- Added a hardened `restart_daemon` flow with graceful shutdown, SIGKILL fallback, health recheck, and dedicated regression tests.
-- Added API/session reconnect regression coverage so websocket reconnect lifecycle remains protected by tests.
+- **Internationalization (i18n)**: Auto locale detection (`LANG` env / `Intl.DateTimeFormat`) with EN and ZH language packs. All user-visible strings in `src/commands/`, `src/ui/`, and `src/daemon/` migrated to `t()` calls. Runtime language switching supported.
+- **Open source community files**: `LICENSE` (MIT), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`.
+- **CI/CD pipeline**: GitHub Actions workflow for `npm run build`, `tsc`, and `vitest` on every push and pull request.
+- **Prebuild protection**: `prebuild-warn` script warns when cold build (`npm run build`) is about to invalidate live chunk hashes and kill running agent sessions.
+- **Agent skills**: `context-mirror` and `aha-v3-reference` skills bundled in `skills/`.
+- **Supervisor ops**: `read_unified_log` aggregates team messages, supervisor score logs, help-request events, and trace events into one ordered stream for faster incident debugging.
+- **Restart daemon**: Hardened `restart_daemon` flow with graceful shutdown, SIGKILL fallback, health recheck, and dedicated regression tests.
+- **Session reconnect tests**: API/session reconnect regression coverage protecting websocket reconnect lifecycle.
+- **Agent self-awareness**: `get_team_info` now includes genome responsibilities and role mirror for each roster member.
+- **Team queue visibility**: `todoAssignedToOthers` field in `teamStats` prevents duplicate pickup of already-claimed tasks.
 
 ### Changed
-- Pre-commit now serializes `prerecommit` runs and is pinned to `Node 22` with a `10GB` heap allocation to avoid multi-agent `tsc` OOM failures on shared machines.
-- Updated the bundled Claude Code SDK to `2.1.85` and aligned the Codex bridge compatibility target documentation to `codex-cli 0.117.0`.
+- **Brand cleanup**: All references to `aha-v3`, `top1vibe`, and `slopus` replaced with `aha` / `ahaagi.com`. README updated with current architecture and setup instructions.
+- **Obfuscation default**: `npm publish` obfuscation now defaults to `none` for open-source distribution.
+- **Pre-commit**: Serialized `prerecommit` runs pinned to Node 22 with a 10 GB heap to avoid multi-agent `tsc` OOM on shared machines.
+- **Claude Code SDK**: Updated to `2.1.85`; Codex bridge compatibility target documented as `codex-cli 0.117.0`.
+- **URL constants**: All default URLs standardized on `ahaagi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
 
 ### Fixed
-- Run-envelope identity resolution now prefers runtime-reported candidate identity and runtime fallback metadata before local derivation.
-- Candidate identity no longer trusts stray `.genome` snapshots from an arbitrary shared repo/workspace; only trusted materialized workspaces may contribute specimen identity.
-- Help-lane retries no longer treat saturated help-agent reuse as delivered work; pending actions now stay open until acceptance/activation is observable.
-- Context status now derives Claude 1M window size from `resolvedModel` instead of stale persisted session metadata.
+- **DNS fallback**: macOS systems with empty system DNS now fall back to Google/Cloudflare resolvers via a global `dns.lookup` patch installed at CLI entry.
+- **Security**: Removed tracked `.env` files; `.gitignore` updated to exclude all secret-bearing files.
+- **Run-envelope identity**: Prefers runtime-reported candidate identity and runtime fallback metadata before local derivation.
+- **Candidate identity**: No longer trusts stray `.genome` snapshots from arbitrary workspaces; only trusted materialized workspaces contribute specimen identity.
+- **Help-lane retries**: No longer treat saturated help-agent reuse as delivered work; pending actions stay open until observable acceptance/activation.
+- **Context status**: Derives Claude 1M window size from `resolvedModel` instead of stale persisted session metadata.
+- **AGENTS.md discovery**: Walks from `cwd` to repo root to preserve closest-scope docs.
+- **Legion session env**: Full cleanup of session-scoped `AHA_*` env vars before daemon spawn.
+- **Team pulse**: Deduplicated by `sessionId` to prevent ghost roster entries.
+- **Archive/retire**: `archive_session` and `retire_self` now correctly remove the member from the team roster.
 
 ## [2.0.16] - 2026-03-26
 
