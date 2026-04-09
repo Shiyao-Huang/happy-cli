@@ -7,6 +7,7 @@
 
 import psList from 'ps-list';
 import spawn from 'cross-spawn';
+import { logger } from '@/ui/logger';
 
 /**
  * Find all Aha CLI processes (including current process)
@@ -87,7 +88,7 @@ export async function killRunawayAhaProcesses(): Promise<{ killed: number, error
 
   for (const { pid, command } of runawayProcesses) {
     try {
-      console.log(`Killing runaway process PID ${pid}: ${command}`);
+      logger.debug(`Killing runaway process PID ${pid}: ${command}`);
 
       if (process.platform === 'win32') {
         // Windows: use taskkill
@@ -105,17 +106,17 @@ export async function killRunawayAhaProcesses(): Promise<{ killed: number, error
         const processes = await psList();
         const stillAlive = processes.find(p => p.pid === pid);
         if (stillAlive) {
-          console.log(`Process PID ${pid} ignored SIGTERM, using SIGKILL`);
+          logger.debug(`Process PID ${pid} ignored SIGTERM, using SIGKILL`);
           process.kill(pid, 'SIGKILL');
         }
       }
 
-      console.log(`Successfully killed runaway process PID ${pid}`);
+      logger.debug(`Successfully killed runaway process PID ${pid}`);
       killed++;
     } catch (error) {
       const errorMessage = (error as Error).message;
       errors.push({ pid, error: errorMessage });
-      console.log(`Failed to kill process PID ${pid}: ${errorMessage}`);
+      logger.warn(`Failed to kill process PID ${pid}: ${errorMessage}`);
     }
   }
 
