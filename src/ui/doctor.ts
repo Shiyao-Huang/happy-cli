@@ -264,7 +264,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
 
         // Support and bug reports
         console.log(chalk.bold(t('doctor.supportHeader')));
-        console.log(`${t('doctor.reportIssuesLabel')}${chalk.blue('https://github.com/Shiyao-Huang/aha/issues/new/choose')}`);
+        console.log(`${t('doctor.reportIssuesLabel')}${chalk.blue('https://github.com/aha-agi/aha-cli/issues/new/choose')}`);
         console.log(`${t('doctor.documentationLabel')}${chalk.blue('https://aha.engineering/')}`);
     }
 

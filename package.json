@@ -130,6 +130,14 @@
     "parse-path": "7.0.3",
     "@types/parse-path": "7.0.3"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aha-agi/aha-cli.git"
+  },
+  "homepage": "https://github.com/aha-agi/aha-cli#readme",
+  "bugs": {
+    "url": "https://github.com/aha-agi/aha-cli/issues"
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"

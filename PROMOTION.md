@@ -29,7 +29,7 @@ npm install -g cc-aha-cli
 
 完全免费 | MIT开源 | 端到端加密
 
-https://top1vibe.com/webapp
+https://aha-agi.com/webapp
 ```
 
 #### 版本 2: 使用场景
@@ -44,7 +44,7 @@ https://top1vibe.com/webapp
 这就是 Aha - Claude Code 的移动超能力
 
 npm install -g cc-aha-cli
-https://top1vibe.com/webapp
+https://aha-agi.com/webapp
 ```
 
 #### 版本 3: 问题导向
@@ -120,14 +120,14 @@ What started as a remote control tool evolved into something more:
 ```bash
 npm install -g cc-aha-cli
 aha daemon start
-# Visit https://top1vibe.com/webapp
+# Visit https://aha-agi.com/webapp
 ```
 
 The multi-agent system is particularly interesting - you can have Master coordinate a team of Builder, QA, and Scribe to complete complex tasks autonomously.
 
 Would love to hear your feedback!
 
-GitHub: https://github.com/slopus/aha-cli
+GitHub: https://github.com/aha-agi/aha-cli
 ```
 
 #### r/ClaudeCode
@@ -148,7 +148,7 @@ npm install -g cc-aha-cli
 aha daemon start
 ```
 
-Then open https://top1vibe.com/webapp on any device.
+Then open https://aha-agi.com/webapp on any device.
 
 The coolest part is the multi-agent system. You can create a team and watch them collaborate on complex projects.
 
@@ -233,7 +233,7 @@ npm install -g cc-aha-cli
 aha daemon start
 ```
 
-然后打开这个网址：**https://top1vibe.com/webapp**
+然后打开这个网址：**https://aha-agi.com/webapp**
 
 就这样，你已经可以在任何设备上控制 Claude Code 了！
 
@@ -285,11 +285,11 @@ npm install -g cc-aha-cli
 aha daemon start
 ```
 
-访问 https://top1vibe.com/webapp
+访问 https://aha-agi.com/webapp
 
 ## 链接
 
-- GitHub: https://github.com/slopus/aha-cli
+- GitHub: https://github.com/aha-agi/aha-cli
 - 文档: [GETTING_STARTED.md]
 - 联系方式: hsy863551305@gmail.com
 
@@ -329,7 +329,7 @@ Aha brings Claude Code to mobile devices and adds a team of 22 AI agents to supe
 Get started in 30 seconds:
 npm install -g cc-aha-cli && aha daemon start
 
-Then visit https://top1vibe.com/webapp on any device.
+Then visit https://aha-agi.com/webapp on any device.
 ```
 
 #### First Comment (Maker)
@@ -377,9 +377,9 @@ WeChat: CopizzaH
 为了优化宣传效果，建议使用 UTM 参数：
 
 ```
-https://top1vibe.com/webapp?utm_source=twitter&utm_medium=social&utm_campaign=launch
-https://top1vibe.com/webapp?utm_source=reddit&utm_medium=post&utm_campaign=launch
-https://top1vibe.com/webapp?utm_source=hackernews&utm_medium=post&utm_campaign=launch
+https://aha-agi.com/webapp?utm_source=twitter&utm_medium=social&utm_campaign=launch
+https://aha-agi.com/webapp?utm_source=reddit&utm_medium=post&utm_campaign=launch
+https://aha-agi.com/webapp?utm_source=hackernews&utm_medium=post&utm_campaign=launch
 ```
 
 ## 🎯 宣传时间表
