@@ -3362,6 +3362,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 // Best-effort: server may be down or member already removed
             }
 
+            // If the daemon did not terminate our process (e.g. bypass agents are not tracked
+            // in pidToTrackedSession), self-terminate after the MCP response is delivered.
+            if (!processTerminated) {
+                setTimeout(() => process.exit(0), 500);
+            }
+
             return {
                 content: [{ type: 'text', text: JSON.stringify({ retired: true, sessionId: ownSessionId, reason: args.reason, archived: result.archived, processTerminated, rosterRemoved, handoffFile, handoffTaskIds }) }],
                 isError: false,
