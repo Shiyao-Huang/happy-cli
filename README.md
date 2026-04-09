@@ -1,10 +1,22 @@
-# Aha
+# Aha CLI
 
-Code on the go controlling claude code from your mobile device.
+> Control Claude Code from your mobile device. Run multi-agent teams. Code anywhere.
 
-Free. Open source. Code anywhere.
+Free. Open source. MIT licensed.
 
-## 🚀 Quick Start
+## Architecture
+
+```
+Mobile / Browser          Aha Server              Local Machine
+─────────────────         ──────────────          ──────────────────────
+ Web App (UI)   ◄────►   WebSocket / E2E  ◄────►  aha daemon
+ iOS / Android           Encrypted relay           └─ Claude Code sessions
+                                                   └─ Multi-agent teams
+```
+
+All traffic is end-to-end encrypted with TweetNaCl before leaving your device. The Aha server relays encrypted bytes only — it never sees your code or prompts.
+
+## Quick Start
 
 ### 1. Install
 
@@ -20,104 +32,54 @@ aha daemon start
 
 ### 3. Open Web App
 
-Visit **https://ahaagi.com/webappv3** in your browser or mobile device to:
-- Control Claude Code remotely from any device
-- Create multi-agent teams (Master, Builder, QA, etc.)
-- **No local configuration needed** - enjoy full team collaboration out of the box!
+Visit **https://ahaagi.com/webappv3** in your browser or mobile device.
 
-## ✨ Features
+## Features
 
-- 🌍 **Code Anywhere**: Control Claude Code from mobile, tablet, or any browser
-- 🤝 **Multi-Agent Teams**: Built-in support for 22 specialized roles (Master, Builder, Architect, QA, etc.)
-- 🔒 **End-to-End Encryption**: All communications are encrypted with TweetNaCl
-- 🔄 **Real-time Sync**: Instant session sharing across all your devices
-- 📱 **Mobile First**: Optimized for mobile coding experience
-- 🆓 **Free & Open Source**: MIT licensed
-
-## Basic Usage
-
-```bash
-aha
-```
-
-This will:
-1. Start a Claude Code session
-2. Display a QR code to connect from your mobile device
-3. Allow real-time session sharing between Claude Code and your mobile app
+- **Code Anywhere**: Control Claude Code from mobile, tablet, or any browser
+- **Multi-Agent Teams**: Built-in support for specialized roles (Master, Builder, Architect, QA, etc.)
+- **End-to-End Encryption**: All communications encrypted with TweetNaCl
+- **Real-time Sync**: Instant session sharing across all your devices
+- **Open Source**: MIT licensed
 
 ## Commands
 
-- `aha auth` – Manage authentication
-  - `aha auth reconnect` refreshes the currently cached account
-  - `aha auth login --code <backup-key>` restores a known account from a one-time ticket
-  - `aha auth join --ticket <ticket>` joins an existing account from a join link
-- `aha codex` – Start Codex mode
-- `aha connect` – Store AI vendor API keys in Aha cloud
-- `aha notify` – Send a push notification to your devices
-- `aha daemon` – Manage background service
-- `aha doctor` – System diagnostics & troubleshooting
-
-## Daemon
-
-The daemon is a background service that enables remote control from the mobile app and handles team session spawning.
-
-### Starting the Daemon
-
-```bash
-# Start daemon with default server
-aha daemon start
-
-# Start daemon with custom server URL (for local development)
-AHA_SERVER_URL=http://localhost:3005 aha daemon start
-
-# Check daemon status
-aha daemon status
-
-# Stop daemon
-aha daemon stop
-```
-
-### Daemon for Teams
-
-**Important**: The daemon must be running to create teams with auto-spawned agent sessions. When you create a team in the mobile app with spawned agents (e.g., Master, Builder, Framer), the daemon:
-
-1. Receives the spawn request from the mobile app
-2. Creates new Claude sessions with `teamId` and `role` in their metadata
-3. Sets environment variables (`AHA_ROOM_ID`, `AHA_AGENT_ROLE`) for team context
-4. Manages the lifecycle of spawned sessions
-
-### Daemon Logs
-
-Daemon logs are stored in `~/.aha/logs/` (or `$AHA_HOME_DIR/logs/`):
-- Format: `YYYY-MM-DD-HH-MM-SS-pid-PID-daemon.log`
-- Session logs: `YYYY-MM-DD-HH-MM-SS-pid-PID.log`
-
-View logs for debugging:
-```bash
-# View daemon logs
-tail -f ~/.aha/logs/*-daemon.log
-
-# View specific session logs
-tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
-```
+| Command | Description |
+|---------|-------------|
+| `aha` | Start a Claude Code session with QR code |
+| `aha daemon start` | Start the background daemon |
+| `aha daemon stop` | Stop the daemon |
+| `aha daemon status` | Check daemon status |
+| `aha auth` | Manage authentication |
+| `aha auth reconnect` | Refresh cached account |
+| `aha auth login --code <key>` | Restore account from backup key |
+| `aha auth join --ticket <ticket>` | Join existing account |
+| `aha codex` | Start Codex mode |
+| `aha connect` | Store AI vendor API keys in Aha cloud |
+| `aha notify` | Send push notification to devices |
+| `aha doctor` | System diagnostics & troubleshooting |
 
 ## Options
 
-- `-h, --help` - Show help
-- `-v, --version` - Show version
-- `-m, --model <model>` - Claude model to use (default: sonnet)
-- `-p, --permission-mode <mode>` - Permission mode: auto, default, or plan
-- `--claude-env KEY=VALUE` - Set environment variable for Claude Code
-- `--claude-arg ARG` - Pass additional argument to Claude CLI
+| Flag | Description |
+|------|-------------|
+| `-h, --help` | Show help |
+| `-v, --version` | Show version |
+| `-m, --model <model>` | Claude model (default: sonnet) |
+| `-p, --permission-mode <mode>` | Permission mode: auto, default, or plan |
+| `--claude-env KEY=VALUE` | Set env variable for Claude Code |
+| `--claude-arg ARG` | Pass additional argument to Claude CLI |
 
 ## Environment Variables
 
-- `AHA_SERVER_URL` - Custom server URL (default: https://ahaagi.com/api)
-- `AHA_WEBAPP_URL` - Custom web app URL (default: https://ahaagi.com/webappv3)
-- `AHA_HOME_DIR` - Custom home directory for Aha data (default: ~/.aha)
-- `AHA_CONFIG_FILE` - Path to persistent CLI config JSON. Environment variables still take priority.
-- `AHA_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
-- `AHA_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AHA_HOME_DIR` | `~/.aha` | Data directory |
+| `AHA_SERVER_URL` | `https://ahaagi.com/api` | Server URL |
+| `AHA_WEBAPP_URL` | `https://ahaagi.com/webappv3` | Web app URL |
+| `AHA_CONFIG_FILE` | `~/.aha/config.json` | Config file path |
+| `AHA_DISABLE_CAFFEINATE` | — | Set to `true` to disable macOS sleep prevention |
+| `AHA_EXPERIMENTAL` | — | Set to `true` to enable experimental features |
 
 Persistent config can also live in `~/.aha/config.json`:
 
@@ -128,35 +90,79 @@ Persistent config can also live in `~/.aha/config.json`:
 }
 ```
 
-## Requirements
+## Development Setup
+
+### Requirements
 
 - Node.js >= 22.0.0
-  - Required by `eventsource-parser@3.0.5`, which is required by
-  `@modelcontextprotocol/sdk`, which we used to implement permission forwarding
-  to mobile app
-- Claude CLI installed & logged in (`claude` command available in PATH)
+- Claude CLI installed and logged in (`claude` command in PATH)
+- Yarn 4.x
 
-## 📚 Documentation
+### Local Development
 
-- **[CLI Reference](./docs/aha-cli-reference.md)** - Complete command syntax, workflows, and configuration reference
-- **[Auth Quickstart](./docs/auth-quickstart.md)** - Shortest path for reconnect, restore, and new-account flows
-- **[Auth Recovery & Account Consistency](./docs/auth-recovery-account-consistency.md)** - Restore-key recovery, reconnect semantics, and machine/team account mismatch diagnosis
-- **[CHANGELOG](./CHANGELOG.md)** - Release notes for npm package versions
-- **[Contributing Guide](./CONTRIBUTING.md)** - How to contribute to Aha development
-- **[Security Policy](./SECURITY.md)** - How to report security vulnerabilities
+```bash
+# Clone the repo
+git clone https://github.com/aha-agi/aha-cli.git
+cd aha-cli
+
+# Install dependencies
+yarn install
+
+# Build
+yarn build
+
+# Run locally (points to production server by default)
+./bin/aha.mjs daemon start
+
+# Run against a local server
+AHA_SERVER_URL=http://localhost:3005 ./bin/aha.mjs daemon start
+```
+
+### Running Tests
+
+```bash
+# Unit tests (excludes E2E)
+yarn test
+
+# Type checking
+yarn typecheck
+
+# Lint
+yarn lint
+```
+
+### Daemon Logs
+
+Logs are stored in `~/.aha/logs/` (or `$AHA_HOME_DIR/logs/`):
+
+```bash
+# View daemon logs
+tail -f ~/.aha/logs/*-daemon.log
+
+# View session logs
+tail -f ~/.aha/logs/2026-01-17-12-49-59-pid-20555.log
+```
+
+## Third-Party Notices
+
+Aha CLI depends on `@anthropic-ai/claude-code`, which is proprietary software owned by Anthropic and distributed under its own license terms. By using Aha CLI, you agree to comply with [Anthropic's usage policies](https://www.anthropic.com/legal/aup) and the terms governing the Claude Code SDK.
+
+All other production dependencies are MIT, ISC, Apache-2.0, or Unlicense — fully compatible with this project's MIT license.
+
+## Documentation
+
+- **[Auth Quickstart](./docs/auth-quickstart.md)** - Reconnect, restore, and new-account flows
+- **[Auth Recovery](./docs/auth-recovery-account-consistency.md)** - Restore-key recovery and account consistency
+- **[CHANGELOG](./CHANGELOG.md)** - Release notes
+- **[Contributing Guide](./CONTRIBUTING.md)** - How to contribute
+- **[Security Policy](./SECURITY.md)** - Reporting vulnerabilities
 - **[Code of Conduct](./CODE_OF_CONDUCT.md)** - Community standards
-
-## 📞 Contact & Support
-
-Need help or want to contribute? Reach out to us:
-
-- **Email**: hsy863551305@gmail.com
-- **WeChat**: CopizzaH (add with note "Aha User")
-- **Issues**: [GitHub Issues](https://github.com/slopus/aha-cli/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/slopus/aha-cli/discussions)
-
-We're here to help you get the most out of Aha!
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE)
+
+## Contact
+
+- **Issues**: [GitHub Issues](https://github.com/aha-agi/aha-cli/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/aha-agi/aha-cli/discussions)
