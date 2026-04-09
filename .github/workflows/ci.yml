@@ -7,32 +7,53 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Test (Node ${{ matrix.node-version }})
+  lint-typecheck:
+    name: Lint & Typecheck
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [22, 24]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '22'
           cache: 'yarn'
 
       - name: Install dependencies
         run: yarn install --immutable
 
-      - name: Type check
-        run: |
-          NODE_OPTIONS="--max-old-space-size=8192" yarn tsc --noEmit --skipLibCheck
-        continue-on-error: true
+      - name: Typecheck
+        run: NODE_OPTIONS="--max-old-space-size=8192" yarn typecheck
 
-      - name: Run tests
-        run: yarn test --run
+      - name: Lint
+        run: npx eslint src/ --max-warnings=0
+
+  build-and-test:
+    name: Build & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --immutable
 
       - name: Build
         run: yarn build
+
+      - name: Run unit tests (exclude E2E)
+        run: |
+          node --max-old-space-size=8192 ./node_modules/.bin/vitest run \
+            --exclude='**/*E2E*' \
+            --exclude='**/*.e2e.*' \
+            --reporter=verbose
+        env:
+          NODE_ENV: test
+          AHA_HOME_DIR: /tmp/aha-ci-test

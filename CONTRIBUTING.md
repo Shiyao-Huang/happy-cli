@@ -308,12 +308,6 @@ aha-cli/
 
 ### 核心贡献者 (10+ PRs)
 - [@swmtjy](https://github.com/swmtjy) - 创始人 & 核心开发
-- [@contributor1](https://github.com/contributor1) - 移动端开发
-- [@contributor2](https://github.com/contributor2) - 后端架构
-
-### 活跃贡献者 (5+ PRs)
-- [@contributor3](https://github.com/contributor3) - 文档
-- [@contributor4](https://github.com/contributor4) - UI/UX
 
 ### 所有贡献者
 查看完整列表：[Contributors](https://github.com/slopus/aha-cli/graphs/contributors)

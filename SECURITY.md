@@ -12,7 +12,7 @@
 
 If you discover a security vulnerability, please report it privately:
 
-1. Open a [GitHub Security Advisory](https://github.com/multica-ai/aha-cli/security/advisories/new)
+1. Open a [GitHub Security Advisory](https://github.com/slopus/aha-cli/security/advisories/new)
 2. Or email the maintainers directly (see package.json `author` field)
 
 Include in your report:

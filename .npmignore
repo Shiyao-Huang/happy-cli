@@ -4,3 +4,8 @@ tools/unpacked/
 # Keep these for npm package
 # tools/archives/
 # tools/licenses/
+
+# Environment variable files (never ship in npm package)
+.env
+.env.*
+!.env.example
