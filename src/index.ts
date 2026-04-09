@@ -159,7 +159,7 @@ function handleTopLevelCommandError(error: unknown): never {
     // Check for clean subcommand
     if (args[1] === 'clean') {
       const result = await killRunawayAhaProcesses()
-      console.log(`Cleaned up ${result.killed} runaway processes`)
+      console.log(t('doctor.cleanedProcesses', { count: result.killed }))
       if (result.errors.length > 0) {
         console.log('Errors:', result.errors)
       }
@@ -302,7 +302,7 @@ function handleTopLevelCommandError(error: unknown): never {
     return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
-    console.log(chalk.yellow('Note: "aha logout" is deprecated. Use "aha auth logout" instead.\n'));
+    console.log(chalk.yellow(t('daemon.logoutDeprecated')));
     try {
       await handleAuthCommand(['logout']);
     } catch (error) {
@@ -391,7 +391,7 @@ function handleTopLevelCommandError(error: unknown): never {
       // Simply print the path to the latest daemon log file
       const latest = await getLatestDaemonLog()
       if (!latest) {
-        console.log('No daemon logs found')
+        console.log(t('daemon.noLogs'))
       } else {
         console.log(latest.path)
       }

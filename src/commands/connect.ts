@@ -5,6 +5,7 @@ import { authenticateCodex } from './connect/authenticateCodex';
 import { authenticateClaude } from './connect/authenticateClaude';
 import { authenticateGemini } from './connect/authenticateGemini';
 import { confirmPrompt, printCliDryRunPreview } from './globalCli';
+import { t } from '@/i18n';
 
 type ConnectVendorInput = 'codex' | 'claude' | 'gemini' | 'openai' | 'anthropic';
 type ServerVendor = 'openai' | 'anthropic' | 'gemini';
@@ -44,7 +45,7 @@ export async function handleConnectCommand(args: string[]): Promise<void> {
             await handleConnectVendor('gemini', 'Gemini');
             break;
         default:
-            console.error(chalk.red(`Unknown connect target: ${subcommand}`));
+            console.error(chalk.red(t('connect.unknownTarget', { target: subcommand })));
             showConnectHelp();
             process.exit(1);
     }
@@ -124,8 +125,8 @@ async function confirm(prompt: string, force = false): Promise<boolean> {
 async function createApiClient(): Promise<ApiClient> {
     const credentials = await readCredentials();
     if (!credentials) {
-        console.log(chalk.yellow('⚠️  Not authenticated with Aha'));
-        console.log(chalk.gray('  Please run "aha auth login" first'));
+        console.log(chalk.yellow(t('connect.notAuthenticated')));
+        console.log(chalk.gray(t('connect.loginHint')));
         process.exit(1);
     }
 
@@ -142,11 +143,11 @@ async function handleListConnections(asJson: boolean): Promise<void> {
     }
 
     if (!result.tokens.length) {
-        console.log(chalk.yellow('No vendor connections stored in Aha cloud.'));
+        console.log(chalk.yellow(t('connect.noTokens')));
         return;
     }
 
-    console.log(chalk.bold(`\nStored vendor connections (${result.tokens.length})\n`));
+    console.log(chalk.bold(t('connect.storedConnections', { count: result.tokens.length })));
     for (const token of result.tokens) {
         const label = getDisplayVendor(token.vendor);
         console.log(`${chalk.green('✓')} ${chalk.bold(label)} ${chalk.gray(`(${token.vendor})`)}`);
@@ -157,7 +158,7 @@ async function handleListConnections(asJson: boolean): Promise<void> {
 async function handleRemoveConnection(args: string[], asJson: boolean): Promise<void> {
     const vendorInput = args.find((value) => !value.startsWith('-')) as ConnectVendorInput | undefined;
     if (!vendorInput) {
-        console.error(chalk.red('Usage: aha connect remove <codex|claude|gemini> [--force]'));
+        console.error(chalk.red(t('connect.removeUsage')));
         process.exit(1);
     }
 
@@ -179,11 +180,11 @@ async function handleRemoveConnection(args: string[], asJson: boolean): Promise<
     }
 
     const shouldRemove = await confirm(
-        `Remove stored ${displayVendor} credentials from Aha cloud? (y/N): `,
+        t('connect.removeConfirm', { vendor: displayVendor }),
         args.includes('--force') || args.includes('-f'),
     );
     if (!shouldRemove) {
-        console.log(chalk.yellow('Operation cancelled'));
+        console.log(chalk.yellow(t('common.operationCancelled')));
         return;
     }
 
@@ -193,17 +194,17 @@ async function handleRemoveConnection(args: string[], asJson: boolean): Promise<
         console.log(JSON.stringify({ ok: true, removed: true, vendor: displayVendor }, null, 2));
         return;
     }
-    console.log(chalk.green(`✅ Removed ${displayVendor} credentials from Aha cloud`));
+    console.log(chalk.green(t('connect.removedSuccess', { vendor: displayVendor })));
 }
 
 async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displayName: string): Promise<void> {
-    console.log(chalk.bold(`\n🔌 Connecting ${displayName} to Aha cloud\n`));
+    console.log(chalk.bold(t('connect.connecting', { vendor: displayName })));
 
     // Check if authenticated
     const credentials = await readCredentials();
     if (!credentials) {
-        console.log(chalk.yellow('⚠️  Not authenticated with Aha'));
-        console.log(chalk.gray('  Please run "aha auth login" first'));
+        console.log(chalk.yellow(t('connect.notAuthenticated')));
+        console.log(chalk.gray(t('connect.loginHint')));
         process.exit(1);
     }
 
@@ -212,22 +213,22 @@ async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displa
 
     // Handle vendor authentication
     if (vendor === 'codex') {
-        console.log('🚀 Registering Codex token with server');
+        console.log(t('connect.registering', { vendor: 'Codex' }));
         const codexAuthTokens = await authenticateCodex();
         await api.registerVendorToken('openai', { oauth: codexAuthTokens });
-        console.log('✅ Codex token registered with server');
+        console.log(t('connect.registered', { vendor: 'Codex' }));
         process.exit(0);
     } else if (vendor === 'claude') {
-        console.log('🚀 Registering Anthropic token with server');
+        console.log(t('connect.registering', { vendor: 'Anthropic' }));
         const anthropicAuthTokens = await authenticateClaude();
         await api.registerVendorToken('anthropic', { oauth: anthropicAuthTokens });
-        console.log('✅ Anthropic token registered with server');
+        console.log(t('connect.registered', { vendor: 'Anthropic' }));
         process.exit(0);
     } else if (vendor === 'gemini') {
-        console.log('🚀 Registering Gemini token with server');
+        console.log(t('connect.registering', { vendor: 'Gemini' }));
         const geminiAuthTokens = await authenticateGemini();
         await api.registerVendorToken('gemini', { oauth: geminiAuthTokens });
-        console.log('✅ Gemini token registered with server');
+        console.log(t('connect.registered', { vendor: 'Gemini' }));
         process.exit(0);
     } else {
         throw new Error(`Unsupported vendor: ${vendor}`);
