@@ -6,6 +6,7 @@ import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 import { resolveContextWindowTokens } from '@/utils/modelContextWindows';
+import { t } from '@/i18n';
 
 function getOption(args: string[], name: string): string | undefined {
   const flag = `--${name}`;
@@ -45,7 +46,7 @@ async function confirm(prompt: string): Promise<boolean> {
 async function createApiClient(): Promise<ApiClient> {
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    console.log(chalk.yellow(t('common.notAuthenticated')), chalk.green('aha auth login'));
     process.exit(1);
   }
 
@@ -82,7 +83,7 @@ function printSession(session: any, verbose = false, includeModelDetails = false
   console.log(chalk.gray(`  team=${teamId} messages=${session.persistedMessageCount ?? 0} path=${path}`));
 
   if (!session.isDecrypted) {
-    console.log(chalk.yellow('  metadata unavailable (could not decrypt session payload)'));
+    console.log(chalk.yellow(`  ${t('session.metadataUnavailable')}`));
     return;
   }
 
@@ -226,7 +227,7 @@ async function listSessions(
   }
 
   if (!filteredSessions.length) {
-    console.log(chalk.yellow('No sessions found.'));
+    console.log(chalk.yellow(t('session.noSessions')));
     return;
   }
 
@@ -269,7 +270,7 @@ async function archiveSession(api: ApiClient, sessionId: string, force: boolean,
   if (!force) {
     const confirmed = await confirm(`Archive session ${sessionId}? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -286,7 +287,7 @@ async function archiveSession(api: ApiClient, sessionId: string, force: boolean,
     throw new Error(entry.error || `Failed to archive session ${sessionId}`);
   }
 
-  console.log(chalk.green(`✓ Archived session ${sessionId}`));
+  console.log(chalk.green(t('session.archiveSuccess', { sessionId })));
   console.log();
 }
 
@@ -306,7 +307,7 @@ async function unarchiveSession(api: ApiClient, sessionId: string, force: boolea
   if (!force) {
     const confirmed = await confirm(`Restore archived session ${sessionId}? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -323,7 +324,7 @@ async function unarchiveSession(api: ApiClient, sessionId: string, force: boolea
     throw new Error(entry.error || `Failed to restore session ${sessionId}`);
   }
 
-  console.log(chalk.green(`✓ Restored session ${sessionId}`));
+  console.log(chalk.green(t('session.restoreSuccess', { sessionId })));
   console.log();
 }
 
@@ -343,7 +344,7 @@ async function deleteSession(api: ApiClient, sessionId: string, force: boolean, 
   if (!force) {
     const confirmed = await confirm(`Delete session ${sessionId}? This cannot be undone. (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -355,6 +356,6 @@ async function deleteSession(api: ApiClient, sessionId: string, force: boolean, 
     return;
   }
 
-  console.log(chalk.green(`✓ Deleted session ${sessionId}`));
+  console.log(chalk.green(t('session.deleteSuccess', { sessionId })));
   console.log();
 }

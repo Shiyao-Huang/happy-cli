@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import axios from 'axios';
+import { t } from '@/i18n';
 import { readCredentials, clearCredentials, clearMachineId, readSettings, writeCredentialsContentSecretKey, writeCredentialsLegacy, Credentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
@@ -199,7 +200,7 @@ async function handleAuthJoin(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  console.log(chalk.yellow('Joining existing account from link ticket...'));
+  console.log(chalk.yellow(t('auth.joiningFromTicket')));
   try {
     const result = await redeemAccountJoinTicket(ticket);
     await clearMachineId();
@@ -209,7 +210,7 @@ async function handleAuthJoin(args: string[]): Promise<void> {
     });
     await ensureRecoveryMaterialForSeed(result.token, result.secret, 'join');
 
-    console.log(chalk.green('✓ Joined account successfully'));
+    console.log(chalk.green(t('auth.joinSuccess')));
     if (result.userId) {
       console.log(chalk.gray(`  Account ID: ${result.userId}`));
     }
@@ -225,15 +226,15 @@ async function handleAuthJoin(args: string[]): Promise<void> {
 async function handleAuthShowJoinCode(): Promise<void> {
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    console.log(chalk.yellow(t('common.notAuthenticated')), chalk.green('aha auth login'));
     process.exit(1);
   }
 
-  console.log(chalk.yellow('Generating one-time join command...'));
+  console.log(chalk.yellow(t('auth.generatingJoinCode')));
   try {
     const { ticket, expiresAt } = await createAccountJoinTicket(credentials.token);
-    console.log(chalk.green('✓ One-time join command ready'));
-    console.log(chalk.gray('  Run this on your new machine:'));
+    console.log(chalk.green(t('auth.joinCodeReady')));
+    console.log(chalk.gray(`  ${t('auth.runOnNewMachine')}`));
     console.log(chalk.cyan(`  aha auth login --code ${ticket}`));
 
     const expiresLabel = formatExpiration(expiresAt);
@@ -256,14 +257,14 @@ async function handleAuthReconnect(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(chalk.yellow('Reconnecting to existing account...'));
+  console.log(chalk.yellow(t('auth.reconnecting')));
   try {
     const refreshed = await reconnectWithStoredCredentials(existingCreds);
     await ensureRecoveryMaterialForCredentials(refreshed, 'reconnect');
     const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(refreshed.token);
 
-    console.log(chalk.green('\n✓ Reconnected successfully'));
+    console.log(chalk.green(t('auth.reconnectSuccess')));
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
@@ -306,7 +307,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     await writeCredentialsLegacy({ secret: result.secret, token: result.token });
     await ensureRecoveryMaterialForSeed(result.token, result.secret, 'email login');
     const { accountId } = decodeTokenSubject(result.token);
-    console.log(chalk.green('\n✓ Signed in via email'));
+    console.log(chalk.green(t('auth.signedInEmail')));
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
@@ -330,14 +331,14 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
   // ── Restore with local credentials: try reconnect WITHOUT stopping daemon ──
   if (restoreAccount && existingCreds) {
-    console.log(chalk.yellow('Reconnecting to existing account...'));
+    console.log(chalk.yellow(t('auth.reconnecting')));
     try {
       const refreshed = await reconnectWithStoredCredentials(existingCreds);
       await ensureRecoveryMaterialForCredentials(refreshed, 'login --restore');
       // Same account — daemon is still valid, just ensure it's running
       const daemonResult = await ensureDaemonRunningAfterAuth();
       const { accountId } = decodeTokenSubject(refreshed.token);
-      console.log(chalk.green('\n✓ Reconnected successfully'));
+      console.log(chalk.green(t('auth.reconnectSuccess')));
       if (accountId) {
         console.log(chalk.gray(`  Account ID: ${accountId}`));
       }
@@ -359,7 +360,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
   // ── Force new account: stop daemon + clear creds ──
   if (createNewAccount) {
-    console.log(chalk.yellow('Force authentication requested.'));
+    console.log(chalk.yellow(t('auth.forceAuthRequested')));
     try {
       await stopDaemon();
       console.log(chalk.gray('✓ Stopped daemon'));
@@ -384,7 +385,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   // Check if already authenticated (if not forcing)
   if (!forceAuth) {
     if (existingCreds && settings?.machineId) {
-      console.log(chalk.green('✓ Already authenticated'));
+      console.log(chalk.green(t('auth.alreadyAuthenticated')));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
       console.log(chalk.gray(`  Host: ${os.hostname()}`));
       printDaemonStatus(await ensureDaemonRunningAfterAuth());
@@ -408,7 +409,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     await ensureRecoveryMaterialForCredentials(result.credentials, useMobileAuth ? 'mobile auth' : 'web auth');
     const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(result.credentials.token);
-    console.log(chalk.green('\n✓ Authentication successful'));
+    console.log(chalk.green(t('auth.authSuccess')));
     if (accountId) {
       console.log(chalk.gray(`  Account ID: ${accountId}`));
     }
@@ -433,12 +434,12 @@ async function handleAuthLogout(): Promise<void> {
   // Check if authenticated
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not currently authenticated'));
+    console.log(chalk.yellow(t('auth.notCurrentlyAuthenticated')));
     return;
   }
 
-  console.log(chalk.blue('This will log you out of Aha'));
-  console.log(chalk.yellow('⚠️  You will need to re-authenticate to use Aha again'));
+  console.log(chalk.blue(t('auth.logoutWarning')));
+  console.log(chalk.yellow(t('auth.logoutReauthWarning')));
 
   // Ask for confirmation
   const rl = createInterface({
@@ -447,7 +448,7 @@ async function handleAuthLogout(): Promise<void> {
   });
 
   const answer = await new Promise<string>((resolve) => {
-    rl.question(chalk.yellow('Are you sure you want to log out? (y/N): '), resolve);
+    rl.question(chalk.yellow(t('auth.logoutConfirmPrompt')), resolve);
   });
 
   rl.close();
@@ -479,13 +480,13 @@ async function handleAuthLogout(): Promise<void> {
         }
       }
 
-      console.log(chalk.green('✓ Successfully logged out'));
+      console.log(chalk.green(t('auth.logoutSuccess')));
       console.log(chalk.gray('  Run "aha auth login" to authenticate again'));
     } catch (error) {
       throw new Error(`Failed to logout: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   } else {
-    console.log(chalk.blue('Logout cancelled'));
+    console.log(chalk.blue(t('auth.logoutCancelled')));
   }
 }
 
@@ -529,7 +530,7 @@ async function handleAuthStatus(): Promise<void> {
   const credentials = await readCredentials();
   const settings = await readSettings();
 
-  console.log(chalk.bold('\nAuthentication Status\n'));
+  console.log(chalk.bold(t('auth.statusHeader')));
 
   if (!credentials) {
     console.log(chalk.red('✗ Not authenticated'));

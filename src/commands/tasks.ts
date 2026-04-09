@@ -4,6 +4,7 @@ import { logger } from '@/ui/logger';
 import { readCredentials } from '@/persistence';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
+import { t } from '@/i18n';
 
 const TASK_STATUSES = ['todo', 'in-progress', 'review', 'blocked', 'done'] as const;
 const TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
@@ -143,7 +144,7 @@ async function confirm(prompt: string): Promise<boolean> {
 async function createApiClient(): Promise<ApiClient> {
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    console.log(chalk.yellow(t('common.notAuthenticated')), chalk.green('aha auth login'));
     process.exit(1);
   }
 
@@ -396,7 +397,7 @@ async function createTask(
     return;
   }
 
-  console.log(chalk.green('✓ Task created successfully'));
+  console.log(chalk.green(t('task.createSuccess')));
   printTask(result.task, verbose);
   console.log();
 }
@@ -427,7 +428,7 @@ async function updateTask(
     return;
   }
 
-  console.log(chalk.green(`✓ Task ${taskId} updated successfully`));
+  console.log(chalk.green(t('task.updateSuccess', { taskId })));
   printTask(result.task, verbose);
   console.log();
 }
@@ -455,13 +456,13 @@ async function deleteTask(
   if (!force) {
     const confirmed = await confirm(`Delete task ${taskId}? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
 
   await api.deleteTask(teamId, taskId);
-  console.log(chalk.green(`✓ Task ${taskId} deleted successfully`));
+  console.log(chalk.green(t('task.deleteSuccess', { taskId })));
 }
 
 async function startTask(
@@ -480,7 +481,7 @@ async function startTask(
     return;
   }
 
-  console.log(chalk.green(`✓ Task ${taskId} started as ${sessionId}`));
+  console.log(chalk.green(t('task.startSuccess', { taskId, sessionId })));
   printTask(result.task, verbose);
   console.log();
 }
@@ -500,7 +501,7 @@ async function completeTask(
     return;
   }
 
-  console.log(chalk.green(`✓ Task ${taskId} completed by ${sessionId}`));
+  console.log(chalk.green(t('task.completeSuccess', { taskId, sessionId })));
   printTask(result.task, verbose);
   console.log();
 }
@@ -531,7 +532,7 @@ async function setTaskHumanLock(
     return;
   }
 
-  console.log(chalk.green(`✓ Human status lock set on task ${taskId}`));
+  console.log(chalk.green(t('task.lockSet', { taskId })));
   printTask(result.task, verbose);
   console.log();
 }
@@ -559,7 +560,7 @@ async function clearTaskHumanLock(
     return;
   }
 
-  console.log(chalk.green(`✓ Human status lock cleared on task ${taskId}`));
+  console.log(chalk.green(t('task.lockCleared', { taskId })));
   printTask(result.task, verbose);
   console.log();
 }

@@ -18,6 +18,7 @@ import {
   parseCorpsSpecFromGenome,
 } from '@/utils/genomeMarketplace';
 import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
+import { t } from '@/i18n';
 
 interface TeamCommandOptions {
   force?: boolean;
@@ -81,7 +82,7 @@ async function confirm(prompt: string): Promise<boolean> {
 async function createApiClient(): Promise<ApiClient> {
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    console.log(chalk.yellow(t('common.notAuthenticated')), chalk.green('aha auth login'));
     process.exit(1);
   }
 
@@ -542,7 +543,7 @@ async function showTeamMessages(api: ApiClient, teamId: string, options: { limit
   }
 
   if (messages.length === 0) {
-    console.log(chalk.yellow('No messages found'));
+    console.log(chalk.yellow(t('team.noMessages')));
     return;
   }
 
@@ -579,7 +580,7 @@ async function sendTeamMessageCmd(api: ApiClient, teamId: string, content: strin
 
 async function listTeams(api: ApiClient, options: TeamCommandOptions): Promise<void> {
   if (!options.asJson) {
-    console.log(chalk.cyan('Fetching teams...'));
+    console.log(chalk.cyan(t('team.fetchingTeams')));
   }
   const result = await api.listTeams();
   const teams = result.teams || [];
@@ -596,7 +597,7 @@ async function listTeams(api: ApiClient, options: TeamCommandOptions): Promise<v
   }
 
   if (teams.length === 0) {
-    console.log(chalk.yellow('No teams found'));
+    console.log(chalk.yellow(t('team.noTeamsFound')));
     return;
   }
 
@@ -834,7 +835,7 @@ async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandO
   if (!options.force) {
     const confirmed = await confirm(`Archive team ${teamId}? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -848,7 +849,7 @@ async function archiveTeam(api: ApiClient, teamId: string, options: TeamCommandO
     return;
   }
 
-  console.log(chalk.green('✓ Team archived successfully'));
+  console.log(chalk.green(t('team.archiveSuccess')));
   console.log(chalk.gray(`Archived ${result.archivedSessions} session(s)`));
   console.log();
 }
@@ -869,7 +870,7 @@ async function unarchiveTeamCmd(api: ApiClient, teamId: string, options: TeamCom
   if (!options.force) {
     const confirmed = await confirm(`Restore archived team ${teamId}? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -881,7 +882,7 @@ async function unarchiveTeamCmd(api: ApiClient, teamId: string, options: TeamCom
     return;
   }
 
-  console.log(chalk.green('✓ Team restored successfully'));
+  console.log(chalk.green(t('team.restoreSuccess')));
   console.log(chalk.gray(`Restored ${result.restoredSessions} session(s)`));
   console.log();
 }
@@ -903,7 +904,7 @@ async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOp
   if (!options.force) {
     const confirmed = await confirm(`Delete team ${teamId}? This cannot be undone. (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -917,7 +918,7 @@ async function deleteTeam(api: ApiClient, teamId: string, options: TeamCommandOp
     return;
   }
 
-  console.log(chalk.green('✓ Team deleted successfully'));
+  console.log(chalk.green(t('team.deleteSuccess')));
   console.log(chalk.gray(`Deleted ${result.deletedSessions} session(s)`));
   console.log();
 }
@@ -930,7 +931,7 @@ async function renameTeam(api: ApiClient, teamId: string, newName: string, optio
     return;
   }
 
-  console.log(chalk.green('✓ Team renamed successfully'));
+  console.log(chalk.green(t('team.renameSuccess')));
   console.log(chalk.gray(`New name: ${newName}`));
   console.log();
 }
@@ -952,7 +953,7 @@ async function batchArchiveTeams(api: ApiClient, teamIds: string[], options: Tea
   if (!options.force) {
     const confirmed = await confirm(`Archive ${teamIds.length} team(s)? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -1527,7 +1528,7 @@ async function batchDeleteTeams(api: ApiClient, teamIds: string[], options: Team
   if (!options.force) {
     const confirmed = await confirm(`Delete ${teamIds.length} team(s)? This cannot be undone. (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }

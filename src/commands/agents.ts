@@ -25,6 +25,7 @@ import { COORDINATION_ROLES } from '@/claude/team/roleConstants';
 import { findClaudeLogFile } from '@/claude/utils/runtimeLogReader';
 import { homedir } from 'os';
 import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
+import { t } from '@/i18n';
 
 type AgentUpdateOptions = {
   name?: string;
@@ -90,7 +91,7 @@ async function confirm(prompt: string): Promise<boolean> {
 async function createApiClient(): Promise<ApiClient> {
   const credentials = await readCredentials();
   if (!credentials) {
-    console.log(chalk.yellow('Not authenticated. Please run:'), chalk.green('aha auth login'));
+    console.log(chalk.yellow(t('common.notAuthenticated')), chalk.green('aha auth login'));
     process.exit(1);
   }
 
@@ -119,7 +120,7 @@ function printSession(session: any, verbose = false): void {
   console.log(chalk.gray(`  team=${teamId} messages=${session.persistedMessageCount ?? 0} path=${path}`));
 
   if (!session.isDecrypted) {
-    console.log(chalk.yellow('  metadata unavailable (could not decrypt session payload)'));
+    console.log(chalk.yellow(`  ${t('session.metadataUnavailable')}`));
     return;
   }
 
@@ -529,7 +530,7 @@ async function showAgentMessages(
   }
 
   if (messages.length === 0) {
-    console.log(chalk.yellow('No messages found'));
+    console.log(chalk.yellow(t('team.noMessages')));
     return;
   }
 
@@ -590,7 +591,7 @@ async function listAgents(
   }
 
   if (!filteredSessions.length) {
-    console.log(chalk.yellow('No agent sessions found.'));
+    console.log(chalk.yellow(t('agent.noAgentsFound')));
     return;
   }
 
@@ -661,7 +662,7 @@ async function archiveAgents(api: ApiClient, sessionIds: string[], force: boolea
   if (!force) {
     const confirmed = await confirm(`Archive ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -699,7 +700,7 @@ async function unarchiveAgents(api: ApiClient, sessionIds: string[], force: bool
   if (!force) {
     const confirmed = await confirm(`Restore ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
@@ -737,7 +738,7 @@ async function deleteAgents(api: ApiClient, sessionIds: string[], force: boolean
   if (!force) {
     const confirmed = await confirm(`Delete ${sessionIds.length} agent session(s)? (y/N): `);
     if (!confirmed) {
-      console.log(chalk.yellow('Operation cancelled'));
+      console.log(chalk.yellow(t('common.operationCancelled')));
       return;
     }
   }
