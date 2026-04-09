@@ -353,8 +353,8 @@ Docker agents are defined in `*.agent.json` files validated against `schemas/age
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AHA_SERVER_URL` | `https://top1vibe.com/api/v2` | API server endpoint |
-| `AHA_WEBAPP_URL` | `https://top1vibe.com/webappv2` | Web app URL |
+| `AHA_SERVER_URL` | `https://ahaagi.com/api` | API server endpoint |
+| `AHA_WEBAPP_URL` | `https://ahaagi.com/webappv3` | Web app URL |
 | `AHA_HOME_DIR` | `~/.aha-v3` | Aha home directory |
 | `AHA_ROOM_ID` | — | Team room ID (required for team features) |
 | `AHA_AGENT_ROLE` | — | Declare agent role |
