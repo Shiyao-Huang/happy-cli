@@ -220,7 +220,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const settings = await readSettings();
     let machineId = settings?.machineId
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/aha-agi/aha-cli/issues/new/choose`);
+        logger.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/aha-agi/aha-cli/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -534,8 +534,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 // AHA_GENOME_FALLBACK=1 → silent (production mode)
                 // default (testing) → warn so we can see genome loading failures
                 if (process.env.AHA_GENOME_FALLBACK !== '1') {
-                    console.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_agentImageId}): ${err?.message ?? err}`);
-                    console.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
+                    logger.warn(`[GENOME] ⚠️  Failed to load genome spec (specId=${_agentImageId}): ${err?.message ?? err}`);
+                    logger.warn(`[GENOME]    Running without genome DNA. Fix genome-hub or set AHA_GENOME_FALLBACK=1 to silence.`);
                 }
                 return null;
             }),
@@ -858,7 +858,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 try {
                     // Check if this message belongs to the current team
                     if (message.teamId === teamId) {
-                        console.log(`[Team] 📨 Received message from ${message.fromSessionId} (${message.fromRole})`);
+                        logger.debug(`[Team] 📨 Received message from ${message.fromSessionId} (${message.fromRole})`);
                         logger.debugLargeJson('[runClaude] Team message received:', message);
 
                         // Save to local storage
@@ -916,12 +916,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         };
 
                         messageQueue.push(formattedMessage, enhancedMode);
-                        console.log('[Team] ✅ Message injected into queue');
-                        logger.debug('[runClaude] Team message injected into queue (stable mode hash)');
+                        logger.debug('[Team] ✅ Message injected into queue');
                     }
                 } catch (error) {
-                    console.error('[Team] Error processing message:', error);
-                    logger.debug('[runClaude] Error processing team message:', error);
+                    logger.debug('[Team] Error processing message:', error);
                 }
             };
 
@@ -958,7 +956,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
                     if (isBootstrapRole(role, _agentImage)) {
                         logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
-                        console.log(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
+                        logger.debug(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
                     } else {
                         const roleSummary = agentImageDescription || roleDef?.name || roleTitle;
                         introContent = buildAgentHandshakeContent({
@@ -986,7 +984,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     if (!isBootstrapRole(role, _agentImage)) {
                         await api.sendTeamMessage(teamId, handshakeMsg);
                         logger.debug('[runClaude] Sent handshake message to team');
-                        console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+                        logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
 
                         // ── Trace: handshake_sent ───────────────────────────
                         try {
@@ -1004,7 +1002,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     }
                 } catch (e) {
                     logger.debug('[runClaude] Failed to send handshake:', e);
-                    console.log(`[Team] ⚠️ Failed to send handshake for ${role}`);
+                    logger.debug(`[Team] ⚠️ Failed to send handshake for ${role}`);
                 }
 
                 // 2. Inject Context (Team Artifact + Recent Messages)

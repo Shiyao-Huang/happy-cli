@@ -171,10 +171,10 @@ async function resolveSystemGenome(name: string, credentialsToken: string): Prom
     }
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
-      console.error(`[DEV] Genome Hub API failed for ${name}:`, error);
+      logger.error(`[DEV] Genome Hub API failed for ${name}:`, error);
       throw new Error(`Genome Hub API broken - fix before using legacy fallback: ${String(error)}`);
     }
-    console.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
+    logger.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
   }
 
   try {
@@ -214,10 +214,10 @@ async function resolveSystemGenomeId(name: string, credentialsToken: string): Pr
     if (id) return id;
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
-      console.error(`[DEV] Genome Hub API failed for ${name}:`, error);
+      logger.error(`[DEV] Genome Hub API failed for ${name}:`, error);
       throw new Error(`Genome Hub API broken - fix before using legacy fallback: ${String(error)}`);
     }
-    console.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
+    logger.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
   }
 
   try {
@@ -648,7 +648,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
       const supervisorSpecId = await resolveSystemGenomeId('supervisor', credentialsToken);
       if (!supervisorSpecId) {
         if (process.env.AHA_GENOME_FALLBACK !== '1') {
-          console.warn(
+          logger.warn(
             `[GENOME] ⚠️  supervisor genome not found in genome-hub — spawning without DNA.\n` +
             `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL})\n` +
             `         and @official/supervisor is seeded. (Set AHA_GENOME_FALLBACK=1 to silence.)`

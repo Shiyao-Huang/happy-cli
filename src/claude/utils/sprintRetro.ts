@@ -10,6 +10,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { logger } from '@/ui/logger';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -111,10 +112,10 @@ export async function gatherSprintData(opts: GatherRetroDataOptions): Promise<{
                     return JSON.parse(l);
                 } catch (error) {
                     if (process.env.NODE_ENV === 'development') {
-                        console.error(`[DEV] Sprint log line ${idx} is malformed:`, error);
+                        logger.error(`[DEV] Sprint log line ${idx} is malformed:`, error);
                         throw new Error(`Sprint log corrupted at line ${idx}: ${String(error)}`);
                     }
-                    console.warn(`[PROD] Sprint log line ${idx} skipped (malformed)`, error);
+                    logger.warn(`[PROD] Sprint log line ${idx} skipped (malformed)`, error);
                     return null;
                 }
             })

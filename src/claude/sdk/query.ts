@@ -355,7 +355,7 @@ export function query(config: {
         const text = data.toString();
         stderrBuffer += text;
         if (process.env.DEBUG) {
-            console.error('Claude Code stderr:', text);
+            logger.debug('[Claude Code stderr]', text.trim().substring(0, 500));
         }
         logger.debug('[Claude Code stderr]', text.trim().substring(0, 500));
     });

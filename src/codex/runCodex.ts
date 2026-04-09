@@ -668,7 +668,7 @@ export async function runCodex(opts: {
     const settings = await readSettings();
     let machineId = settings?.machineId;
     if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/aha/issues/new/choose`);
+        logger.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/aha/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -1679,7 +1679,7 @@ export async function runCodex(opts: {
             };
             await api.sendTeamMessage(teamId, handshakeMsg);
             logger.debug(`[Codex] Sent handshake message to team`);
-            console.log(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+            logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
 
             // Fetch team context (artifact + recent messages)
             let teamData: any = null;
@@ -1744,7 +1744,7 @@ ${historyText}
 
         } catch (e) {
             logger.debug('[Codex] Team initialization failed:', e);
-            console.log(`[Team] ⚠️ Failed to initialize team mode: ${e}`);
+            logger.debug(`[Team] ⚠️ Failed to initialize team mode: ${e}`);
         }
     }
 
