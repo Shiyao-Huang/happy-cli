@@ -145,6 +145,8 @@ Persistent config can also live in `~/.aha-v3/config.json`:
 - **[Auth Recovery & Account Consistency](./docs/auth-recovery-account-consistency.md)** - Restore-key recovery, reconnect semantics, and machine/team account mismatch diagnosis
 - **[CHANGELOG](./CHANGELOG.md)** - Release notes for npm package versions
 - **[Contributing Guide](./CONTRIBUTING.md)** - How to contribute to Aha development
+- **[Security Policy](./SECURITY.md)** - How to report security vulnerabilities
+- **[Code of Conduct](./CODE_OF_CONDUCT.md)** - Community standards
 
 ## 📞 Contact & Support
 
