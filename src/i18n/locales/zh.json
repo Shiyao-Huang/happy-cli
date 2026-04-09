@@ -1,0 +1,56 @@
+{
+  "auth.failed": "创建认证请求失败，请稍后重试。",
+  "auth.scanQr": "使用移动应用扫描二维码进行认证",
+  "auth.webAuth": "正在打开浏览器进行认证...",
+  "auth.success": "认证成功！",
+  "auth.noCredentials": "未认证。请先运行 'aha auth'。",
+
+  "daemon.starting": "正在启动守护进程...",
+  "daemon.started": "守护进程已在端口 {port} 启动",
+  "daemon.stopping": "正在停止守护进程...",
+  "daemon.stopped": "守护进程已停止",
+  "daemon.notRunning": "守护进程未运行",
+  "daemon.alreadyRunning": "守护进程已在端口 {port} 运行",
+  "daemon.status": "守护进程状态：{status}",
+
+  "connect.unknownTarget": "未知的连接目标：{target}",
+  "connect.success": "成功连接 {vendor}",
+  "connect.removed": "已移除连接：{vendor}",
+  "connect.noConnections": "未找到连接",
+  "connect.listHeader": "已连接的服务：",
+
+  "team.created": "团队已创建：{name}",
+  "team.notFound": "未找到团队",
+  "team.members": "团队成员（{count}）：",
+  "team.noMembers": "无团队成员",
+
+  "session.created": "会话已创建：{id}",
+  "session.resumed": "正在恢复会话：{id}",
+  "session.notFound": "未找到会话：{id}",
+  "session.archived": "会话已归档：{id}",
+
+  "agent.spawning": "正在创建代理：{role}",
+  "agent.spawned": "代理已创建：{name}（{role}）",
+  "agent.notFound": "未找到代理：{id}",
+  "agent.killed": "代理已终止：{id}",
+
+  "task.created": "任务已创建：{title}",
+  "task.updated": "任务已更新：{id}",
+  "task.completed": "任务已完成：{title}",
+  "task.notFound": "未找到任务：{id}",
+  "task.noTasks": "未找到任务",
+
+  "error.networkFailed": "网络请求失败，请检查连接。",
+  "error.serverUnavailable": "服务器不可用，请稍后重试。",
+  "error.unauthorized": "未授权。请运行 'aha auth' 进行认证。",
+  "error.unknown": "发生意外错误：{message}",
+
+  "common.yes": "是",
+  "common.no": "否",
+  "common.cancel": "取消",
+  "common.confirm": "确认",
+  "common.loading": "加载中...",
+  "common.done": "完成",
+  "common.failed": "失败",
+  "common.noResults": "未找到结果"
+}

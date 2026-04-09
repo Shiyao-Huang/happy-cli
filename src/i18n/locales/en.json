@@ -1,0 +1,56 @@
+{
+  "auth.failed": "Failed to create authentication request, please try again later.",
+  "auth.scanQr": "Scan the QR code with your mobile app to authenticate",
+  "auth.webAuth": "Opening browser for authentication...",
+  "auth.success": "Successfully authenticated!",
+  "auth.noCredentials": "Not authenticated. Run 'aha auth' first.",
+
+  "daemon.starting": "Starting daemon...",
+  "daemon.started": "Daemon started on port {port}",
+  "daemon.stopping": "Stopping daemon...",
+  "daemon.stopped": "Daemon stopped",
+  "daemon.notRunning": "Daemon is not running",
+  "daemon.alreadyRunning": "Daemon is already running on port {port}",
+  "daemon.status": "Daemon status: {status}",
+
+  "connect.unknownTarget": "Unknown connect target: {target}",
+  "connect.success": "Successfully connected {vendor}",
+  "connect.removed": "Connection removed: {vendor}",
+  "connect.noConnections": "No connections found",
+  "connect.listHeader": "Connected services:",
+
+  "team.created": "Team created: {name}",
+  "team.notFound": "Team not found",
+  "team.members": "Team members ({count}):",
+  "team.noMembers": "No team members",
+
+  "session.created": "Session created: {id}",
+  "session.resumed": "Resuming session: {id}",
+  "session.notFound": "Session not found: {id}",
+  "session.archived": "Session archived: {id}",
+
+  "agent.spawning": "Spawning agent: {role}",
+  "agent.spawned": "Agent spawned: {name} ({role})",
+  "agent.notFound": "Agent not found: {id}",
+  "agent.killed": "Agent terminated: {id}",
+
+  "task.created": "Task created: {title}",
+  "task.updated": "Task updated: {id}",
+  "task.completed": "Task completed: {title}",
+  "task.notFound": "Task not found: {id}",
+  "task.noTasks": "No tasks found",
+
+  "error.networkFailed": "Network request failed. Check your connection.",
+  "error.serverUnavailable": "Server unavailable. Try again later.",
+  "error.unauthorized": "Unauthorized. Run 'aha auth' to authenticate.",
+  "error.unknown": "An unexpected error occurred: {message}",
+
+  "common.yes": "Yes",
+  "common.no": "No",
+  "common.cancel": "Cancel",
+  "common.confirm": "Confirm",
+  "common.loading": "Loading...",
+  "common.done": "Done",
+  "common.failed": "Failed",
+  "common.noResults": "No results found"
+}
