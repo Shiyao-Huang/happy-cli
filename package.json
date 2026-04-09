@@ -3,7 +3,7 @@
   "version": "1.0.8",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "swmtjy",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "aha": "bin/aha.js",

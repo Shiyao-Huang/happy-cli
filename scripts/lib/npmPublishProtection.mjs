@@ -8,7 +8,7 @@ export function isPublishProtectedArtifact(filePath) {
 }
 
 export function resolvePublishProtectionPolicy(env = process.env) {
-  const raw = String(env.AHA_NPM_PUBLISH_ENCRYPTION ?? 'obfuscate').trim().toLowerCase();
+  const raw = String(env.AHA_NPM_PUBLISH_ENCRYPTION ?? 'none').trim().toLowerCase();
 
   if (raw === '0' || raw === 'false' || raw === 'off' || raw === 'none' || raw === 'disabled') {
     return {
