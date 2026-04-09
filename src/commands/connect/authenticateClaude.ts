@@ -6,6 +6,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { AddressInfo } from 'net';
 import { randomBytes, createHash } from 'crypto';
 import { openBrowser } from '@/utils/browser';
 import { ClaudeAuthTokens, PKCECodes } from './types';
@@ -51,7 +52,7 @@ async function findAvailablePort(): Promise<number> {
     return new Promise((resolve) => {
         const server = createServer();
         server.listen(0, '127.0.0.1', () => {
-            const port = (server.address() as any).port;
+            const port = (server.address() as AddressInfo).port;
             server.close(() => resolve(port));
         });
     });
@@ -118,7 +119,14 @@ async function exchangeCodeForTokens(
     //       email_address: string
     //     }
     //   }
-    const tokenData = await tokenResponse.json() as any;
+    interface ClaudeTokenResponse {
+        access_token: string;
+        expires_in: number;
+        refresh_token?: string;
+        scope?: string;
+        [key: string]: unknown;
+    }
+    const tokenData = await tokenResponse.json() as ClaudeTokenResponse;
 
     return {
         raw: tokenData,

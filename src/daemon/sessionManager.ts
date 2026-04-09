@@ -362,7 +362,8 @@ export async function recoverExistingSessions(api?: ApiClient): Promise<number> 
         // archiveRequested, kill the orphaned process and skip recovery.
         // This catches sessions that were archived without being killed (e.g.
         // archive_session called without kill_agent prior to this fix).
-        const rosterLifecycle = (rosterMember as any)?.lifecycleState as string | undefined;
+        // TODO: type narrowing — RosterMember type does not yet include lifecycleState
+        const rosterLifecycle = (rosterMember as Record<string, unknown>)?.lifecycleState as string | undefined;
         if (rosterLifecycle === 'archived' || rosterLifecycle === 'archiveRequested') {
           logger.debug(
             `[SESSION MANAGER] Skipping recovery of PID ${pid} (member: ${memberId}) — ` +

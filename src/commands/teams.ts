@@ -224,14 +224,18 @@ async function resolveTeamSessionIds(api: ApiClient, teamId: string): Promise<st
   if (sessionIds.size === 0) {
     try {
       const artifact = await api.getArtifact(teamId);
-      const headerSessions = Array.isArray((artifact.header as any)?.sessions) ? (artifact.header as any).sessions : [];
+      // TODO: type narrowing — artifact.header and artifact.body are untyped JSON payloads
+      const headerAny = artifact.header as Record<string, unknown>;
+      const headerSessions = Array.isArray(headerAny?.sessions) ? headerAny.sessions as string[] : [];
       for (const sessionId of headerSessions) {
         if (typeof sessionId === 'string' && sessionId.length > 0) {
           sessionIds.add(sessionId);
         }
       }
 
-      const bodyMembers = Array.isArray((artifact.body as any)?.team?.members) ? (artifact.body as any).team.members : [];
+      const bodyAny = artifact.body as Record<string, unknown>;
+      const bodyTeam = bodyAny?.team as Record<string, unknown> | undefined;
+      const bodyMembers = Array.isArray(bodyTeam?.members) ? bodyTeam.members as Array<{ sessionId?: string }> : [];
       for (const member of bodyMembers) {
         if (typeof member?.sessionId === 'string' && member.sessionId.length > 0) {
           sessionIds.add(member.sessionId);

@@ -6,6 +6,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { AddressInfo } from 'net';
 import { randomBytes, createHash } from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -59,7 +60,7 @@ async function findAvailablePort(): Promise<number> {
     return new Promise((resolve) => {
         const server = createServer();
         server.listen(0, '127.0.0.1', () => {
-            const port = (server.address() as any).port;
+            const port = (server.address() as AddressInfo).port;
             server.close(() => resolve(port));
         });
     });

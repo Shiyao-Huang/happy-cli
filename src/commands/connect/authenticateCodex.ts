@@ -6,6 +6,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { AddressInfo } from 'net';
 import { randomBytes, createHash } from 'crypto';
 import { CodexAuthTokens, PKCECodes } from './types';
 import { openBrowser } from '@/utils/browser';
@@ -62,7 +63,7 @@ async function findAvailablePort(): Promise<number> {
     return new Promise((resolve) => {
         const server = createServer();
         server.listen(0, '127.0.0.1', () => {
-            const port = (server.address() as any).port;
+            const port = (server.address() as AddressInfo).port;
             server.close(() => resolve(port));
         });
     });
@@ -111,7 +112,12 @@ async function exchangeCodeForTokens(
         throw new Error(`Token exchange failed: ${error}`);
     }
 
-    const data = (await response.json() as any);
+    interface CodexTokenResponse {
+        id_token: string;
+        access_token?: string;
+        [key: string]: unknown;
+    }
+    const data = (await response.json() as CodexTokenResponse);
 
     // Parse ID token to get account ID
     const idTokenPayload = parseJWT(data.id_token);
