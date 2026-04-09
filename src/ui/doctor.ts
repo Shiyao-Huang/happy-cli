@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { projectPath } from '@/projectPath'
 import packageJson from '../../package.json'
+import { t } from '@/i18n'
 
 /**
  * Get relevant environment information for debugging
@@ -76,103 +77,103 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     if (!filter) {
         filter = 'all';
     }
-    
-    console.log(chalk.bold.cyan('\n🩺 Aha CLI Doctor\n'));
+
+    console.log(chalk.bold.cyan(t('doctor.title')));
 
     // For 'all' filter, show everything. For 'daemon', only show daemon-related info
     if (filter === 'all') {
         // Version and basic info
-        console.log(chalk.bold('📋 Basic Information'));
-        console.log(`Aha CLI Version: ${chalk.green(packageJson.version)}`);
-        console.log(`Platform: ${chalk.green(process.platform)} ${process.arch}`);
-        console.log(`Node.js Version: ${chalk.green(process.version)}`);
+        console.log(chalk.bold(t('doctor.basicInfo')));
+        console.log(`${t('doctor.cliVersionLabel')}${chalk.green(packageJson.version)}`);
+        console.log(`${t('doctor.platformLabel')}${chalk.green(process.platform)} ${process.arch}`);
+        console.log(`${t('doctor.nodeVersionLabel')}${chalk.green(process.version)}`);
         console.log('');
 
         // Daemon spawn diagnostics
-        console.log(chalk.bold('🔧 Daemon Spawn Diagnostics'));
+        console.log(chalk.bold(t('doctor.daemonSpawnDiag')));
         const projectRoot = projectPath();
         const wrapperPath = join(projectRoot, 'bin', 'aha.mjs');
         const cliEntrypoint = join(projectRoot, 'dist', 'index.mjs');
-        
-        console.log(`Project Root: ${chalk.blue(projectRoot)}`);
-        console.log(`Wrapper Script: ${chalk.blue(wrapperPath)}`);
-        console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
-        console.log(`Wrapper Exists: ${existsSync(wrapperPath) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
-        console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
+
+        console.log(`${t('doctor.projectRootLabel')}${chalk.blue(projectRoot)}`);
+        console.log(`${t('doctor.wrapperScriptLabel')}${chalk.blue(wrapperPath)}`);
+        console.log(`${t('doctor.cliEntrypointLabel')}${chalk.blue(cliEntrypoint)}`);
+        console.log(`${t('doctor.wrapperExistsLabel')}${existsSync(wrapperPath) ? chalk.green(t('doctor.checkYes')) : chalk.red(t('doctor.checkNo'))}`);
+        console.log(`${t('doctor.cliExistsLabel')}${existsSync(cliEntrypoint) ? chalk.green(t('doctor.checkYes')) : chalk.red(t('doctor.checkNo'))}`);
         console.log('');
 
         // Configuration
-        console.log(chalk.bold('⚙️  Configuration'));
-        console.log(`Aha Home: ${chalk.blue(configuration.ahaHomeDir)}`);
-        console.log(`Config File: ${chalk.blue(configuration.configFile)}`);
-        console.log(`Server URL: ${chalk.blue(configuration.serverUrl)}`);
-        console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
+        console.log(chalk.bold(t('doctor.configuration')));
+        console.log(`${t('doctor.ahaHomeLabel')}${chalk.blue(configuration.ahaHomeDir)}`);
+        console.log(`${t('doctor.configFileLabel')}${chalk.blue(configuration.configFile)}`);
+        console.log(`${t('doctor.serverUrlLabel')}${chalk.blue(configuration.serverUrl)}`);
+        console.log(`${t('doctor.logsDirLabel')}${chalk.blue(configuration.logsDir)}`);
 
         // Environment
-        console.log(chalk.bold('\n🌍 Environment Variables'));
+        console.log(chalk.bold(t('doctor.envVars')));
         const env = getEnvironmentInfo();
-        console.log(`AHA_HOME_DIR: ${env.AHA_HOME_DIR ? chalk.green(env.AHA_HOME_DIR) : chalk.gray('not set')}`);
-        console.log(`AHA_CONFIG_FILE: ${env.AHA_CONFIG_FILE ? chalk.green(env.AHA_CONFIG_FILE) : chalk.gray('not set')}`);
-        console.log(`AHA_SERVER_URL: ${env.AHA_SERVER_URL ? chalk.green(env.AHA_SERVER_URL) : chalk.gray('not set')}`);
-        console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
-        console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);
-        console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray('not set')}`);
+        console.log(`AHA_HOME_DIR: ${env.AHA_HOME_DIR ? chalk.green(env.AHA_HOME_DIR) : chalk.gray(t('doctor.notSet'))}`);
+        console.log(`AHA_CONFIG_FILE: ${env.AHA_CONFIG_FILE ? chalk.green(env.AHA_CONFIG_FILE) : chalk.gray(t('doctor.notSet'))}`);
+        console.log(`AHA_SERVER_URL: ${env.AHA_SERVER_URL ? chalk.green(env.AHA_SERVER_URL) : chalk.gray(t('doctor.notSet'))}`);
+        console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow(t('doctor.enabled')) : chalk.gray(t('doctor.notSet'))}`);
+        console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray(t('doctor.notSet'))}`);
+        console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray(t('doctor.notSet'))}`);
 
         // Settings
         try {
             const settings = await readSettings();
-            console.log(chalk.bold('\n📄 Settings (settings.json):'));
+            console.log(chalk.bold(t('doctor.settingsJson')));
             console.log(chalk.gray(JSON.stringify(settings, null, 2)));
         } catch (error) {
-            console.log(chalk.bold('\n📄 Settings:'));
-            console.log(chalk.red('❌ Failed to read settings'));
+            console.log(chalk.bold(t('doctor.settingsHeader')));
+            console.log(chalk.red(t('doctor.settingsFailed')));
         }
 
         // Authentication status
-        console.log(chalk.bold('\n🔐 Authentication'));
+        console.log(chalk.bold(t('doctor.authHeader')));
         try {
             const credentials = await readCredentials();
             if (credentials) {
-                console.log(chalk.green('✓ Authenticated (credentials found)'));
+                console.log(chalk.green(t('doctor.authenticated')));
             } else {
-                console.log(chalk.yellow('⚠️  Not authenticated (no credentials)'));
+                console.log(chalk.yellow(t('doctor.notAuthenticated')));
             }
         } catch (error) {
-            console.log(chalk.red('❌ Error reading credentials'));
+            console.log(chalk.red(t('doctor.credentialsError')));
         }
     }
 
     // Daemon status - shown for both 'all' and 'daemon' filters
-    console.log(chalk.bold('\n🤖 Daemon Status'));
+    console.log(chalk.bold(t('doctor.daemonStatusHeader')));
     try {
         const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
         const state = await readDaemonState();
 
         if (isRunning && state) {
-            console.log(chalk.green('✓ Daemon is running'));
-            console.log(`  PID: ${state.pid}`);
-            console.log(`  Started: ${new Date(state.startTime).toLocaleString()}`);
-            console.log(`  CLI Version: ${state.startedWithCliVersion}`);
+            console.log(chalk.green(t('doctor.daemonRunning')));
+            console.log(t('doctor.daemonPidLabel', { pid: state.pid }));
+            console.log(t('doctor.daemonStartedLabel', { time: new Date(state.startTime).toLocaleString() }));
+            console.log(t('doctor.daemonCliVersionLabel', { version: state.startedWithCliVersion }));
             if (state.httpPort) {
-                console.log(`  HTTP Port: ${state.httpPort}`);
+                console.log(t('doctor.daemonHttpPortLabel', { port: state.httpPort }));
             }
         } else if (state && !isRunning) {
-            console.log(chalk.yellow('⚠️  Daemon state exists but process not running (stale)'));
+            console.log(chalk.yellow(t('doctor.daemonStale')));
         } else {
-            console.log(chalk.red('❌ Daemon is not running'));
+            console.log(chalk.red(t('doctor.daemonNotRunning')));
         }
 
         // Show daemon state file
         if (state) {
-            console.log(chalk.bold('\n📄 Daemon State:'));
-            console.log(chalk.blue(`Location: ${configuration.daemonStateFile}`));
+            console.log(chalk.bold(t('doctor.daemonStateHeader')));
+            console.log(chalk.blue(`${t('doctor.daemonStateLocationLabel')}${configuration.daemonStateFile}`));
             console.log(chalk.gray(JSON.stringify(state, null, 2)));
         }
 
         // All Aha processes
         const allProcesses = await findAllAhaProcesses();
         if (allProcesses.length > 0) {
-            console.log(chalk.bold('\n🔍 All Aha CLI Processes'));
+            console.log(chalk.bold(t('doctor.allProcesses')));
 
             // Group by type
             const grouped = allProcesses.reduce((groups, process) => {
@@ -182,22 +183,22 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
             }, {} as Record<string, typeof allProcesses>);
 
             // Display each group
-            Object.entries(grouped).forEach(([type, processes]) => {
-                const typeLabels: Record<string, string> = {
-                    'current': '📍 Current Process',
-                    'daemon': '🤖 Daemon',
-                    'daemon-version-check': '🔍 Daemon Version Check (stuck)',
-                    'daemon-spawned-session': '🔗 Daemon-Spawned Sessions',
-                    'user-session': '👤 User Sessions',
-                    'dev-daemon': '🛠️  Dev Daemon',
-                    'dev-daemon-version-check': '🛠️  Dev Daemon Version Check (stuck)',
-                    'dev-session': '🛠️  Dev Sessions',
-                    'dev-doctor': '🛠️  Dev Doctor',
-                    'dev-related': '🛠️  Dev Related',
-                    'doctor': '🩺 Doctor',
-                    'unknown': '❓ Unknown'
-                };
+            const typeLabels: Record<string, string> = {
+                'current': t('doctor.processType.current'),
+                'daemon': t('doctor.processType.daemon'),
+                'daemon-version-check': t('doctor.processType.daemonVersionCheck'),
+                'daemon-spawned-session': t('doctor.processType.daemonSpawnedSession'),
+                'user-session': t('doctor.processType.userSession'),
+                'dev-daemon': t('doctor.processType.devDaemon'),
+                'dev-daemon-version-check': t('doctor.processType.devDaemonVersionCheck'),
+                'dev-session': t('doctor.processType.devSession'),
+                'dev-doctor': t('doctor.processType.devDoctor'),
+                'dev-related': t('doctor.processType.devRelated'),
+                'doctor': t('doctor.processType.doctor'),
+                'unknown': t('doctor.processType.unknown')
+            };
 
+            Object.entries(grouped).forEach(([type, processes]) => {
                 console.log(chalk.blue(`\n${typeLabels[type] || type}:`));
                 processes.forEach(({ pid, command }) => {
                     const color = type === 'current' ? chalk.green :
@@ -207,24 +208,24 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
                 });
             });
         } else {
-            console.log(chalk.red('❌ No aha processes found'));
+            console.log(chalk.red(t('doctor.noProcesses')));
         }
 
         if (filter === 'all' && allProcesses.length > 1) { // More than just current process
-            console.log(chalk.bold('\n💡 Process Management'));
-            console.log(chalk.gray('To clean up runaway processes: aha doctor clean'));
+            console.log(chalk.bold(t('doctor.processManagement')));
+            console.log(chalk.gray(t('doctor.cleanupHint')));
         }
     } catch (error) {
-        console.log(chalk.red('❌ Error checking daemon status'));
+        console.log(chalk.red(t('doctor.daemonCheckError')));
     }
 
     // Log files - only show for 'all' filter
     if (filter === 'all') {
-        console.log(chalk.bold('\n📝 Log Files'));
+        console.log(chalk.bold(t('doctor.logFilesHeader')));
 
         // Get ALL log files
         const allLogs = getLogFiles(configuration.logsDir);
-        
+
         if (allLogs.length > 0) {
             // Separate daemon and regular logs
             const daemonLogs = allLogs.filter(({ file }) => file.includes('daemon'));
@@ -232,40 +233,40 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
 
             // Show regular logs (max 10)
             if (regularLogs.length > 0) {
-                console.log(chalk.blue('\nRecent Logs:'));
+                console.log(chalk.blue(t('doctor.recentLogs')));
                 const logsToShow = regularLogs.slice(0, 10);
                 logsToShow.forEach(({ file, path, modified }) => {
                     console.log(`  ${chalk.green(file)} - ${modified.toLocaleString()}`);
                     console.log(chalk.gray(`    ${path}`));
                 });
                 if (regularLogs.length > 10) {
-                    console.log(chalk.gray(`  ... and ${regularLogs.length - 10} more log files`));
+                    console.log(chalk.gray(t('doctor.moreLogFiles', { count: regularLogs.length - 10 })));
                 }
             }
 
             // Show daemon logs (max 5)
             if (daemonLogs.length > 0) {
-                console.log(chalk.blue('\nDaemon Logs:'));
+                console.log(chalk.blue(t('doctor.daemonLogsHeader')));
                 const daemonLogsToShow = daemonLogs.slice(0, 5);
                 daemonLogsToShow.forEach(({ file, path, modified }) => {
                     console.log(`  ${chalk.green(file)} - ${modified.toLocaleString()}`);
                     console.log(chalk.gray(`    ${path}`));
                 });
                 if (daemonLogs.length > 5) {
-                    console.log(chalk.gray(`  ... and ${daemonLogs.length - 5} more daemon log files`));
+                    console.log(chalk.gray(t('doctor.moreDaemonLogs', { count: daemonLogs.length - 5 })));
                 }
             } else {
-                console.log(chalk.yellow('\nNo daemon log files found'));
+                console.log(chalk.yellow(t('doctor.noDaemonLogs')));
             }
         } else {
-            console.log(chalk.yellow('No log files found'));
+            console.log(chalk.yellow(t('doctor.noLogFiles')));
         }
 
         // Support and bug reports
-        console.log(chalk.bold('\n🐛 Support & Bug Reports'));
-        console.log(`Report issues: ${chalk.blue('https://github.com/Shiyao-Huang/aha/issues/new/choose')}`);
-        console.log(`Documentation: ${chalk.blue('https://aha.engineering/')}`);
+        console.log(chalk.bold(t('doctor.supportHeader')));
+        console.log(`${t('doctor.reportIssuesLabel')}${chalk.blue('https://github.com/Shiyao-Huang/aha/issues/new/choose')}`);
+        console.log(`${t('doctor.documentationLabel')}${chalk.blue('https://aha.engineering/')}`);
     }
 
-    console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));
+    console.log(chalk.green(t('doctor.complete')));
 }
