@@ -225,11 +225,8 @@ export function registerAgentTools(ctx: McpToolContext): void {
         const { effectiveGenome } = teamId
             ? await getCurrentTeamMemberContext(teamId)
             : { effectiveGenome: genomeSpecRef?.current ?? null };
-        const allowed = canSpawnAgents(role, effectiveGenome);
-        if (!allowed) {
-            return { content: [{ type: 'text', text: 'Error: Your genome/role does not have permission to browse the agent docker marketplace.' }], isError: true };
-        }
-
+        // Marketplace browse is read-only; allow all authenticated team members.
+        // Spawn gating (canSpawnAgents) applies only to create_agent.
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
         try {
             const includeCorps = args.category === 'corps';
@@ -334,8 +331,9 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 ## Anti-Patterns
 
 - Don't spawn agents for tasks you can do yourself
-- Don't spawn more than 4 agents without explicit user approval
+- Don't spawn more than 10 agents without explicit user approval
 - Don't spawn agents without checking get_team_info first
+- For 3+ agents at once, prefer batch_spawn_agents over sequential create_agent calls
 - Don't use codex unless user explicitly requested it`,
         title: 'Create Agent',
         inputSchema: {
@@ -1264,6 +1262,198 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const msg = error instanceof Error ? error.message : String(error);
             const hint = msg === 'fetch failed' ? ' (replace_agent failed before stage attribution; inspect server/daemon reachability)' : '';
             return { content: [{ type: 'text', text: `Error replacing agent: ${msg}${hint}` }], isError: true };
+        }
+    });
+
+    // Batch Spawn Agents — parallel dispatch of multiple agents in one tool call
+    mcp.registerTool('batch_spawn_agents', {
+        description: `Spawn multiple agents in parallel. Each agent is dispatched simultaneously to the daemon's spawn queue.
+
+## When to Use
+
+- You need 3-10+ agents running simultaneously on independent tasks
+- Parallel work that would be too slow spawning one-at-a-time via create_agent
+- Sprint kickoff: batch-spawn implementers for each task on the board
+
+## Constraints
+
+- Maximum 10 agents per batch (resource ceiling)
+- All agents share the same teamId and directory
+- Each agent gets its own memberId and sessionTag (no identity collision)
+- Agents self-claim tasks from the board via start_task (server-side locking prevents double-claim)
+
+## Anti-Patterns
+
+- Don't batch-spawn without checking get_team_info first
+- Don't batch-spawn more agents than available tasks
+- Don't use for sequential dependencies (use create_agent instead)`,
+        title: 'Batch Spawn Agents',
+        inputSchema: {
+            teamId: z.string().describe('Team ID to register all new agents to'),
+            directory: z.string().describe('Working directory (repository root) for all spawned agents'),
+            agents: z.array(z.object({
+                role: z.string().describe('Role ID: implementer, architect, qa-engineer, reviewer, etc.'),
+                sessionName: z.string().optional().describe('Display name, e.g. "Frontend Implementer"'),
+                prompt: z.string().optional().describe('Task-specific instructions for this agent'),
+                model: z.string().optional().describe('Model override'),
+                specId: z.string().optional().describe('Explicit genome specId'),
+                strategy: z.enum(['official', 'best-rated']).optional(),
+            })).min(1).max(10).describe('Array of agent specs to spawn in parallel (max 10)'),
+            agent: z.enum(['claude', 'codex']).optional().describe('Runtime for all agents. Defaults to claude.'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const role = metadata?.role;
+            const currentTeamId = metadata?.teamId || metadata?.roomId;
+            const { effectiveGenome } = currentTeamId
+                ? await getCurrentTeamMemberContext(currentTeamId)
+                : { effectiveGenome: genomeSpecRef?.current ?? null };
+
+            const allowed = canSpawnAgents(role, effectiveGenome);
+            if (!allowed) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: Role "${role || 'unknown'}" cannot create agents. Only bootstrap/coordinator roles may spawn team members.`
+                    }],
+                    isError: true,
+                };
+            }
+
+            const daemonState = await readDaemonState();
+            if (!daemonState?.httpPort) {
+                return {
+                    content: [{ type: 'text', text: 'Error: Daemon is not running. Cannot spawn agent sessions without a running daemon.' }],
+                    isError: true,
+                };
+            }
+
+            const parentSessionId = client.sessionId;
+            const runtime = args.agent || 'claude';
+
+            // Fire all spawns in parallel
+            const spawnResults = await Promise.all(
+                args.agents.map(async (agentSpec) => {
+                    const { memberId, sessionTag } = createTeamMemberIdentity(args.teamId);
+
+                    const specResolution = await resolvePreferredAgentImageId({
+                        role: agentSpec.role,
+                        runtime,
+                        strategy: agentSpec.strategy || 'best-rated',
+                        explicitSpecId: agentSpec.specId,
+                    });
+
+                    const spawnBody = {
+                        directory: args.directory,
+                        sessionTag,
+                        sessionName: agentSpec.sessionName || `${agentSpec.role}-agent`,
+                        role: agentSpec.role,
+                        teamId: args.teamId,
+                        agent: runtime,
+                        parentSessionId,
+                        executionPlane: 'mainline',
+                        env: {
+                            AHA_AGENT_LANGUAGE: process.env.AHA_AGENT_LANGUAGE || 'en',
+                            AHA_TEAM_MEMBER_ID: memberId,
+                            ...(agentSpec.prompt ? { AHA_AGENT_PROMPT: agentSpec.prompt } : {}),
+                            ...(agentSpec.model ? { AHA_AGENT_MODEL: agentSpec.model } : {}),
+                        },
+                        specId: specResolution.specId || undefined,
+                    } as Record<string, any>;
+
+                    // Fire-and-forget spawn count increment
+                    if (specResolution.specId) {
+                        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+                        fetch(`${hubUrl}/genomes/id/${encodeURIComponent(specResolution.specId)}/spawn`, {
+                            method: 'POST',
+                            signal: AbortSignal.timeout(3_000),
+                        }).catch(() => {});
+                    }
+
+                    try {
+                        const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(spawnBody),
+                            signal: AbortSignal.timeout(15_000),
+                        });
+
+                        const result = await response.json() as { success?: boolean; sessionId?: string; queued?: boolean; queuePosition?: number; error?: string };
+
+                        if (!response.ok || !result.success) {
+                            return { success: false as const, role: agentSpec.role, error: result.error || `HTTP ${response.status}`, memberId, sessionTag };
+                        }
+
+                        // Register to team roster (skip for queued — agent will self-register on startup)
+                        const spawnedSessionId = result.queued ? undefined : result.sessionId;
+                        if (spawnedSessionId && args.teamId) {
+                            try {
+                                await api.addTeamMember(
+                                    args.teamId,
+                                    spawnedSessionId,
+                                    agentSpec.role,
+                                    agentSpec.sessionName || `${agentSpec.role}-agent`,
+                                    {
+                                        memberId,
+                                        sessionTag,
+                                        ...(specResolution.specId ? { candidateId: `spec:${specResolution.specId}` } : {}),
+                                        specId: specResolution.specId,
+                                        parentSessionId,
+                                        executionPlane: 'mainline',
+                                        runtimeType: runtime,
+                                    }
+                                );
+                            } catch (memberError) {
+                                logger.debug(`[batch_spawn_agents] Warning: roster registration failed for ${agentSpec.role}: ${memberError}`);
+                            }
+                        }
+
+                        return {
+                            success: true as const,
+                            role: agentSpec.role,
+                            sessionId: spawnedSessionId || result.sessionId,
+                            memberId,
+                            sessionTag,
+                            specId: specResolution.specId,
+                            specSource: specResolution.source,
+                            status: result.queued ? 'queued' as const : 'spawned_and_registered' as const,
+                            queuePosition: result.queuePosition,
+                        };
+                    } catch (error) {
+                        return { success: false as const, role: agentSpec.role, error: String(error), memberId, sessionTag };
+                    }
+                })
+            );
+
+            // Publish corps template once after all spawns
+            try {
+                await publishTeamCorpsTemplate({ api, teamId: args.teamId });
+            } catch { /* non-critical */ }
+
+            const summary = spawnResults.map((r, i) => {
+                const name = args.agents[i].sessionName || `${r.role}-agent`;
+                if (r.success) {
+                    return `  ✅ ${name} (${r.role}) → ${r.sessionId}${r.status === 'queued' ? ` [queued #${r.queuePosition}]` : ''} spec=${r.specId || 'default'}`;
+                }
+                return `  ❌ ${name} (${r.role}) → FAILED: ${r.error}`;
+            });
+
+            const successCount = spawnResults.filter(r => r.success).length;
+            const failCount = spawnResults.filter(r => !r.success).length;
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Batch spawn complete: ${successCount} spawned, ${failCount} failed\n${summary.join('\n')}`,
+                }],
+                isError: failCount === spawnResults.length,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text', text: `Error batch spawning agents: ${String(error)}` }],
+                isError: true,
+            };
         }
     });
 }

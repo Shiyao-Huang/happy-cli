@@ -40,6 +40,7 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { execSync } from 'child_process';
 import { ulid } from 'ulid';
+import os from 'os';
 import { buildPendingRunId, finalizeRunEnvelopeFromWebhook, resolveCandidateIdentity, writeDraftRunEnvelope } from './runEnvelope';
 import { chooseHelpAgentForRequest } from './helpAgentPool';
 import { resolveAhaHomeDir } from '@/configurationResolver';
@@ -212,16 +213,23 @@ function getActiveClaudeCount(): number {
 
 function getMaxConcurrentClaude(): number {
   const raw = process.env.AHA_MAX_CONCURRENT_CLAUDE_AGENTS;
-  if (raw == null || raw.trim() === '') {
-    return Number.POSITIVE_INFINITY;
+  if (raw != null && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
   }
 
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return Number.POSITIVE_INFINITY;
-  }
-
-  return parsed;
+  // Auto-detect from available system memory.
+  // Each Claude agent uses ~300-500MB RSS. Reserve 4GB for OS + daemon overhead.
+  // Floor at 3, cap at 20.
+  const totalMemBytes = os.totalmem();
+  const totalMemGB = totalMemBytes / (1024 * 1024 * 1024);
+  const reservedGB = 4;
+  const perAgentGB = 0.5;
+  const availableGB = Math.max(totalMemGB - reservedGB, 1);
+  const autoLimit = Math.floor(availableGB / perAgentGB);
+  return Math.max(3, Math.min(autoLimit, 20));
 }
 
 /** Process the next queued spawn if a slot is available. */
