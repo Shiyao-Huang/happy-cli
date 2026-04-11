@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     buildPublishedCorpsSpec,
     deriveRoleIdFromGenomeRef,
@@ -7,11 +7,16 @@ import {
     parseMarketplaceFeedbackData,
     parseCorpsSpecFromGenome,
     resolveSpawnRuntimeForRole,
+    searchMarketplaceGenomes,
     searchMatchesRole,
     selectBestRatedGenomeCandidate,
 } from './genomeMarketplace';
 
 describe('genomeMarketplace helpers', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
     it('maps role aliases to preferred genome names', () => {
         expect(getPreferredGenomeNames('builder', 'claude')).toEqual(['builder', 'implementer']);
         expect(getPreferredGenomeNames('agent-builder', 'codex')).toEqual([
@@ -199,5 +204,76 @@ describe('genomeMarketplace helpers', () => {
         });
 
         expect(corps.members[0]?.roleAlias).toBe('master');
+    });
+
+    it('falls back to tokenized marketplace search when an exact multi-word query returns no matches', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch' as never).mockImplementation(async (...args) => {
+            const input = args[0] as string | URL | Request;
+            const url = String(input);
+            if (url.includes('q=implementer+builder')) {
+                return new Response(JSON.stringify({ genomes: [] }), { status: 200 });
+            }
+            if (url.includes('q=implementer')) {
+                return new Response(JSON.stringify({
+                    genomes: [
+                        { id: 'impl-1', namespace: '@official', name: 'implementer', feedbackData: '{"avgScore":90,"evaluationCount":5}' },
+                    ],
+                }), { status: 200 });
+            }
+            if (url.includes('q=builder')) {
+                return new Response(JSON.stringify({
+                    genomes: [
+                        { id: 'builder-1', namespace: '@official', name: 'gstack-fullstack-builder', feedbackData: '{"avgScore":88,"evaluationCount":4}' },
+                    ],
+                }), { status: 200 });
+            }
+
+            throw new Error(`Unexpected fetch URL: ${url}`);
+        });
+
+        const genomes = await searchMarketplaceGenomes({
+            query: 'implementer builder',
+            limit: 5,
+            hubUrl: 'http://example.test',
+        });
+
+        expect(genomes.map((genome) => genome.id)).toEqual(['impl-1', 'builder-1']);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('deduplicates fallback token results and respects the requested limit', async () => {
+        vi.spyOn(globalThis, 'fetch' as never).mockImplementation(async (...args) => {
+            const input = args[0] as string | URL | Request;
+            const url = String(input);
+            if (url.includes('q=implementer+builder')) {
+                return new Response(JSON.stringify({ genomes: [] }), { status: 200 });
+            }
+            if (url.includes('q=implementer')) {
+                return new Response(JSON.stringify({
+                    genomes: [
+                        { id: 'shared', namespace: '@official', name: 'implementer' },
+                        { id: 'impl-2', namespace: '@official', name: 'implementer-r2' },
+                    ],
+                }), { status: 200 });
+            }
+            if (url.includes('q=builder')) {
+                return new Response(JSON.stringify({
+                    genomes: [
+                        { id: 'shared', namespace: '@official', name: 'implementer' },
+                        { id: 'builder-2', namespace: '@official', name: 'agent-builder' },
+                    ],
+                }), { status: 200 });
+            }
+
+            throw new Error(`Unexpected fetch URL: ${url}`);
+        });
+
+        const genomes = await searchMarketplaceGenomes({
+            query: 'implementer builder',
+            limit: 2,
+            hubUrl: 'http://example.test',
+        });
+
+        expect(genomes.map((genome) => genome.id)).toEqual(['shared', 'impl-2']);
     });
 });

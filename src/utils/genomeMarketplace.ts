@@ -106,6 +106,42 @@ function stableStringify(value: unknown): string {
     return JSON.stringify(value);
 }
 
+function tokenizeMarketplaceQuery(query: string): string[] {
+    return uniqueStrings(
+        Array.from(query.toLowerCase().match(/[\p{Letter}\p{Number}_-]{2,}/gu) ?? []),
+    );
+}
+
+async function fetchMarketplaceGenomePage(input: {
+    query?: string;
+    category?: string;
+    limit?: number;
+    hubUrl: string;
+}): Promise<MarketplaceGenomeRecord[]> {
+    const query = new URLSearchParams();
+
+    if (input.query) query.set('q', input.query);
+    if (input.category) query.set('category', input.category);
+    query.set('sortBy', 'score');
+    query.set('limit', String(input.limit ?? 20));
+
+    let response: Response;
+    try {
+        response = await fetch(`${input.hubUrl}/genomes?${query.toString()}`, {
+            signal: AbortSignal.timeout(5_000),
+        });
+    } catch (error) {
+        throw new Error(`${String(error)}. ${buildMarketplaceConnectionHint(input.hubUrl)}`);
+    }
+
+    if (!response.ok) {
+        throw new Error(`genome-hub returned ${response.status}`);
+    }
+
+    const payload = await response.json() as { genomes?: MarketplaceGenomeRecord[] };
+    return payload.genomes ?? [];
+}
+
 export function parseMarketplaceFeedbackData(feedbackData?: string | null): MarketplaceFeedbackSummary {
     if (!feedbackData) {
         return { avgScore: 0, evaluationCount: 0 };
@@ -224,28 +260,38 @@ export async function searchMarketplaceGenomes(options?: {
     hubUrl?: string;
 }): Promise<MarketplaceGenomeRecord[]> {
     const hubUrl = (options?.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-    const query = new URLSearchParams();
+    const exactMatches = await fetchMarketplaceGenomePage({
+        query: options?.query,
+        category: options?.category,
+        limit: options?.limit,
+        hubUrl,
+    });
 
-    if (options?.query) query.set('q', options.query);
-    if (options?.category) query.set('category', options.category);
-    query.set('sortBy', 'score');
-    query.set('limit', String(options?.limit ?? 20));
-
-    let response: Response;
-    try {
-        response = await fetch(`${hubUrl}/genomes?${query.toString()}`, {
-            signal: AbortSignal.timeout(5_000),
-        });
-    } catch (error) {
-        throw new Error(`${String(error)}. ${buildMarketplaceConnectionHint(hubUrl)}`);
+    const tokens = options?.query ? tokenizeMarketplaceQuery(options.query) : [];
+    if (exactMatches.length > 0 || tokens.length < 2) {
+        return exactMatches;
     }
 
-    if (!response.ok) {
-        throw new Error(`genome-hub returned ${response.status}`);
+    const fallbackPages = await Promise.all(tokens.map((token) => fetchMarketplaceGenomePage({
+        query: token,
+        category: options?.category,
+        limit: options?.limit,
+        hubUrl,
+    })));
+
+    const merged = new Map<string, MarketplaceGenomeRecord>();
+    for (const genome of exactMatches) {
+        merged.set(genome.id, genome);
+    }
+    for (const page of fallbackPages) {
+        for (const genome of page) {
+            if (!merged.has(genome.id)) {
+                merged.set(genome.id, genome);
+            }
+        }
     }
 
-    const payload = await response.json() as { genomes?: MarketplaceGenomeRecord[] };
-    return payload.genomes ?? [];
+    return Array.from(merged.values()).slice(0, options?.limit ?? 20);
 }
 
 function resolveMarketplaceGenomeUrls(specId: string, hubUrl?: string): string[] {
