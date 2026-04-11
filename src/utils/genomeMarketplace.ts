@@ -403,10 +403,19 @@ export async function resolvePreferredAgentImageId(options: {
         return { specId: options.explicitSpecId, source: 'explicit' };
     }
 
-    const preferredNames = getPreferredGenomeNames(options.role, options.runtime);
     const strategy = options.strategy ?? 'best-rated';
 
+    // Official latest always first — resolves to newest lineage version
+    // regardless of isPublic. Marketplace search only sees public versions,
+    // so evolved genomes (private until published) would be invisible.
+    const official = await resolveOfficialGenomeSpecId(options.role, options.runtime, options.hubUrl);
+    if (official.specId) {
+        return { specId: official.specId, source: 'official', matchedName: official.matchedName };
+    }
+
+    // Marketplace fallback when official resolution fails (non-official roles)
     if (strategy !== 'official') {
+        const preferredNames = getPreferredGenomeNames(options.role, options.runtime);
         const marketCandidates: MarketplaceGenomeRecord[] = [];
 
         for (const queryName of preferredNames) {
@@ -426,11 +435,6 @@ export async function resolvePreferredAgentImageId(options: {
         if (selected?.id) {
             return { specId: selected.id, source: 'best-rated', matchedName: selected.name };
         }
-    }
-
-    const official = await resolveOfficialGenomeSpecId(options.role, options.runtime, options.hubUrl);
-    if (official.specId) {
-        return { specId: official.specId, source: 'official', matchedName: official.matchedName };
     }
 
     return { specId: null, source: 'none' };
