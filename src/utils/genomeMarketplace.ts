@@ -406,6 +406,41 @@ export async function resolvePreferredAgentImageId(options: {
     const preferredNames = getPreferredGenomeNames(options.role, options.runtime);
     const strategy = options.strategy ?? 'best-rated';
 
+    // For @official genomes, resolve official lineage first regardless of strategy.
+    // GET /genomes/%40official/:name returns latest version even if isPublic=false,
+    // whereas marketplace search only returns isPublic=true — evolved versions
+    // written as private would be invisible to marketplace but found here.
+    const official = await resolveOfficialGenomeSpecId(options.role, options.runtime, options.hubUrl);
+    if (official.specId) {
+        if (strategy === 'official') {
+            return { specId: official.specId, source: 'official', matchedName: official.matchedName };
+        }
+        // best-rated strategy: prefer official lineage but allow marketplace
+        // to override if a higher-rated public alternative exists
+        const marketCandidates: MarketplaceGenomeRecord[] = [];
+        for (const queryName of preferredNames) {
+            try {
+                const genomes = await searchMarketplaceGenomes({
+                    query: queryName,
+                    limit: 8,
+                    hubUrl: options.hubUrl,
+                });
+                marketCandidates.push(...genomes);
+            } catch (error) {
+                logger.debug(`[genome-marketplace] best-rated lookup failed for ${queryName}: ${String(error)}`);
+            }
+        }
+
+        const marketBest = selectBestRatedGenomeCandidate(marketCandidates, preferredNames);
+        if (marketBest?.id && marketBest.id !== official.specId) {
+            // Marketplace found a different genome with better rating — use it
+            return { specId: marketBest.id, source: 'best-rated', matchedName: marketBest.name };
+        }
+
+        return { specId: official.specId, source: 'official', matchedName: official.matchedName };
+    }
+
+    // No official genome found — fall back to marketplace discovery
     if (strategy !== 'official') {
         const marketCandidates: MarketplaceGenomeRecord[] = [];
 
@@ -426,11 +461,6 @@ export async function resolvePreferredAgentImageId(options: {
         if (selected?.id) {
             return { specId: selected.id, source: 'best-rated', matchedName: selected.name };
         }
-    }
-
-    const official = await resolveOfficialGenomeSpecId(options.role, options.runtime, options.hubUrl);
-    if (official.specId) {
-        return { specId: official.specId, source: 'official', matchedName: official.matchedName };
     }
 
     return { specId: null, source: 'none' };
