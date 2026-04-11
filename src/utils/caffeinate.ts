@@ -6,6 +6,7 @@
 import { spawn, ChildProcess } from 'child_process'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
+import { serializeErrorForLog } from '@/utils/serializeErrorForLog'
 
 let caffeinateProcess: ChildProcess | null = null
 
@@ -130,11 +131,11 @@ function setupCleanupHandlers(): void {
     process.on('SIGUSR1', cleanup)
     process.on('SIGUSR2', cleanup)
     process.on('uncaughtException', (error) => {
-        logger.debug('[caffeinate] Uncaught exception, cleaning up:', error)
+        logger.debug('[caffeinate] Uncaught exception, cleaning up:', serializeErrorForLog(error))
         cleanup()
     })
     process.on('unhandledRejection', (reason, promise) => {
-        logger.debug('[caffeinate] Unhandled rejection, cleaning up:', reason)
+        logger.debug('[caffeinate] Unhandled rejection, cleaning up:', serializeErrorForLog(reason))
         cleanup()
     })
 }

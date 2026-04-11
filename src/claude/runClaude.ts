@@ -52,6 +52,8 @@ import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAU
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
+import { serializeErrorForLog } from '@/utils/serializeErrorForLog';
+import { resolveAgentInstructions } from './utils/resolveAgentInstructions';
 
 export interface StartOptions {
     model?: string
@@ -123,45 +125,6 @@ function resolveEnvPermissionMode(rawMode?: string): StartOptions['permissionMod
             logger.debug(`[START] Ignoring unknown AHA_PERMISSION_MODE value: ${rawMode}`);
             return undefined;
     }
-}
-
-function serializeErrorForLog(error: unknown): Record<string, unknown> {
-    if (error instanceof Error) {
-        const base: Record<string, unknown> = {
-            name: error.name,
-            message: error.message,
-            stack: error.stack,
-        };
-
-        const anyError = error as Error & { code?: unknown; cause?: unknown };
-        if (anyError.code !== undefined) {
-            base.code = anyError.code;
-        }
-        if (anyError.cause !== undefined) {
-            base.cause = anyError.cause instanceof Error
-                ? {
-                    name: anyError.cause.name,
-                    message: anyError.cause.message,
-                    stack: anyError.cause.stack,
-                }
-                : anyError.cause;
-        }
-        return base;
-    }
-
-    if (error && typeof error === 'object') {
-        return error as Record<string, unknown>;
-    }
-
-    return { value: String(error) };
-}
-
-/**
- * Replace `{{VAR_NAME}}` placeholders in a genome systemPrompt with runtime values.
- * Unknown tokens are left as-is so downstream code can still detect them.
- */
-function resolvePromptTemplateVars(template: string, vars: Record<string, string>): string {
-    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => vars[key] ?? match);
 }
 
 /**
@@ -689,6 +652,23 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // ApprovalWorkflow for Master/Coordinator roles
     let approvalWorkflow: ApprovalWorkflow | undefined;
 
+    const beginTeamHandlingUpdate = (
+        teamId: string | undefined,
+        role: string | undefined,
+        isNewJoin: boolean,
+        source: 'delayed-init' | 'metadata-update',
+    ) => {
+        void updateTeamHandling(teamId, role, isNewJoin).catch((error) => {
+            const serializedError = serializeErrorForLog(error);
+            logger.error(`[runClaude] Team handling failed during ${source}:`, serializedError);
+
+            const message = typeof serializedError.message === 'string'
+                ? serializedError.message
+                : 'Unknown error';
+            console.error(`[Team] ⚠️ Team initialization failed: ${message}`);
+        });
+    };
+
     // Function to setup/update team handling
     const updateTeamHandling = async (teamId: string | undefined, role: string | undefined, isNewJoin: boolean) => {
         // Cleanup existing listener if any
@@ -1005,14 +985,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     };
                 }
 
-                let instructions: string;
-
-                // ── Genome Tier 1：Prompt 注入（复用启动阶段已 fetch 的 _agentImage）──
-                // _agentImage 在启动时已 fetch 并缓存，这里直接用，不重复请求。
-                // If genome supplies a full system prompt, use it directly and
-                // skip the compiled role prompt below.
-                if (_agentImage?.systemPrompt) {
-                    instructions = resolvePromptTemplateVars(_agentImage.systemPrompt, {
+                const resolvedInstructions = resolveAgentInstructions({
+                    agentImage: _agentImage ?? undefined,
+                    agentImageId: _agentImageId,
+                    role,
+                    promptVars: {
                         AHA_SUPERVISOR_TEAM_LOG_CURSOR: process.env.AHA_SUPERVISOR_TEAM_LOG_CURSOR || '0',
                         AHA_SUPERVISOR_LAST_CONCLUSION: process.env.AHA_SUPERVISOR_LAST_CONCLUSION || '(none — this is the first run)',
                         AHA_SUPERVISOR_PENDING_ACTION: process.env.AHA_SUPERVISOR_PENDING_ACTION || '(none)',
@@ -1023,19 +1000,18 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         AHA_SUPERVISOR_PENDING_ACTION_BLOCK: buildPendingActionBlock(),
                         AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
                         AHA_AGENT_ROLE: role || 'agent',
-                    });
-                    if (_agentImage.systemPromptSuffix) {
-                        instructions += '\n\n' + _agentImage.systemPromptSuffix;
-                    }
+                    },
+                });
+                let instructions = resolvedInstructions.instructions;
+
+                if (resolvedInstructions.source === 'genome') {
                     logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId})`);
-                } else if (_agentImageId || _agentImage) {
-                    throw new Error(
-                        `[runClaude] Missing required genome systemPrompt for role=${role ?? 'agent'} specId=${_agentImageId ?? 'unknown'}`,
+                } else if (resolvedInstructions.source === 'legacy-genome-fallback') {
+                    logger.warn(
+                        `[genome] Genome missing systemPrompt for role=${role ?? 'agent'} specId=${_agentImageId ?? 'unknown'}; using legacy instruction fallback`,
                     );
                 } else {
-                    // Ad-hoc agents spawned without a genome still need a minimal safe instruction block.
                     logger.warn(`[runClaude] Agent role=${role} started without genome; using minimal fallback`);
-                    instructions = `You are a team agent with role: ${role || 'agent'}. Follow your team's kanban board and messaging protocol. Call get_team_info and list_tasks to understand your context.`;
                 }
 
                 if (currentTeamOverlay?.promptSuffix) {
@@ -1176,7 +1152,7 @@ ${instructions}
         }
 
         if (changed) {
-            updateTeamHandling(currentTeamId, currentRole, isNewJoin);
+            beginTeamHandlingUpdate(currentTeamId, currentRole, isNewJoin, 'metadata-update');
         }
     });
 
@@ -1375,12 +1351,12 @@ ${instructions}
 
     // Handle uncaught exceptions and rejections
     process.on('uncaughtException', (error) => {
-        logger.debug('[START] Uncaught exception:', error);
+        logger.debug('[START] Uncaught exception:', serializeErrorForLog(error));
         cleanup();
     });
 
     process.on('unhandledRejection', (reason) => {
-        logger.debug('[START] Unhandled rejection:', reason);
+        logger.debug('[START] Unhandled rejection:', serializeErrorForLog(reason));
         cleanup();
     });
 
@@ -1460,7 +1436,7 @@ ${instructions}
             }
 
             // Initialize team handling
-            updateTeamHandling(currentTeamId, currentRole, true);
+            beginTeamHandlingUpdate(currentTeamId, currentRole, true, 'delayed-init');
         }
     }, 3000); // 3 second delay to ensure loop is fully started
 

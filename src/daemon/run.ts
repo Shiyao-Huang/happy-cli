@@ -41,6 +41,7 @@ import { configuration } from '@/configuration';
 import { getReconnectSeed, persistCredentials } from '@/auth/reconnect';
 import { authGetToken } from '@/api/auth';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
+import { serializeErrorForLog } from '@/utils/serializeErrorForLog';
 import axios from 'axios';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock, readSettings } from '@/persistence';
@@ -221,13 +222,14 @@ export async function startDaemon(): Promise<void> {
   });
 
   process.on('uncaughtException', (error) => {
-    logger.debug('[DAEMON RUN] FATAL: Uncaught exception', error);
-    logger.debug(`[DAEMON RUN] Stack trace: ${error.stack}`);
+    const serializedError = serializeErrorForLog(error);
+    logger.debug('[DAEMON RUN] FATAL: Uncaught exception', serializedError);
+    logger.debug(`[DAEMON RUN] Stack trace: ${serializedError.stack ?? '(no stack)'}`);
     requestShutdown('exception', error.message);
   });
 
   process.on('unhandledRejection', (reason, promise) => {
-    logger.debug('[DAEMON RUN] FATAL: Unhandled promise rejection', reason);
+    logger.debug('[DAEMON RUN] FATAL: Unhandled promise rejection', serializeErrorForLog(reason));
     logger.debug(`[DAEMON RUN] Rejected promise:`, promise);
     const error = reason instanceof Error ? reason : new Error(`Unhandled promise rejection: ${reason}`);
     logger.debug(`[DAEMON RUN] Stack trace: ${error.stack}`);

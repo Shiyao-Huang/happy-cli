@@ -19,6 +19,13 @@ All notable changes to this package will be documented in this file.
 - Help-lane retries no longer treat saturated help-agent reuse as delivered work; pending actions now stay open until acceptance/activation is observable.
 - Context status now derives Claude 1M window size from `resolvedModel` instead of stale persisted session metadata.
 
+## [1.0.10] - 2026-04-12
+
+### Fixed
+- `org-manager` no longer crashes during team bootstrap when a legacy genome is missing `systemPrompt`; runtime now falls back to compatible instruction synthesis instead of aborting after team artifact fetch.
+- Async team initialization failures in `runClaude` are now caught and reported locally instead of surfacing as a process-killing unhandled rejection.
+- Fatal error logging now serializes `Error` objects with message and stack so daemon/session crash logs no longer collapse to `{}`.
+
 ## [2.0.16] - 2026-03-26
 
 ### Fixed
