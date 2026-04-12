@@ -80,17 +80,45 @@ export interface SupervisorContext {
  * This helper is used by both supervisorScheduler and the heartbeat cycle in run.ts.
  */
 /**
- * Collect ALL evaluable session IDs grouped by team.
+ * Collect mainline session IDs grouped by team — used for lifecycle decisions.
  *
- * Self-referential design: bypass agents (supervisor, help-agent) are ALSO
- * evaluable targets. If bypass agents are excluded from scoring, they can
- * never receive verdicts and therefore can never evolve — breaking the
- * self-referential loop at the system-agent level.
- *
- * The supervisor's own running session is excluded at score_agent call time
- * (it shouldn't score itself in the same cycle), not here.
+ * This set EXCLUDES bypass agents. Used for:
+ * - team liveness / idle-terminate (team is "active" only if mainline agents exist)
+ * - task routing (bypass agents don't execute implementation tasks)
+ * - cwd resolution (bypass agents don't represent project paths)
+ * - spawn guard (bypass agents have their own scheduler)
  */
 export function collectLiveMainlineSessionIdsByTeam(
+  pidToTrackedSession: Map<number, TrackedSession>
+): Map<string, Set<string>> {
+  const sessionsByTeam = new Map<string, Set<string>>();
+
+  for (const session of pidToTrackedSession.values()) {
+    const meta = session.ahaSessionMetadataFromLocalWebhook;
+    const sessionTeamId = meta?.teamId || meta?.roomId;
+    if (!sessionTeamId || !session.ahaSessionId) continue;
+    // Exclude bypass from lifecycle set
+    if (meta?.executionPlane === 'bypass') continue;
+
+    const teamSessions = sessionsByTeam.get(sessionTeamId) ?? new Set<string>();
+    teamSessions.add(session.ahaSessionId);
+    sessionsByTeam.set(sessionTeamId, teamSessions);
+  }
+
+  return sessionsByTeam;
+}
+
+/**
+ * Collect ALL evaluable session IDs grouped by team — used for scoring.
+ *
+ * Self-referential design: bypass agents (supervisor, help-agent) are ALSO
+ * evaluable targets. If excluded from scoring, they can never receive verdicts
+ * and therefore can never evolve — breaking the self-referential loop.
+ *
+ * Supervisor's own running session is excluded at score_agent call time,
+ * not here.
+ */
+export function collectEvaluableSessionIdsByTeam(
   pidToTrackedSession: Map<number, TrackedSession>
 ): Map<string, Set<string>> {
   const sessionsByTeam = new Map<string, Set<string>>();

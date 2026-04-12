@@ -155,11 +155,13 @@ function parseStandbyAutoExitMs(envName: string, fallbackMs: number): number | n
 
 /**
  * Genome-first standby auto-exit resolution.
- * Priority: env var override → genome behavior.standbyAutoExitMs → null (no auto-exit).
- * No role string checks — the value comes from the genome or env.
+ * Priority: env var override → genome behavior.standbyAutoExitMs → role-based transitional fallback → null.
+ *
+ * The role-based fallback is temporary: once all system agents carry standbyAutoExitMs in their
+ * genome, the role parameter and its fallback branch can be removed.
  */
 export function resolveStandbyAutoExitMs(
-    _role?: string,
+    role?: string,
     genome?: { behavior?: { standbyAutoExitMs?: number } } | null,
 ): number | null {
     // Env override (backwards compat for ops)
@@ -173,6 +175,14 @@ export function resolveStandbyAutoExitMs(
     // Genome-first
     if (typeof genome?.behavior?.standbyAutoExitMs === 'number' && genome.behavior.standbyAutoExitMs > 0) {
         return genome.behavior.standbyAutoExitMs;
+    }
+
+    // Transitional role-based fallback (remove when all system agents carry the field in genome)
+    if (role === 'help-agent') {
+        return parseStandbyAutoExitMs('AHA_HELP_STANDBY_AUTO_EXIT_MS', 120_000);
+    }
+    if (role === 'supervisor') {
+        return parseStandbyAutoExitMs('AHA_SUPERVISOR_STANDBY_AUTO_EXIT_MS', 60_000);
     }
 
     return null;

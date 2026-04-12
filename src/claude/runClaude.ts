@@ -1199,7 +1199,9 @@ ${instructions}
                 const taskPrompt = process.env.AHA_TASK_PROMPT;
                 let finalContextMsg = contextMsg;
                 const isProactiveBootstrap = _agentImage?.behavior?.canSpawnAgents === true
-                    && _agentImage?.behavior?.onIdle !== 'wait';
+                    && _agentImage?.behavior?.onIdle !== 'wait'
+                    // Transitional fallback: org-manager without genome still merges task prompt
+                    || (!_agentImage && role === 'org-manager');
                 if (isProactiveBootstrap && taskPrompt) {
                     finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
                     logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for proactive bootstrap agent');

@@ -104,6 +104,9 @@ export function canSpawnAgents(
     }
     // Genome-first: if no genome loaded (local dev, direct-chat), fall back to
     // bootstrap/coordinator classification (which themselves are genome-driven when available).
+    // Transitional: agent-builder keeps spawn ability in no-genome sessions until all
+    // sessions guarantee genome loading at startup.
+    if (role === 'agent-builder') return true;
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 
