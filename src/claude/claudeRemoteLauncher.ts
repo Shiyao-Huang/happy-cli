@@ -153,13 +153,26 @@ function parseStandbyAutoExitMs(envName: string, fallbackMs: number): number | n
     return parsed;
 }
 
-export function resolveStandbyAutoExitMs(role?: string): number | null {
-    if (role === 'help-agent') {
-        return parseStandbyAutoExitMs('AHA_HELP_STANDBY_AUTO_EXIT_MS', 120_000);
+/**
+ * Genome-first standby auto-exit resolution.
+ * Priority: env var override → genome behavior.standbyAutoExitMs → null (no auto-exit).
+ * No role string checks — the value comes from the genome or env.
+ */
+export function resolveStandbyAutoExitMs(
+    _role?: string,
+    genome?: { behavior?: { standbyAutoExitMs?: number } } | null,
+): number | null {
+    // Env override (backwards compat for ops)
+    const envRaw = process.env.AHA_STANDBY_AUTO_EXIT_MS;
+    if (envRaw != null && envRaw.trim() !== '') {
+        const parsed = Number.parseInt(envRaw, 10);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+        if (envRaw.trim() === '0' || envRaw.trim() === 'null') return null;
     }
 
-    if (role === 'supervisor') {
-        return parseStandbyAutoExitMs('AHA_SUPERVISOR_STANDBY_AUTO_EXIT_MS', 60_000);
+    // Genome-first
+    if (typeof genome?.behavior?.standbyAutoExitMs === 'number' && genome.behavior.standbyAutoExitMs > 0) {
+        return genome.behavior.standbyAutoExitMs;
     }
 
     return null;

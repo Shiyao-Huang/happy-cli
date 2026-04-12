@@ -1175,9 +1175,9 @@ export const requestHelp = async (params: {
       for (const session of pidToTrackedSession.values()) {
         const metadata = session.ahaSessionMetadataFromLocalWebhook;
         const sessionTeamId = metadata?.teamId || metadata?.roomId;
-        const role = metadata?.role;
         if (sessionTeamId !== teamId) continue;
-        if (role === 'supervisor' || role === 'help-agent') continue;
+        // Genome-first: skip bypass-plane agents (supervisor, help-agent, etc.)
+        if (metadata?.executionPlane === 'bypass') continue;
         if (session.ahaSessionId) {
           targetSessionId = session.ahaSessionId;
           break;
@@ -1313,9 +1313,8 @@ function isRespawnEligible(session: TrackedSession): boolean {
   if (session.intentionallyStopped) return false;
   if (session.startedBy !== 'daemon') return false;
 
-  const role = session.spawnOptions.role || session.ahaSessionMetadataFromLocalWebhook?.role;
-  if (role === 'supervisor' || role === 'help-agent') return false;
-
+  // Genome-first: bypass agents (supervisor, help-agent, etc.) are not respawnable.
+  // executionPlane is the canonical genome field — no role string checks needed.
   const plane = session.spawnOptions.executionPlane || session.ahaSessionMetadataFromLocalWebhook?.executionPlane;
   if (plane === 'bypass') return false;
 

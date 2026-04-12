@@ -72,14 +72,10 @@ export function isBypassRole(role: string | undefined, genome?: { executionPlane
 export function isBootstrapRole(role: string | undefined, genome?: { executionPlane?: string; behavior?: { canSpawnAgents?: boolean } } | null): boolean {
     if (!role) return false;
 
-    // Genome authority: bootstrap = can spawn + bypass, or org-manager role
-    if (genome?.behavior?.canSpawnAgents && genome?.executionPlane !== 'bypass') {
-        // org-manager pattern: can spawn but runs mainline, auto-retires
-        if (role === 'org-manager') return true;
-    }
-
-    // Fallback: hardcoded
-    if (role === 'org-manager' || isBypassRole(role, genome)) return true;
+    // Genome-first: bootstrap = can spawn agents on mainline (org-manager pattern),
+    // or operates on bypass plane (supervisor/help-agent pattern).
+    if (genome?.behavior?.canSpawnAgents && genome?.executionPlane !== 'bypass') return true;
+    if (isBypassRole(role, genome)) return true;
     return false;
 }
 
@@ -106,9 +102,8 @@ export function canSpawnAgents(
         }
         return false;
     }
-    // agent-builder genome defines canSpawnAgents:true; add hardcoded fallback for solo/no-genome sessions
-    // (genome spec is authoritative when loaded, this fallback covers local dev and direct-chat solo sessions)
-    if (role === 'agent-builder') return true;
+    // Genome-first: if no genome loaded (local dev, direct-chat), fall back to
+    // bootstrap/coordinator classification (which themselves are genome-driven when available).
     return isBootstrapRole(role) || isCoordinatorRole(role);
 }
 

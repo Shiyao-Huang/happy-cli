@@ -79,6 +79,17 @@ export interface SupervisorContext {
  *
  * This helper is used by both supervisorScheduler and the heartbeat cycle in run.ts.
  */
+/**
+ * Collect ALL evaluable session IDs grouped by team.
+ *
+ * Self-referential design: bypass agents (supervisor, help-agent) are ALSO
+ * evaluable targets. If bypass agents are excluded from scoring, they can
+ * never receive verdicts and therefore can never evolve — breaking the
+ * self-referential loop at the system-agent level.
+ *
+ * The supervisor's own running session is excluded at score_agent call time
+ * (it shouldn't score itself in the same cycle), not here.
+ */
 export function collectLiveMainlineSessionIdsByTeam(
   pidToTrackedSession: Map<number, TrackedSession>
 ): Map<string, Set<string>> {
@@ -88,10 +99,6 @@ export function collectLiveMainlineSessionIdsByTeam(
     const meta = session.ahaSessionMetadataFromLocalWebhook;
     const sessionTeamId = meta?.teamId || meta?.roomId;
     if (!sessionTeamId || !session.ahaSessionId) continue;
-    // Exclude supervisor and help-agent roles
-    if (meta?.role === 'supervisor' || meta?.role === 'help-agent') continue;
-    // Exclude bypass execution plane (double-safety with role check)
-    if (meta?.executionPlane === 'bypass') continue;
 
     const teamSessions = sessionsByTeam.get(sessionTeamId) ?? new Set<string>();
     teamSessions.add(session.ahaSessionId);
@@ -119,7 +126,7 @@ export function resolveTeamWorkingDirectory(
       const sessionTeamId = meta?.teamId || meta?.roomId;
       if (sessionTeamId !== teamId) return false;
       if (!session.ahaSessionId) return false;
-      if (meta?.role === 'supervisor' || meta?.role === 'help-agent') return false;
+      // Genome-first: executionPlane is the canonical field for bypass agents.
       if (meta?.executionPlane === 'bypass') return false;
 
       const candidatePath = meta?.path?.trim();

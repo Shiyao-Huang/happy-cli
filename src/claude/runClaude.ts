@@ -1194,16 +1194,18 @@ ${instructions}
                     disallowedTools: [...(currentDisallowedTools || []), ...roleDisallowedTools]
                 };
 
-                // For org-manager with task prompt, merge it into the context message
-                // so it's processed in the SAME conversation turn (not a separate turn)
+                // Genome-first: agents with canSpawnAgents + proactive behavior merge task
+                // prompts as immediate actions (org-manager pattern). Others get clean-slate injection.
                 const taskPrompt = process.env.AHA_TASK_PROMPT;
                 let finalContextMsg = contextMsg;
-                if (role === 'org-manager' && taskPrompt) {
+                const isProactiveBootstrap = _agentImage?.behavior?.canSpawnAgents === true
+                    && _agentImage?.behavior?.onIdle !== 'wait';
+                if (isProactiveBootstrap && taskPrompt) {
                     finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
-                    logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for org-manager');
+                    logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for proactive bootstrap agent');
                     // Use pushImmediate (non-isolated) so Claude treats this as actionable user message
                     messageQueue.pushImmediate(escapeInjectedContextForTransport(finalContextMsg), enhancedMode);
-                    logger.debug('[runClaude] Pushed org-manager context+task as immediate message');
+                    logger.debug('[runClaude] Pushed bootstrap context+task as immediate message');
                 } else {
                     // Use pushIsolateAndClear to ensure the agent starts with a clean slate for the new team
                     // This prevents context leakage from previous teams or sessions

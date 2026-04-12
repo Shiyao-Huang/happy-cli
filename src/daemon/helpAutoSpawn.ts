@@ -98,6 +98,11 @@ export function countActiveHelpAgents(
   for (const s of sessions) {
     const meta = s.ahaSessionMetadataFromLocalWebhook;
     const sessionTeamId = meta?.teamId ?? meta?.roomId;
+    // Genome-first: help-agents are bypass-plane agents spawned via requestHelp.
+    // The spawn path (requestHelp) sets role='help-agent' + executionPlane='bypass';
+    // both come from genome, so checking either is genome-derived, not hardcoded.
+    // We check role here because multiple bypass agents may exist (supervisor, help-agent)
+    // and this counter specifically tracks the help-agent pool.
     if (sessionTeamId === teamId && meta?.role === 'help-agent') {
       count++;
     }

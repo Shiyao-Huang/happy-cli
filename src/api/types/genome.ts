@@ -252,6 +252,12 @@ export interface AgentImage {
          */
         onRetire?: 'silent' | 'write-handoff';
         onContextHigh?: 'compact' | 'delegate' | 'summarize';
+        /**
+         * Standby 后多久自动退出（毫秒）。
+         * null / 不设置 = 不自动退出。
+         * 用于替代 hardcoded 的 role-based 超时（supervisor 60s, help-agent 120s）。
+         */
+        standbyAutoExitMs?: number;
     };
 
     // =========================================================================
