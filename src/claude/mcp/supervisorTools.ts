@@ -432,6 +432,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
     type EntityMirrorRecord = {
         id: string;
+        kind?: 'agent' | 'legion' | null;
         namespace?: string | null;
         name: string;
         version: number;
@@ -2442,6 +2443,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return { content: [{ type: 'text', text: `Network error fetching entity mirror: ${String(error)}` }], isError: true };
         }
         const currentSpec = currentMirror.spec;
+        const isLegionSpec = currentMirror.entity.kind === 'legion' || Array.isArray(currentSpec.members);
 
         let avgScore = 0;
         const feedbackRaw = currentMirror.entity.feedbackData;
@@ -2512,6 +2514,10 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         const diffDescription = args.description?.trim()
             || `Evolve: merge ${newLearningEntries.length} new learnings from supervisor feedback (avgScore=${Math.round(avgScore)})`;
 
+        const legionWarning = isLegionSpec
+            ? `\n⚠️  LegionImage detected: this genome has a members[] spec, not an AgentImage. Diffs apply to the serialized spec — use changes[] targeting LegionImage fields (members, bootContext.taskPolicy, etc.) rather than AgentImage paths (protocol, systemPrompt, responsibilities).`
+            : '';
+
         if (args.dryRun) {
             const previewSpec = applyPreviewDiffChanges(currentSpec, diffChanges);
             const changeSummary = diffChanges.map((change) => {
@@ -2530,6 +2536,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 `Preview materialized view:`,
                 JSON.stringify(previewSpec, null, 2),
             ];
+            if (legionWarning) lines.unshift(legionWarning.trim());
             return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
         }
 
@@ -2568,7 +2575,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             return {
                 content: [{
                     type: 'text',
-                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Submitted ${diffChanges.length} ledger change(s)${newLearningEntries.length > 0 ? `, including ${newLearningEntries.length} new learning append(s)` : ''}.`,
+                    text: `Evolved ${args.genomeNamespace}/${args.genomeName} → v${newVersion} (diffId=${diffId})${via}. Submitted ${diffChanges.length} ledger change(s)${newLearningEntries.length > 0 ? `, including ${newLearningEntries.length} new learning append(s)` : ''}.${legionWarning}`,
                 }],
                 isError: false,
             };
@@ -2642,6 +2649,29 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
 
         if (!entityId || !baseVersion) {
             return { content: [{ type: 'text', text: 'Genome package is missing sourceEntityId or version.' }], isError: true };
+        }
+
+        const isLegionSpec = Array.isArray(currentSpec.members);
+
+        // LegionImage has a different structure (members[], bootContext) from AgentImage (systemPrompt, protocol, responsibilities).
+        // conservative/moderate strategies reference AgentImage-specific fields and will silently no-op on a LegionImage.
+        // Require radical strategy so the caller explicitly targets the correct LegionImage fields.
+        if (isLegionSpec && args.strategy !== 'radical') {
+            return {
+                content: [{
+                    type: 'text',
+                    text: [
+                        `Cannot mutate LegionImage ${args.genomeNamespace}/${args.genomeName} with strategy='${args.strategy}'.`,
+                        `LegionImage fields differ from AgentImage: use strategy='radical' and target LegionImage paths such as:`,
+                        `  - members (array of { genome, roleAlias, count, required, overlay })`,
+                        `  - bootContext.teamDescription`,
+                        `  - bootContext.taskPolicy`,
+                        `  - description`,
+                        `AgentImage fields (protocol, responsibilities, systemPromptSuffix, evalCriteria) do not exist in a LegionImage.`,
+                    ].join('\n'),
+                }],
+                isError: true,
+            };
         }
 
         // 2. Validate mutations against strategy
@@ -2779,11 +2809,14 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             const mutationSummary = args.mutations.map(m =>
                 `  ${m.action} ${m.field}${m.index !== undefined ? `[${m.index}]` : ''}: ${m.reason}`
             ).join('\n');
+            const legionNote = isLegionSpec
+                ? `\n⚠️  LegionImage (radical strategy): ensure mutation fields target LegionImage paths (members, bootContext.*, description) not AgentImage paths.`
+                : '';
             return {
                 content: [{
                     type: 'text',
                     text: [
-                        `DRY RUN — mutate ${args.genomeNamespace}/${args.genomeName} (${args.strategy})`,
+                        `DRY RUN — mutate ${args.genomeNamespace}/${args.genomeName} (${args.strategy})${legionNote}`,
                         `Mutations applied:`,
                         mutationSummary,
                         `Note: ${args.mutationNote}`,
@@ -2837,11 +2870,14 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 return { content: [{ type: 'text', text: `Mutated package persisted but response was invalid JSON: ${diffResult.body}` }], isError: true };
             }
 
+            const legionNote = isLegionSpec
+                ? `\n⚠️  LegionImage mutated with radical strategy. Verify members[] and bootContext fields are correct.`
+                : '';
             return {
                 content: [{
                     type: 'text',
                     text: [
-                        `✅ Mutated ${args.genomeNamespace}/${args.genomeName} (${args.strategy} strategy)`,
+                        `✅ Mutated ${args.genomeNamespace}/${args.genomeName} (${args.strategy} strategy)${legionNote}`,
                         `New version: ${result.entity?.name ?? args.genomeName} v${result.entity?.version ?? '?'}`,
                         `Entity ID: ${result.entity?.id ?? entityId}`,
                         `Diff ID: ${result.diff?.id ?? '?'}`,
