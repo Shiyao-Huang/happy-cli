@@ -68,8 +68,11 @@ describe('Role Permissions System', () => {
     });
 
     describe('role behavior helpers', () => {
-        it('should detect org-manager as bootstrap role', () => {
-            expect(isBootstrapRole('org-manager')).toBe(true);
+        it('should detect org-manager as bootstrap role (genome-first)', () => {
+            // Genome-first: org-manager is bootstrap because genome sets canSpawnAgents=true on mainline
+            expect(isBootstrapRole('org-manager', { behavior: { canSpawnAgents: true }, executionPlane: 'mainline' })).toBe(true);
+            // Without genome, org-manager is NOT auto-bootstrap (no hardcoded role fallback)
+            expect(isBootstrapRole('org-manager')).toBe(false);
         });
 
         it('should detect master as coordinator role', () => {
