@@ -1428,26 +1428,29 @@ async function spawnTeamWithPreset(
     const agentId = randomUUID();
     const teamContextSuffix = `\n\n## Team Context\n- Team ID: ${teamId}\n- Your role: ${roleId}\n- On startup: call get_team_info then list_tasks\n- Kanban protocol: start_task before work, complete_task after done\n- Report blockers via send_team_message @master`;
 
-    // Fetch genome from hub to get complete spec (including files with skill content)
+    // Fetch genome from hub — hard fail if unreachable. No fallback = no hidden broken state.
     let genomeSpec: import('../api/types/genome').AgentImage | null = null;
     let resolvedSpecId: string | null = null;
-    try {
-      const resolution = await resolvePreferredAgentImageId({ role: roleId, runtime: opts.model });
-      resolvedSpecId = resolution.specId;
-      const hubUrl = process.env.GENOME_HUB_URL || 'https://ahaagi.com/api/v2';
-      const encodedNs = encodeURIComponent('@official');
-      const res = await fetch(`${hubUrl}/genomes/${encodedNs}/${encodeURIComponent(roleId)}`);
-      if (res.ok) {
-        const data = await res.json() as { genome?: { id?: string; spec?: string } };
-        if (data.genome?.spec) {
-          const { parseGenomeSpec } = await import('../api/types/genome');
-          genomeSpec = parseGenomeSpec(data.genome as any);
-          if (!resolvedSpecId && data.genome.id) {
-            resolvedSpecId = data.genome.id;
-          }
-        }
-      }
-    } catch { /* non-fatal */ }
+    const hubUrl = process.env.GENOME_HUB_URL || 'https://ahaagi.com/api/v2';
+    const encodedNs = encodeURIComponent('@official');
+    const genomeUrl = `${hubUrl}/genomes/${encodedNs}/${encodeURIComponent(roleId)}`;
+
+    const resolution = await resolvePreferredAgentImageId({ role: roleId, runtime: opts.model });
+    resolvedSpecId = resolution.specId;
+
+    const res = await fetch(genomeUrl);
+    if (!res.ok) {
+      throw new Error(`Genome fetch failed for @official/${roleId}: ${res.status} ${res.statusText} (${genomeUrl})`);
+    }
+    const data = await res.json() as { genome?: { id?: string; spec?: string } };
+    if (!data.genome?.spec) {
+      throw new Error(`Genome @official/${roleId} has no spec. Hub returned empty genome from ${genomeUrl}`);
+    }
+    const { parseGenomeSpec } = await import('../api/types/genome');
+    genomeSpec = parseGenomeSpec(data.genome as any);
+    if (!resolvedSpecId && data.genome.id) {
+      resolvedSpecId = data.genome.id;
+    }
 
     const config = {
       kind: 'aha.agent.v1' as const,

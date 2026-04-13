@@ -2,6 +2,7 @@ import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { LegionImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { buildMarketplaceConnectionHint } from './marketplaceConnection';
+import { resolveGenomeHubWriteTokenSync } from './genomeHubAuth';
 
 export type MarketplaceGenomeRecord = {
     id: string;
@@ -540,7 +541,7 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
     error?: string;
 }> {
     const hubUrl = (options.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-    const publishKey = options.publishKey ?? process.env.HUB_PUBLISH_KEY ?? '';
+    const publishKey = resolveGenomeHubWriteTokenSync(options.publishKey) ?? '';
 
     try {
         const teamResult = await options.api.getTeam(options.teamId);

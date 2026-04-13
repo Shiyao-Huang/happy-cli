@@ -5,6 +5,7 @@ import { Session } from "./session"
 import { claudeLocalLauncher } from "./claudeLocalLauncher"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
 import { ApiClient } from "@/lib"
+import type { AgentImage } from "@/api/types/genome";
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo';
 
@@ -34,6 +35,7 @@ interface LoopOptions {
     maxTurns?: number
     settingsPath?: string
     sessionTag?: string
+    genomeSpec?: AgentImage | null
     onSessionReady?: (session: Session) => void
 }
 
@@ -47,6 +49,7 @@ export async function loop(opts: LoopOptions) {
         path: opts.path,
         sessionId: null,
         sessionTag: opts.sessionTag,
+        genomeSpec: opts.genomeSpec,
         claudeEnvVars: opts.claudeEnvVars,
         claudeArgs: opts.claudeArgs,
         mcpServers: opts.mcpServers,

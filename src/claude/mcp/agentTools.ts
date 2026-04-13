@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, resolveAhaHomeDir } from '@/configurationResolver'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 /**
@@ -56,6 +56,7 @@ import {
 import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext, ReplaceAgentStageError } from './mcpContext';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 
 /**
  * Collect handoff comments from a predecessor's tasks to inject into the new agent's context.
@@ -141,7 +142,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
         spawnReplacementSession,
     } = ctx;
 
-    const getHubPublishKey = () => process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+    const getHubPublishKey = () => resolveGenomeHubWriteTokenSync();
 
     const syncTargetSessionTemporaryGrants = async (sessionId: string): Promise<{
         session: any;

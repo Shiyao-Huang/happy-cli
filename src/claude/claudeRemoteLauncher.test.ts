@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     buildApiRetryDiagnosticMessage,
     extractAnthropicBaseUrlHost,
     extractLifecycleDirectiveFromContent,
+    resolveStandbyAutoExitMs,
 } from './claudeRemoteLauncher';
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+});
 
 describe('extractLifecycleDirectiveFromContent', () => {
     it('extracts an explicit retire directive from a text block array', () => {
@@ -89,5 +94,30 @@ describe('buildApiRetryDiagnosticMessage', () => {
 
         expect(message).toContain('api.anthropic.com');
         expect(message).not.toContain('自定义 relay');
+    });
+});
+
+describe('resolveStandbyAutoExitMs', () => {
+    it('prefers genome standbyAutoExitMs over role fallback', () => {
+        expect(
+            resolveStandbyAutoExitMs('supervisor', {
+                behavior: { standbyAutoExitMs: 15_000 },
+            })
+        ).toBe(15_000);
+    });
+
+    it('still supports legacy role fallback when genome lacks the field', () => {
+        expect(resolveStandbyAutoExitMs('help-agent', null)).toBe(120_000);
+        expect(resolveStandbyAutoExitMs('supervisor', null)).toBe(60_000);
+    });
+
+    it('allows env override to disable standby auto-exit entirely', () => {
+        vi.stubEnv('AHA_STANDBY_AUTO_EXIT_MS', '0');
+
+        expect(
+            resolveStandbyAutoExitMs('help-agent', {
+                behavior: { standbyAutoExitMs: 30_000 },
+            })
+        ).toBeNull();
     });
 });

@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, resolveAhaHomeDir } from '@/configurationResolver'
 import type { RunEnvelope } from '@/daemon/runEnvelope'
 /**
  * @module supervisorTools
@@ -72,6 +72,7 @@ import {
 } from './inspectionTools';
 import { McpToolContext } from './mcpContext';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 import type { Metadata } from '@/api/types';
 
 /**
@@ -1960,7 +1961,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                             role: args.role,
                             feedback,
                             hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
-                            hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                            hubPublishKey: resolveGenomeHubWriteTokenSync() ?? '',
                             serverUrl: configuration.serverUrl,
                             authToken: client.getAuthToken(),
                         });
@@ -2053,7 +2054,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             if (entity) {
                 const { writeEntityVerdict } = await import('../utils/evidenceWriter.js');
                 const { buildSessionTrialLogRefs } = await import('@/utils/sessionTrialSync');
-                const hubPublishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+                const hubPublishKey = resolveGenomeHubWriteTokenSync();
 
                 const verdictWrite = await writeEntityVerdict({
                     namespace: entity.ns,
@@ -2274,7 +2275,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 role: args.role,
                 feedback,
                 hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
-                hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
+                hubPublishKey: resolveGenomeHubWriteTokenSync() ?? '',
                 serverUrl: configuration.serverUrl,
                 authToken: client.getAuthToken(),
             });
@@ -2433,7 +2434,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+        const publishKey = resolveGenomeHubWriteTokenSync();
 
         let currentMirror: Awaited<ReturnType<typeof fetchEntityMirror>>;
         try {
@@ -2620,7 +2621,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+        const publishKey = resolveGenomeHubWriteTokenSync();
         const authToken = client.getAuthToken() ?? '';
         const packageSpecId = `${args.genomeNamespace}/${args.genomeName}`;
 
@@ -3050,7 +3051,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         }
 
         const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-        const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+        const publishKey = resolveGenomeHubWriteTokenSync();
 
         try {
             const [targetGenome, versions] = await Promise.all([
@@ -3641,7 +3642,7 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                     const { submitDiffViaMarketplace } = await import('@/claude/utils/genomePromotionSync');
                     const biasTrend = cal.scoreBiasTrend > 0 ? 'overestimates' : 'underestimates';
                     const biasAbs = Math.abs(cal.scoreBiasTrend).toFixed(1);
-                    const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+                    const publishKey = resolveGenomeHubWriteTokenSync();
 
                     const diffResult = await submitDiffViaMarketplace({
                         namespace: '@official',

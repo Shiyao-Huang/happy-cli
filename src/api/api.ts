@@ -23,6 +23,7 @@ import { configuration } from '@/configuration';
 import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 import { buildMarketplaceConnectionHint, buildMarketplacePublishAuthHint } from '@/utils/marketplaceConnection';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 
 export class ApiClient {
 
@@ -2468,7 +2469,7 @@ export class ApiClient {
   }): Promise<{ genome: any }> {
     // Primary: genome-hub (M3 marketplace, port 3006)
     const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const hubKey = resolveGenomeHubWriteTokenSync() ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
     const namespace = genome.namespace ?? '@public';
     const encodedNs = encodeURIComponent(namespace);
@@ -2546,7 +2547,7 @@ export class ApiClient {
     publisherId?: string | null;
   }): Promise<{ genome: any; corps: LegionImage }> {
     const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const hubKey = resolveGenomeHubWriteTokenSync() ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
 
     try {

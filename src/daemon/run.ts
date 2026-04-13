@@ -50,6 +50,7 @@ import { join } from 'path';
 import { spawn, type SpawnOptions } from 'child_process';
 import { projectPath } from '@/projectPath';
 import { withWindowsHide } from '@/utils/windowsProcessOptions';
+import { ensureGenomeHubWriteToken } from '@/utils/genomeHubAuth';
 import { resolveRuntimeBuildInfo } from './runtimeBuildInfo';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './controlClient';
@@ -215,12 +216,24 @@ export async function startDaemon(): Promise<void> {
   });
 
   // Setup signal handlers
+  // Grace period: ignore early SIGTERM during first 3s after spawn.
+  // When daemon is started via startDaemonDetached(), the parent process exits
+  // and may propagate SIGTERM to the child despite detached:true + unref().
+  // This race condition kills the daemon before it finishes startup.
+  const startedAt = Date.now();
+  const STARTUP_GRACE_MS = 3000;
+
   process.on('SIGINT', () => {
     logger.debug('[DAEMON RUN] Received SIGINT');
     requestShutdown('os-signal');
   });
 
   process.on('SIGTERM', () => {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < STARTUP_GRACE_MS) {
+      logger.debug(`[DAEMON RUN] Received SIGTERM during startup grace period (${elapsed}ms) — ignoring`);
+      return;
+    }
     logger.debug('[DAEMON RUN] Received SIGTERM');
     requestShutdown('os-signal');
   });
@@ -301,6 +314,19 @@ export async function startDaemon(): Promise<void> {
 
     // ── Genome hub access: SSH tunnel + publish key injection ─────────────────
     await ensureGenomeHubAccess();
+    try {
+      const genomeHubAuth = await ensureGenomeHubWriteToken({
+        authToken: credentials.token,
+        serverUrl: configuration.serverUrl,
+      });
+      if (genomeHubAuth.source === 'none') {
+        logger.warn('[GENOME HUB] No genome-token or HUB_PUBLISH_KEY fallback available. Direct genome-hub writes may fail with 401.');
+      } else {
+        logger.debug(`[GENOME HUB] Auth source: ${genomeHubAuth.source}${genomeHubAuth.expiresAt ? `, expiresAt=${new Date(genomeHubAuth.expiresAt).toISOString()}` : ''}`);
+      }
+    } catch (error) {
+      logger.warn(`[GENOME HUB] Failed to fetch genome-token at daemon startup: ${error instanceof Error ? error.message : String(error)}. Falling back to HUB_PUBLISH_KEY if available.`);
+    }
 
     // ── Per-team agent heartbeat tracking ─────────────────────────────────────
     const teamHeartbeats = new Map<string, AgentHeartbeat>();
@@ -657,6 +683,15 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Token refreshed and persisted during ${reason}, retrying machine registration...`);
 
           api = await ApiClient.create(credentials);
+          try {
+            await ensureGenomeHubWriteToken({
+              authToken: credentials.token,
+              serverUrl: configuration.serverUrl,
+              forceRefresh: true,
+            });
+          } catch (tokenError) {
+            logger.warn(`[GENOME HUB] Failed to refresh genome-token after auth reconnect: ${tokenError instanceof Error ? tokenError.message : String(tokenError)}`);
+          }
 
           try {
             machine = await register();
@@ -738,6 +773,15 @@ export async function startDaemon(): Promise<void> {
       try {
         if (process.env.DEBUG) {
           logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
+        }
+
+        try {
+          await ensureGenomeHubWriteToken({
+            authToken: credentials.token,
+            serverUrl: configuration.serverUrl,
+          });
+        } catch (tokenError) {
+          logger.debug(`[GENOME HUB] Token refresh skipped: ${tokenError instanceof Error ? tokenError.message : String(tokenError)}`);
         }
 
         if (!machine || !apiMachine) {

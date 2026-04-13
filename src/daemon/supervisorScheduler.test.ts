@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockAxiosGet = vi.hoisted(() => vi.fn());
 const mockLogger = vi.hoisted(() => ({
     debug: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
 }));
 const mockConfiguration = vi.hoisted(() => ({
     serverUrl: 'https://server.test',
@@ -36,12 +38,19 @@ vi.mock('./supervisorState', () => ({
     updateSupervisorState: mockUpdateSupervisorState,
 }));
 
-import { runSupervisorCycle } from './supervisorScheduler';
+import {
+    clearSystemGenomeCacheForTests,
+    resolveScheduleIntervalTicks,
+    runSupervisorCycle,
+} from './supervisorScheduler';
 
 describe('supervisorScheduler', () => {
     beforeEach(() => {
         mockAxiosGet.mockReset();
+        clearSystemGenomeCacheForTests();
         mockLogger.debug.mockReset();
+        mockLogger.warn.mockReset();
+        mockLogger.error.mockReset();
         mockListSupervisorStates.mockReset();
         mockReadSupervisorState.mockReset();
         mockUpdateSupervisorState.mockReset();
@@ -91,7 +100,7 @@ describe('supervisorScheduler', () => {
             if (url.includes('/genomes/%40official/supervisor')) {
                 return {
                     data: {
-                        genome: { id: 'spec-supervisor' },
+                        genome: { id: 'spec-supervisor', spec: {} },
                     },
                 };
             }
@@ -122,6 +131,68 @@ describe('supervisorScheduler', () => {
                 teamId: 'team-1',
                 role: 'supervisor',
                 executionPlane: 'bypass',
+                specId: 'spec-supervisor',
+            })
+        );
+    });
+
+    it('uses genome schedule.interval instead of fallback env cadence when deciding spawn ticks', async () => {
+        mockAxiosGet.mockImplementation(async (url: string) => {
+            if (url === 'https://server.test/v1/teams') {
+                return {
+                    data: {
+                        teams: [{ id: 'team-1', taskCount: 1 }],
+                    },
+                };
+            }
+
+            if (url === 'https://server.test/v1/teams/team-1/tasks') {
+                return {
+                    data: {
+                        tasks: [{ id: 'task-1', status: 'todo' }],
+                    },
+                };
+            }
+
+            if (url.includes('/genomes/%40official/supervisor')) {
+                return {
+                    data: {
+                        genome: {
+                            id: 'spec-supervisor',
+                            spec: {
+                                schedule: {
+                                    interval: '5m',
+                                    enabled: true,
+                                },
+                            },
+                        },
+                    },
+                };
+            }
+
+            throw new Error(`Unexpected axios.get call: ${url}`);
+        });
+
+        const spawnSession = vi.fn().mockResolvedValue({
+            type: 'success',
+            sessionId: 'supervisor-session-1',
+        });
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map(),
+            heartbeatCount: 5,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 60_000,
+            credentialsToken: 'token-1',
+            spawnSession,
+            requestHelp: vi.fn(),
+        });
+
+        expect(spawnSession).toHaveBeenCalledTimes(1);
+        expect(spawnSession).toHaveBeenCalledWith(
+            expect.objectContaining({
                 specId: 'spec-supervisor',
             })
         );
@@ -245,5 +316,31 @@ describe('supervisorScheduler', () => {
         expect(nextState?.pendingAction).toEqual(pendingState.pendingAction);
         expect(nextState?.pendingActionMeta?.retryCount).toBe(1);
         expect(nextState?.pendingActionMeta?.lastError).toContain('saturated');
+    });
+});
+
+describe('resolveScheduleIntervalTicks', () => {
+    it('maps human intervals to heartbeat ticks', () => {
+        expect(resolveScheduleIntervalTicks({ interval: '5m', enabled: true }, 60_000, 20)).toEqual({
+            enabled: true,
+            intervalTicks: 5,
+            source: 'genome',
+        });
+    });
+
+    it('falls back when the schedule interval is absent or unsupported', () => {
+        expect(resolveScheduleIntervalTicks({ interval: '*/5 * * * *', enabled: true }, 60_000, 20)).toEqual({
+            enabled: true,
+            intervalTicks: 20,
+            source: 'fallback',
+        });
+    });
+
+    it('honors schedule.enabled=false as a hard disable', () => {
+        expect(resolveScheduleIntervalTicks({ enabled: false }, 60_000, 20)).toEqual({
+            enabled: false,
+            intervalTicks: 20,
+            source: 'disabled',
+        });
     });
 });

@@ -11,7 +11,7 @@ export function buildMarketplaceConnectionHint(hubUrl?: string): string {
 
 export function buildMarketplacePublishAuthHint(status?: number): string {
     if (status === 401 || status === 403) {
-        return 'Publishing to genome-hub requires a valid HUB_PUBLISH_KEY. Set HUB_PUBLISH_KEY in your environment or publish through a trusted server-side proxy that injects the key.';
+        return 'Publishing to genome-hub requires a valid genome-token. The daemon fetches one automatically when possible; HUB_PUBLISH_KEY remains a local-dev fallback.';
     }
 
     return 'Verify genome-hub publish credentials and server policy before retrying.';

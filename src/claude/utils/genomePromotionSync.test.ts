@@ -1,6 +1,29 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 
 import { createGenomeViaMarketplace, promoteGenomeViaMarketplace, submitDiffViaMarketplace, submitPackageDiffViaMarketplace } from './genomePromotionSync'
+
+const DEFAULT_HUB_URL = DEFAULT_GENOME_HUB_URL.replace(/\/$/, '')
+const ORIGINAL_HUB_PUBLISH_KEY = process.env.HUB_PUBLISH_KEY
+const ORIGINAL_GENOME_HUB_AUTH_TOKEN = process.env.GENOME_HUB_AUTH_TOKEN
+
+beforeEach(() => {
+    delete process.env.HUB_PUBLISH_KEY
+    delete process.env.GENOME_HUB_AUTH_TOKEN
+})
+
+afterEach(() => {
+    if (ORIGINAL_HUB_PUBLISH_KEY === undefined) {
+        delete process.env.HUB_PUBLISH_KEY
+    } else {
+        process.env.HUB_PUBLISH_KEY = ORIGINAL_HUB_PUBLISH_KEY
+    }
+    if (ORIGINAL_GENOME_HUB_AUTH_TOKEN === undefined) {
+        delete process.env.GENOME_HUB_AUTH_TOKEN
+    } else {
+        process.env.GENOME_HUB_AUTH_TOKEN = ORIGINAL_GENOME_HUB_AUTH_TOKEN
+    }
+})
 
 function response(status: number, body: string) {
     return {
@@ -37,7 +60,7 @@ describe('promoteGenomeViaMarketplace', () => {
         })
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/supervisor/promote',
+                input: `${DEFAULT_HUB_URL}/genomes/%40official/supervisor/promote`,
                 method: 'POST',
             },
         ])
@@ -54,7 +77,7 @@ describe('promoteGenomeViaMarketplace', () => {
                     : null,
             })
 
-            if (input.startsWith('https://aha-agi.com/genome/')) {
+            if (input.startsWith(DEFAULT_HUB_URL)) {
                 return response(401, '{"error":"Unauthorized"}')
             }
 
@@ -78,18 +101,16 @@ describe('promoteGenomeViaMarketplace', () => {
             status: 201,
             transport: 'server-proxy',
         })
-        expect(calls).toEqual([
-            {
-                input: 'https://aha-agi.com/genome/genomes/%40official/supervisor/promote',
-                method: 'POST',
-                auth: null,
-            },
-            {
-                input: 'https://aha-agi.com/v1/genomes/%40official/supervisor/promote',
-                method: 'POST',
-                auth: 'Bearer user-token',
-            },
-        ])
+        expect(calls).toHaveLength(2)
+        expect(calls[0]).toMatchObject({
+            input: `${DEFAULT_HUB_URL}/genomes/%40official/supervisor/promote`,
+            method: 'POST',
+        })
+        expect(calls[1]).toEqual({
+            input: 'https://aha-agi.com/v1/genomes/%40official/supervisor/promote',
+            method: 'POST',
+            auth: 'Bearer user-token',
+        })
     })
 })
 
@@ -120,7 +141,7 @@ describe('submitPackageDiffViaMarketplace', () => {
         })
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/entities/id/entity-1/package-diffs',
+                input: `${DEFAULT_HUB_URL}/entities/id/entity-1/package-diffs`,
                 method: 'POST',
             },
         ])
@@ -137,7 +158,7 @@ describe('submitPackageDiffViaMarketplace', () => {
                     : null,
             })
 
-            if (input.includes('aha-agi.com')) {
+            if (input.startsWith(DEFAULT_HUB_URL)) {
                 return response(403, '{"error":"Forbidden"}')
             }
             return response(201, '{"entity":{"id":"e-1","version":2},"diff":{"id":"d-1"}}')
@@ -163,7 +184,7 @@ describe('submitPackageDiffViaMarketplace', () => {
             transport: 'server-proxy',
         })
         expect(calls).toHaveLength(2)
-        expect(calls[0].input).toContain('aha-agi.com')
+        expect(calls[0].input).toBe(`${DEFAULT_HUB_URL}/entities/id/entity-1/package-diffs`)
         expect(calls[1].input).toContain('api.test.com')
         expect(calls[1].auth).toBe('Bearer test-token')
     })

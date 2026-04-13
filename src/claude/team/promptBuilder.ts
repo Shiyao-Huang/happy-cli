@@ -23,12 +23,12 @@ import { buildAgentImageInjection } from '@/claude/utils/buildGenomeInjection';
 import { buildSharedOperatingRulesSection } from './alwaysInjectedPolicies';
 import { DEFAULT_ROLES } from './roles.config';
 import {
-    COORDINATION_ROLES,
-    BYPASS_ROLES,
     getRoleCollaborators,
     isTaskOwningRole,
 } from './roleConstants';
 import {
+    hasTeamAuthority,
+    isBypassRole,
     isCoordinatorRole,
 } from './rolePredicates';
 
@@ -129,7 +129,7 @@ function formatStatusBadge(status: string): string {
  * Build the <Role> section for a given role
  */
 function buildRoleSection(roleKey: string, roleDef: typeof DEFAULT_ROLES[string], teamId: string, genomeSpec?: import('../../api/types/genome').AgentImage): string {
-    const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
 
     const listenFrom = genomeSpec?.messaging?.listenFrom;
     const receiveUser = genomeSpec?.messaging?.receiveUserMessages;
@@ -169,7 +169,7 @@ ${roleDef.responsibilities.map((r, i) => `${i + 1}. ${r}`).join('\n')}
  * Build the Phase 0 - Intent Gate section
  */
 function buildPhase0Section(roleKey: string, genomeSpec?: import('../../api/types/genome').AgentImage): string {
-    const isCoordinator = COORDINATION_ROLES.includes(roleKey);
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
 
     const onIdle = genomeSpec?.behavior?.onIdle;
     const noTaskAction = isCoordinator
@@ -276,9 +276,9 @@ function buildPhase1CoordinatorSection(): string {
 /**
  * Build the <Task_Management> section
  */
-function buildTaskManagementSection(roleKey: string): string {
-    const isCoordinator = isCoordinatorRole(roleKey);
-    const isBypass = BYPASS_ROLES.includes(roleKey);
+function buildTaskManagementSection(roleKey: string, genomeSpec?: import('../../api/types/genome').AgentImage): string {
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
+    const isBypass = isBypassRole(roleKey, genomeSpec);
 
     return `<Task_Management>
 ## Task Management (CRITICAL)
@@ -441,8 +441,12 @@ Just respond to substance.
  */
 function buildKanbanContextSection(
     roleKey: string,
-    kanbanContext: KanbanContext
+    kanbanContext: KanbanContext,
+    genomeSpec?: import('../../api/types/genome').AgentImage,
 ): string {
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
+    const isBypass = isBypassRole(roleKey, genomeSpec);
+    const canApproveTasks = isCoordinator || hasTeamAuthority(genomeSpec?.authorities, 'task.approve');
     let section = `
 ## [KANBAN CONTEXT]
 
@@ -496,7 +500,7 @@ These tasks are assigned to you. Work on these:
     } else {
         section += `### [MY TASKS] ⏳ EMPTY
 No tasks currently assigned to you.
-**ACTION**: ${COORDINATION_ROLES.includes(roleKey)
+**ACTION**: ${isCoordinator
             ? 'WAIT for user instructions. DO NOT read files to find work.'
             : isTaskOwningRole(roleKey)
                 ? 'Announce yourself via send_team_message, then keep the board visible and treat [MY TASKS] as your primary queue.'
@@ -506,7 +510,7 @@ No tasks currently assigned to you.
     }
 
     // Available Tasks Section (workers only)
-    if (kanbanContext.availableTasks.length > 0 && !COORDINATION_ROLES.includes(roleKey)) {
+    if (kanbanContext.availableTasks.length > 0 && !isCoordinator && !isBypass) {
         section += `### [AVAILABLE TASKS - ${kanbanContext.availableTasks.length} items]
 Tasks you can claim (use 'start_task' to claim and begin):
 
@@ -526,7 +530,7 @@ Tasks you can claim (use 'start_task' to claim and begin):
     }
 
     // Pending Approvals (coordinators only)
-    if (COORDINATION_ROLES.includes(roleKey) && kanbanContext.pendingApprovals && kanbanContext.pendingApprovals.length > 0) {
+    if (canApproveTasks && kanbanContext.pendingApprovals && kanbanContext.pendingApprovals.length > 0) {
         section += `### [PENDING APPROVALS - ${kanbanContext.pendingApprovals.length} items] ⚠️ ACTION REQUIRED
 Tasks awaiting your approval:
 
@@ -557,12 +561,16 @@ Tasks awaiting your approval:
 /**
  * Build the Next Step section
  */
-function buildNextStepSection(roleKey: string, kanbanContext?: KanbanContext): string {
+function buildNextStepSection(
+    roleKey: string,
+    kanbanContext?: KanbanContext,
+    genomeSpec?: import('../../api/types/genome').AgentImage,
+): string {
     const hasMyTasks = kanbanContext && kanbanContext.myTasks.length > 0;
     const hasAvailableTasks = kanbanContext && kanbanContext.availableTasks.length > 0;
     const hasPendingApprovals = kanbanContext && kanbanContext.pendingApprovals && kanbanContext.pendingApprovals.length > 0;
-    const isCoordinator = COORDINATION_ROLES.includes(roleKey);
-    const isBypass = BYPASS_ROLES.includes(roleKey);
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
+    const isBypass = isBypassRole(roleKey, genomeSpec);
     const ownsTasks = isTaskOwningRole(roleKey);
 
     let section = `## [NEXT STEP - IMMEDIATE ACTION]
@@ -876,8 +884,8 @@ export function generateRolePrompt(
         return '';
     }
 
-    const isCoordinator = COORDINATION_ROLES.includes(roleKey);
-    const isBypass = BYPASS_ROLES.includes(roleKey);
+    const isCoordinator = isCoordinatorRole(roleKey, genomeSpec);
+    const isBypass = isBypassRole(roleKey, genomeSpec);
     const taskPrompt = process.env.AHA_TASK_PROMPT || '';
 
     // Build prompt sections
@@ -904,7 +912,7 @@ export function generateRolePrompt(
         sections.push('');
         sections.push('</Behavior_Instructions>');
         sections.push('');
-        sections.push(buildTaskManagementSection(roleKey));
+        sections.push(buildTaskManagementSection(roleKey, genomeSpec));
         sections.push('');
         sections.push(buildSharedOperatingRulesSection({ roleKey, isCoordinator, isBypass, genomeSpec }));
         sections.push('');
@@ -923,11 +931,11 @@ export function generateRolePrompt(
     // Add Kanban context if provided
     if (kanbanContext) {
         logger.debug(`[Roles] Injecting Kanban context: ${kanbanContext.myTasks.length} my tasks`);
-        sections.push(buildKanbanContextSection(roleKey, kanbanContext));
+        sections.push(buildKanbanContextSection(roleKey, kanbanContext, genomeSpec));
     }
 
     // Add next step guidance
-    sections.push(buildNextStepSection(roleKey, kanbanContext));
+    sections.push(buildNextStepSection(roleKey, kanbanContext, genomeSpec));
 
     sections.push('');
     sections.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

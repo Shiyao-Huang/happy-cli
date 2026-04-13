@@ -129,6 +129,7 @@ class Configuration {
   public readonly logsDir: string
   public readonly settingsFile: string
   public readonly privateKeyFile: string
+  public readonly genomeHubTokenCacheFile: string
   public readonly daemonStateFile: string
   public readonly daemonLockFile: string
   public readonly currentCliVersion: string
@@ -150,6 +151,7 @@ class Configuration {
     this.logsDir = join(this.ahaHomeDir, 'logs')
     this.settingsFile = join(this.ahaHomeDir, 'settings.json')
     this.privateKeyFile = join(this.ahaHomeDir, 'access.key')
+    this.genomeHubTokenCacheFile = join(this.ahaHomeDir, 'genome-hub-token.json')
     this.daemonStateFile = join(this.ahaHomeDir, 'daemon.state.json')
     this.daemonLockFile = join(this.ahaHomeDir, 'daemon.state.json.lock')
 

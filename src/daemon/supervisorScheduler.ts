@@ -182,12 +182,65 @@ interface ResolvedGenome {
   spec: Record<string, unknown> | null;
 }
 
+const SYSTEM_GENOME_CACHE_TTL_MS = 60_000;
+const systemGenomeCache = new Map<string, { expiresAt: number; value: ResolvedGenome | null }>();
+
+export function clearSystemGenomeCacheForTests(): void {
+  systemGenomeCache.clear();
+}
+
+function parseHumanIntervalMs(input: string | undefined): number | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\d+)\s*([smhd])$/i);
+  if (!match) return null;
+
+  const value = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  switch (match[2].toLowerCase()) {
+    case 's': return value * 1000;
+    case 'm': return value * 60_000;
+    case 'h': return value * 60 * 60_000;
+    case 'd': return value * 24 * 60 * 60_000;
+    default: return null;
+  }
+}
+
+export function resolveScheduleIntervalTicks(
+  schedule: { interval?: string; enabled?: boolean } | null | undefined,
+  heartbeatIntervalMs: number,
+  fallbackTicks: number
+): { enabled: boolean; intervalTicks: number; source: 'genome' | 'fallback' | 'disabled' } {
+  if (schedule?.enabled === false) {
+    return { enabled: false, intervalTicks: fallbackTicks, source: 'disabled' };
+  }
+
+  const intervalMs = parseHumanIntervalMs(schedule?.interval);
+  if (intervalMs == null) {
+    return { enabled: true, intervalTicks: fallbackTicks, source: 'fallback' };
+  }
+
+  return {
+    enabled: true,
+    intervalTicks: Math.max(1, Math.ceil(intervalMs / heartbeatIntervalMs)),
+    source: 'genome',
+  };
+}
+
 /**
  * Resolve the specId (and optionally parsed spec) of a @official genome by name.
  * Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).
  * Returns null on failure — caller falls back to hardcoded role.
  */
 async function resolveSystemGenome(name: string, credentialsToken: string): Promise<ResolvedGenome | null> {
+  const cached = systemGenomeCache.get(name);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
 
   try {
@@ -202,7 +255,9 @@ async function resolveSystemGenome(name: string, credentialsToken: string): Prom
         const rawSpec = res.data?.genome?.spec;
         spec = typeof rawSpec === 'string' ? JSON.parse(rawSpec) : rawSpec ?? null;
       } catch { /* spec parse failure is non-fatal */ }
-      return { specId: id, spec };
+      const resolved = { specId: id, spec };
+      systemGenomeCache.set(name, { value: resolved, expiresAt: Date.now() + SYSTEM_GENOME_CACHE_TTL_MS });
+      return resolved;
     }
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
@@ -224,43 +279,11 @@ async function resolveSystemGenome(name: string, credentialsToken: string): Prom
         const rawSpec = res.data?.genome?.spec;
         spec = typeof rawSpec === 'string' ? JSON.parse(rawSpec) : rawSpec ?? null;
       } catch { /* spec parse failure is non-fatal */ }
-      return { specId: id, spec };
+      const resolved = { specId: id, spec };
+      systemGenomeCache.set(name, { value: resolved, expiresAt: Date.now() + SYSTEM_GENOME_CACHE_TTL_MS });
+      return resolved;
     }
     return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolve the specId of a @official genome by name.
- * Queries genome-hub first (M3 marketplace), falls back to happy-server (M2 legacy).
- * Returns null on failure — caller falls back to hardcoded role.
- */
-async function resolveSystemGenomeId(name: string, credentialsToken: string): Promise<string | null> {
-  const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-
-  try {
-    const res = await axios.get(
-      `${hubUrl}/genomes/%40official/${name}`,
-      { timeout: 5000 }
-    );
-    const id = res.data?.genome?.id ?? null;
-    if (id) return id;
-  } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      logger.error(`[DEV] Genome Hub API failed for ${name}:`, error);
-      throw new Error(`Genome Hub API broken - fix before using legacy fallback: ${String(error)}`);
-    }
-    logger.warn(`[PROD] Genome Hub API failed for ${name}, falling back to legacy`, error);
-  }
-
-  try {
-    const res = await axios.get(
-      `${configuration.serverUrl}/v1/genomes/%40official/${name}/latest`,
-      { headers: { Authorization: `Bearer ${credentialsToken}` }, timeout: 5000 }
-    );
-    return res.data?.genome?.id ?? null;
   } catch {
     return null;
   }
@@ -369,6 +392,12 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
   const supervisorStates = listSupervisorStates();
   const outstandingWorkByKnownTeam = new Map<string, TeamOutstandingWorkSummary>();
   const now = Date.now();
+  const supervisorGenome = await resolveSystemGenome('supervisor', credentialsToken);
+  const supervisorSchedule = resolveScheduleIntervalTicks(
+    (supervisorGenome?.spec as { schedule?: { interval?: string; enabled?: boolean } } | null | undefined)?.schedule,
+    heartbeatIntervalMs,
+    supervisorInterval
+  );
 
   // Force-kill supervisors that have been terminated for >5 minutes (zombie cleanup)
   const forceKillTimeoutMs = parseInt(process.env.AHA_SUPERVISOR_FORCE_KILL_TIMEOUT_MS || '300000', 10); // 5 minutes
@@ -562,7 +591,12 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
   }
 
   // ── Supervisor spawn check (every N heartbeats) ─────────────────────────────
-  if (heartbeatCount % supervisorInterval !== 0) {
+  if (!supervisorSchedule.enabled) {
+    logger.debug('[SUPERVISOR SCHEDULER] Supervisor schedule disabled by genome; skipping auto-spawn');
+    return;
+  }
+
+  if (heartbeatCount % supervisorSchedule.intervalTicks !== 0) {
     return;
   }
 
@@ -667,7 +701,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     );
 
     // Detect idle runs: state unchanged since last trigger
-    const heartbeatMs = heartbeatIntervalMs * supervisorInterval;
+    const heartbeatMs = heartbeatIntervalMs * supervisorSchedule.intervalTicks;
     const stateIsStale =
       supervisorState.lastRunAt > 0 &&
       (Date.now() - supervisorState.lastRunAt) > heartbeatMs * 1.5;
@@ -679,8 +713,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     }
 
     try {
-      // Resolve @official/supervisor genome specId from genome-hub
-      const supervisorSpecId = await resolveSystemGenomeId('supervisor', credentialsToken);
+      const supervisorSpecId = supervisorGenome?.specId ?? null;
       if (!supervisorSpecId) {
         if (process.env.AHA_GENOME_FALLBACK !== '1') {
           logger.warn(
@@ -691,6 +724,11 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         }
       } else {
         logger.debug(`[SUPERVISOR SCHEDULER] Supervisor genome specId: ${supervisorSpecId}`);
+        if (supervisorSchedule.source === 'genome') {
+          logger.debug(
+            `[SUPERVISOR SCHEDULER] Supervisor schedule resolved from genome: ${supervisorSchedule.intervalTicks} heartbeat tick(s)`
+          );
+        }
       }
 
       const supervisorDirectory = resolveTeamWorkingDirectory(teamId, pidToTrackedSession);

@@ -2,6 +2,7 @@ import { ApiClient, ApiSessionClient } from "@/lib";
 import { MessageQueue2 } from "@/utils/MessageQueue2";
 import { EnhancedMode } from "./loop";
 import { logger } from "@/ui/logger";
+import type { AgentImage } from "@/api/types/genome";
 
 export class Session {
     readonly path: string;
@@ -16,6 +17,7 @@ export class Session {
     readonly settingsPath?: string;
     readonly maxTurns?: number;
     readonly sessionTag?: string;
+    readonly genomeSpec?: AgentImage | null;
     readonly _onModeChange: (mode: 'local' | 'remote') => void;
 
     sessionId: string | null;
@@ -30,6 +32,7 @@ export class Session {
         logPath: string,
         sessionId: string | null,
         sessionTag?: string,
+        genomeSpec?: AgentImage | null,
         claudeEnvVars?: Record<string, string>,
         claudeArgs?: string[],
         mcpServers: Record<string, any>,
@@ -52,6 +55,7 @@ export class Session {
         this.settingsPath = opts.settingsPath;
         this.maxTurns = opts.maxTurns;
         this.sessionTag = opts.sessionTag;
+        this.genomeSpec = opts.genomeSpec;
         this._onModeChange = opts.onModeChange;
 
         // Start keep alive

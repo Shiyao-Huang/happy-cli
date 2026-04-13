@@ -17,6 +17,7 @@ import {
     mkdirSync,
     readFileSync,
     rmSync,
+    writeFileSync,
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -148,7 +149,12 @@ describe('materializer smoke test (CI)', () => {
 
             // Create skill dirs referenced by config (if any)
             for (const skill of config.tools?.skills ?? []) {
-                mkdirSync(join(runtimeLibRoot, 'skills', skill), { recursive: true });
+                const skillDir = join(runtimeLibRoot, 'skills', skill);
+                mkdirSync(skillDir, { recursive: true });
+                writeFileSync(
+                    join(skillDir, 'SKILL.md'),
+                    `# ${skill}\n\nFixture skill for docker materializer CI.\n`
+                );
             }
 
             const plan = materializeAgentWorkspace({

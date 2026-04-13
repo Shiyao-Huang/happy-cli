@@ -1577,6 +1577,7 @@ ${instructions}
             claudeArgs: options.claudeArgs,
             settingsPath: _workspacePlan?.settingsPath ?? _prebuiltSettingsPath,
             maxTurns: _maxTurns,
+            genomeSpec: _agentImage ?? undefined,
         });
     } finally {
         clearInterval(keepAliveInterval);

@@ -1,7 +1,7 @@
 import type { Metadata } from '@/api/types';
 import type { AgentImage } from '@/api/types/genome';
-import { configuration } from '@/configuration';
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver';
+import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 
 type FetchResponseLike = {
     ok: boolean;
@@ -156,7 +156,7 @@ function buildHubHeaders(hubPublishKey?: string): Record<string, string> {
 }
 
 function resolveHubPublishKey(explicit?: string): string | undefined {
-    return explicit || process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile) || undefined;
+    return resolveGenomeHubWriteTokenSync(explicit);
 }
 
 function parseGrantResponseBody(raw: string): any {

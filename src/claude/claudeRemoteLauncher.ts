@@ -379,7 +379,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
                 if (directive.action === 'standby') {
                     const role = resolveLifecycleRole();
-                    const standbyAutoExitMs = resolveStandbyAutoExitMs(role);
+                    const standbyAutoExitMs = resolveStandbyAutoExitMs(role, session.genomeSpec ?? null);
                     if (standbyAutoExitMs != null) {
                         clearStandbyTimer('refresh standby window');
                         standbyTimer = setTimeout(() => {

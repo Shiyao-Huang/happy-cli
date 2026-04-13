@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver';
 import type { AgentPackage, DiffChange, Genome, AgentVerdict } from '@/api/types/genome';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 
 export type EntityLogRef = {
     kind: 'claude' | 'codex' | 'team' | 'daemon' | 'git' | 'browser' | 'other';
@@ -13,7 +14,7 @@ function genomeHubBaseUrl(): string {
 }
 
 function authHeaders(token?: string): Record<string, string> {
-    const resolvedToken = token ?? process.env.HUB_PUBLISH_KEY ?? '';
+    const resolvedToken = resolveGenomeHubWriteTokenSync(token) ?? '';
     return {
         'Content-Type': 'application/json',
         ...(resolvedToken ? { Authorization: `Bearer ${resolvedToken}` } : {}),

@@ -2,6 +2,7 @@ import { configuration } from '@/configuration'
 import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
 import type { DiffChange } from '@/api/types/genome'
 import { normalizeFeedbackProxyBaseUrl } from './genomeFeedbackSync'
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth'
 
 type FetchResponseLike = {
     ok: boolean;
@@ -26,9 +27,10 @@ export type GenomePromotePayload = {
 }
 
 function buildPromoteHeaders(hubPublishKey?: string): Record<string, string> {
+    const hubAuthToken = resolveGenomeHubWriteTokenSync(hubPublishKey)
     return {
         'Content-Type': 'application/json',
-        ...(hubPublishKey ? { Authorization: `Bearer ${hubPublishKey}` } : {}),
+        ...(hubAuthToken ? { Authorization: `Bearer ${hubAuthToken}` } : {}),
     }
 }
 

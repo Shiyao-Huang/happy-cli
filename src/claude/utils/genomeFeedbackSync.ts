@@ -3,6 +3,7 @@ import type { AggregatedFeedback } from './feedbackPrivacy';
 import type { FeedbackUploadTarget } from './supervisorAgentVerdict';
 import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
+import { resolveGenomeHubWriteTokenSync } from '@/utils/genomeHubAuth';
 
 type FetchResponseLike = {
     ok: boolean;
@@ -98,9 +99,10 @@ function normalizeRole(role: string): string {
 }
 
 function buildFeedbackHeaders(hubPublishKey?: string): Record<string, string> {
+    const hubAuthToken = resolveGenomeHubWriteTokenSync(hubPublishKey);
     return {
         'Content-Type': 'application/json',
-        ...(hubPublishKey ? { 'Authorization': `Bearer ${hubPublishKey}` } : {}),
+        ...(hubAuthToken ? { 'Authorization': `Bearer ${hubAuthToken}` } : {}),
     };
 }
 

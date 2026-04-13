@@ -9,6 +9,7 @@ import {
     isBootstrapRole,
     isCoordinatorRole
 } from './roles';
+import { DEFAULT_ROLES } from './roles.config';
 
 /**
  * Unit tests for role permissions system
@@ -19,6 +20,8 @@ import {
 describe('Role Permissions System', () => {
     afterEach(() => {
         vi.unstubAllEnvs();
+        delete DEFAULT_ROLES['scribe'];
+        delete DEFAULT_ROLES['watcher'];
     });
 
     describe('getRolePermissions', () => {
@@ -195,6 +198,60 @@ describe('Role Permissions System', () => {
             expect(handshake).toContain('reporting for duty');
             expect(handshake).toContain('Coordinate the team and assign work');
             expect(handshake).toContain('help lane');
+        });
+
+        it('treats a non-legacy role as coordinator when genome receiveUserMessages is true', () => {
+            DEFAULT_ROLES['scribe'] = {
+                name: 'Scribe',
+                description: 'Writes docs',
+                responsibilities: ['Keep documentation accurate'],
+                protocol: [],
+                accessLevel: 'read-only',
+            };
+
+            const prompt = generateRolePrompt(
+                { teamId: 'team-123', role: 'scribe' } as any,
+                {
+                    myTasks: [],
+                    availableTasks: [{ id: 'task-1', title: 'Draft docs', status: 'todo' }],
+                    teamStats: { todo: 1, inProgress: 0, review: 0, done: 0, blocked: 0 },
+                    pendingApprovals: [],
+                },
+                {
+                    messaging: { receiveUserMessages: true },
+                } as any,
+            );
+
+            expect(prompt).toContain('You COORDINATE the team');
+            expect(prompt).not.toContain('[AVAILABLE TASKS - 1 items]');
+            expect(prompt).toContain('WAIT for user instructions');
+        });
+
+        it('treats a non-legacy role as bypass when genome executionPlane is bypass', () => {
+            DEFAULT_ROLES['watcher'] = {
+                name: 'Watcher',
+                description: 'Monitors the system',
+                responsibilities: ['Observe and intervene when needed'],
+                protocol: [],
+                accessLevel: 'read-only',
+            };
+
+            const prompt = generateRolePrompt(
+                { teamId: 'team-123', role: 'watcher' } as any,
+                {
+                    myTasks: [],
+                    availableTasks: [{ id: 'task-1', title: 'Ignored task', status: 'todo' }],
+                    teamStats: { todo: 1, inProgress: 0, review: 0, done: 0, blocked: 0 },
+                    pendingApprovals: [],
+                },
+                {
+                    executionPlane: 'bypass',
+                } as any,
+            );
+
+            expect(prompt).toContain('**System Workflow:**');
+            expect(prompt).toContain('SYSTEM MODE');
+            expect(prompt).not.toContain('[AVAILABLE TASKS - 1 items]');
         });
     });
 });
