@@ -65,16 +65,31 @@ export function readPersistentCliConfig(configFile: string): PersistentCliConfig
   return persistentCliConfigSchema.parse(parsed)
 }
 
+/**
+ * Inject GENOME_HUB_URL into env from AHA_SERVER_URL if not already set.
+ * Call this ONCE at startup — never derive at usage time.
+ */
+export function injectGenomeHubUrlFromServerUrl(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.GENOME_HUB_URL) return
+  const serverUrl = env.AHA_SERVER_URL
+  if (serverUrl) {
+    env.GENOME_HUB_URL = `${serverUrl.replace(/\/$/, '')}/v2`
+  }
+}
+
 export function resolveServerConfig(
   env: NodeJS.ProcessEnv = process.env,
   persistentConfig: PersistentCliConfig = persistentCliConfigSchema.parse({})
 ): {
   serverUrl: string
   webappUrl: string
+  genomeHubUrl: string
 } {
+  const serverUrl = env.AHA_SERVER_URL || persistentConfig.serverUrl || DEFAULT_SERVER_URL
   return {
-    serverUrl: env.AHA_SERVER_URL || persistentConfig.serverUrl || DEFAULT_SERVER_URL,
-    webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL
+    serverUrl,
+    webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL,
+    genomeHubUrl: env.GENOME_HUB_URL || `${serverUrl.replace(/\/$/, '')}/v2`,
   }
 }
 

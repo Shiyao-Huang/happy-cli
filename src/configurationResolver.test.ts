@@ -7,7 +7,8 @@ import {
   readPublishKeyFromSettings,
   resolveAhaHomeDir,
   resolvePersistentConfigFile,
-  resolveServerConfig
+  resolveServerConfig,
+  injectGenomeHubUrlFromServerUrl,
 } from '@/configurationResolver'
 
 describe('configurationResolver', () => {
@@ -58,14 +59,60 @@ describe('configurationResolver', () => {
       enableModelSelection: false,
     })).toEqual({
       serverUrl: 'http://localhost:3005',
-      webappUrl: 'http://localhost:8081'
+      webappUrl: 'http://localhost:8081',
+      genomeHubUrl: 'http://localhost:3005/v2',
     })
   })
 
   it('uses ahaagi production defaults when nothing is configured', () => {
     expect(resolveServerConfig({}, { enableModelSelection: false })).toEqual({
       serverUrl: 'https://ahaagi.com/api',
-      webappUrl: 'https://ahaagi.com/webappv3'
+      webappUrl: 'https://ahaagi.com/webappv3',
+      genomeHubUrl: 'https://ahaagi.com/api/v2',
+    })
+  })
+
+  it('derives genomeHubUrl from AHA_SERVER_URL when GENOME_HUB_URL not set', () => {
+    expect(resolveServerConfig({
+      AHA_SERVER_URL: 'https://aha-agi.com/api',
+    }, { enableModelSelection: false })).toEqual({
+      serverUrl: 'https://aha-agi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+      genomeHubUrl: 'https://aha-agi.com/api/v2',
+    })
+  })
+
+  it('prefers explicit GENOME_HUB_URL over AHA_SERVER_URL derivation', () => {
+    expect(resolveServerConfig({
+      AHA_SERVER_URL: 'https://aha-agi.com/api',
+      GENOME_HUB_URL: 'https://custom-hub.com/v2',
+    }, { enableModelSelection: false })).toEqual({
+      serverUrl: 'https://aha-agi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+      genomeHubUrl: 'https://custom-hub.com/v2',
+    })
+  })
+
+  describe('injectGenomeHubUrlFromServerUrl', () => {
+    it('injects GENOME_HUB_URL from AHA_SERVER_URL', () => {
+      const env: Record<string, string> = { AHA_SERVER_URL: 'https://aha-agi.com/api' }
+      injectGenomeHubUrlFromServerUrl(env)
+      expect(env.GENOME_HUB_URL).toBe('https://aha-agi.com/api/v2')
+    })
+
+    it('does not overwrite existing GENOME_HUB_URL', () => {
+      const env: Record<string, string> = {
+        AHA_SERVER_URL: 'https://aha-agi.com/api',
+        GENOME_HUB_URL: 'https://custom.com/v2',
+      }
+      injectGenomeHubUrlFromServerUrl(env)
+      expect(env.GENOME_HUB_URL).toBe('https://custom.com/v2')
+    })
+
+    it('does nothing when neither is set', () => {
+      const env: Record<string, string> = {}
+      injectGenomeHubUrlFromServerUrl(env)
+      expect(env.GENOME_HUB_URL).toBeUndefined()
     })
   })
 

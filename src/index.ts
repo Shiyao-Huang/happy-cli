@@ -8,6 +8,7 @@
 
 
 import { installDnsFallback } from '@/utils/dnsFallback'
+import { injectGenomeHubUrlFromServerUrl } from '@/configurationResolver'
 import chalk from 'chalk'
 import { t } from '@/i18n'
 import { runClaude, StartOptions } from '@/claude/runClaude'
@@ -15,6 +16,8 @@ import { logger } from './ui/logger'
 
 // Install DNS fallback before any network calls — affects all code paths (daemon + sessions)
 installDnsFallback()
+// Inject GENOME_HUB_URL from AHA_SERVER_URL once at startup — no runtime derivation
+injectGenomeHubUrlFromServerUrl()
 import { readCredentials } from './persistence'
 import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'

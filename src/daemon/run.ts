@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { DEFAULT_GENOME_HUB_URL, injectGenomeHubUrlFromServerUrl } from '@/configurationResolver'
 /**
  * @module run
  * @description Daemon entry point: lifecycle, signals, lock, auth, heartbeat orchestration.
@@ -256,6 +256,8 @@ export async function startDaemon(): Promise<void> {
   // When the system DNS resolver fails (ENOTFOUND), this falls back to
   // Google/Cloudflare public DNS. Prevents daemon crashes from transient DNS issues.
   installDnsFallback();
+  // Inject GENOME_HUB_URL from AHA_SERVER_URL once at startup
+  injectGenomeHubUrlFromServerUrl();
 
   logger.debug('[DAEMON RUN] Starting daemon process...');
   logger.debugLargeJson('[DAEMON RUN] Environment', getEnvironmentInfo());
