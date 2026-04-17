@@ -22,8 +22,15 @@ afterEach(async () => {
 })
 
 describe('resolvePublishProtectionPolicy', () => {
-  it('enables obfuscation by default', () => {
+  it('disables obfuscation by default (AHA_NPM_PUBLISH_ENCRYPTION defaults to none)', () => {
     expect(resolvePublishProtectionPolicy({})).toEqual({
+      enabled: false,
+      mode: 'none',
+    })
+  })
+
+  it('enables obfuscation when explicitly set', () => {
+    expect(resolvePublishProtectionPolicy({ AHA_NPM_PUBLISH_ENCRYPTION: 'obfuscate' })).toEqual({
       enabled: true,
       mode: 'obfuscate',
     })

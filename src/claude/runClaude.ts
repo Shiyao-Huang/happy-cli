@@ -1460,9 +1460,10 @@ ${instructions}
         cleanup();
     });
 
-    process.on('unhandledRejection', (reason) => {
-        logger.debug('[START] Unhandled rejection:', reason);
-        cleanup();
+    process.on('unhandledRejection', (reason, promise) => {
+        logger.warn('[START] Unhandled rejection (non-fatal):', reason);
+        logger.warn('[START] Rejection type:', typeof reason, 'keys:', reason && typeof reason === 'object' ? Object.keys(reason) : 'N/A');
+        logger.warn('[START] Promise:', promise);
     });
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);

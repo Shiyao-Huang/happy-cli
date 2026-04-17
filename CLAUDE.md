@@ -1,5 +1,46 @@
 # Aha CLI Codebase Overview
 
+## 多域名单包设计（待实现）
+
+目标：一个 npm 包（`aha-agi-v2`）支持多域名部署 + A/B 分流。
+
+```
+npx aha-agi-v2 --server https://aha-agi.com    → wow 测试
+npx aha-agi-v2 --server https://ahaagi.com      → 生产
+npx aha-agi-v2                                    → 默认生产
+```
+
+### 需要改的 3 处
+1. **package.json**: name 从 `aha-agi` 改为 `aha-agi-v2`
+2. **src/index.ts**: 加 `--server <url>` CLI flag，覆盖 `AHA_SERVER_URL` 和 `GENOME_HUB_URL`
+3. **kanban cliCommands.ts**: 粘贴命令从 `npm i aha-agi` 改为 `npm i ${EXPO_PUBLIC_CLI_PACKAGE}` + `--server ${EXPO_PUBLIC_HAPPY_SERVER_URL}`（已改）
+
+### 已有支持
+- `AHA_SERVER_URL` 环境变量（`src/configurationResolver.ts:76`）
+- `GENOME_HUB_URL` 环境变量（`src/configurationResolver.ts:9`）
+- `~/.aha/settings.json` 持久化配置（`serverUrl` 字段）
+
+### A/B 分流
+- 同一个包，不同 `--server` 指向不同 happy-server
+- 两个 happy-server 连同一个 genome-hub（single truth）
+- namespace 隔离：`@experiment-a/*` vs `@experiment-b/*`
+- 30 处 `@official` 硬编码需提取为配置后才能真正支持（见 05-代码质量约束.md）
+
+## Genome Schema 同步规则
+
+修改 `src/api/types/genome.ts`（AgentImage / LegionImage / AgentPlug）时，必须同步检查 genome-hub 的 `src/types/genome.ts`。
+- genome-hub 是 single truth：字段定义以 hub 为准
+- aha-cli 是 consumer：可以多（解析函数、Zod runtime schema），不能少（hub 有的字段 cli 必须有）
+- 改完后跑 `docker build --target test-l1` 确认 tsc + vitest 绿
+
+## Testing Rule
+
+All build, test, and daemon verification MUST run inside Docker (`Dockerfile.test`), never on the host machine.
+- `npm publish` + `npm install` 污染 `~/node_modules` — 禁止在宿主机直接跑
+- daemon restart 会杀正在跑的 agent session — 禁止在宿主机直接跑
+- L1（单测/tsc）: `docker build --target test-l1` — 无需 API key
+- L2（daemon 集成）: `docker build --target test-l2 --build-arg ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY`
+
 ## Project Overview
 
 Aha CLI (`aha-cli`) is a command-line tool that wraps Claude Code to enable remote control and session sharing. It's part of a three-component system:

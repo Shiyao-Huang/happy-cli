@@ -86,6 +86,17 @@ function cleanupHelpAgentLeases(teamId: string, activeSessionIds: string[]): Map
 const MAX_RESPAWN_ATTEMPTS = parseInt(process.env.AHA_MAX_RESPAWN_ATTEMPTS || '3', 10);
 const RESPAWN_BASE_DELAY_MS = parseInt(process.env.AHA_RESPAWN_BASE_DELAY_MS || '5000', 10);
 
+export const EVALUABLE_ROLES = new Set(['supervisor', 'help-agent']);
+export const RESPAWN_PRIORITY_ROLES = new Set(['master']);
+
+export function isEvaluableRole(role: string | undefined): boolean {
+  return !!role && EVALUABLE_ROLES.has(role);
+}
+
+export function hasRespawnPriority(role: string | undefined): boolean {
+  return !!role && RESPAWN_PRIORITY_ROLES.has(role);
+}
+
 interface QueuedSpawn {
   options: SpawnSessionOptions;
 }
@@ -1185,7 +1196,7 @@ export const requestHelp = async (params: {
         const sessionTeamId = metadata?.teamId || metadata?.roomId;
         const role = metadata?.role;
         if (sessionTeamId !== teamId) continue;
-        if (role === 'supervisor' || role === 'help-agent') continue;
+        if (isEvaluableRole(role)) continue;
         if (session.ahaSessionId) {
           targetSessionId = session.ahaSessionId;
           break;
@@ -1322,7 +1333,7 @@ function isRespawnEligible(session: TrackedSession): boolean {
   if (session.startedBy !== 'daemon') return false;
 
   const role = session.spawnOptions.role || session.ahaSessionMetadataFromLocalWebhook?.role;
-  if (role === 'supervisor' || role === 'help-agent') return false;
+  if (isEvaluableRole(role)) return false;
 
   const plane = session.spawnOptions.executionPlane || session.ahaSessionMetadataFromLocalWebhook?.executionPlane;
   if (plane === 'bypass') return false;
@@ -1357,8 +1368,8 @@ function scheduleRespawn(session: TrackedSession): void {
   const respawnCount = (session.respawnCount ?? 0) + 1;
   const role = session.spawnOptions!.role || 'unknown';
   const teamId = session.spawnOptions!.teamId || 'unknown';
-  const isMaster = role === 'master';
-  const baseDelay = isMaster ? Math.max(2000, Math.floor(RESPAWN_BASE_DELAY_MS / 2)) : RESPAWN_BASE_DELAY_MS;
+  const isPriority = hasRespawnPriority(role);
+  const baseDelay = isPriority ? Math.max(2000, Math.floor(RESPAWN_BASE_DELAY_MS / 2)) : RESPAWN_BASE_DELAY_MS;
   const delayMs = baseDelay * Math.pow(2, respawnCount - 1);
 
   logger.debug(

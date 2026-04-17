@@ -38,11 +38,11 @@ describe('traceId', () => {
       expect(ids.size).toBe(100);
     });
 
-    it('generates time-sortable IDs', () => {
+    it('generates time-sortable IDs', async () => {
       const id1 = generateTraceId();
+      await new Promise((r) => setTimeout(r, 2));
       const id2 = generateTraceId();
-      // ULIDs generated in sequence should be monotonically increasing
-      expect(id2 >= id1).toBe(true);
+      expect(id2 > id1).toBe(true);
     });
   });
 

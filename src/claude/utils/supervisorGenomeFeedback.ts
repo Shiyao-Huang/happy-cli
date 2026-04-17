@@ -4,6 +4,7 @@ export interface FeedbackUploadTarget {
     genomeId?: string;
     namespace: string;
     name: string;
+    version?: number;
     source: 'score-spec' | 'explicit-target';
 }
 

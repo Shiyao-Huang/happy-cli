@@ -3,9 +3,14 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { execSync } from 'child_process'
 import { run } from './index'
 
-describe('ripgrep low-level wrapper', () => {
+const hasRg = (() => {
+    try { execSync('rg --version', { stdio: 'ignore' }); return true; } catch { return false; }
+})();
+
+describe.skipIf(!hasRg)('ripgrep low-level wrapper', () => {
     it('should get version', async () => {
         const result = await run(['--version'])
         expect(result.exitCode).toBe(0)

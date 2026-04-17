@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { createGenomeViaMarketplace, promoteGenomeViaMarketplace, submitDiffViaMarketplace, submitPackageDiffViaMarketplace } from './genomePromotionSync'
+import { promoteGenomeViaMarketplace, submitPackageDiffViaMarketplace } from './genomePromotionSync'
+
+const TEST_HUB_URL = 'https://aha-agi.com/genome'
+const TEST_SERVER_URL = 'https://aha-agi.com/api'
 
 function response(status: number, body: string) {
     return {
@@ -27,6 +30,7 @@ describe('promoteGenomeViaMarketplace', () => {
                 isPublic: true,
                 minAvgScore: 60,
             },
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         })
 
@@ -37,7 +41,7 @@ describe('promoteGenomeViaMarketplace', () => {
         })
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/supervisor/promote',
+                input: `${TEST_HUB_URL}/genomes/%40official/supervisor/promote`,
                 method: 'POST',
             },
         ])
@@ -54,7 +58,7 @@ describe('promoteGenomeViaMarketplace', () => {
                     : null,
             })
 
-            if (input.startsWith('https://aha-agi.com/genome/')) {
+            if (input.startsWith(`${TEST_HUB_URL}/`)) {
                 return response(401, '{"error":"Unauthorized"}')
             }
 
@@ -68,9 +72,10 @@ describe('promoteGenomeViaMarketplace', () => {
                 isPublic: true,
                 minAvgScore: 60,
             },
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
             authToken: 'user-token',
-            serverUrl: 'https://aha-agi.com/api',
+            serverUrl: TEST_SERVER_URL,
         })
 
         expect(result).toMatchObject({
@@ -80,7 +85,7 @@ describe('promoteGenomeViaMarketplace', () => {
         })
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/supervisor/promote',
+                input: `${TEST_HUB_URL}/genomes/%40official/supervisor/promote`,
                 method: 'POST',
                 auth: null,
             },
@@ -110,6 +115,7 @@ describe('submitPackageDiffViaMarketplace', () => {
                     { type: 'manifest_set', path: 'behavior.onIdle', value: 'self-assign' },
                 ],
             },
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         })
 
@@ -120,7 +126,7 @@ describe('submitPackageDiffViaMarketplace', () => {
         })
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/entities/id/entity-1/package-diffs',
+                input: `${TEST_HUB_URL}/entities/id/entity-1/package-diffs`,
                 method: 'POST',
             },
         ])
@@ -152,6 +158,7 @@ describe('submitPackageDiffViaMarketplace', () => {
                     { type: 'manifest_set', path: 'behavior.onIdle', value: 'self-assign' },
                 ],
             },
+            hubUrl: TEST_HUB_URL,
             authToken: 'test-token',
             serverUrl: 'https://api.test.com',
             fetchImpl: fetchImpl as any,
@@ -184,6 +191,7 @@ describe('submitPackageDiffViaMarketplace', () => {
                     { type: 'manifest_set', path: 'behavior.onIdle', value: 'self-assign' },
                 ],
             },
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         })
 

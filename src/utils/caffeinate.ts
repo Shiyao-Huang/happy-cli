@@ -134,7 +134,7 @@ function setupCleanupHandlers(): void {
         cleanup()
     })
     process.on('unhandledRejection', (reason, promise) => {
-        logger.debug('[caffeinate] Unhandled rejection, cleaning up:', reason)
-        cleanup()
+        logger.warn('[caffeinate] Unhandled rejection (non-fatal):', reason)
+        logger.warn('[caffeinate] Rejection type:', typeof reason, 'keys:', reason && typeof reason === 'object' ? Object.keys(reason as object) : 'N/A')
     })
 }

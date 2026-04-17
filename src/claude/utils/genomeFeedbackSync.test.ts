@@ -4,6 +4,9 @@ import type { AggregatedFeedback } from './feedbackPrivacy';
 import { normalizeFeedbackProxyBaseUrl, syncGenomeFeedbackToMarketplace } from './genomeFeedbackSync';
 import type { FeedbackUploadTarget } from './supervisorAgentVerdict';
 
+const TEST_HUB_URL = 'https://aha-agi.com/genome';
+const TEST_SERVER_URL = 'https://aha-agi.com/api';
+
 function makeFeedback(): AggregatedFeedback {
     return {
         evaluationCount: 3,
@@ -38,6 +41,7 @@ function makeTarget(overrides: Partial<FeedbackUploadTarget> = {}): FeedbackUplo
         name: overrides.name ?? 'implementer',
         source: overrides.source ?? 'explicit-target',
         ...(overrides.genomeId ? { genomeId: overrides.genomeId } : {}),
+        ...(overrides.version != null ? { version: overrides.version } : {}),
     };
 }
 
@@ -66,6 +70,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             }),
             role: 'implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         });
 
@@ -77,7 +82,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/id/genome-1/feedback',
+                input: `${TEST_HUB_URL}/genomes/id/genome-1/feedback`,
                 method: 'PATCH',
             },
         ]);
@@ -94,6 +99,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             target: makeTarget(),
             role: 'implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         });
 
@@ -105,7 +111,36 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
+                input: `${TEST_HUB_URL}/genomes/%40official/implementer/feedback`,
+                method: 'PATCH',
+            },
+        ]);
+    });
+
+    it('patches feedback via version route when target has version', async () => {
+        const calls: Array<{ input: string; method?: string }> = [];
+        const fetchImpl = async (input: string, init?: RequestInit) => {
+            calls.push({ input, method: init?.method });
+            return response(200, '{"genome":{"id":"g-1"}}');
+        };
+
+        const result = await syncGenomeFeedbackToMarketplace({
+            target: makeTarget({ version: 2 }),
+            role: 'implementer',
+            feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
+            fetchImpl: fetchImpl as any,
+        });
+
+        expect(result).toMatchObject({
+            ok: true,
+            status: 200,
+            createdGenome: false,
+            transport: 'direct-hub',
+        });
+        expect(calls).toEqual([
+            {
+                input: `${TEST_HUB_URL}/genomes/%40official/implementer/versions/2/feedback`,
                 method: 'PATCH',
             },
         ]);
@@ -125,6 +160,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             }),
             role: 'implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         });
 
@@ -136,7 +172,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/id/genome-missing/feedback',
+                input: `${TEST_HUB_URL}/genomes/id/genome-missing/feedback`,
                 method: 'PATCH',
             },
         ]);
@@ -158,6 +194,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             target: makeTarget(),
             role: 'Implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         });
 
@@ -169,15 +206,15 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
+                input: `${TEST_HUB_URL}/genomes/%40official/implementer/feedback`,
                 method: 'PATCH',
             },
             {
-                input: 'https://aha-agi.com/genome/genomes',
+                input: `${TEST_HUB_URL}/genomes`,
                 method: 'POST',
             },
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
+                input: `${TEST_HUB_URL}/genomes/%40official/implementer/feedback`,
                 method: 'PATCH',
             },
         ]);
@@ -199,6 +236,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             }),
             role: 'custom-reviewer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
         });
 
@@ -210,7 +248,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/id/genome-custom-reviewer/feedback',
+                input: `${TEST_HUB_URL}/genomes/id/genome-custom-reviewer/feedback`,
                 method: 'PATCH',
             },
         ]);
@@ -227,7 +265,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
                     : null,
             });
 
-            if (input.startsWith('https://aha-agi.com/genome/')) {
+            if (input.startsWith(`${TEST_HUB_URL}/`)) {
                 throw new TypeError('fetch failed');
             }
 
@@ -238,9 +276,10 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             target: makeTarget(),
             role: 'implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
             authToken: 'user-token',
-            serverUrl: 'https://aha-agi.com/api',
+            serverUrl: TEST_SERVER_URL,
         });
 
         expect(result).toMatchObject({
@@ -251,7 +290,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/%40official/implementer/feedback',
+                input: `${TEST_HUB_URL}/genomes/%40official/implementer/feedback`,
                 method: 'PATCH',
                 auth: null,
             },
@@ -274,7 +313,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
                     : null,
             });
 
-            if (input.startsWith('https://aha-agi.com/genome/')) {
+            if (input.startsWith(`${TEST_HUB_URL}/`)) {
                 throw new TypeError('fetch failed');
             }
 
@@ -288,9 +327,10 @@ describe('syncGenomeFeedbackToMarketplace', () => {
             }),
             role: 'implementer',
             feedback: makeFeedback(),
+            hubUrl: TEST_HUB_URL,
             fetchImpl: fetchImpl as any,
             authToken: 'user-token',
-            serverUrl: 'https://aha-agi.com/api',
+            serverUrl: TEST_SERVER_URL,
         });
 
         expect(result).toMatchObject({
@@ -301,7 +341,7 @@ describe('syncGenomeFeedbackToMarketplace', () => {
         });
         expect(calls).toEqual([
             {
-                input: 'https://aha-agi.com/genome/genomes/id/genome-1/feedback',
+                input: `${TEST_HUB_URL}/genomes/id/genome-1/feedback`,
                 method: 'PATCH',
                 auth: null,
             },

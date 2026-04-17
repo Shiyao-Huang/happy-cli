@@ -4,6 +4,11 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildReflexivityFixture } from '../fixtures'
 import { buildTurnsFromResponsePayload, fixtureExampleCommand, scoreCaseCommand } from '../command'
+import { resolveReflexivityCasesPath } from '../cases'
+
+const hasBenchmark = (() => {
+    try { resolveReflexivityCasesPath(); return true; } catch { return false; }
+})();
 
 describe('reflexivity command helpers', () => {
     it('builds prompt turns from structured response payload', () => {
@@ -22,7 +27,7 @@ describe('reflexivity command helpers', () => {
         expect(turns[0].parsed?.claims[0].claimType).toBe('role')
     })
 
-    it('scores a case from fixture/response files', async () => {
+    it.skipIf(!hasBenchmark)('scores a case from fixture/response files', async () => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'reflexivity-cli-'))
         const fixturePath = path.join(tmp, 'fixture.json')
         const responsePath = path.join(tmp, 'response.json')

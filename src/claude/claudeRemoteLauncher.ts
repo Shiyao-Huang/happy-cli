@@ -337,7 +337,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                     retiredBy: 'runtime',
                                     retireReason: directive.reason || 'explicit-retire-directive',
                                 }));
-                                await session.client.flush();
+                                await Promise.race([
+                                    session.client.flush(),
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('flush timeout')), 3000)),
+                                ]);
                             } catch (error) {
                                 logger.debug('[remote]: Failed to persist retired metadata before exit:', error);
                             }
@@ -372,7 +375,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                         retiredBy: 'runtime',
                                         retireReason: directive.reason || 'standby-auto-exit',
                                     }));
-                                    await session.client.flush();
+                                    await Promise.race([
+                                    session.client.flush(),
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('flush timeout')), 3000)),
+                                ]);
                                 } catch (error) {
                                     logger.debug('[remote]: Failed to persist auto-retired metadata before exit:', error);
                                 }

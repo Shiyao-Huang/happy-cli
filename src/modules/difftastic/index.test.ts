@@ -4,11 +4,16 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { run } from './index';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { execSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-describe('difftastic', () => {
+const hasDifft = (() => {
+    try { execSync('difft --version', { stdio: 'ignore' }); return true; } catch { return false; }
+})();
+
+describe.skipIf(!hasDifft)('difftastic', () => {
     let testDir: string;
     let file1Path: string;
     let file2Path: string;

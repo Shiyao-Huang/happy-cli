@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { loadReflexivityCases, resolveReflexivityCasesPath } from '../cases'
 
-describe('reflexivity cases loader', () => {
+const hasBenchmark = (() => {
+    try { resolveReflexivityCasesPath(); return true; } catch { return false; }
+})();
+
+describe.skipIf(!hasBenchmark)('reflexivity cases loader', () => {
     it('finds and loads the benchmark reflexivity JSONL', () => {
         const filePath = resolveReflexivityCasesPath()
         const cases = loadReflexivityCases(filePath)

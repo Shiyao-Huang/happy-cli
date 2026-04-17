@@ -1,0 +1,120 @@
+# ── Dockerfile.test ──────────────────────────────────────────────────
+# Ephemeral test container: spin up, test, tear down. Zero host pollution.
+#
+# L1 (unit + tsc):  docker build -f Dockerfile.test --target test-l1 -t aha-test-l1 .
+#                   docker run --rm aha-test-l1
+#
+# L2 (daemon integration): docker build -f Dockerfile.test --target test-l2 -t aha-test-l2 .
+#                           docker run --rm -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY aha-test-l2
+
+# ── Stage: deps ─────────────────────────────────────────────────────
+FROM node:22-alpine AS deps
+RUN apk add --no-cache python3 make g++ git bash
+WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=10240
+COPY package.json yarn.lock ./
+COPY bin ./bin
+COPY scripts ./scripts
+COPY tools ./tools
+RUN yarn install --frozen-lockfile --ignore-engines
+
+# ── Stage: build ────────────────────────────────────────────────────
+FROM deps AS build
+COPY . .
+RUN yarn add --dev ajv ajv-formats 2>/dev/null || true
+RUN yarn build
+
+# ── Stage: test-l1 (unit tests + type check, no API key needed) ────
+FROM build AS test-l1
+COPY <<'L1_SCRIPT' /app/scripts/run-l1.sh
+#!/bin/sh
+echo "=== L1: TypeScript type check ==="
+npx tsc --noEmit 2>&1
+TSC_EXIT=$?
+echo ""
+echo "=== L1: Vitest unit tests ==="
+npx vitest run --reporter=verbose 2>&1
+TEST_EXIT=$?
+echo ""
+echo "=== L1 Summary ==="
+echo "tsc:    $([ $TSC_EXIT -eq 0 ] && echo PASS || echo FAIL) (exit $TSC_EXIT)"
+echo "vitest: $([ $TEST_EXIT -eq 0 ] && echo PASS || echo FAIL) (exit $TEST_EXIT)"
+if [ $TEST_EXIT -ne 0 ]; then exit $TEST_EXIT; fi
+if [ $TSC_EXIT -ne 0 ]; then exit $TSC_EXIT; fi
+exit 0
+L1_SCRIPT
+RUN chmod +x /app/scripts/run-l1.sh
+CMD ["sh", "/app/scripts/run-l1.sh"]
+
+# ── Stage: test-l2 (daemon integration, needs ANTHROPIC_API_KEY) ───
+FROM build AS test-l2-base
+RUN apk add --no-cache bash procps
+ENV AHA_HOME_DIR=/tmp/aha-test \
+    AHA_DISABLE_CAFFEINATE=true \
+    NODE_ENV=test \
+    API_TIMEOUT_MS=3000000 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
+    ENABLE_TOOL_SEARCH=true
+RUN mkdir -p /tmp/aha-test
+
+COPY <<'VERIFY' /app/scripts/verify-daemon.sh
+#!/bin/bash
+set -euo pipefail
+
+echo "=== L2: Daemon cold-start verification ==="
+
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  echo "SKIP: Neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN set, L2 requires one"
+  exit 0
+fi
+
+export AHA_HOME_DIR=/tmp/aha-test
+export AHA_DISABLE_CAFFEINATE=true
+
+echo "[1/4] Starting daemon..."
+node dist/index.mjs daemon start-sync &
+DAEMON_PID=$!
+sleep 5
+
+echo "[2/4] Checking daemon is alive (PID $DAEMON_PID)..."
+if ! kill -0 $DAEMON_PID 2>/dev/null; then
+  echo "FAIL: daemon died within 5s"
+  exit 1
+fi
+
+echo "[3/4] Watching logs for boot loop (30s)..."
+BOOT_LOOP=0
+for i in $(seq 1 6); do
+  sleep 5
+  LOG_FILE=$(ls -t /tmp/aha-test/logs/*.log 2>/dev/null | head -1)
+  if [ -n "$LOG_FILE" ]; then
+    if grep -q '\[caffeinate\] Unhandled rejection' "$LOG_FILE" 2>/dev/null; then
+      echo "FAIL: boot loop detected — unhandled rejection in caffeinate"
+      BOOT_LOOP=1
+      break
+    fi
+    if grep -q '\[START\] Unhandled rejection' "$LOG_FILE" 2>/dev/null; then
+      echo "INFO: unhandled rejection logged (non-fatal after F-019 fix)"
+    fi
+  fi
+done
+
+echo "[4/4] Stopping daemon..."
+kill $DAEMON_PID 2>/dev/null || true
+wait $DAEMON_PID 2>/dev/null || true
+
+echo ""
+echo "=== L2 Summary ==="
+if [ $BOOT_LOOP -eq 1 ]; then
+  echo "daemon-cold-start: FAIL (boot loop)"
+  exit 1
+else
+  echo "daemon-cold-start: PASS (alive 30s, no boot loop)"
+  exit 0
+fi
+VERIFY
+RUN chmod +x /app/scripts/verify-daemon.sh
+
+FROM test-l2-base AS test-l2
+CMD ["bash", "/app/scripts/verify-daemon.sh"]

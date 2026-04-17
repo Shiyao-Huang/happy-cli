@@ -115,6 +115,7 @@ async function exchangeCodeForTokens(
     interface CodexTokenResponse {
         id_token: string;
         access_token?: string;
+        refresh_token?: string;
         [key: string]: unknown;
     }
     const data = (await response.json() as CodexTokenResponse);
@@ -136,7 +137,7 @@ async function exchangeCodeForTokens(
     return {
         id_token: data.id_token,
         access_token: data.access_token || data.id_token,
-        refresh_token: data.refresh_token,
+        refresh_token: data.refresh_token ?? '',
         account_id: accountId,
     };
 }

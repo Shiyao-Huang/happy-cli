@@ -111,6 +111,16 @@ function buildServerProxyHeaders(authToken?: string): Record<string, string> {
     };
 }
 
+function buildFeedbackUrl(hubUrl: string, target: FeedbackUploadTarget): string {
+    if (target.genomeId) {
+        return `${hubUrl}/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`;
+    }
+    if (target.version != null) {
+        return `${hubUrl}/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/versions/${target.version}/feedback`;
+    }
+    return `${hubUrl}/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
+}
+
 async function patchFeedback(
     fetchImpl: FetchLike,
     hubUrl: string,
@@ -118,11 +128,8 @@ async function patchFeedback(
     target: FeedbackUploadTarget,
     feedback: AggregatedFeedback,
 ): Promise<FetchResponseLike> {
-    const url = target.genomeId
-        ? `${hubUrl}/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`
-        : `${hubUrl}/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
     return fetchImpl(
-        url,
+        buildFeedbackUrl(hubUrl, target),
         {
             method: 'PATCH',
             headers: buildFeedbackHeaders(hubPublishKey),
@@ -132,6 +139,16 @@ async function patchFeedback(
     );
 }
 
+function buildFeedbackProxyUrl(serverUrl: string, target: FeedbackUploadTarget): string {
+    if (target.genomeId) {
+        return `${serverUrl}/v1/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`;
+    }
+    if (target.version != null) {
+        return `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/versions/${target.version}/feedback`;
+    }
+    return `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
+}
+
 async function patchFeedbackViaServerProxy(
     fetchImpl: FetchLike,
     serverUrl: string,
@@ -139,11 +156,8 @@ async function patchFeedbackViaServerProxy(
     target: FeedbackUploadTarget,
     feedback: AggregatedFeedback,
 ): Promise<FetchResponseLike> {
-    const url = target.genomeId
-        ? `${serverUrl}/v1/genomes/id/${encodeURIComponent(target.genomeId)}/feedback`
-        : `${serverUrl}/v1/genomes/${encodeURIComponent(target.namespace)}/${encodeURIComponent(target.name)}/feedback`;
     return fetchImpl(
-        url,
+        buildFeedbackProxyUrl(serverUrl, target),
         {
             method: 'PATCH',
             headers: buildServerProxyHeaders(authToken),
