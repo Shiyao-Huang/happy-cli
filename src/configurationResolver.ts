@@ -6,7 +6,7 @@ import { z } from 'zod'
 
 export const DEFAULT_SERVER_URL = 'https://ahaagi.com/api'
 export const DEFAULT_WEBAPP_URL = 'https://ahaagi.com/webappv3'
-export const DEFAULT_GENOME_HUB_URL = 'https://ahaagi.com/api/v2'
+export const DEFAULT_GENOME_HUB_URL = 'https://ahaagi.com/genome'
 
 const persistentCliConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
@@ -67,13 +67,14 @@ export function readPersistentCliConfig(configFile: string): PersistentCliConfig
 
 /**
  * Inject GENOME_HUB_URL into env from AHA_SERVER_URL if not already set.
+ * Convention: replace trailing /api with /genome.
  * Call this ONCE at startup — never derive at usage time.
  */
 export function injectGenomeHubUrlFromServerUrl(env: NodeJS.ProcessEnv = process.env): void {
   if (env.GENOME_HUB_URL) return
   const serverUrl = env.AHA_SERVER_URL
   if (serverUrl) {
-    env.GENOME_HUB_URL = `${serverUrl.replace(/\/$/, '')}/v2`
+    env.GENOME_HUB_URL = serverUrl.replace(/\/$/, '').replace(/\/api$/, '/genome')
   }
 }
 
@@ -89,7 +90,7 @@ export function resolveServerConfig(
   return {
     serverUrl,
     webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL,
-    genomeHubUrl: env.GENOME_HUB_URL || `${serverUrl.replace(/\/$/, '')}/v2`,
+    genomeHubUrl: env.GENOME_HUB_URL || serverUrl.replace(/\/$/, '').replace(/\/api$/, '/genome'),
   }
 }
 

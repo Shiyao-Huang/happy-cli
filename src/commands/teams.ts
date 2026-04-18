@@ -16,6 +16,7 @@ import {
   deriveRoleIdFromGenomeRef,
   fetchMarketplaceGenomeDetail,
   parseCorpsSpecFromGenome,
+  resolvePreferredAgentImageId,
 } from '@/utils/genomeMarketplace';
 import { confirmPrompt, getCliCommandExitCode, printCliCommandError, printCliDryRunPreview } from './globalCli';
 import { t } from '@/i18n';
@@ -1420,10 +1421,31 @@ async function spawnTeamWithPreset(
     console.log(chalk.gray(`Spawning ${presetConfig.roles.length} agent(s)...\n`));
   }
 
-  // Step 3: spawn each agent
+  // Step 3: resolve genome for each role from hub BEFORE spawning
+  const resolvedRoles: Array<{ roleId: string; name: string; specId: string }> = [];
+  for (const { roleId, name } of presetConfig.roles) {
+    const resolution = await resolvePreferredAgentImageId({ role: roleId, runtime: opts.model });
+    if (!resolution.specId) {
+      const msg = `No genome found for role "${roleId}" in genome-hub. ` +
+        `Publish @official/${roleId} or a matching genome before spawning.`;
+      if (opts.asJson) {
+        console.log(JSON.stringify({ success: false, error: msg }));
+      } else {
+        console.error(chalk.red(`  ✗ ${name} (${roleId}): ${msg}`));
+      }
+      continue;
+    }
+    resolvedRoles.push({ roleId, name, specId: resolution.specId });
+  }
+
+  if (resolvedRoles.length === 0) {
+    throw new Error('No genomes resolved — cannot spawn team. Publish required genomes to genome-hub first.');
+  }
+
+  // Step 4: spawn each agent with resolved specId
   const spawnedAgents: Array<{ sessionId: string; roleId: string; name: string }> = [];
 
-  for (const { roleId, name } of presetConfig.roles) {
+  for (const { roleId, name, specId } of resolvedRoles) {
     const agentId = randomUUID();
     const teamContextSuffix = `\n\n## Team Context\n- Team ID: ${teamId}\n- Your role: ${roleId}\n- On startup: call get_team_info then list_tasks\n- Kanban protocol: start_task before work, complete_task after done\n- Report blockers via send_team_message @master`;
 
@@ -1460,6 +1482,7 @@ async function spawnTeamWithPreset(
         role: roleId,
         sessionName: name,
         teamId,
+        specId,
         env: materializedEnv,
       };
 

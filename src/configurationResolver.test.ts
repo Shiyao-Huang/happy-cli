@@ -60,7 +60,7 @@ describe('configurationResolver', () => {
     })).toEqual({
       serverUrl: 'http://localhost:3005',
       webappUrl: 'http://localhost:8081',
-      genomeHubUrl: 'http://localhost:3005/v2',
+      genomeHubUrl: 'http://localhost:3005/genome',
     })
   })
 
@@ -68,17 +68,17 @@ describe('configurationResolver', () => {
     expect(resolveServerConfig({}, { enableModelSelection: false })).toEqual({
       serverUrl: 'https://ahaagi.com/api',
       webappUrl: 'https://ahaagi.com/webappv3',
-      genomeHubUrl: 'https://ahaagi.com/api/v2',
+      genomeHubUrl: 'https://ahaagi.com/genome',
     })
   })
 
-  it('derives genomeHubUrl from AHA_SERVER_URL when GENOME_HUB_URL not set', () => {
+  it('derives genomeHubUrl from AHA_SERVER_URL: /api → /genome', () => {
     expect(resolveServerConfig({
       AHA_SERVER_URL: 'https://aha-agi.com/api',
     }, { enableModelSelection: false })).toEqual({
       serverUrl: 'https://aha-agi.com/api',
       webappUrl: 'https://ahaagi.com/webappv3',
-      genomeHubUrl: 'https://aha-agi.com/api/v2',
+      genomeHubUrl: 'https://aha-agi.com/genome',
     })
   })
 
@@ -94,10 +94,10 @@ describe('configurationResolver', () => {
   })
 
   describe('injectGenomeHubUrlFromServerUrl', () => {
-    it('injects GENOME_HUB_URL from AHA_SERVER_URL', () => {
+    it('injects GENOME_HUB_URL from AHA_SERVER_URL: /api → /genome', () => {
       const env: Record<string, string> = { AHA_SERVER_URL: 'https://aha-agi.com/api' }
       injectGenomeHubUrlFromServerUrl(env)
-      expect(env.GENOME_HUB_URL).toBe('https://aha-agi.com/api/v2')
+      expect(env.GENOME_HUB_URL).toBe('https://aha-agi.com/genome')
     })
 
     it('does not overwrite existing GENOME_HUB_URL', () => {
