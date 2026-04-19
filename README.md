@@ -32,7 +32,7 @@ aha daemon start
 
 ### 3. Open Web App
 
-Visit **https://ahaagi.com/webappv3** in your browser or mobile device.
+Visit **https://aha-agi.com/webappv3** in your browser or mobile device.
 
 ## Features
 
@@ -75,8 +75,8 @@ Visit **https://ahaagi.com/webappv3** in your browser or mobile device.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AHA_HOME_DIR` | `~/.aha` | Data directory |
-| `AHA_SERVER_URL` | `https://ahaagi.com/api` | Server URL |
-| `AHA_WEBAPP_URL` | `https://ahaagi.com/webappv3` | Web app URL |
+| `AHA_SERVER_URL` | `https://aha-agi.com/api` | Server URL |
+| `AHA_WEBAPP_URL` | `https://aha-agi.com/webappv3` | Web app URL |
 | `AHA_CONFIG_FILE` | `~/.aha/config.json` | Config file path |
 | `AHA_DISABLE_CAFFEINATE` | — | Set to `true` to disable macOS sleep prevention |
 | `AHA_EXPERIMENTAL` | — | Set to `true` to enable experimental features |
