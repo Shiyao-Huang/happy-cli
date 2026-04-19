@@ -14,6 +14,7 @@ export type MarketplaceGenomeRecord = {
     category?: string | null;
     spawnCount?: number | null;
     feedbackData?: string | null;
+    runtimeType?: 'claude' | 'codex' | 'open-code' | null;
 };
 
 export type MarketplaceFeedbackSummary = {
@@ -115,6 +116,7 @@ function tokenizeMarketplaceQuery(query: string): string[] {
 async function fetchMarketplaceGenomePage(input: {
     query?: string;
     category?: string;
+    runtimeType?: MarketplaceGenomeRecord['runtimeType'];
     limit?: number;
     hubUrl: string;
 }): Promise<MarketplaceGenomeRecord[]> {
@@ -122,6 +124,7 @@ async function fetchMarketplaceGenomePage(input: {
 
     if (input.query) query.set('q', input.query);
     if (input.category) query.set('category', input.category);
+    if (input.runtimeType) query.set('runtimeType', input.runtimeType);
     query.set('sortBy', 'score');
     query.set('limit', String(input.limit ?? 20));
 
@@ -196,6 +199,16 @@ export function searchMatchesRole(genome: MarketplaceGenomeRecord, roleNames: st
     });
 }
 
+function matchesRequestedRuntime(
+    genome: MarketplaceGenomeRecord,
+    runtimeType?: 'claude' | 'codex' | 'open-code',
+): boolean {
+    if (!runtimeType) {
+        return true;
+    }
+    return genome.runtimeType == null || genome.runtimeType === runtimeType;
+}
+
 function keepLatestGenomeVersion(genomes: MarketplaceGenomeRecord[]): MarketplaceGenomeRecord[] {
     const latestByLineage = new Map<string, MarketplaceGenomeRecord>();
 
@@ -224,12 +237,17 @@ function keepLatestGenomeVersion(genomes: MarketplaceGenomeRecord[]): Marketplac
 export function selectBestRatedGenomeCandidate(
     genomes: MarketplaceGenomeRecord[],
     roleNames: string[],
-    options?: { minScore?: number; minEvaluationCount?: number }
+    options?: {
+        runtimeType?: 'claude' | 'codex' | 'open-code';
+        minScore?: number;
+        minEvaluationCount?: number;
+    }
 ): MarketplaceGenomeRecord | null {
     const minScore = options?.minScore ?? 60;
     const minEvaluationCount = options?.minEvaluationCount ?? 3;
 
     const candidates = keepLatestGenomeVersion(genomes)
+        .filter((genome) => matchesRequestedRuntime(genome, options?.runtimeType))
         .filter((genome) => searchMatchesRole(genome, roleNames))
         .filter((genome) => {
             const feedback = parseMarketplaceFeedbackData(genome.feedbackData);
@@ -256,6 +274,7 @@ export function selectBestRatedGenomeCandidate(
 export async function searchMarketplaceGenomes(options?: {
     query?: string;
     category?: string;
+    runtimeType?: 'claude' | 'codex' | 'open-code';
     limit?: number;
     hubUrl?: string;
 }): Promise<MarketplaceGenomeRecord[]> {
@@ -263,6 +282,7 @@ export async function searchMarketplaceGenomes(options?: {
     const exactMatches = await fetchMarketplaceGenomePage({
         query: options?.query,
         category: options?.category,
+        runtimeType: options?.runtimeType,
         limit: options?.limit,
         hubUrl,
     });
@@ -275,6 +295,7 @@ export async function searchMarketplaceGenomes(options?: {
     const fallbackPages = await Promise.all(tokens.map((token) => fetchMarketplaceGenomePage({
         query: token,
         category: options?.category,
+        runtimeType: options?.runtimeType,
         limit: options?.limit,
         hubUrl,
     })));
@@ -380,8 +401,8 @@ export async function resolveOfficialGenomeSpecId(
             );
 
             if (!response.ok) continue;
-            const payload = await response.json() as { genome?: { id?: string } };
-            if (payload.genome?.id) {
+            const payload = await response.json() as { genome?: { id?: string; runtimeType?: MarketplaceGenomeRecord['runtimeType'] } };
+            if (payload.genome?.id && (payload.genome.runtimeType == null || payload.genome.runtimeType === runtime)) {
                 return { specId: payload.genome.id, matchedName: officialName };
             }
         } catch {
@@ -422,6 +443,7 @@ export async function resolvePreferredAgentImageId(options: {
             try {
                 const genomes = await searchMarketplaceGenomes({
                     query: queryName,
+                    runtimeType: options.runtime,
                     limit: 8,
                     hubUrl: options.hubUrl,
                 });
@@ -431,7 +453,9 @@ export async function resolvePreferredAgentImageId(options: {
             }
         }
 
-        const marketBest = selectBestRatedGenomeCandidate(marketCandidates, preferredNames);
+        const marketBest = selectBestRatedGenomeCandidate(marketCandidates, preferredNames, {
+            runtimeType: options.runtime,
+        });
         if (marketBest?.id && marketBest.id !== official.specId) {
             // Marketplace found a different genome with better rating — use it
             return { specId: marketBest.id, source: 'best-rated', matchedName: marketBest.name };
@@ -448,6 +472,7 @@ export async function resolvePreferredAgentImageId(options: {
             try {
                 const genomes = await searchMarketplaceGenomes({
                     query: queryName,
+                    runtimeType: options.runtime,
                     limit: 8,
                     hubUrl: options.hubUrl,
                 });
@@ -457,7 +482,9 @@ export async function resolvePreferredAgentImageId(options: {
             }
         }
 
-        const selected = selectBestRatedGenomeCandidate(marketCandidates, preferredNames);
+        const selected = selectBestRatedGenomeCandidate(marketCandidates, preferredNames, {
+            runtimeType: options.runtime,
+        });
         if (selected?.id) {
             return { specId: selected.id, source: 'best-rated', matchedName: selected.name };
         }

@@ -6,6 +6,7 @@ import {
     getPreferredGenomeNames,
     parseMarketplaceFeedbackData,
     parseCorpsSpecFromGenome,
+    resolveOfficialGenomeSpecId,
     resolveSpawnRuntimeForRole,
     searchMarketplaceGenomes,
     searchMatchesRole,
@@ -108,6 +109,49 @@ describe('genomeMarketplace helpers', () => {
         ], ['master']);
 
         expect(selected).toBeNull();
+    });
+
+    it('filters best-rated candidates by requested runtime so codex requests do not reuse claude genomes', () => {
+        const selected = selectBestRatedGenomeCandidate([
+            {
+                id: 'impl-claude',
+                namespace: '@official',
+                name: 'implementer',
+                runtimeType: 'claude',
+                feedbackData: '{"avgScore":96,"evaluationCount":12}',
+                spawnCount: 40,
+            },
+            {
+                id: 'builder-codex',
+                namespace: '@official',
+                name: 'agent-builder-codex',
+                runtimeType: 'codex',
+                tags: '["agent-builder","codex"]',
+                feedbackData: '{"avgScore":84,"evaluationCount":5}',
+                spawnCount: 5,
+            },
+        ], ['implementer', 'agent-builder-codex', 'agent-builder'], {
+            runtimeType: 'codex',
+        });
+
+        expect(selected?.id).toBe('builder-codex');
+    });
+
+    it('treats legacy genomes without runtimeType as compatible fallback candidates', () => {
+        const selected = selectBestRatedGenomeCandidate([
+            {
+                id: 'legacy-builder',
+                namespace: '@official',
+                name: 'agent-builder-codex',
+                tags: '["agent-builder","codex"]',
+                feedbackData: '{"avgScore":82,"evaluationCount":4}',
+                spawnCount: 8,
+            },
+        ], ['agent-builder-codex', 'agent-builder'], {
+            runtimeType: 'codex',
+        });
+
+        expect(selected?.id).toBe('legacy-builder');
     });
 
     it('builds corps specs by aggregating duplicate members into counts', () => {
@@ -275,5 +319,39 @@ describe('genomeMarketplace helpers', () => {
         });
 
         expect(genomes.map((genome) => genome.id)).toEqual(['shared', 'impl-2']);
+    });
+
+    it('passes runtimeType through marketplace search requests', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({ genomes: [] }), { status: 200 }),
+        );
+
+        await searchMarketplaceGenomes({
+            query: 'agent-builder',
+            runtimeType: 'codex',
+            limit: 5,
+            hubUrl: 'http://example.test',
+        });
+
+        expect(fetchMock).toHaveBeenCalledWith(
+            'http://example.test/genomes?q=agent-builder&runtimeType=codex&sortBy=score&limit=5',
+            expect.any(Object),
+        );
+    });
+
+    it('accepts official legacy genomes when runtimeType has not been backfilled yet', async () => {
+        vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({
+                genome: {
+                    id: 'legacy-official-builder',
+                    runtimeType: null,
+                },
+            }), { status: 200 }),
+        );
+
+        await expect(resolveOfficialGenomeSpecId('agent-builder', 'codex', 'http://example.test')).resolves.toEqual({
+            specId: 'legacy-official-builder',
+            matchedName: 'agent-builder-codex-r2',
+        });
     });
 });
