@@ -19,6 +19,7 @@ import {
   countActiveHelpAgents,
   HELP_POOL_MAX,
   HELP_DEBOUNCE_MS,
+  shouldTriggerHelpAutoSpawn,
 } from './helpAutoSpawn';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -32,8 +33,12 @@ function makeTeamDir(tmpDir: string, teamId: string, messages: object[]): string
   return teamDir;
 }
 
-function makeMessage(content: string, timestamp = Date.now()) {
-  return { id: 'msg-1', teamId: 'team-a', fromRole: 'builder', content, timestamp };
+function makeMessage(
+  content: string,
+  timestamp = Date.now(),
+  overrides: Record<string, unknown> = {}
+) {
+  return { id: 'msg-1', teamId: 'team-a', fromRole: 'builder', content, timestamp, ...overrides };
 }
 
 function makeSession(teamId: string, role: string) {
@@ -175,6 +180,50 @@ describe('checkHelpAutoSpawn', () => {
     expect(requestHelp).toHaveBeenCalledOnce();
   });
 
+  it('does not auto-spawn from handshake guidance that only documents @help', async () => {
+    const teamId = 'team-f2';
+    const now = Date.now();
+    makeTeamDir(tmpDir, teamId, [
+      makeMessage('If blocked, use `@help` in team chat.', now - 100, {
+        metadata: { type: 'handshake' },
+      }),
+    ]);
+
+    const state = createHelpAutoSpawnState();
+    await checkHelpAutoSpawn({
+      activeTeamIds: [teamId],
+      sessions: [],
+      state,
+      requestHelp,
+      cwd: tmpDir,
+      now,
+    });
+
+    expect(requestHelp).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-spawn from help-agent chatter', async () => {
+    const teamId = 'team-f3';
+    const now = Date.now();
+    makeTeamDir(tmpDir, teamId, [
+      makeMessage('@help already handling this', now - 100, {
+        fromRole: 'help-agent',
+      }),
+    ]);
+
+    const state = createHelpAutoSpawnState();
+    await checkHelpAutoSpawn({
+      activeTeamIds: [teamId],
+      sessions: [],
+      state,
+      requestHelp,
+      cwd: tmpDir,
+      now,
+    });
+
+    expect(requestHelp).not.toHaveBeenCalled();
+  });
+
   it('skips messages older than lastCheckedTs (no double-spawn across cycles)', async () => {
     const teamId = 'team-g';
     const now = Date.now();
@@ -226,5 +275,23 @@ describe('countActiveHelpAgents', () => {
       },
     ];
     expect(countActiveHelpAgents(sessions, 'room-x')).toBe(1);
+  });
+});
+
+describe('shouldTriggerHelpAutoSpawn', () => {
+  it('ignores handshake messages that mention @help as documentation', () => {
+    expect(shouldTriggerHelpAutoSpawn({
+      content: 'If blocked, use `@help` in team chat.',
+      timestamp: Date.now(),
+      metadata: { type: 'handshake' },
+    })).toBe(false);
+  });
+
+  it('keeps explicit teammate help requests eligible', () => {
+    expect(shouldTriggerHelpAutoSpawn({
+      content: '@help I am blocked on auth',
+      timestamp: Date.now(),
+      fromRole: 'builder',
+    })).toBe(true);
   });
 });

@@ -16,6 +16,7 @@ import * as path from 'node:path';
 
 import { logger } from '@/ui/logger';
 import { Metadata } from '@/api/types';
+import { containsHelpMention } from '@/claude/team/helpLane';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,11 @@ interface TeamMessage {
   fromRole?: string;
   content: string;
   timestamp: number;
+  type?: string;
+  metadata?: {
+    type?: string;
+    [key: string]: unknown;
+  };
 }
 
 /** Per-team mutable state tracked across heartbeat cycles. */
@@ -88,6 +94,22 @@ function readTeamMessages(teamId: string, fromTs: number, cwd: string): TeamMess
   } catch {
     return [];
   }
+}
+
+export function shouldTriggerHelpAutoSpawn(message: TeamMessage): boolean {
+  if (!containsHelpMention(message.content)) {
+    return false;
+  }
+
+  if (message.fromRole === 'help-agent') {
+    return false;
+  }
+
+  if (message.metadata?.type === 'handshake') {
+    return false;
+  }
+
+  return true;
 }
 
 export function countActiveHelpAgents(
@@ -156,9 +178,7 @@ export async function checkHelpAutoSpawn(params: {
 
     const messages = readTeamMessages(teamId, lastChecked, cwd);
 
-    const hasHelpRequest = messages.some(msg =>
-      typeof msg.content === 'string' && /@help/i.test(msg.content)
-    );
+    const hasHelpRequest = messages.some(shouldTriggerHelpAutoSpawn);
 
     if (!hasHelpRequest) continue;
 
