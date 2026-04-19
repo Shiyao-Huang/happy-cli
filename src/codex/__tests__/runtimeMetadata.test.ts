@@ -40,11 +40,11 @@ describe('buildCodexRuntimeMetadata', () => {
                 source: 'codex-runtime',
                 updatedAt: 99,
                 permissionMode: 'bypassPermissions',
+                allowedTools: null,
+                disallowedTools: null,
             },
         });
         expect(result).not.toHaveProperty('tools');
-        expect(result.runtimePermissions).not.toHaveProperty('allowedTools');
-        expect(result.runtimePermissions).not.toHaveProperty('disallowedTools');
     });
 
     it('preserves required session metadata while rewriting codex runtime permissions', () => {
@@ -56,6 +56,8 @@ describe('buildCodexRuntimeMetadata', () => {
             tools: ['mcp__aha__list_tasks'],
         }, {
             permissionMode: 'read-only',
+            allowedTools: ['list_tasks'],
+            disallowedTools: ['delete_task'],
             updatedAt: 123,
         });
 
@@ -68,7 +70,29 @@ describe('buildCodexRuntimeMetadata', () => {
                 source: 'codex-runtime',
                 updatedAt: 123,
                 permissionMode: 'read-only',
+                allowedTools: ['list_tasks'],
+                disallowedTools: ['delete_task'],
             },
+        });
+    });
+
+    it('writes allow and deny lists into codex runtime permissions when provided', () => {
+        const result = buildCodexRuntimeMetadata({
+            path: '/tmp/agent',
+            host: 'localhost',
+        }, {
+            permissionMode: 'default',
+            allowedTools: ['list_tasks', 'start_task'],
+            disallowedTools: ['delete_task'],
+            updatedAt: 77,
+        });
+
+        expect(result.runtimePermissions).toEqual({
+            source: 'codex-runtime',
+            updatedAt: 77,
+            permissionMode: 'default',
+            allowedTools: ['list_tasks', 'start_task'],
+            disallowedTools: ['delete_task'],
         });
     });
 });

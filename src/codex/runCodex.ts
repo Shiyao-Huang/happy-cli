@@ -1,7 +1,7 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexMcpClient, detectCodexCliVersion, parseCodexApprovalRequest } from './codexMcpClient';
+import { CodexMcpClient, detectCodexCliVersion } from './codexMcpClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -23,7 +23,7 @@ import { startAhaServer } from '@/claude/utils/startAhaServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import { trimIdent } from "@/utils/trimIdent";
-import type { CodexSessionConfig } from './types';
+import type { CodexSessionConfig, CodexToolResponse } from './types';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
@@ -31,6 +31,7 @@ import { stopCaffeinate } from "@/utils/caffeinate";
 import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
+import { withDefaultAgentSkills } from '@/agentDocker/materializer';
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
@@ -43,14 +44,36 @@ import { buildAgentImageInjection } from '@/claude/utils/buildGenomeInjection';
 import type { AgentImage } from '@/api/types/genome';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
+import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens } from '@/utils/modelContextWindows';
+import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { CODEX_BRIDGE_DEBUG_ENV, isCodexBridgeDebugEnabled, logCodexBridge, logCodexSignal } from './utils/bridgeDebug';
 import { buildCodexRuntimeMetadata } from './runtimeMetadata';
+import {
+    type CodexAssistantSessionMessage,
+    convertCodexApprovalEventToSessionMessage,
+    convertCodexFunctionEventToSessionMessage,
+    convertCodexMcpLifecycleEventToSessionMessage,
+    createCodexAssistantEventReducerState,
+    decodeCodexDeltaChunk,
+    hasSeenCodexAssistantMessage,
+    isMcpFunctionName,
+    rememberCodexAssistantMessage,
+    reduceCodexAssistantEvent,
+    unwrapCodexEvent,
+} from './sessionEventAdapter';
 import {
     materializeAgentImageSkillsToCodexHome,
     seedCodexHomeConfig,
     seedCodexHomeSkillUnion,
 } from './codexHome';
+import {
+    buildCodexCustomSystemPromptBlock,
+    buildCodexToolAccessInstruction,
+    buildSkillsAwarenessPrompt,
+    composeCodexBaseInstructions,
+} from './runtimePromptAdapter';
 import { findCodexTranscriptFile, findMostRecentCodexTranscriptFile } from '@/claude/utils/runtimeLogReader';
+import { computeEffectiveAllowedToolsFromMetadata, hasDynamicGrantOptIn } from '@/claude/utils/temporaryToolGrants';
 
 // Helper functions for role metadata — agent-image-first, empty fallback
 function getRoleTitle(roleId: string): string {
@@ -61,10 +84,27 @@ function getRoleResponsibilities(roleId: string): string[] {
     return DEFAULT_ROLES[roleId]?.responsibilities || [];
 }
 
+function readVisibleSkillNames(commandsDir?: string | null): string[] {
+    if (!commandsDir) {
+        return [];
+    }
+
+    try {
+        return fs.readdirSync(commandsDir, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .filter((name) => !name.startsWith('.'))
+            .sort((left, right) => left.localeCompare(right));
+    } catch {
+        return [];
+    }
+}
+
 type ReadyEventOptions = {
     pending: unknown;
     queueSize: () => number;
     shouldExit: boolean;
+    healthy?: boolean;
     sendReady: () => void;
     notify?: () => void;
 };
@@ -73,8 +113,11 @@ type ReadyEventOptions = {
  * Notify connected clients when Codex finishes processing and the queue is idle.
  * Returns true when a ready event was emitted.
  */
-export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, notify }: ReadyEventOptions): boolean {
+export function emitReadyIfIdle({ pending, queueSize, shouldExit, healthy = true, sendReady, notify }: ReadyEventOptions): boolean {
     if (shouldExit) {
+        return false;
+    }
+    if (!healthy) {
         return false;
     }
     if (pending) {
@@ -89,305 +132,19 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
     return true;
 }
 
-
-export function unwrapCodexEvent(rawMessage: any): any {
-    if (
-        rawMessage &&
-        typeof rawMessage === 'object' &&
-        rawMessage.type === 'raw_response_item' &&
-        rawMessage.item &&
-        typeof rawMessage.item === 'object'
-    ) {
-        return rawMessage.item;
-    }
-    if (
-        rawMessage &&
-        typeof rawMessage === 'object' &&
-        (rawMessage.type === 'event_msg' || rawMessage.type === 'response_item') &&
-        rawMessage.payload &&
-        typeof rawMessage.payload === 'object'
-    ) {
-        return rawMessage.payload;
-    }
-    return rawMessage;
-}
-
-function parseStructuredCodexValue(value: unknown): unknown {
-    if (typeof value !== 'string') {
-        return value;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-        return value;
-    }
-
-    try {
-        return JSON.parse(trimmed);
-    } catch {
-        return value;
-    }
-}
-
-function decodeCodexDeltaChunk(value: unknown): string {
-    if (typeof value !== 'string' || value.length === 0) {
-        return '';
-    }
-
-    try {
-        return Buffer.from(value, 'base64').toString('utf-8');
-    } catch {
-        return value;
-    }
-}
-
-function isMcpFunctionName(name: unknown): name is string {
-    return typeof name === 'string' && name.startsWith('mcp__');
-}
-
-export function convertCodexFunctionEventToSessionMessage(rawMessage: any):
-    | {
-        type: 'tool-call';
-        name: string;
-        callId: string;
-        input: unknown;
-        id: string;
-    }
-    | {
-        type: 'tool-call-result';
-        callId: string;
-        output: unknown;
-        id: string;
-    }
-    | null {
-    const message = unwrapCodexEvent(rawMessage);
-
-    if (!message || typeof message !== 'object') {
+export function getCodexToolError(response: CodexToolResponse | null | undefined): string | null {
+    if (!response?.isError) {
         return null;
     }
 
-    if (message.type === 'function_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
-        return {
-            type: 'tool-call',
-            name: message.name,
-            callId: message.call_id,
-            input: parseStructuredCodexValue(message.arguments),
-            id: randomUUID()
-        };
-    }
+    const text = response.content
+        .filter((item) => item.type === 'text')
+        .map((item) => item.text?.trim() || '')
+        .filter(Boolean)
+        .join('\n')
+        .trim();
 
-    if (message.type === 'function_call_output' && typeof message.call_id === 'string') {
-        return {
-            type: 'tool-call-result',
-            callId: message.call_id,
-            output: parseStructuredCodexValue(message.output),
-            id: randomUUID()
-        };
-    }
-
-    if (message.type === 'custom_tool_call' && typeof message.name === 'string' && typeof message.call_id === 'string') {
-        return {
-            type: 'tool-call',
-            name: message.name,
-            callId: message.call_id,
-            input: parseStructuredCodexValue(message.input),
-            id: randomUUID()
-        };
-    }
-
-    if (message.type === 'custom_tool_call_output' && typeof message.call_id === 'string') {
-        return {
-            type: 'tool-call-result',
-            callId: message.call_id,
-            output: parseStructuredCodexValue(message.output),
-            id: randomUUID()
-        };
-    }
-
-    return null;
-}
-
-export function convertCodexMcpLifecycleEventToSessionMessage(rawMessage: any):
-    | {
-        type: 'tool-call';
-        name: string;
-        callId: string;
-        input: unknown;
-        id: string;
-    }
-    | {
-        type: 'tool-call-result';
-        callId: string;
-        output: unknown;
-        id: string;
-    }
-    | null {
-    const message = unwrapCodexEvent(rawMessage);
-
-    if (!message || typeof message !== 'object') {
-        return null;
-    }
-
-    if (message.type === 'mcp_tool_call_begin' && typeof message.call_id === 'string') {
-        return {
-            type: 'tool-call',
-            name: message.invocation?.tool || 'unknown',
-            callId: message.call_id,
-            input: message.invocation?.arguments,
-            id: randomUUID(),
-        };
-    }
-
-    if (message.type === 'mcp_tool_call_end' && typeof message.call_id === 'string') {
-        const ok = message.result?.Ok;
-        const err = message.result?.Err;
-        const output = ok ?? err ?? message.result;
-
-        return {
-            type: 'tool-call-result',
-            callId: message.call_id,
-            output,
-            id: randomUUID(),
-        };
-    }
-
-    return null;
-}
-
-export function convertCodexApprovalEventToSessionMessage(rawMessage: any):
-    | {
-        type: 'tool-call';
-        name: string;
-        callId: string;
-        input: unknown;
-        id: string;
-    }
-    | null {
-    const message = unwrapCodexEvent(rawMessage);
-    if (!message || typeof message !== 'object' || message.type !== 'elicitation_request') {
-        return null;
-    }
-
-    const approvalRequest = parseCodexApprovalRequest(message);
-    if (!approvalRequest) {
-        return null;
-    }
-
-    return {
-        type: 'tool-call',
-        name: 'CodexApprovalRequest',
-        callId: `approval:${approvalRequest.toolCallId}`,
-        input: {
-            toolCallId: approvalRequest.toolCallId,
-            toolName: approvalRequest.toolName,
-            approvalKind: approvalRequest.approvalKind,
-            ...approvalRequest.input
-        },
-        id: randomUUID(),
-    };
-}
-
-export function convertCodexAssistantEventToSessionMessage(rawMessage: any):
-    | {
-        type: 'message';
-        message: string;
-        id: string;
-    }
-    | {
-        type: 'reasoning';
-        message: string;
-        id: string;
-    }
-    | null {
-    const message = unwrapCodexEvent(rawMessage);
-
-    if (!message || typeof message !== 'object') {
-        return null;
-    }
-
-    if (message.type === 'item_completed' && message.item?.type === 'AgentMessage' && Array.isArray(message.item.content)) {
-        const text = message.item.content
-            .filter((item: any) => (item?.type === 'Text' || item?.type === 'output_text') && typeof item.text === 'string')
-            .map((item: any) => item.text)
-            .join('');
-
-        if (!text.trim()) {
-            return null;
-        }
-
-        return {
-            type: 'message',
-            message: text,
-            id: randomUUID(),
-        };
-    }
-
-    if (message.type === 'item_completed' && message.item?.type === 'Reasoning') {
-        const summary = Array.isArray(message.item.summary_text)
-            ? message.item.summary_text
-                .map((item: any) => {
-                    if (typeof item === 'string') return item;
-                    if (item && typeof item.text === 'string') return item.text;
-                    if (item && typeof item.summary === 'string') return item.summary;
-                    return '';
-                })
-                .filter(Boolean)
-                .join('\n')
-            : '';
-
-        if (!summary.trim()) {
-            return null;
-        }
-
-        return {
-            type: 'reasoning',
-            message: summary,
-            id: randomUUID(),
-        };
-    }
-
-    if (message.type === 'message' && message.role === 'assistant' && Array.isArray(message.content)) {
-        const text = message.content
-            .filter((item: any) => item?.type === 'output_text' && typeof item.text === 'string')
-            .map((item: any) => item.text)
-            .join('');
-
-        if (!text.trim()) {
-            return null;
-        }
-
-        return {
-            type: 'message',
-            message: text,
-            id: randomUUID(),
-        };
-    }
-
-    if (message.type === 'reasoning') {
-        const summary = Array.isArray(message.summary)
-            ? message.summary
-                .map((item: any) => {
-                    if (typeof item === 'string') return item;
-                    if (item && typeof item.text === 'string') return item.text;
-                    if (item && typeof item.summary === 'string') return item.summary;
-                    return '';
-                })
-                .filter(Boolean)
-                .join('\n')
-            : '';
-
-        if (!summary.trim()) {
-            return null;
-        }
-
-        return {
-            type: 'reasoning',
-            message: summary,
-            id: randomUUID(),
-        };
-    }
-
-    return null;
+    return text || 'Codex MCP tool call returned an error.';
 }
 
 /**
@@ -646,6 +403,10 @@ export async function runCodex(opts: {
     interface EnhancedMode {
         permissionMode: PermissionMode;
         model?: string;
+        customSystemPrompt?: string;
+        appendSystemPrompt?: string;
+        allowedTools?: string[];
+        disallowedTools?: string[];
     }
 
     //
@@ -754,6 +515,10 @@ export async function runCodex(opts: {
     const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
+        customSystemPrompt: mode.customSystemPrompt,
+        appendSystemPrompt: mode.appendSystemPrompt,
+        allowedTools: mode.allowedTools ?? null,
+        disallowedTools: mode.disallowedTools ?? null,
     }));
 
     // Track current overrides to apply per message
@@ -761,20 +526,111 @@ export async function runCodex(opts: {
     let currentPermissionMode: PermissionMode = resolvePermissionMode(process.env.AHA_PERMISSION_MODE);
     logger.debug(`[Codex] Permission mode initialized: ${currentPermissionMode}`);
     let currentModel: string | undefined = session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL || undefined;
+    let currentCustomSystemPrompt: string | undefined = undefined;
+    let currentAppendSystemPrompt: string | undefined = undefined;
+    let currentAllowedTools: string[] | undefined = undefined;
+    let currentDisallowedTools: string[] | undefined = undefined;
+    let baselineAllowedTools: string[] | undefined = undefined;
+    let baselineDisallowedTools: string[] | undefined = undefined;
+    let allowDynamicToolGrants = false;
+    let currentModelAwarenessPrompt: string | undefined = undefined;
+    let lastRuntimePermissionSignature: string | null = null;
+
+    const recomputeEffectiveRuntimeToolAccess = (metadataOverride?: Metadata | null, reason: string = 'runtime-refresh') => {
+        const metadataForComputation = metadataOverride ?? session.getMetadata();
+        const computed = computeEffectiveAllowedToolsFromMetadata({
+            baseAllowedTools: baselineAllowedTools,
+            baseDisallowedTools: baselineDisallowedTools,
+            metadata: allowDynamicToolGrants ? metadataForComputation : null,
+            dynamicGrantOptIn: allowDynamicToolGrants,
+        });
+
+        currentAllowedTools = computed.allowedTools;
+        currentDisallowedTools = computed.disallowedTools;
+        logger.debug(
+            `[Codex] Effective tool access recomputed (${reason}): allow=${currentAllowedTools ? currentAllowedTools.join(', ') : 'none'} deny=${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'} grants=${computed.activeGrantTools.join(', ') || 'none'}`,
+        );
+    };
 
     const syncRuntimePermissionMetadata = () => {
+        const signature = JSON.stringify({
+            permissionMode: currentPermissionMode ?? null,
+            allowedTools: currentAllowedTools ?? null,
+            disallowedTools: currentDisallowedTools ?? null,
+        });
+        if (signature === lastRuntimePermissionSignature) {
+            return;
+        }
+        lastRuntimePermissionSignature = signature;
         void session.updateMetadata((currentMetadata) => buildCodexRuntimeMetadata(currentMetadata, {
             permissionMode: currentPermissionMode,
+            allowedTools: currentAllowedTools ?? null,
+            disallowedTools: currentDisallowedTools ?? null,
         })).catch((error) => {
             logger.debug('[Codex] Failed to sync runtime permission metadata:', error);
         });
     };
 
+    const syncModelAwareness = () => {
+        const contextWindowTokens = resolveContextWindowTokens(currentModel);
+        currentModelAwarenessPrompt = buildModelSelfAwarenessPrompt({
+            modelId: currentModel,
+            contextWindowTokens,
+        }) || undefined;
+
+        void session.updateMetadata((currentMetadata) => {
+            const nextMetadata = { ...((currentMetadata || {}) as any) };
+            if (typeof contextWindowTokens === 'number') {
+                (nextMetadata as any).contextWindowTokens = contextWindowTokens;
+            } else {
+                delete (nextMetadata as any).contextWindowTokens;
+            }
+            if (currentModel) {
+                (nextMetadata as any).resolvedModel = currentModel;
+            } else {
+                delete (nextMetadata as any).resolvedModel;
+            }
+            return nextMetadata as Metadata;
+        }).catch((error) => {
+            logger.debug('[Codex] Failed to sync model awareness metadata:', error);
+        });
+    };
+
+    try {
+        const rulesConfig = await api.kvGet('config.rules');
+        const preferencesConfig = await api.kvGet('config.preferences');
+
+        let initialContext = '';
+        if (rulesConfig?.value) initialContext += `\n\n<global_rules>\n${rulesConfig.value}\n</global_rules>`;
+        if (preferencesConfig?.value) initialContext += `\n\n<user_preferences>\n${preferencesConfig.value}\n</user_preferences>`;
+
+        currentAppendSystemPrompt = initialContext.trim() || undefined;
+        if (currentAppendSystemPrompt) {
+            logger.debug('[Codex] Implanted global rules/preferences into base instructions');
+        }
+    } catch (error) {
+        logger.debug('[Codex] Failed to implant global rules/preferences:', error);
+    }
+
+    const mountedAgentPromptBlock = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
+    if (mountedAgentPromptBlock) {
+        currentAppendSystemPrompt = currentAppendSystemPrompt
+            ? `${currentAppendSystemPrompt}\n\n${mountedAgentPromptBlock}`
+            : mountedAgentPromptBlock;
+        logger.debug('[Codex] Mounted launch-time agent context into base instructions');
+    }
+
+    recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'startup');
     syncRuntimePermissionMetadata();
+    syncModelAwareness();
 
     const getCurrentEnhancedMode = (): EnhancedMode => ({
         permissionMode: currentPermissionMode,
         model: currentModel,
+        customSystemPrompt: currentCustomSystemPrompt,
+        appendSystemPrompt: currentAppendSystemPrompt,
+        allowedTools: currentAllowedTools,
+        disallowedTools: currentDisallowedTools,
     });
 
     session.on('artifact-update', (update: UpdateArtifactBody) => {
@@ -820,7 +676,11 @@ export async function runCodex(opts: {
         if (newMetadata.modelOverride !== undefined) {
             currentModel = newMetadata.modelOverride || undefined;
             logger.debug(`[Codex] Model override updated from metadata: ${currentModel || 'default'}`);
+            syncModelAwareness();
         }
+
+        recomputeEffectiveRuntimeToolAccess(newMetadata, 'metadata-update');
+        syncRuntimePermissionMetadata();
 
         const nextRole = metadata.role;
         const nextTeamId = metadata.teamId || metadata.roomId;
@@ -886,7 +746,6 @@ export async function runCodex(opts: {
             messagePermissionMode = resolvePermissionMode(message.meta.permissionMode);
             currentPermissionMode = messagePermissionMode;
             logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
-            syncRuntimePermissionMetadata();
         } else {
             logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode}`);
         }
@@ -896,20 +755,64 @@ export async function runCodex(opts: {
             messageModel = message.meta.model || undefined;
             currentModel = messageModel;
             logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
+            syncModelAwareness();
         } else {
             logger.debug(`[Codex] User message received with no model override, using current: ${currentModel || 'default'}`);
         }
 
+        let messageCustomSystemPrompt = currentCustomSystemPrompt;
+        if (message.meta?.hasOwnProperty('customSystemPrompt')) {
+            messageCustomSystemPrompt = message.meta.customSystemPrompt || undefined;
+            currentCustomSystemPrompt = messageCustomSystemPrompt;
+            logger.debug(`[Codex] Custom system prompt updated from user message: ${messageCustomSystemPrompt ? 'set' : 'reset to none'}`);
+        } else {
+            logger.debug(`[Codex] User message received with no custom system prompt override, using current: ${currentCustomSystemPrompt ? 'set' : 'none'}`);
+        }
+
+        let messageAppendSystemPrompt = currentAppendSystemPrompt;
+        if (message.meta?.hasOwnProperty('appendSystemPrompt')) {
+            messageAppendSystemPrompt = message.meta.appendSystemPrompt || undefined;
+            currentAppendSystemPrompt = messageAppendSystemPrompt;
+            logger.debug(`[Codex] Append system prompt updated from user message: ${messageAppendSystemPrompt ? 'set' : 'reset to none'}`);
+        } else {
+            logger.debug(`[Codex] User message received with no append system prompt override, using current: ${currentAppendSystemPrompt ? 'set' : 'none'}`);
+        }
+
+        if (message.meta?.hasOwnProperty('allowedTools')) {
+            baselineAllowedTools = message.meta.allowedTools || undefined;
+            logger.debug('[Codex] Allowed tools baseline updated from user message');
+        } else {
+            logger.debug(`[Codex] User message received with no allowed tools override, using current: ${currentAllowedTools ? currentAllowedTools.join(', ') : 'none'}`);
+        }
+
+        if (message.meta?.hasOwnProperty('disallowedTools')) {
+            baselineDisallowedTools = message.meta.disallowedTools || undefined;
+            logger.debug('[Codex] Disallowed tools baseline updated from user message');
+        } else {
+            logger.debug(`[Codex] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
+        }
+
+        recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'message-dispatch');
+        syncRuntimePermissionMetadata();
+
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode,
             model: messageModel,
+            customSystemPrompt: messageCustomSystemPrompt,
+            appendSystemPrompt: messageAppendSystemPrompt,
+            allowedTools: currentAllowedTools,
+            disallowedTools: currentDisallowedTools,
         };
         messageQueue.push(message.content.text, enhancedMode);
     });
     let thinking = false;
+    let runtimeHealthy = true;
     session.keepAlive(thinking, 'remote');
     // Periodic keep-alive; store handle so we can clear on exit
     const keepAliveInterval = setInterval(() => {
+        if (!runtimeHealthy) {
+            return;
+        }
         session.keepAlive(thinking, 'remote');
     }, 2000);
 
@@ -1116,8 +1019,99 @@ export async function runCodex(opts: {
         }
     }
     const permissionHandler = new CodexPermissionHandler(session, () => currentPermissionMode);
+    const assistantEventState = createCodexAssistantEventReducerState();
+
+    function renderAssistantSessionMessage(sessionMessage: CodexAssistantSessionMessage): void {
+        if (sessionMessage.type === 'message') {
+            messageBuffer.addMessage(sessionMessage.message, 'assistant');
+            return;
+        }
+
+        messageBuffer.addMessage(`[Thinking] ${sessionMessage.message.substring(0, 100)}...`, 'system');
+    }
+
+    function emitAssistantSessionMessage(
+        sourceMsg: any,
+        sessionMessage: CodexAssistantSessionMessage,
+        options: {
+            updateUi?: boolean;
+            signal?: string;
+            reason?: string;
+            alreadyDeduped?: boolean;
+        } = {},
+    ): boolean {
+        const normalizedMessage = {
+            ...sessionMessage,
+            id: sessionMessage.id || randomUUID(),
+        } as const;
+
+        if (!options.alreadyDeduped && hasSeenCodexAssistantMessage(assistantEventState.deduper, normalizedMessage)) {
+            logCodexSignal('suppressed-assistant-duplicate', sourceMsg, {
+                reason: options.reason || 'assistant message matched previously forwarded content',
+                sessionMessage: normalizedMessage,
+                fullTextLength: normalizedMessage.message.length,
+            });
+            return false;
+        }
+
+        if (!options.alreadyDeduped) {
+            rememberCodexAssistantMessage(assistantEventState.deduper, normalizedMessage);
+        }
+
+        if (options.updateUi) {
+            renderAssistantSessionMessage(normalizedMessage);
+        }
+
+        session.sendCodexMessage(normalizedMessage);
+        logCodexSignal(options.signal || 'forwarded-assistant', sourceMsg, {
+            sessionMessage: normalizedMessage,
+            fullTextLength: normalizedMessage.message.length,
+        });
+        return true;
+    }
+
+    function emitAssistantReducerResult(
+        sourceMsg: any,
+        options: {
+            updateUi?: boolean;
+            signal?: string;
+        } = {},
+    ): void {
+        const result = reduceCodexAssistantEvent(assistantEventState, sourceMsg);
+
+        if (result.skippedReason) {
+            const signal = result.skippedReason.includes('duplicated')
+                ? 'suppressed-assistant-duplicate'
+                : 'skipped';
+            logCodexSignal(signal, sourceMsg, {
+                reason: result.skippedReason,
+            });
+        }
+
+        for (const sessionMessage of result.emitted) {
+            emitAssistantSessionMessage(sourceMsg, sessionMessage, {
+                updateUi: options.updateUi,
+                signal: options.signal,
+                alreadyDeduped: true,
+                reason: result.skippedReason,
+            });
+        }
+    }
+
     const reasoningProcessor = new ReasoningProcessor((message) => {
-        // Callback to send messages directly from the processor
+        if (message?.type === 'reasoning') {
+            emitAssistantSessionMessage(
+                { type: 'agent_reasoning', source: 'reasoning_processor' },
+                message,
+                {
+                    updateUi: false,
+                    signal: 'forwarded-reasoning',
+                    reason: 'reasoning processor output matched previously forwarded reasoning',
+                },
+            );
+            return;
+        }
+
         session.sendCodexMessage(message);
     });
     const diffProcessor = new DiffProcessor((message) => {
@@ -1126,11 +1120,6 @@ export async function runCodex(opts: {
     });
     client.setPermissionHandler(permissionHandler);
 
-    // Accumulator for agent_message_delta events.
-    // Newer Codex SDK versions stream text via agent_message_delta and only
-    // emit agent_message with a short summary (e.g. title update).  We
-    // accumulate the deltas so we can forward the full text to kanban.
-    let agentMessageDeltaBuffer = '';
     const mcpLifecycleCallIds = new Set<string>();
     const suppressedAhaTitleCallIds = new Set<string>();
     const execOutputBuffers = new Map<string, { stdout: string; stderr: string }>();
@@ -1148,15 +1137,6 @@ export async function runCodex(opts: {
         // Do not infer metadata.tools from bridge registry or mcp server config.
         // Only a runtime event that explicitly surfaces the final tool inventory to Codex
         // is allowed to populate visible-tool truth. No such event is currently known here.
-
-        // item_completed events duplicate content already delivered via agent_message / agent_reasoning.
-        // Skip them entirely to prevent 2-3x message repetition in context.
-        if (msg.type === 'item_completed') {
-            logCodexSignal('skipped', msg, {
-                reason: 'item_completed duplicates already-forwarded content'
-            });
-            return;
-        }
 
         // session_meta: capture Codex's internal session UUID to resolve the transcript file path.
         // The aha session ID (CUID) does not match the Codex internal UUID (UUIDv7) used in
@@ -1190,29 +1170,18 @@ export async function runCodex(opts: {
             return;
         }
 
-        // Old-format Codex events: `message` (role: assistant) and `reasoning` type.
-        // These are only emitted by older Codex versions that don't send agent_message/agent_reasoning.
-        const assistantMessage = convertCodexAssistantEventToSessionMessage(msg);
-        if (assistantMessage && msg.type !== 'agent_message' && msg.type !== 'agent_reasoning') {
-            const fullText = assistantMessage.type === 'message'
-                ? (agentMessageDeltaBuffer || assistantMessage.message)
-                : assistantMessage.message;
-            agentMessageDeltaBuffer = '';
+        if (msg.type === 'agent_message_delta') {
+            reduceCodexAssistantEvent(assistantEventState, msg);
+            logCodexSignal('buffered-agent-message-delta', msg, {
+                bufferLength: assistantEventState.agentMessageDeltaBuffer.length
+            });
+            return;
+        }
 
-            if (assistantMessage.type === 'message') {
-                messageBuffer.addMessage(fullText, 'assistant');
-            } else {
-                messageBuffer.addMessage(`[Thinking] ${fullText.substring(0, 100)}...`, 'system');
-            }
-
-            const sessionMessage = {
-                ...assistantMessage,
-                message: fullText,
-            };
-            session.sendCodexMessage(sessionMessage);
-            logCodexSignal('forwarded-assistant', msg, {
-                sessionMessage,
-                fullTextLength: fullText.length
+        if (msg.type === 'item_completed' || msg.type === 'message' || msg.type === 'reasoning' || msg.type === 'agent_message') {
+            emitAssistantReducerResult(msg, {
+                updateUi: true,
+                signal: msg.type === 'agent_message' ? 'forwarded-agent-message' : 'forwarded-assistant',
             });
             return;
         }
@@ -1250,14 +1219,6 @@ export async function runCodex(opts: {
             return;
         }
 
-        // Accumulate streaming text deltas
-        if (msg.type === 'agent_message_delta') {
-            agentMessageDeltaBuffer += msg.delta;
-            logCodexSignal('buffered-agent-message-delta', msg, {
-                bufferLength: agentMessageDeltaBuffer.length
-            });
-            return; // Don't process further — wait for agent_message or task_complete
-        }
         // agent_message_content_delta is a duplicate of agent_message_delta with extra metadata — skip
         if (msg.type === 'agent_message_content_delta') {
             logCodexSignal('skipped', msg, {
@@ -1282,12 +1243,7 @@ export async function runCodex(opts: {
         }
 
         // Add messages to the ink UI buffer based on message type
-        if (msg.type === 'agent_message') {
-            // NOTE: Do NOT clear agentMessageDeltaBuffer here — it is read and cleared
-            // in the session send block below to avoid double-read/premature clear.
-            const fullText = agentMessageDeltaBuffer || msg.message;
-            messageBuffer.addMessage(fullText, 'assistant');
-        } else if (msg.type === 'agent_reasoning_delta') {
+        if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning') {
             messageBuffer.addMessage(`[Thinking] ${msg.text.substring(0, 100)}...`, 'system');
@@ -1311,6 +1267,7 @@ export async function runCodex(opts: {
         }
 
         if (msg.type === 'task_started') {
+            reduceCodexAssistantEvent(assistantEventState, msg);
             if (!thinking) {
                 logger.debug('thinking started');
                 thinking = true;
@@ -1326,18 +1283,11 @@ export async function runCodex(opts: {
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
             }
-            // Flush any remaining delta text that wasn't closed by agent_message
-            let flushedDeltaLength = 0;
-            if (agentMessageDeltaBuffer) {
-                flushedDeltaLength = agentMessageDeltaBuffer.length;
-                const sessionMessage = {
-                    type: 'message',
-                    message: agentMessageDeltaBuffer,
-                    id: randomUUID()
-                };
-                session.sendCodexMessage(sessionMessage);
-                agentMessageDeltaBuffer = '';
-            }
+            const flushedDeltaLength = assistantEventState.agentMessageDeltaBuffer.length;
+            emitAssistantReducerResult(msg, {
+                updateUi: true,
+                signal: 'flushed-agent-message-delta',
+            });
             // Reset diff processor on task end or abort
             diffProcessor.reset();
             logCodexSignal('task-finished-cleanup', msg, {
@@ -1363,21 +1313,6 @@ export async function runCodex(opts: {
             reasoningProcessor.complete(msg.text);
             logCodexSignal('processed-reasoning-complete', msg, {
                 textLength: msg.text.length
-            });
-        }
-        if (msg.type === 'agent_message') {
-            // Use accumulated delta text when available; fall back to msg.message for older SDK
-            const fullText = agentMessageDeltaBuffer || msg.message;
-            agentMessageDeltaBuffer = '';
-            const sessionMessage = {
-                type: 'message',
-                message: fullText,
-                id: randomUUID()
-            };
-            session.sendCodexMessage(sessionMessage);
-            logCodexSignal('forwarded-agent-message', msg, {
-                sessionMessage,
-                fullTextLength: fullText.length
             });
         }
         const functionToolMessage = convertCodexFunctionEventToSessionMessage(msg);
@@ -1568,11 +1503,34 @@ export async function runCodex(opts: {
     const agentImageId = process.env.AHA_SPEC_ID;
     if (agentImageId) {
         try {
-            agentImage = await fetchAgentImage(opts.credentials.token, agentImageId);
-            const injection = buildAgentImageInjection(agentImage);
-            if (injection) {
-                agentImageInjectionBlock = injection;
-                logger.debug(`[Codex] AgentImage injection built for spec ${agentImageId}`);
+            const fetchedAgentImage = await fetchAgentImage(opts.credentials.token, agentImageId);
+            if (fetchedAgentImage) {
+                agentImage = fetchedAgentImage;
+                allowDynamicToolGrants = hasDynamicGrantOptIn(fetchedAgentImage);
+                if (fetchedAgentImage.modelId && !currentModel) {
+                    currentModel = fetchedAgentImage.modelId;
+                    logger.debug(`[Codex] Model set from agent image: ${currentModel}`);
+                    syncModelAwareness();
+                }
+                const mergedAllowedTools = fetchedAgentImage.allowedTools?.length
+                    ? Array.from(new Set([
+                        ...getInjectedAllowedToolsForAgentImage(fetchedAgentImage),
+                        ...fetchedAgentImage.allowedTools,
+                    ]))
+                    : undefined;
+                if (mergedAllowedTools) {
+                    baselineAllowedTools = mergedAllowedTools;
+                }
+                if (fetchedAgentImage.disallowedTools?.length) {
+                    baselineDisallowedTools = fetchedAgentImage.disallowedTools;
+                }
+                recomputeEffectiveRuntimeToolAccess(session.getMetadata(), 'agent-image');
+                syncRuntimePermissionMetadata();
+                const injection = buildAgentImageInjection(fetchedAgentImage);
+                if (injection) {
+                    agentImageInjectionBlock = injection;
+                    logger.debug(`[Codex] AgentImage injection built for spec ${agentImageId}`);
+                }
             }
         } catch (error) {
             if (process.env.AHA_GENOME_FALLBACK !== '1') {
@@ -1607,7 +1565,16 @@ export async function runCodex(opts: {
             logger.debug(`[Codex] ${warning}`);
         }
     }
-    const mountedAgentPromptBlock = buildMountedAgentPrompt(process.env.AHA_AGENT_PROMPT) ?? null;
+    const visibleSkillNames = agentImage
+        ? withDefaultAgentSkills(agentImage.skills)
+        : readVisibleSkillNames(materializedCommandsDir);
+    const skillsAwarenessPrompt = buildSkillsAwarenessPrompt(visibleSkillNames);
+    if (skillsAwarenessPrompt) {
+        currentAppendSystemPrompt = currentAppendSystemPrompt
+            ? `${currentAppendSystemPrompt}\n\n${skillsAwarenessPrompt}`
+            : skillsAwarenessPrompt;
+        logger.debug('[Codex] Skills awareness appended to base instructions');
+    }
 
     // ============================================================
     // Team Collaboration Initialization
@@ -1820,6 +1787,8 @@ ${historyText}
             // Display user messages in the UI
             messageBuffer.addMessage(message.message, 'user');
             currentModeHash = message.hash;
+            runtimeHealthy = true;
+            session.keepAlive(thinking, 'remote');
 
             try {
                 // Map permission mode to approval policy and sandbox for startSession
@@ -1858,8 +1827,22 @@ ${historyText}
 
                     const instructionBlocks: string[] = [];
 
-                    if (mountedAgentPromptBlock) {
-                        instructionBlocks.push(mountedAgentPromptBlock);
+                    const customSystemPromptBlock = buildCodexCustomSystemPromptBlock(message.mode.customSystemPrompt);
+                    if (customSystemPromptBlock) {
+                        instructionBlocks.push(customSystemPromptBlock);
+                    }
+                    if (message.mode.appendSystemPrompt) {
+                        instructionBlocks.push(message.mode.appendSystemPrompt);
+                    }
+                    if (currentModelAwarenessPrompt) {
+                        instructionBlocks.push(currentModelAwarenessPrompt);
+                    }
+                    const toolAccessInstruction = buildCodexToolAccessInstruction({
+                        allowedTools: message.mode.allowedTools,
+                        disallowedTools: message.mode.disallowedTools,
+                    });
+                    if (toolAccessInstruction) {
+                        instructionBlocks.push(toolAccessInstruction);
                     }
 
                     // Inject team context if initialized (this includes role, responsibilities, kanban state, required actions)
@@ -1901,8 +1884,9 @@ Call functions.aha__get_team_info immediately as your first action.`)
 Always reflect progress on the board and call these tools whenever you start or finish work.`)
                         );
                     }
-                    if (instructionBlocks.length > 0) {
-                        startConfig['base-instructions'] = instructionBlocks.join('\n\n');
+                    const composedBaseInstructions = composeCodexBaseInstructions(instructionBlocks);
+                    if (composedBaseInstructions) {
+                        startConfig['base-instructions'] = composedBaseInstructions;
                     }
                     if (message.mode.model) {
                         startConfig.model = message.mode.model;
@@ -1933,10 +1917,14 @@ Always reflect progress on the board and call these tools whenever you start or 
                         (startConfig.config as any).experimental_resume = resumeFile;
                     }
 
-                    await client.startSession(
+                    const response = await client.startSession(
                         startConfig,
                         { signal: abortController.signal }
                     );
+                    const codexError = getCodexToolError(response);
+                    if (codexError) {
+                        throw new Error(codexError);
+                    }
                     wasCreated = true;
                     first = false;
                 } else {
@@ -1945,6 +1933,10 @@ Always reflect progress on the board and call these tools whenever you start or 
                         { signal: abortController.signal }
                     );
                     logger.debug('[Codex] continueSession response:', response);
+                    const codexError = getCodexToolError(response);
+                    if (codexError) {
+                        throw new Error(codexError);
+                    }
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
@@ -1959,13 +1951,18 @@ Always reflect progress on the board and call these tools whenever you start or 
                     currentModeHash = null;
                     logger.debug('[Codex] Marked session as not created after abort for proper resume');
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    runtimeHealthy = false;
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    messageBuffer.addMessage(`Codex session failed: ${errorMessage}`, 'status');
+                    session.sendSessionEvent({ type: 'message', message: `Codex session failed: ${errorMessage}` });
+                    wasCreated = false;
+                    currentModeHash = null;
                     // For unexpected exits, try to store session for potential recovery
                     if (client.hasActiveSession()) {
                         storedSessionIdForResume = client.storeSessionForResume();
                         logger.debug('[Codex] Stored session after unexpected error:', storedSessionIdForResume);
                     }
+                    client.clearSession();
                 }
             } finally {
                 // Reset permission handler, reasoning processor, and diff processor
@@ -1973,11 +1970,14 @@ Always reflect progress on the board and call these tools whenever you start or 
                 reasoningProcessor.abort();  // Use abort to properly finish any in-progress tool calls
                 diffProcessor.reset();
                 thinking = false;
-                session.keepAlive(thinking, 'remote');
+                if (runtimeHealthy) {
+                    session.keepAlive(thinking, 'remote');
+                }
                 emitReadyIfIdle({
                     pending,
                     queueSize: () => messageQueue.size(),
                     shouldExit,
+                    healthy: runtimeHealthy,
                     sendReady,
                 });
                 logActiveHandles('after-turn');

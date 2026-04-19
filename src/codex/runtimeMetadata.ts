@@ -4,6 +4,8 @@ export function buildCodexRuntimeMetadata(
     currentMetadata: Metadata,
     args: {
         permissionMode: PermissionMode;
+        allowedTools?: string[] | null;
+        disallowedTools?: string[] | null;
         updatedAt?: number;
     }
 ): Metadata {
@@ -15,6 +17,8 @@ export function buildCodexRuntimeMetadata(
             source: 'codex-runtime',
             updatedAt: args.updatedAt ?? Date.now(),
             permissionMode: args.permissionMode,
+            allowedTools: args.allowedTools ?? null,
+            disallowedTools: args.disallowedTools ?? null,
         },
     };
 }

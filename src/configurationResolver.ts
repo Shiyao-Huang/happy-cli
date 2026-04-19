@@ -21,6 +21,19 @@ const persistentCliConfigSchema = z.object({
 
 export type PersistentCliConfig = z.infer<typeof persistentCliConfigSchema>
 
+function deriveGenomeHubUrl(serverUrl: string): string {
+  const normalizedServerUrl = serverUrl.replace(/\/$/, '')
+  if (normalizedServerUrl.endsWith('/genome')) {
+    return normalizedServerUrl
+  }
+
+  if (normalizedServerUrl.endsWith('/api')) {
+    return normalizedServerUrl.replace(/\/api$/, '/genome')
+  }
+
+  return `${normalizedServerUrl}/genome`
+}
+
 export function expandHomePath(path: string): string {
   return path.replace(/^~/, homedir())
 }
@@ -74,7 +87,7 @@ export function injectGenomeHubUrlFromServerUrl(env: NodeJS.ProcessEnv = process
   if (env.GENOME_HUB_URL) return
   const serverUrl = env.AHA_SERVER_URL
   if (serverUrl) {
-    env.GENOME_HUB_URL = serverUrl.replace(/\/$/, '').replace(/\/api$/, '/genome')
+    env.GENOME_HUB_URL = deriveGenomeHubUrl(serverUrl)
   }
 }
 
@@ -90,7 +103,7 @@ export function resolveServerConfig(
   return {
     serverUrl,
     webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL,
-    genomeHubUrl: env.GENOME_HUB_URL || serverUrl.replace(/\/$/, '').replace(/\/api$/, '/genome'),
+    genomeHubUrl: env.GENOME_HUB_URL || deriveGenomeHubUrl(serverUrl),
   }
 }
 

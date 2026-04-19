@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,11 @@ import {
     listSkillSourcesInRoot,
     resolveDeclaredSkillSource,
 } from '@/skills/skillResolver';
+
+type TomlSection = {
+    header: string | null;
+    lines: string[];
+};
 
 function expandHomePath(value: string): string {
     return value.replace(/^~(?=\/|$)/, homedir());
@@ -25,6 +30,86 @@ function writeInlineSkill(targetSkillsDir: string, skillName: string, content: s
     rmSync(targetSkillDir, { recursive: true, force: true });
     mkdirSync(targetSkillDir, { recursive: true });
     writeFileSync(join(targetSkillDir, 'SKILL.md'), content, 'utf-8');
+}
+
+function splitTomlSections(source: string): TomlSection[] {
+    const sections: TomlSection[] = [];
+    let current: TomlSection = { header: null, lines: [] };
+
+    for (const line of source.split(/\r?\n/)) {
+        const sectionMatch = line.match(/^\s*\[(.+)\]\s*$/);
+        if (sectionMatch) {
+            sections.push(current);
+            current = {
+                header: sectionMatch[1].trim(),
+                lines: [line],
+            };
+            continue;
+        }
+
+        current.lines.push(line);
+    }
+
+    sections.push(current);
+    return sections;
+}
+
+function isMarketplaceSection(header: string | null): boolean {
+    if (!header) {
+        return false;
+    }
+
+    const root = header.split('.')[0]?.replace(/^"|"$/g, '');
+    return root === 'marketplaces';
+}
+
+function buildIsolatedCodexConfig(sourceConfig: string | null): string {
+    const sections = splitTomlSections(sourceConfig ?? '').filter((section) => !isMarketplaceSection(section.header));
+    let hasFeaturesSection = false;
+
+    for (const section of sections) {
+        if (section.header !== 'features') {
+            continue;
+        }
+
+        hasFeaturesSection = true;
+        const retainedLines = section.lines.filter((line, index) => {
+            if (index === 0) {
+                return true;
+            }
+
+            return !/^\s*(plugins|shell_snapshot)\s*=/.test(line);
+        });
+
+        if (retainedLines.length > 0 && retainedLines[retainedLines.length - 1].trim() !== '') {
+            retainedLines.push('');
+        }
+
+        retainedLines.push('plugins = false');
+        retainedLines.push('shell_snapshot = false');
+        section.lines = retainedLines;
+    }
+
+    if (!hasFeaturesSection) {
+        if (sections.length > 0 && sections[sections.length - 1].lines.at(-1)?.trim() !== '') {
+            sections[sections.length - 1].lines.push('');
+        }
+
+        sections.push({
+            header: 'features',
+            lines: [
+                '[features]',
+                'plugins = false',
+                'shell_snapshot = false',
+            ],
+        });
+    }
+
+    return `${sections
+        .map((section) => section.lines.join('\n').replace(/\n+$/g, ''))
+        .filter((section) => section.length > 0)
+        .join('\n\n')
+        .trim()}\n`;
 }
 
 export function seedCodexHomeConfig(
@@ -42,7 +127,21 @@ export function seedCodexHomeConfig(
     }
 
     const sourceCodexHome = resolveSourceCodexHome(env);
-    for (const filename of ['auth.json', 'config.toml', 'config.json', 'settings.json']) {
+    const sourceConfigPath = join(sourceCodexHome, 'config.toml');
+    const targetConfigPath = join(targetCodexHome, 'config.toml');
+    for (const filename of [
+        'auth.json',
+        'config.json',
+        'settings.json',
+        '.codex-global-state.json',
+        'installation_id',
+        'models_cache.json',
+        'session_index.jsonl',
+        'version.json',
+        'state_5.sqlite',
+        'state_5.sqlite-shm',
+        'state_5.sqlite-wal',
+    ]) {
         if (options.token && filename === 'auth.json') {
             continue;
         }
@@ -51,6 +150,17 @@ export function seedCodexHomeConfig(
         const targetPath = join(targetCodexHome, filename);
         if (existsSync(sourcePath) && !existsSync(targetPath)) {
             copyFileSync(sourcePath, targetPath);
+        }
+    }
+
+    const sourceConfig = existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, 'utf-8') : null;
+    writeFileSync(targetConfigPath, buildIsolatedCodexConfig(sourceConfig), 'utf-8');
+
+    for (const dirname of ['sqlite']) {
+        const sourcePath = join(sourceCodexHome, dirname);
+        const targetPath = join(targetCodexHome, dirname);
+        if (existsSync(sourcePath) && !existsSync(targetPath)) {
+            cpSync(sourcePath, targetPath, { recursive: true });
         }
     }
 }

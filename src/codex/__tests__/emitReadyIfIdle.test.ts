@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { emitReadyIfIdle } from '../runCodex';
+import { emitReadyIfIdle, getCodexToolError } from '../runCodex';
 
 describe('emitReadyIfIdle', () => {
     it('emits ready and notification when queue is idle', () => {
@@ -59,5 +59,43 @@ describe('emitReadyIfIdle', () => {
 
         expect(emitted).toBe(false);
         expect(sendReady).not.toHaveBeenCalled();
+    });
+
+    it('skips when the runtime is unhealthy', () => {
+        const sendReady = vi.fn();
+
+        const emitted = emitReadyIfIdle({
+            pending: null,
+            queueSize: () => 0,
+            shouldExit: false,
+            healthy: false,
+            sendReady,
+        });
+
+        expect(emitted).toBe(false);
+        expect(sendReady).not.toHaveBeenCalled();
+    });
+});
+
+describe('getCodexToolError', () => {
+    it('returns null for successful responses', () => {
+        expect(getCodexToolError({
+            content: [{ type: 'text', text: 'ok' }],
+            isError: false,
+        })).toBeNull();
+    });
+
+    it('returns the text payload for error responses', () => {
+        expect(getCodexToolError({
+            content: [{ type: 'text', text: 'Token data is not available.' }],
+            isError: true,
+        })).toBe('Token data is not available.');
+    });
+
+    it('falls back to a generic message when the error payload is empty', () => {
+        expect(getCodexToolError({
+            content: [{ type: 'text', text: '   ' }],
+            isError: true,
+        })).toBe('Codex MCP tool call returned an error.');
     });
 });

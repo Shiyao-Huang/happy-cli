@@ -5,7 +5,7 @@ import {
     convertCodexFunctionEventToSessionMessage,
     convertCodexMcpLifecycleEventToSessionMessage,
     unwrapCodexEvent,
-} from '../runCodex';
+} from '../sessionEventAdapter';
 
 describe('unwrapCodexEvent', () => {
     it('unwraps raw_response_item notifications from newer codex MCP servers', () => {
