@@ -111,6 +111,16 @@ describe('registerBridgeTools', () => {
                 undefined,
             );
         });
+
+        it('rejects recursive bridge tool names', async () => {
+            const handler = registeredTools.get('invoke_tool')!.handler;
+
+            const result = await handler({ tool_name: 'invoke_tool' });
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain('recursive call');
+            expect(invokeMozartTool).not.toHaveBeenCalled();
+        });
     });
 
     describe('check_bridge', () => {

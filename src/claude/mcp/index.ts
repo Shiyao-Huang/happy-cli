@@ -40,6 +40,7 @@ import { registerSupervisorTools } from './supervisorTools';
 import { registerEvolutionTools } from './evolutionTools';
 import { patchRegisterTool } from './mozartShim';
 import { createMozartAdapter } from './mozartHttpAdapter';
+import { registerBridgeTools } from '@/runtime/bridgeTools';
 
 export async function startAhaServer(
     api: any,
@@ -187,6 +188,15 @@ export async function startAhaServer(
         registerAgentTools(ctx);
         registerSupervisorTools(ctx);
         registerEvolutionTools(ctx);
+        const mozartBridgeTimeoutMs = process.env.MOZART_BRIDGE_TIMEOUT_MS
+            ? Number(process.env.MOZART_BRIDGE_TIMEOUT_MS)
+            : undefined;
+        registerBridgeTools(mcp, {
+            mozartPath: process.env.MOZART_BIN,
+            mcpUrl: process.env.MOZART_MCP_URL,
+            remoteUrl: process.env.MOZART_PROXY_URL,
+            timeout: Number.isFinite(mozartBridgeTimeoutMs as number) ? mozartBridgeTimeoutMs : undefined,
+        });
 
         return mcp;
     };

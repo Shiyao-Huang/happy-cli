@@ -54,6 +54,18 @@ export function registerBridgeTools(
         async (params: { tool_name: string; arguments?: Record<string, unknown>; request_id?: string }) => {
             const { tool_name, arguments: toolArgs, request_id } = params;
 
+            if (tool_name === 'invoke_tool' || tool_name === 'check_bridge') {
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Bridge tool invocation rejected: recursive call to "${tool_name}" is not allowed.`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+
             logger.debug('[BridgeTool] Invoking tool via bridge', {
                 tool_name,
                 request_id,
