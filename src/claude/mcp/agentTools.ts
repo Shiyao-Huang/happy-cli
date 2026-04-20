@@ -34,7 +34,7 @@ import { canSpawnAgents, BYPASS_ROLES } from '@/claude/team/roles';
 import { TOOL_GRANT_ROLES, AGENT_REPLACE_ROLES } from '@/claude/team/roleConstants';
 import { createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { projectTeamAgentMirror } from '../utils/runEnvelopeMirror';
-import { readDaemonState } from '@/persistence';
+import { readDaemonState, readSettings } from '@/persistence';
 import { extractTeamConfigSnapshot, buildRuntimePermissionSnapshot, explainRuntimeToolAccess } from './inspectionTools';
 import {
     publishTeamCorpsTemplate,
@@ -216,7 +216,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
         inputSchema: {
             query: z.string().optional().describe('Optional search query, e.g. a role, skill, or tag'),
             category: z.string().optional().describe("Optional filter: 'coordination' | 'implementation' | 'quality' | 'research' | 'support'"),
-            limit: z.number().default(100).describe('Max results (default 100)'),
+            limit: z.coerce.number().default(100).describe('Max results (default 100)'),
         },
     }, async (args) => {
         const metadata = client.getMetadata();
@@ -383,14 +383,15 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
 
-            // Read daemon state to get the control port
-            const daemonState = await readDaemonState();
+            // Read daemon state to get the control port + machineId from settings
+            const [daemonState, settings] = await Promise.all([readDaemonState(), readSettings()]);
             if (!daemonState?.httpPort) {
                 return {
                     content: [{ type: 'text', text: 'Error: Daemon is not running. Cannot spawn agent sessions without a running daemon.' }],
                     isError: true,
                 };
             }
+            const spawnMachineId = settings.machineId;
             const parentSessionId = client.sessionId;
             const runtime = resolveSpawnRuntimeForRole(args.role, args.agent);
 
@@ -498,6 +499,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                             parentSessionId,
                             executionPlane: args.executionPlane || 'mainline',
                             runtimeType: runtime,
+                            ...(spawnMachineId ? { machineId: spawnMachineId } : {}),
                         }
                     );
                     logger.debug(`[create_agent] Added ${args.role} (${spawnedSessionId}) to team ${args.teamId}`);
@@ -695,6 +697,8 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                     executionPlane: projectedMirror.executionPlane,
                     runtimeType: projectedMirror.runtimeType,
                     lifecycleState: lifecycleState || 'running',
+                    machineId: member?.machineId || sessionSnapshot?.metadata?.machineId,
+                    machineName: member?.machineName || sessionSnapshot?.metadata?.host,
                     taskStats: taskStatsByAssignee.get(sessionId) ?? {
                         total: 0,
                         todo: 0,
@@ -949,8 +953,8 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
         inputSchema: {
             targetSessionId: z.string().describe('Session ID being voted on'),
             teamId: z.string().optional().describe('Team ID. Defaults to your current team.'),
-            minVotes: z.number().int().min(1).default(2).describe('Minimum number of votes required before replacement can be recommended'),
-            limit: z.number().int().min(1).max(500).default(200).describe('How many recent team messages to inspect'),
+            minVotes: z.coerce.number().int().min(1).default(2).describe('Minimum number of votes required before replacement can be recommended'),
+            limit: z.coerce.number().int().min(1).max(500).default(200).describe('How many recent team messages to inspect'),
         },
     }, async (args) => {
         const metadata = client.getMetadata();
@@ -1321,13 +1325,14 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 };
             }
 
-            const daemonState = await readDaemonState();
+            const [daemonState, batchSettings] = await Promise.all([readDaemonState(), readSettings()]);
             if (!daemonState?.httpPort) {
                 return {
                     content: [{ type: 'text', text: 'Error: Daemon is not running. Cannot spawn agent sessions without a running daemon.' }],
                     isError: true,
                 };
             }
+            const batchMachineId = batchSettings.machineId;
 
             const parentSessionId = client.sessionId;
             const runtime = args.agent || 'claude';
@@ -1402,6 +1407,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                                         parentSessionId,
                                         executionPlane: 'mainline',
                                         runtimeType: runtime,
+                                        ...(batchMachineId ? { machineId: batchMachineId } : {}),
                                     }
                                 );
                             } catch (memberError) {

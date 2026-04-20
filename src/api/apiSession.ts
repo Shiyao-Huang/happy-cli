@@ -187,7 +187,12 @@ export class ApiSessionClient extends EventEmitter {
                     }
                 } else if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
+                        const prevAhaSessionId = this.metadata?.ahaSessionId;
                         this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(data.body.metadata.value));
+                        // Preserve locally-set ahaSessionId — server never sends it back, so a fresh update-session would clear it
+                        if (prevAhaSessionId && !this.metadata?.ahaSessionId) {
+                            this.metadata = Object.assign({}, this.metadata, { ahaSessionId: prevAhaSessionId });
+                        }
                         this.metadataVersion = data.body.metadata.version;
                         this.emit('metadata-update', this.metadata);
                     }

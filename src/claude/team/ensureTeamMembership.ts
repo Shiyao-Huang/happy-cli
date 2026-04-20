@@ -103,6 +103,8 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
                 specId: resolvedSpecId,
                 executionPlane: metadata.executionPlane,
                 runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',
+                machineId: metadata.machineId,
+                machineName: metadata.host,
             }
         )
 

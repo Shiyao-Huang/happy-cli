@@ -1723,6 +1723,8 @@ export class ApiClient {
       parentSessionId?: string;
       executionPlane?: string;
       runtimeType?: string;
+      machineId?: string;
+      machineName?: string;
       authorities?: string[];
       teamOverlay?: LegionMemberOverlay;
     }
@@ -1740,6 +1742,8 @@ export class ApiClient {
         ...(opts?.parentSessionId !== undefined && { parentSessionId: opts.parentSessionId }),
         ...(opts?.executionPlane !== undefined && { executionPlane: opts.executionPlane }),
         ...(opts?.runtimeType !== undefined && { runtimeType: opts.runtimeType }),
+        ...(opts?.machineId !== undefined && { machineId: opts.machineId }),
+        ...(opts?.machineName !== undefined && { machineName: opts.machineName }),
         ...(opts?.authorities !== undefined && { authorities: opts.authorities }),
         ...(opts?.teamOverlay !== undefined && { teamOverlay: opts.teamOverlay }),
       };
