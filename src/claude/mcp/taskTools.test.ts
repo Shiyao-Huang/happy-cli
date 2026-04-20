@@ -205,6 +205,11 @@ describe('resolveTaskActorSessionId', () => {
         expect(resolveTaskActorSessionId({ ahaSessionId: 'server-sid' }, 'local-sid')).toBe('server-sid');
     });
 
+    it('falls back to client session id when ahaSessionId is empty or whitespace', () => {
+        expect(resolveTaskActorSessionId({ ahaSessionId: '' }, 'local-sid')).toBe('local-sid');
+        expect(resolveTaskActorSessionId({ ahaSessionId: '   ' }, 'local-sid')).toBe('local-sid');
+    });
+
     it('falls back to client session id when metadata is missing', () => {
         expect(resolveTaskActorSessionId({}, 'local-sid')).toBe('local-sid');
         expect(resolveTaskActorSessionId(null, 'local-sid')).toBe('local-sid');

@@ -135,7 +135,10 @@ export function resolveTaskActorSessionId(
     metadata: { ahaSessionId?: string } | null | undefined,
     clientSessionId: string,
 ): string {
-    return metadata?.ahaSessionId || clientSessionId;
+    const authoritativeSessionId = typeof metadata?.ahaSessionId === 'string'
+        ? metadata.ahaSessionId.trim()
+        : '';
+    return authoritativeSessionId.length > 0 ? authoritativeSessionId : clientSessionId;
 }
 
 export function summarizeTaskForList(task: ListableTask): Record<string, unknown> {
