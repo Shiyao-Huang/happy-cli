@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildShowAllTaskPage,
+    isRetryableTaskSessionMismatchError,
     resolveCreateTaskPolicy,
     resolveTaskActorSessionId,
+    runWithTaskSessionFallback,
+    shouldRetryTaskSessionWithClient,
     summarizeTaskForList,
 } from './taskTools';
 
@@ -214,5 +217,50 @@ describe('resolveTaskActorSessionId', () => {
         expect(resolveTaskActorSessionId({}, 'local-sid')).toBe('local-sid');
         expect(resolveTaskActorSessionId(null, 'local-sid')).toBe('local-sid');
         expect(resolveTaskActorSessionId(undefined, 'local-sid')).toBe('local-sid');
+    });
+});
+
+describe('task session fallback retry helpers', () => {
+    it('detects retryable session mismatch errors', () => {
+        expect(isRetryableTaskSessionMismatchError(new Error('Invalid actor session for this team'))).toBe(true);
+        expect(isRetryableTaskSessionMismatchError(new Error('Request failed with status code 400'))).toBe(true);
+        expect(isRetryableTaskSessionMismatchError(new Error('Network timeout'))).toBe(false);
+    });
+
+    it('retries with client session when stale ahaSessionId mismatch is detected', async () => {
+        const calls: string[] = [];
+        const { result, sessionId } = await runWithTaskSessionFallback({
+            operation: 'update_task',
+            metadata: { ahaSessionId: 'stale-server-sid' },
+            clientSessionId: 'client-sid',
+            preferredSessionId: 'stale-server-sid',
+            execute: async (sid) => {
+                calls.push(sid);
+                if (sid === 'stale-server-sid') {
+                    throw new Error('Invalid actor session for this team');
+                }
+                return { ok: true };
+            },
+        });
+
+        expect(calls).toEqual(['stale-server-sid', 'client-sid']);
+        expect(sessionId).toBe('client-sid');
+        expect(result).toEqual({ ok: true });
+    });
+
+    it('does not retry when metadata/session mismatch preconditions are not met', () => {
+        expect(shouldRetryTaskSessionWithClient({
+            metadata: { ahaSessionId: 'same' },
+            clientSessionId: 'same',
+            attemptedSessionId: 'same',
+            error: new Error('Invalid actor session for this team'),
+        })).toBe(false);
+
+        expect(shouldRetryTaskSessionWithClient({
+            metadata: { ahaSessionId: 'server' },
+            clientSessionId: 'client',
+            attemptedSessionId: 'client',
+            error: new Error('Invalid actor session for this team'),
+        })).toBe(false);
     });
 });

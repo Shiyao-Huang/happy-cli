@@ -32,6 +32,7 @@ import {
 import { emitTraceEvent } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { McpToolContext } from './mcpContext';
+import { TaskStateManager } from '../utils/taskStateManager';
 
 export type CreateTaskType = 'standard' | 'hypothesis';
 
@@ -139,6 +140,78 @@ export function resolveTaskActorSessionId(
         ? metadata.ahaSessionId.trim()
         : '';
     return authoritativeSessionId.length > 0 ? authoritativeSessionId : clientSessionId;
+}
+
+const TASK_SESSION_MISMATCH_PATTERNS = [
+    'invalid actor session for this team',
+    'invalid reporterid for this team',
+    'invalid reporter id for this team',
+    'invalid session for this team',
+    'invalid actor session',
+    'invalid reporterid',
+    'invalid reporter id',
+    'invalid session',
+    'status code 400',
+];
+
+export function isRetryableTaskSessionMismatchError(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return TASK_SESSION_MISMATCH_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
+interface TaskSessionFallbackArgs {
+    metadata: { ahaSessionId?: string } | null | undefined;
+    clientSessionId: string;
+    attemptedSessionId: string;
+    error: unknown;
+}
+
+export function shouldRetryTaskSessionWithClient(args: TaskSessionFallbackArgs): boolean {
+    const ahaSessionId = typeof args.metadata?.ahaSessionId === 'string'
+        ? args.metadata.ahaSessionId.trim()
+        : '';
+
+    if (!ahaSessionId) return false;
+    if (ahaSessionId === args.clientSessionId) return false;
+    if (args.attemptedSessionId !== ahaSessionId) return false;
+    return isRetryableTaskSessionMismatchError(args.error);
+}
+
+export interface RunWithTaskSessionFallbackArgs<T> {
+    operation: string;
+    metadata: { ahaSessionId?: string } | null | undefined;
+    clientSessionId: string;
+    preferredSessionId: string;
+    execute: (sessionId: string) => Promise<T>;
+}
+
+export async function runWithTaskSessionFallback<T>(
+    args: RunWithTaskSessionFallbackArgs<T>,
+): Promise<{ result: T; sessionId: string }> {
+    try {
+        const result = await args.execute(args.preferredSessionId);
+        return { result, sessionId: args.preferredSessionId };
+    } catch (error) {
+        if (!shouldRetryTaskSessionWithClient({
+            metadata: args.metadata,
+            clientSessionId: args.clientSessionId,
+            attemptedSessionId: args.preferredSessionId,
+            error,
+        })) {
+            throw error;
+        }
+
+        logger.warn(
+            `[TaskTools] ${args.operation}: session mismatch detected, retrying with client session id`,
+            {
+                preferredSessionId: args.preferredSessionId,
+                clientSessionId: args.clientSessionId,
+            },
+        );
+
+        const result = await args.execute(args.clientSessionId);
+        return { result, sessionId: args.clientSessionId };
+    }
 }
 
 export function summarizeTaskForList(task: ListableTask): Record<string, unknown> {
@@ -251,7 +324,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
-            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            const preferredSessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create tasks.' }], isError: true };
@@ -280,12 +353,20 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 description: args.description || '',
                 status: 'todo' as const,
                 assigneeId: creationPolicy.assigneeId,
-                reporterId: sessionId,
                 priority: args.priority || 'medium',
                 labels: creationPolicy.labels,
             };
 
-            const result = await api.createTask(teamId, taskData);
+            const { result, sessionId } = await runWithTaskSessionFallback({
+                operation: 'create_task',
+                metadata,
+                clientSessionId: client.sessionId,
+                preferredSessionId,
+                execute: (activeSessionId) => api.createTask(teamId, {
+                    ...taskData,
+                    reporterId: activeSessionId,
+                }),
+            });
 
             if (!result.success || !result.task) {
                 return { content: [{ type: 'text', text: `Error: Failed to create task via server API. Verify: title is non-empty, priority is one of [low, medium, high, urgent], assigneeId (if provided) is a valid session ID. Team: ${teamId}, role: ${role}.` }], isError: true };
@@ -351,15 +432,17 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
-            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            const preferredSessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            const sessionCandidates = new Set<string>([preferredSessionId, client.sessionId]);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to update tasks.' }], isError: true };
             }
 
-            const { authorities } = await getCurrentTeamMemberContext(teamId);
+            const { authorities, effectiveGenome } = await getCurrentTeamMemberContext(teamId);
             const hasTeamWideTaskWrite =
-                hasTeamAuthority(authorities, 'task.update.any')
+                canManageExistingTasks(role, effectiveGenome)
+                || hasTeamAuthority(authorities, 'task.update.any')
                 || hasTeamAuthority(authorities, 'task.assign')
                 || hasTeamAuthority(authorities, 'task.create')
                 || hasTeamAuthority(authorities, 'task.approve');
@@ -385,19 +468,19 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 try {
                     const existingTask = await api.getTask(teamId, args.taskId);
                     if (existingTask) {
-                        const assignedToSelf = existingTask.assigneeId === sessionId;
-                        const claimingSelf = !existingTask.assigneeId && args.assigneeId === sessionId;
+                        const assignedToSelf = sessionCandidates.has(existingTask.assigneeId ?? '');
+                        const claimingSelf = !existingTask.assigneeId && !!args.assigneeId && sessionCandidates.has(args.assigneeId);
 
                         if (!assignedToSelf && !claimingSelf) {
                             return {
-                                content: [{ type: 'text', text: `Error: Workers can only update tasks assigned to them. This task is assigned to ${existingTask.assigneeId ?? '(unassigned)'}, your session is ${sessionId} (role: ${role}). Options: (1) ask a coordinator to reassign, (2) use add_task_comment to leave notes, (3) use send_team_message to request the change.` }],
+                                content: [{ type: 'text', text: `Error: Workers can only update tasks assigned to them. This task is assigned to ${existingTask.assigneeId ?? '(unassigned)'}, your session is ${preferredSessionId} (role: ${role}). Options: (1) ask a coordinator to reassign, (2) use add_task_comment to leave notes, (3) use send_team_message to request the change.` }],
                                 isError: true
                             };
                         }
 
-                        if (args.assigneeId && args.assigneeId !== sessionId) {
+                        if (args.assigneeId && !sessionCandidates.has(args.assigneeId)) {
                             return {
-                                content: [{ type: 'text', text: `Error: Workers cannot reassign tasks to other members. Your session: ${sessionId}. Use send_team_message to request a coordinator to reassign task ${args.taskId}.` }],
+                                content: [{ type: 'text', text: `Error: Workers cannot reassign tasks to other members. Your session: ${preferredSessionId}. Use send_team_message to request a coordinator to reassign task ${args.taskId}.` }],
                                 isError: true
                             };
                         }
@@ -407,38 +490,46 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 }
             }
 
-            // Build updates object
-            const updates: any = {
-                actor: {
-                    sessionId,
-                    role,
-                    displayName: metadata?.displayName || metadata?.name,
-                    kind: role === 'user' ? 'human' : 'agent',
-                },
-            };
-            if (args.status) updates.status = args.status;
-            if (args.assigneeId) updates.assigneeId = args.assigneeId;
-            if (args.priority) updates.priority = args.priority;
-            if (args.comment) {
-                updates.comment = {
-                    sessionId,
-                    role,
-                    displayName: metadata?.displayName || metadata?.name,
-                    type: args.commentType || (
-                        args.assigneeId ? 'handoff'
-                            : args.status === 'review' ? 'review-feedback'
-                                : args.status ? 'status-change'
-                                    : 'note'
-                    ),
-                    content: args.comment,
-                    fromStatus: undefined,
-                    toStatus: args.status,
-                    mentions: args.assigneeId ? [args.assigneeId] : undefined,
+            const buildUpdates = (activeSessionId: string): any => {
+                const updates: any = {
+                    actor: {
+                        sessionId: activeSessionId,
+                        role,
+                        displayName: metadata?.displayName || metadata?.name,
+                        kind: role === 'user' ? 'human' : 'agent',
+                    },
                 };
-            }
+                if (args.status) updates.status = args.status;
+                if (args.assigneeId) updates.assigneeId = args.assigneeId;
+                if (args.priority) updates.priority = args.priority;
+                if (args.comment) {
+                    updates.comment = {
+                        sessionId: activeSessionId,
+                        role,
+                        displayName: metadata?.displayName || metadata?.name,
+                        type: args.commentType || (
+                            args.assigneeId ? 'handoff'
+                                : args.status === 'review' ? 'review-feedback'
+                                    : args.status ? 'status-change'
+                                        : 'note'
+                        ),
+                        content: args.comment,
+                        fromStatus: undefined,
+                        toStatus: args.status,
+                        mentions: args.assigneeId ? [args.assigneeId] : undefined,
+                    };
+                }
+                return updates;
+            };
 
             // Use REST API - server handles artifact update + WebSocket event emission
-            const result = await api.updateTask(teamId, args.taskId, updates);
+            const { result, sessionId } = await runWithTaskSessionFallback({
+                operation: 'update_task',
+                metadata,
+                clientSessionId: client.sessionId,
+                preferredSessionId,
+                execute: (activeSessionId) => api.updateTask(teamId, args.taskId, buildUpdates(activeSessionId)),
+            });
 
             if (!result.success || !result.task) {
                 return { content: [{ type: 'text', text: `Error: Failed to update task ${args.taskId} via server API. Valid status: [todo, in-progress, review, done, blocked]. Valid priority: [low, medium, high, urgent]. Team: ${teamId}, role: ${role}.` }], isError: true };
@@ -504,19 +595,25 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const metadata = client.getMetadata();
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
-            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            const preferredSessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to add task comments.' }], isError: true };
             }
 
-            const result = await api.addTaskComment(teamId, args.taskId, {
-                sessionId,
-                role,
-                displayName: metadata?.displayName || metadata?.name,
-                type: args.type,
-                content: args.content,
-                mentions: args.mentions,
+            const { result } = await runWithTaskSessionFallback({
+                operation: 'add_task_comment',
+                metadata,
+                clientSessionId: client.sessionId,
+                preferredSessionId,
+                execute: (activeSessionId) => api.addTaskComment(teamId, args.taskId, {
+                    sessionId: activeSessionId,
+                    role,
+                    displayName: metadata?.displayName || metadata?.name,
+                    type: args.type,
+                    content: args.content,
+                    mentions: args.mentions,
+                }),
             });
 
             if (!result.success || !result.task) {
@@ -705,7 +802,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
-            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            const preferredSessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create subtasks.' }], isError: true };
@@ -740,12 +837,20 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 description: args.description || '',
                 status: 'todo' as const,
                 assigneeId: args.assigneeId ?? parentTask.assigneeId ?? null,
-                reporterId: sessionId,
                 priority: args.priority ?? parentTask.priority ?? 'medium',
                 parentTaskId: args.parentTaskId,
             };
 
-            const result = await api.createTask(teamId, subtaskData);
+            const { result, sessionId } = await runWithTaskSessionFallback({
+                operation: 'create_subtask',
+                metadata,
+                clientSessionId: client.sessionId,
+                preferredSessionId,
+                execute: (activeSessionId) => api.createTask(teamId, {
+                    ...subtaskData,
+                    reporterId: activeSessionId,
+                }),
+            });
 
             if (!result.success || !result.task) {
                 return { content: [{ type: 'text', text: 'Error: Failed to create subtask via server API.' }], isError: true };
@@ -930,20 +1035,45 @@ export function registerTaskTools(ctx: McpToolContext): void {
         },
     }, async (args) => {
         try {
-            const taskManager = getTaskStateManager();
-            if (!taskManager) {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const preferredSessionId = resolveTaskActorSessionId(metadata, client.sessionId);
+            let activeSessionId = preferredSessionId;
+
+            let taskManager = getTaskStateManager();
+            if (!taskManager || !teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team.' }], isError: true };
             }
+
+            const taskStartComment = args.comment ? {
+                displayName: metadata?.displayName || metadata?.name,
+                content: args.comment,
+            } : undefined;
 
             // Delegate to TaskStateManager which handles:
             // - Execution link creation
             // - Status change to 'in-progress'
             // - State change broadcasting
             // - Team message notification
-            const result = await taskManager.startTaskWithComment(args.taskId, args.comment ? {
-                displayName: client.getMetadata()?.displayName || client.getMetadata()?.name,
-                content: args.comment,
-            } : undefined);
+            let result = await taskManager.startTaskWithComment(args.taskId, taskStartComment);
+
+            if (!result.success && shouldRetryTaskSessionWithClient({
+                metadata,
+                clientSessionId: client.sessionId,
+                attemptedSessionId: preferredSessionId,
+                error: result.error ?? '',
+            })) {
+                activeSessionId = client.sessionId;
+                logger.warn(
+                    '[TaskTools] start_task: session mismatch detected, retrying with client session id',
+                    {
+                        preferredSessionId,
+                        clientSessionId: client.sessionId,
+                    },
+                );
+                taskManager = new TaskStateManager(api, teamId, activeSessionId, metadata?.role, metadata);
+                result = await taskManager.startTaskWithComment(args.taskId, taskStartComment);
+            }
 
             if (!result.success) {
                 return { content: [{ type: 'text', text: `Error: ${result.error}` }], isError: true };
@@ -955,8 +1085,6 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const taskTitle = task?.title || args.taskId;
 
             // ── Trace: task_started ─────────────────────────────────────
-            const metadata = client.getMetadata();
-            const teamId = metadata?.teamId || metadata?.roomId;
             try {
                 emitTraceEvent(
                     TraceEventKind.task_started,
@@ -964,7 +1092,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     {
                         team_id: teamId,
                         task_id: args.taskId,
-                        session_id: client.sessionId,
+                        session_id: activeSessionId,
                     },
                     `Task "${taskTitle}" started by ${metadata?.role || 'unknown'}`,
                 );
