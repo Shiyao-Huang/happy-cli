@@ -229,9 +229,16 @@ describe('Layer 3b: Skill symlink access mechanism', () => {
         const runtimeLibRoot = join(root, 'runtime-lib');
 
         mkdirSync(repoRoot, { recursive: true });
-        mkdirSync(join(runtimeLibRoot, 'skills', 'review'), { recursive: true });
-        mkdirSync(join(runtimeLibRoot, 'skills', 'ship'), { recursive: true });
-        mkdirSync(join(runtimeLibRoot, 'skills', 'deploy'), { recursive: true });
+        // Create skill dirs with SKILL.md so they resolve correctly
+        const reviewDir = join(runtimeLibRoot, 'skills', 'review');
+        const shipDir = join(runtimeLibRoot, 'skills', 'ship');
+        const deployDir = join(runtimeLibRoot, 'skills', 'deploy');
+        mkdirSync(reviewDir, { recursive: true });
+        mkdirSync(shipDir, { recursive: true });
+        mkdirSync(deployDir, { recursive: true });
+        writeFileSync(join(reviewDir, 'SKILL.md'), '# review', 'utf-8');
+        writeFileSync(join(shipDir, 'SKILL.md'), '# ship', 'utf-8');
+        writeFileSync(join(deployDir, 'SKILL.md'), '# deploy', 'utf-8');
 
         const plan = materializeAgentWorkspace({
             agentId: `skill-filter-${Date.now()}`,
@@ -257,7 +264,7 @@ describe('Layer 3b: Skill symlink access mechanism', () => {
         expect(existsSync(join(plan.commandsDir, 'deploy'))).toBe(false);
     });
 
-    it('skill source missing emits warning and does not create symlink', () => {
+    it('skill source missing throws error for non-bundled required skills', () => {
         const root = makeTempRoot('aha-skill-missing-');
         const repoRoot = join(root, 'repo');
         const runtimeLibRoot = join(root, 'runtime-lib');
@@ -266,7 +273,7 @@ describe('Layer 3b: Skill symlink access mechanism', () => {
         mkdirSync(join(runtimeLibRoot, 'skills'), { recursive: true });
         // Intentionally NOT creating the 'nonexistent' skill directory
 
-        const plan = materializeAgentWorkspace({
+        expect(() => materializeAgentWorkspace({
             agentId: `skill-missing-${Date.now()}`,
             repoRoot,
             runtime: 'claude',
@@ -280,9 +287,6 @@ describe('Layer 3b: Skill symlink access mechanism', () => {
                     skills: ['nonexistent'],
                 },
             },
-        });
-
-        expect(existsSync(join(plan.commandsDir, 'nonexistent'))).toBe(false);
-        expect(plan.warnings.some((w) => w.includes('nonexistent'))).toBe(true);
+        })).toThrow('Skill "nonexistent" declared in skills[] but content is missing.');
     });
 });

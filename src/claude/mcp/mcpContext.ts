@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { TaskStateManager } from '../utils/taskStateManager';
+import { resolveTaskActorSessionId } from './taskTools';
 import { readDaemonState } from '@/persistence';
 import { createReplacementTeamMemberIdentity, createTeamMemberIdentity } from '../utils/teamMemberIdentity';
 import { resolvePreferredAgentImageId } from '@/utils/genomeMarketplace';
@@ -127,7 +128,7 @@ export function buildMcpHelpers(
         if (!teamId) {
             return null;
         }
-        return new TaskStateManager(api, teamId, client.sessionId, metadata?.role, metadata);
+        return new TaskStateManager(api, teamId, resolveTaskActorSessionId(metadata, client.sessionId), metadata?.role, metadata);
     };
 
     const parseBoardFromArtifact = (artifact: any): any => {

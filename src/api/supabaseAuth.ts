@@ -5,8 +5,42 @@ import { encodeBase64, decodeBase64 } from './encryption';
 import { configuration } from '@/configuration';
 import tweetnacl from 'tweetnacl';
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? 'https://cegpdcfsqcfowgwkpanl.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlZ3BkY2ZzcWNmb3dnd2twYW5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4ODM3MDcsImV4cCI6MjA5MDQ1OTcwN30.4Y2QD5oTjze_QxEAeTBPUYTbOhhCeCr-LRVyJoiIK64';
+const SUPABASE_URL_ENV_NAME = 'SUPABASE_URL';
+const SUPABASE_ANON_KEY_ENV_NAME = 'SUPABASE_ANON_KEY';
+const JWT_LIKE_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+export function resolveSupabaseUrl(envUrl = process.env.SUPABASE_URL): string {
+    const trimmed = envUrl?.trim();
+    if (trimmed) {
+        return trimmed;
+    }
+
+    throw new Error(`Missing required ${SUPABASE_URL_ENV_NAME}`);
+}
+
+export function isLikelySupabaseAnonKey(value: string): boolean {
+    return JWT_LIKE_PATTERN.test(value.trim());
+}
+
+export function resolveSupabaseAnonKey(envKey = process.env.SUPABASE_ANON_KEY): string {
+    const trimmed = envKey?.trim();
+    if (trimmed && isLikelySupabaseAnonKey(trimmed)) {
+        return trimmed;
+    }
+
+    if (!trimmed) {
+        throw new Error(`Missing required ${SUPABASE_ANON_KEY_ENV_NAME}`);
+    }
+
+    throw new Error(`Invalid ${SUPABASE_ANON_KEY_ENV_NAME}`);
+}
+
+function getSupabaseConfig(): { url: string; anonKey: string } {
+    return {
+        url: resolveSupabaseUrl(),
+        anonKey: resolveSupabaseAnonKey(),
+    };
+}
 
 function prompt(question: string): Promise<string> {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -22,11 +56,12 @@ function prompt(question: string): Promise<string> {
  * Send OTP to email via Supabase.
  */
 async function sendOtp(email: string): Promise<void> {
-    const response = await axios.post(`${SUPABASE_URL}/auth/v1/otp`, {
+    const { url, anonKey } = getSupabaseConfig();
+    const response = await axios.post(`${url}/auth/v1/otp`, {
         email,
     }, {
         headers: {
-            'apikey': SUPABASE_ANON_KEY,
+            'apikey': anonKey,
             'Content-Type': 'application/json',
         },
     });
@@ -40,13 +75,14 @@ async function sendOtp(email: string): Promise<void> {
  * Verify OTP and get Supabase access token.
  */
 async function verifyOtp(email: string, token: string): Promise<string> {
-    const response = await axios.post(`${SUPABASE_URL}/auth/v1/verify`, {
+    const { url, anonKey } = getSupabaseConfig();
+    const response = await axios.post(`${url}/auth/v1/verify`, {
         email,
         token,
         type: 'email',
     }, {
         headers: {
-            'apikey': SUPABASE_ANON_KEY,
+            'apikey': anonKey,
             'Content-Type': 'application/json',
         },
     });
@@ -214,3 +250,5 @@ export async function doEmailOtpAuth(): Promise<EmailOtpResult | null> {
         return null;
     }
 }
+
+export { SUPABASE_ANON_KEY_ENV_NAME, SUPABASE_URL_ENV_NAME };

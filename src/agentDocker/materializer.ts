@@ -3,6 +3,7 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
+    readFileSync,
     readlinkSync,
     rmSync,
     statSync,
@@ -14,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { basename, join } from 'path';
 
 import { configuration } from '@/configuration';
+import { projectPath } from '@/projectPath';
 import type { AgentImage } from '@/api/types/genome';
 import { buildHooksSettingsContent, type ClaudeHooksSettingsContent } from '@/claude/utils/hooksSettings';
 import {
@@ -189,6 +191,35 @@ const DEFAULT_AGENT_SKILLS = ['context-mirror'];
 
 export function withDefaultAgentSkills(skills?: string[]): string[] {
     return Array.from(new Set([...(skills ?? []), ...DEFAULT_AGENT_SKILLS]));
+}
+
+/**
+ * Allowlist of runtime skills that ship bundled with aha-cli itself.
+ * These skills can be used as a defensive fallback when missing from published packages.
+ */
+const BUNDLED_RUNTIME_SKILLS = ['context-mirror'] as const;
+
+/**
+ * Get the content of a bundled aha-cli skill by name.
+ * Returns null if the skill is not bundled or content cannot be read.
+ */
+function getBundledSkillContent(skillName: string): string | null {
+    if (!BUNDLED_RUNTIME_SKILLS.includes(skillName as any)) {
+        return null;
+    }
+
+    try {
+        const cliRoot = projectPath();
+        const skillPath = join(cliRoot, 'skills', skillName, 'SKILL.md');
+
+        if (existsSync(skillPath)) {
+            return readFileSync(skillPath, 'utf-8');
+        }
+    } catch {
+        // If we can't read the bundled skill, return null and let the caller decide
+    }
+
+    return null;
 }
 
 function resolveMaterializedEnvValues(opts: {
@@ -739,6 +770,19 @@ export function materializeAgentWorkspace(
         }
 
         if (!action.source || !existsSync(action.source)) {
+            // Layered fallback: bundled skills before throwing
+            const bundledContent = getBundledSkillContent(skillName);
+            if (bundledContent !== null) {
+                // Write bundled skill content as defensive fallback
+                mkdirSync(action.target, { recursive: true });
+                writeFileSync(join(action.target, 'SKILL.md'), bundledContent, 'utf-8');
+                plan.warnings.push(
+                    `genome-skill-fallback: ${skillName} missing from published package; used aha-cli bundled copy`,
+                );
+                continue;
+            }
+
+            // Not a bundled skill and required → throw
             if (action.required) {
                 throw new Error(
                     `Skill "${skillName}" declared in skills[] but content is missing. ` +

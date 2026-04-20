@@ -35,7 +35,7 @@ import { withDefaultAgentSkills } from '@/agentDocker/materializer';
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
-import { ensureCurrentSessionRegisteredToTeam } from '@/claude/team/ensureTeamMembership';
+import { ensureCurrentSessionRegisteredToTeam, forceRegisterCurrentSessionToTeam } from '@/claude/team/ensureTeamMembership';
 import { buildAgentHandshakeContent, COORDINATION_ROLES, generateRolePrompt } from '@/claude/team/roles';
 import { TeamMessageStorage } from '@/claude/team/teamMessageStorage';
 import { DEFAULT_ROLES } from '@/claude/team/roles.config';
@@ -108,6 +108,106 @@ type ReadyEventOptions = {
     sendReady: () => void;
     notify?: () => void;
 };
+
+export function applyCodexSessionNamingFromEnv(
+    metadata: Pick<Metadata, 'name' | 'roomName'>,
+    env: NodeJS.ProcessEnv = process.env,
+): void {
+    const roomName = env.AHA_ROOM_NAME?.trim();
+    const sessionName = env.AHA_SESSION_NAME?.trim();
+
+    if (roomName) {
+        metadata.roomName = roomName;
+    }
+
+    if (sessionName || roomName) {
+        metadata.name = sessionName || roomName;
+    }
+}
+
+const HANDSHAKE_RETRYABLE_STATUS_CODES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+
+function resolveTeamActorSessionId(
+    metadata: { ahaSessionId?: string } | null | undefined,
+    fallbackSessionId: string,
+): string {
+    const ahaSessionId = metadata?.ahaSessionId?.trim();
+    return ahaSessionId && ahaSessionId.length > 0 ? ahaSessionId : fallbackSessionId;
+}
+
+function extractHttpStatusCodeFromError(error: unknown): number | undefined {
+    if (typeof error !== 'object' || error === null) {
+        return undefined;
+    }
+
+    const maybeStatus = (error as { status?: unknown }).status;
+    if (typeof maybeStatus === 'number') {
+        return maybeStatus;
+    }
+
+    const nestedStatus = (error as { response?: { status?: unknown } }).response?.status;
+    if (typeof nestedStatus === 'number') {
+        return nestedStatus;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    const statusMatch = message.match(/\bstatus code (\d{3})\b/i);
+    return statusMatch ? Number(statusMatch[1]) : undefined;
+}
+
+function isRetryableHandshakeError(error: unknown): boolean {
+    const status = extractHttpStatusCodeFromError(error);
+    if (typeof status === 'number') {
+        return HANDSHAKE_RETRYABLE_STATUS_CODES.has(status);
+    }
+
+    const normalizedMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return (
+        normalizedMessage.includes('timeout')
+        || normalizedMessage.includes('socket')
+        || normalizedMessage.includes('network')
+        || normalizedMessage.includes('econn')
+    );
+}
+
+function isInvalidFromSessionIdHandshakeError(error: unknown): boolean {
+    const normalizedMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return normalizedMessage.includes('invalid fromsessionid');
+}
+
+async function sendTeamHandshakeWithRetry(opts: {
+    api: ApiClient;
+    teamId: string;
+    message: Record<string, unknown>;
+    maxAttempts?: number;
+}): Promise<void> {
+    const { api, teamId, message, maxAttempts = 3 } = opts;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            await api.sendTeamMessage(teamId, message);
+            if (attempt > 1) {
+                logger.debug(`[Codex] Handshake succeeded on retry attempt ${attempt}/${maxAttempts}`);
+            }
+            return;
+        } catch (error) {
+            lastError = error;
+            const retryable = isRetryableHandshakeError(error);
+            const status = extractHttpStatusCodeFromError(error);
+            if (!retryable || attempt >= maxAttempts) {
+                throw error;
+            }
+            const backoffMs = 250 * Math.pow(2, attempt - 1);
+            logger.debug(
+                `[Codex] Handshake attempt ${attempt}/${maxAttempts} failed (status=${status ?? 'unknown'}), retrying in ${backoffMs}ms`
+            );
+            await delay(backoffMs);
+        }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Handshake send failed');
+}
 
 /**
  * Notify connected clients when Codex finishes processing and the queue is idle.
@@ -498,10 +598,7 @@ export async function runCodex(opts: {
     if (process.env.AHA_EXECUTION_PLANE) {
         metadata.executionPlane = process.env.AHA_EXECUTION_PLANE as 'bypass' | 'mainline';
     }
-    if (process.env.AHA_ROOM_NAME) {
-        metadata.roomName = process.env.AHA_ROOM_NAME;
-        metadata.name = process.env.AHA_ROOM_NAME;
-    }
+    applyCodexSessionNamingFromEnv(metadata);
     if (process.env.AHA_AGENT_MODEL) {
         metadata.modelOverride = process.env.AHA_AGENT_MODEL;
     }
@@ -510,7 +607,9 @@ export async function runCodex(opts: {
     }
     const recoverAhaSessionId = process.env.AHA_RECOVER_SESSION_ID?.trim() || undefined;
     const response = await api.getOrCreateSession({ sessionId: recoverAhaSessionId, tag: sessionTag, metadata, state });
-    const session = api.sessionSyncClient(response);
+    // Populate ahaSessionId so resolveFromSessionId returns the server-assigned CUID (not the Claude-local UUID)
+    const patchedResponse = { ...response, metadata: { ...(response.metadata || {}), ahaSessionId: response.id } };
+    const session = api.sessionSyncClient(patchedResponse);
 
     const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
@@ -1591,8 +1690,13 @@ export async function runCodex(opts: {
         logger.debug(`[Codex] Team mode detected: teamId=${teamId}, role=${role}`);
 
         try {
+            const authoritativeSessionId = resolveTeamActorSessionId(
+                session.getMetadata() as { ahaSessionId?: string } | null | undefined,
+                response.id,
+            );
+
             // Initialize TaskStateManager
-            taskStateManager = new TaskStateManager(api, teamId, response.id, role, metadata);
+            taskStateManager = new TaskStateManager(api, teamId, authoritativeSessionId, role, metadata);
             logger.debug(`[Codex] TaskStateManager initialized for role ${role}`);
 
             // Set up state change notifications
@@ -1601,13 +1705,13 @@ export async function runCodex(opts: {
             });
 
             // Initialize StatusReporter for automatic status updates
-            statusReporter = createStatusReporter(api, taskStateManager, teamId, response.id, role);
+            statusReporter = createStatusReporter(api, taskStateManager, teamId, authoritativeSessionId, role);
             logger.debug(`[Codex] StatusReporter initialized for role ${role}`);
 
             const membershipResult = await ensureCurrentSessionRegisteredToTeam({
                 api,
                 teamId,
-                sessionId: response.id,
+                sessionId: authoritativeSessionId,
                 role,
                 metadata,
                 taskStateManager,
@@ -1640,13 +1744,46 @@ export async function runCodex(opts: {
                 content: introContent,
                 type: 'chat' as const,
                 timestamp: Date.now(),
-                fromSessionId: response.id,
+                fromSessionId: authoritativeSessionId,
                 fromRole: role,
                 metadata: { type: 'handshake', roleTitle }
             };
-            await api.sendTeamMessage(teamId, handshakeMsg);
-            logger.debug(`[Codex] Sent handshake message to team`);
-            logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+            try {
+                await sendTeamHandshakeWithRetry({
+                    api,
+                    teamId,
+                    message: handshakeMsg,
+                });
+                logger.debug(`[Codex] Sent handshake message to team`);
+                logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+            } catch (handshakeError) {
+                if (isInvalidFromSessionIdHandshakeError(handshakeError)) {
+                    logger.debug('[Codex] Handshake rejected with invalid fromSessionId; force re-registering team membership');
+                    try {
+                        await forceRegisterCurrentSessionToTeam({
+                            api,
+                            teamId,
+                            sessionId: authoritativeSessionId,
+                            role,
+                            metadata,
+                            taskStateManager,
+                        });
+                        await sendTeamHandshakeWithRetry({
+                            api,
+                            teamId,
+                            message: handshakeMsg,
+                            maxAttempts: 2,
+                        });
+                        logger.debug('[Codex] Handshake recovered after force-registration');
+                    } catch (recoveryError) {
+                        logger.debug('[Codex] Handshake recovery after force-registration failed:', recoveryError);
+                        logger.debug(`[Team] ⚠️ Handshake send failed for ${role}; continuing team initialization`);
+                    }
+                } else {
+                    logger.debug('[Codex] Handshake send failed after retries (non-fatal):', handshakeError);
+                    logger.debug(`[Team] ⚠️ Handshake send failed for ${role}; continuing team initialization`);
+                }
+            }
 
             // Fetch team context (artifact + recent messages)
             let teamData: any = null;

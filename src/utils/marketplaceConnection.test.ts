@@ -3,7 +3,10 @@ import { buildMarketplaceConnectionHint, buildMarketplacePublishAuthHint } from 
 
 describe('buildMarketplaceConnectionHint', () => {
     it('suggests SSH tunneling for the default local genome-hub endpoint', () => {
-        expect(buildMarketplaceConnectionHint('http://localhost:3006')).toContain('ssh -L 3006:127.0.0.1:3006 wow');
+        const hint = buildMarketplaceConnectionHint('http://localhost:3006');
+        expect(hint).toContain('ssh -L 3006:127.0.0.1:3006');
+        expect(hint).toContain('GENOME_HUB_SSH_HOST');
+        expect(hint).not.toContain('wow');
     });
 
     it('suggests verifying GENOME_HUB_URL for remote endpoints', () => {

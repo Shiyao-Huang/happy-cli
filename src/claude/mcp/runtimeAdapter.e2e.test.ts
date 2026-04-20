@@ -55,19 +55,22 @@ function createFakeClient(metadata: Record<string, unknown>) {
     } as any;
 }
 
-function createFakeApi() {
+function createFakeApi(overrides: Record<string, unknown> = {}) {
     return {
         getArtifact: async () => null,
         getSession: async () => null,
+        listTasks: async () => ({ tasks: [], version: 0 }),
+        ...overrides,
     } as any;
 }
 
 async function startTestServer(input: {
     metadata: Record<string, unknown>;
     genomeSpec: Record<string, unknown>;
+    apiOverrides?: Record<string, unknown>;
 }): Promise<StartedServer> {
     return startAhaServer(
-        createFakeApi(),
+        createFakeApi(input.apiOverrides),
         createFakeClient(input.metadata),
         { current: input.genomeSpec as any },
     );
@@ -122,11 +125,26 @@ describe('runtime adapter E2E', () => {
         const toolNames = await listToolNames(server.url);
         expect(toolNames).toEqual(expect.arrayContaining([
             'get_self_view',
+            'get_legion_view',
             'list_visible_tools',
             'explain_tool_access',
             'get_effective_permissions',
             'grant_tool_access',
             'revoke_tool_access',
+            'compact_agent',
+            'retire_self',
+            'mutate_genome',
+            'compare_genome_versions',
+            'rollback_genome',
+        ]));
+        expect(server.toolNames.slice().sort()).toEqual(expect.arrayContaining(toolNames));
+        expect(server.toolNames).toEqual(expect.arrayContaining([
+            'get_legion_view',
+            'compact_agent',
+            'retire_self',
+            'mutate_genome',
+            'compare_genome_versions',
+            'rollback_genome',
         ]));
 
         const selfView = await callJsonTool(server.url, 'get_self_view', {
@@ -215,6 +233,103 @@ describe('runtime adapter E2E', () => {
             deniedTools: ['kill_agent'],
             visibleTools: ['get_self_view'],
             hiddenTools: ['list_tasks', 'create_task'],
+        });
+    });
+
+    it('serves a legion-level mirror over HTTP for team metabolism decisions', async () => {
+        const server = await startTestServer({
+            metadata: {
+                role: 'org-manager',
+                ahaSessionId: 'sess-legion-view',
+                teamId: 'team-legion',
+                roomId: 'team-legion',
+                specId: 'spec-org',
+                flavor: 'claude',
+            },
+            genomeSpec: {
+                baseRoleId: 'org-manager',
+                displayName: 'Org Manager',
+                behavior: { canSpawnAgents: true },
+                authorities: ['agent.spawn'],
+            },
+            apiOverrides: {
+                getArtifact: async () => ({
+                    body: {
+                        team: {
+                            name: 'Fullstack Squad',
+                            members: [
+                                {
+                                    sessionId: 'sess-legion-view',
+                                    roleId: 'org-manager',
+                                    displayName: 'Org Manager',
+                                },
+                                {
+                                    sessionId: 'sess-impl-1',
+                                    roleId: 'implementer',
+                                    displayName: 'Implementer One',
+                                },
+                            ],
+                            bootContext: {
+                                teamDescription: 'Delivery legion for login rewrite',
+                                initialObjective: 'Stabilize the login redesign',
+                                taskPolicy: 'board-first',
+                            },
+                        },
+                    },
+                    header: {
+                        sessions: ['sess-legion-view', 'sess-impl-1'],
+                    },
+                }),
+                listTasks: async () => ({
+                    tasks: [
+                        { id: 'task-1', status: 'in-progress', assigneeId: 'sess-impl-1' },
+                        { id: 'task-2', status: 'blocked', assigneeId: 'sess-missing' },
+                        { id: 'task-3', status: 'todo' },
+                    ],
+                    version: 1,
+                }),
+            },
+        });
+        startedServers.push(server);
+
+        const legionView = await callJsonTool(server.url, 'get_legion_view', {
+            format: 'json',
+        });
+
+        expect(legionView).toMatchObject({
+            teamId: 'team-legion',
+            identity: {
+                teamName: 'Fullstack Squad',
+                teamDescription: 'Delivery legion for login rewrite',
+                initialObjective: 'Stabilize the login redesign',
+            },
+            bootContext: {
+                taskPolicy: 'board-first',
+            },
+            roster: {
+                counts: {
+                    active: 1,
+                    unknown: 1,
+                    visible: 2,
+                    totalKnown: 2,
+                },
+            },
+            tasks: {
+                counts: {
+                    total: 3,
+                    inProgress: 1,
+                    blocked: 1,
+                    unassigned: 1,
+                    orphaned: 1,
+                },
+                blockedTaskIds: ['task-2'],
+                orphanedTaskIds: ['task-2'],
+            },
+            lifecycle: {
+                unfinishedTasks: 3,
+                teamAlive: true,
+                continuityRisk: 'high',
+            },
         });
     });
 

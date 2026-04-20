@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## 审查登记（2026-04-20）
+
+- [已关闭][严重] `src/commands/auth.ts`：经 2026-04-21 复核，backup key 恢复路径已完整实现：`auth.ts:401-409` 正确分支（`isAccountJoinTicket` → join / else → `handleAuthBackupKeyRestore`），`backupKey.ts:parseBackupKeyToSecret` 支持 base32+dash 和 base64url 双格式，`auth.test.ts` 覆盖 happy path + error path。原登记时的"只接受 join ticket"判断已不成立。
+
 ## 0403 Sprint 架构决策
 
 - **一个 runtime，多态全靠 genome**：所有 agent 共享 runClaude.ts，行为差异通过 Entity.spec（config + systemPrompt）实现。Runtime 不应有 role-specific 分支。

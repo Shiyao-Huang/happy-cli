@@ -5,6 +5,7 @@ import {
     readFileSync,
     realpathSync,
     rmSync,
+    writeFileSync,
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -37,8 +38,12 @@ function createMaterializerFixture(
     const agentId = `integration-agent-${root.split('/').pop()}`;
 
     mkdirSync(join(repoRoot, 'src'), { recursive: true });
-    mkdirSync(join(runtimeLibRoot, 'skills', 'review'), { recursive: true });
-    mkdirSync(join(runtimeLibRoot, 'skills', 'score'), { recursive: true });
+    const reviewSkillDir = join(runtimeLibRoot, 'skills', 'review');
+    const scoreSkillDir = join(runtimeLibRoot, 'skills', 'score');
+    mkdirSync(reviewSkillDir, { recursive: true });
+    mkdirSync(scoreSkillDir, { recursive: true });
+    writeFileSync(join(reviewSkillDir, 'SKILL.md'), '# review', 'utf-8');
+    writeFileSync(join(scoreSkillDir, 'SKILL.md'), '# score', 'utf-8');
 
     const plan = materializeAgentWorkspace({
         agentId,

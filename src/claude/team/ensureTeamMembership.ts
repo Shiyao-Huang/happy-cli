@@ -3,6 +3,16 @@ import type { Metadata } from '@/api/types'
 import { TaskStateManager } from '@/claude/utils/taskStateManager'
 import { logger } from '@/ui/logger'
 
+type EnsureTeamMembershipOpts = {
+    api: ApiClient
+    teamId: string
+    sessionId: string
+    role: string
+    metadata: Metadata
+    taskStateManager?: TaskStateManager
+    specId?: string
+}
+
 function parseArtifactBoard(artifact: any): Record<string, any> | null {
     if (!artifact) return null
 
@@ -27,25 +37,10 @@ function parseArtifactBoard(artifact: any): Record<string, any> | null {
     return null
 }
 
-function hasMember(board: Record<string, any> | null, sessionId: string, memberId?: string): boolean {
-    const members = Array.isArray(board?.team?.members) ? board.team.members : []
-    return members.some((member: any) => {
-        if (memberId && member?.memberId) {
-            return member.memberId === memberId
-        }
-        return member?.sessionId === sessionId
-    })
-}
-
-export async function ensureCurrentSessionRegisteredToTeam(opts: {
-    api: ApiClient
-    teamId: string
-    sessionId: string
-    role: string
-    metadata: Metadata
-    taskStateManager?: TaskStateManager
-    specId?: string
-}): Promise<{ registered: boolean; alreadyPresent: boolean }> {
+function resolveRegistrationIdentity(opts: EnsureTeamMembershipOpts): {
+    candidateId?: string
+    resolvedSpecId?: string
+} {
     const { api, teamId, sessionId, role, metadata, taskStateManager, specId } = opts
     let parsedIdentity: { candidateId?: string; specId?: string | null } | null = null
     if (process.env.AHA_CANDIDATE_IDENTITY_JSON) {
@@ -62,6 +57,44 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
         || process.env.AHA_CANDIDATE_ID
         || (resolvedSpecId ? `spec:${resolvedSpecId}` : undefined)
 
+    return { candidateId, resolvedSpecId }
+}
+
+async function registerCurrentSessionToTeam(
+    opts: EnsureTeamMembershipOpts,
+): Promise<void> {
+    const { api, teamId, sessionId, role, metadata } = opts
+    const { candidateId, resolvedSpecId } = resolveRegistrationIdentity(opts)
+
+    await api.addTeamMember(
+        teamId,
+        sessionId,
+        role,
+        metadata.name || `${role}-agent`,
+        {
+            memberId: metadata.memberId,
+            sessionTag: metadata.sessionTag,
+            candidateId,
+            specId: resolvedSpecId,
+            executionPlane: metadata.executionPlane,
+            runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',
+            machineId: metadata.machineId,
+            machineName: metadata.host,
+        }
+    )
+}
+
+export async function forceRegisterCurrentSessionToTeam(
+    opts: EnsureTeamMembershipOpts,
+): Promise<void> {
+    const { teamId, sessionId, role, metadata } = opts
+    await registerCurrentSessionToTeam(opts)
+    logger.debug(`[teamMembership] Force-registered session ${sessionId} to team ${teamId} as ${role}`)
+}
+
+export async function ensureCurrentSessionRegisteredToTeam(opts: EnsureTeamMembershipOpts): Promise<{ registered: boolean; alreadyPresent: boolean }> {
+    const { api, teamId, sessionId, role, metadata, taskStateManager } = opts
+
     if (!teamId || !sessionId || !role) {
         return { registered: false, alreadyPresent: false }
     }
@@ -77,36 +110,33 @@ export async function ensureCurrentSessionRegisteredToTeam(opts: {
             const artifact = await api.getArtifact(teamId)
             const board = parseArtifactBoard(artifact)
             const members: any[] = Array.isArray(board?.team?.members) ? board.team.members : []
-            // Find member by memberId — but only treat as "already present" if the sessionId is real.
-            // A queued-* sessionId is a daemon-side placeholder; if found, fall through to re-register
-            // with the actual sessionId so the roster entry is healed.
-            const existingByMemberId = metadata.memberId
-                ? members.find((m: any) => m?.memberId === metadata.memberId)
-                : null
-            const hasPlaceholderSessionId = Boolean(existingByMemberId?.sessionId?.startsWith('queued-'))
-            if (hasMember(board, sessionId, metadata.memberId) && !hasPlaceholderSessionId) {
+            const hasExactSession = members.some((member: any) => member?.sessionId === sessionId)
+            if (hasExactSession) {
                 return { registered: false, alreadyPresent: true }
+            }
+
+            const existingByMemberId = metadata.memberId
+                ? members.find((member: any) => member?.memberId === metadata.memberId)
+                : null
+            const existingMemberSessionId = typeof existingByMemberId?.sessionId === 'string'
+                ? existingByMemberId.sessionId
+                : ''
+            const needsSessionRebind = Boolean(existingByMemberId) && existingMemberSessionId !== sessionId
+
+            if (existingByMemberId && !needsSessionRebind) {
+                return { registered: false, alreadyPresent: true }
+            }
+
+            if (needsSessionRebind) {
+                logger.debug(
+                    `[teamMembership] Rebinding memberId ${metadata.memberId} from session ${existingMemberSessionId || 'unknown'} to ${sessionId}`
+                )
             }
         } catch (artifactError) {
             logger.debug('[teamMembership] Could not inspect existing team roster before registration:', artifactError)
         }
 
-        await api.addTeamMember(
-            teamId,
-            sessionId,
-            role,
-            metadata.name || `${role}-agent`,
-            {
-                memberId: metadata.memberId,
-                sessionTag: metadata.sessionTag,
-                candidateId,
-                specId: resolvedSpecId,
-                executionPlane: metadata.executionPlane,
-                runtimeType: metadata.flavor === 'codex' ? 'codex' : 'claude',
-                machineId: metadata.machineId,
-                machineName: metadata.host,
-            }
-        )
+        await registerCurrentSessionToTeam(opts)
 
         logger.debug(`[teamMembership] Registered session ${sessionId} to team ${teamId} as ${role}`)
         return { registered: true, alreadyPresent: false }

@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { authGetToken } from '@/api/auth';
+import { parseBackupKeyToSecret } from '@/utils/backupKey';
+
+const mockConfiguration = vi.hoisted(() => ({
+  ahaHomeDir: '/tmp/.aha-test',
+  serverUrl: 'https://aha-agi.test',
+}));
 
 const mockApi = vi.hoisted(() => ({
   listTeams: vi.fn(),
@@ -37,10 +44,7 @@ vi.mock('@/ui/auth', () => ({
 }));
 
 vi.mock('@/configuration', () => ({
-  configuration: {
-    ahaHomeDir: '/tmp/.aha-test',
-    serverUrl: 'https://aha-agi.test',
-  },
+  configuration: mockConfiguration,
 }));
 
 vi.mock('@/daemon/controlClient', () => mockControlClient);
@@ -89,6 +93,7 @@ function collectOutput(spy: ReturnType<typeof vi.spyOn>): string {
 describe('handleAuthCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockConfiguration.serverUrl = 'https://aha-agi.test';
     mockPersistence.readSettings.mockResolvedValue({
       onboardingCompleted: false,
       machineId: 'machine-123',
@@ -122,8 +127,29 @@ describe('handleAuthCommand', () => {
 
     const output = collectOutput(logSpy);
     expect(mockAccountJoin.createAccountJoinTicket).toHaveBeenCalledWith('token-123');
-    expect(output).toContain('aha auth login --code aha_join_abc123');
+    expect(output).toContain('npm i aha-agi && AHA_SERVER_URL=https://aha-agi.test npx aha auth login --code aha_join_abc123');
     expect(output).toContain('One-time join command ready');
+    expect(output).toContain('This join code is single-use.');
+  });
+
+  it('omits the server override for the default production deployment', async () => {
+    mockConfiguration.serverUrl = 'https://aha-agi.com/api';
+    mockPersistence.readCredentials.mockResolvedValue({
+      token: 'token-123',
+      encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3]) },
+    });
+    mockAccountJoin.createAccountJoinTicket.mockResolvedValue({
+      ticket: 'aha_join_default123',
+      expiresAt: '2026-04-02T12:34:56.000Z',
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await handleAuthCommand(['show-join-code']);
+
+    const output = collectOutput(logSpy);
+    expect(output).toContain('npm i aha-agi && npx aha auth login --code aha_join_default123');
+    expect(output).not.toContain('AHA_SERVER_URL=');
   });
 
   it('shows teams in auth status', async () => {
@@ -175,5 +201,107 @@ describe('handleAuthCommand', () => {
     expect(output).toContain('aha auth show-join-code');
     expect(output).not.toContain('emergency restore key');
     expect(output).not.toContain('npx aha auth restore --code');
+  });
+
+  it('restores account from backup key via login --code', async () => {
+    const payload = Buffer.from(JSON.stringify({
+      sub: 'acct-backup-restore',
+    })).toString('base64url');
+    const secret = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1));
+
+    mockPersistence.readCredentials.mockResolvedValue(null);
+    vi.mocked(parseBackupKeyToSecret).mockReturnValue(secret);
+    vi.mocked(authGetToken).mockResolvedValue(`header.${payload}.sig`);
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await handleAuthCommand(['login', '--code', 'ABCDE-ABCDE-ABCDE-ABCDE-ABCDE-ABCDE-ABCDE']);
+
+    expect(parseBackupKeyToSecret).toHaveBeenCalledWith('ABCDE-ABCDE-ABCDE-ABCDE-ABCDE-ABCDE-ABCDE');
+    expect(authGetToken).toHaveBeenCalledWith(secret, 'reconnect');
+    expect(mockPersistence.clearMachineId).toHaveBeenCalled();
+    expect(mockPersistence.writeCredentialsContentSecretKey).toHaveBeenCalledWith({
+      contentSecretKey: secret,
+      token: `header.${payload}.sig`,
+    });
+    expect(mockRecoveryBootstrap.bootstrapRecoveryMaterial).toHaveBeenCalledWith(`header.${payload}.sig`, secret);
+
+    const output = collectOutput(logSpy);
+    expect(output).toContain('Restored account from backup key.');
+    expect(output).toContain('Account ID: acct-backup-restore');
+  });
+
+  it('shows a helpful error when --code is neither join ticket nor backup key', async () => {
+    vi.mocked(parseBackupKeyToSecret).mockImplementation(() => {
+      throw new Error('invalid backup key');
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+
+    await expect(handleAuthCommand(['login', '--code', 'not-a-valid-code'])).rejects.toThrow('process.exit');
+
+    expect(collectOutput(errorSpy)).toContain('Invalid code. Expected a one-time join ticket or backup key.');
+    expect(collectOutput(logSpy)).toContain('To join from another device, run: aha auth show-join-code');
+    expect(collectOutput(logSpy)).toContain('To restore from a backup key, use the secretKeyFormatted value from your restore JSON.');
+
+    exitSpy.mockRestore();
+  });
+
+  it('shows a helpful message when a join code is invalid or already used', async () => {
+    mockAccountJoin.redeemAccountJoinTicket.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 404,
+        data: {
+          error: 'Join code is invalid or expired',
+          code: 'JOIN_TICKET_INVALID',
+        },
+      },
+      message: 'Request failed with status code 404',
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+
+    await expect(handleAuthCommand(['join', '--ticket', 'YHLGVT'])).rejects.toThrow('process.exit');
+
+    const output = collectOutput(errorSpy);
+    expect(output).toContain('Join failed:');
+    expect(output).toContain('Join code is invalid, already used, or expired.');
+
+    exitSpy.mockRestore();
+  });
+
+  it('shows a helpful message when recovery material is not ready for join', async () => {
+    mockAccountJoin.redeemAccountJoinTicket.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 409,
+        data: {
+          error: 'Automatic recovery is not ready for this account yet',
+          code: 'RECOVERY_NOT_READY',
+        },
+      },
+      message: 'Request failed with status code 409',
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit');
+    }) as never);
+
+    await expect(handleAuthCommand(['join', '--ticket', 'YHLGVT'])).rejects.toThrow('process.exit');
+
+    const output = collectOutput(errorSpy);
+    expect(output).toContain('Join failed:');
+    expect(output).toContain('This account is not ready for machine join yet.');
+
+    exitSpy.mockRestore();
   });
 });

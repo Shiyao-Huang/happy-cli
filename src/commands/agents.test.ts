@@ -112,9 +112,23 @@ describe('resolveMaterializedAgentImageForCreate', () => {
             builtinAgentImage: { name: 'Builtin Builder' } as AgentImage,
             specId: 'cm-spec-1',
             authToken: 'token-123',
+            requestedRuntime: 'claude',
         })).resolves.toBe(publishedAgentImage);
 
         expect(fetchAgentImage).toHaveBeenCalledWith('token-123', 'cm-spec-1');
+    });
+
+    it('falls back to the builtin image when the published runtime mismatches the requested runtime', async () => {
+        const builtinAgentImage = { name: 'Builtin Builder', runtimeType: 'codex' } as AgentImage;
+        const publishedAgentImage = { name: 'Published Builder', runtimeType: 'claude' } as AgentImage;
+        vi.mocked(fetchAgentImage).mockResolvedValue(publishedAgentImage);
+
+        await expect(resolveMaterializedAgentImageForCreate({
+            builtinAgentImage,
+            specId: 'cm-spec-1',
+            authToken: 'token-123',
+            requestedRuntime: 'codex',
+        })).resolves.toBe(builtinAgentImage);
     });
 
     it('fails hard when the resolved published agent image is missing', async () => {

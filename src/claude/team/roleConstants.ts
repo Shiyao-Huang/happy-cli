@@ -85,7 +85,7 @@ export const TASK_CREATE_ROLES = ['master', 'orchestrator'] as const;
 export const TOOL_GRANT_ROLES = ['supervisor', 'master'] as const;
 
 /** Roles that can respawn / replace agents. */
-export const AGENT_REPLACE_ROLES = ['supervisor', 'master', 'help-agent'] as const;
+export const AGENT_REPLACE_ROLES = ['supervisor', 'master', 'help-agent', 'org-manager'] as const;
 
 /** Roles that can read team logs, CC logs, and runtime logs (observation-only, no mutation). */
 export const SUPERVISOR_OBSERVATION_ROLES = ['supervisor', 'help-agent', 'org-manager', 'master'] as const;

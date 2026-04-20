@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { emitReadyIfIdle, getCodexToolError } from '../runCodex';
+import { applyCodexSessionNamingFromEnv, emitReadyIfIdle, getCodexToolError } from '../runCodex';
 
 describe('emitReadyIfIdle', () => {
     it('emits ready and notification when queue is idle', () => {
@@ -97,5 +97,34 @@ describe('getCodexToolError', () => {
             content: [{ type: 'text', text: '   ' }],
             isError: true,
         })).toBe('Codex MCP tool call returned an error.');
+    });
+});
+
+describe('applyCodexSessionNamingFromEnv', () => {
+    it('prefers explicit session name over room name', () => {
+        const metadata = {} as { name?: string; roomName?: string };
+
+        applyCodexSessionNamingFromEnv(metadata as any, {
+            AHA_SESSION_NAME: 'Codex Implementer',
+            AHA_ROOM_NAME: 'Delivery Team',
+        });
+
+        expect(metadata).toEqual({
+            name: 'Codex Implementer',
+            roomName: 'Delivery Team',
+        });
+    });
+
+    it('falls back to room name when session name is absent', () => {
+        const metadata = {} as { name?: string; roomName?: string };
+
+        applyCodexSessionNamingFromEnv(metadata as any, {
+            AHA_ROOM_NAME: 'Delivery Team',
+        });
+
+        expect(metadata).toEqual({
+            name: 'Delivery Team',
+            roomName: 'Delivery Team',
+        });
     });
 });

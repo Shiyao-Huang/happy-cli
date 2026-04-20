@@ -120,7 +120,7 @@ export function registerContextTools(ctx: McpToolContext): void {
         title: 'Recall',
         inputSchema: {
             query: z.string().describe('Search query (keywords)'),
-            limit: z.number().optional().describe('Max results to return (default 5)'),
+            limit: z.coerce.number().optional().describe('Max results to return (default 5)'),
             tag: z.string().optional().describe('Filter by specific tag'),
         },
     }, async (args) => {

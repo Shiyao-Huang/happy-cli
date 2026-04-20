@@ -48,7 +48,7 @@ import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult,
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
-import { ensureCurrentSessionRegisteredToTeam } from './team/ensureTeamMembership';
+import { ensureCurrentSessionRegisteredToTeam, forceRegisterCurrentSessionToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
@@ -126,6 +126,11 @@ function resolveEnvPermissionMode(rawMode?: string): StartOptions['permissionMod
             logger.debug(`[START] Ignoring unknown AHA_PERMISSION_MODE value: ${rawMode}`);
             return undefined;
     }
+}
+
+function isInvalidFromSessionIdHandshakeError(error: unknown): boolean {
+    const normalizedMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return normalizedMessage.includes('invalid fromsessionid');
 }
 
 function serializeErrorForLog(error: unknown): Record<string, unknown> {
@@ -316,7 +321,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
 
     // Create realtime session
-    const session = api.sessionSyncClient(response);
+    // Populate ahaSessionId so resolveFromSessionId returns the server-assigned CUID (not the Claude-local UUID)
+    const patchedResponse = { ...response, metadata: { ...(response.metadata || {}), ahaSessionId: response.id } };
+    const session = api.sessionSyncClient(patchedResponse);
 
     // Note: teamId/role from env vars are used internally, Kanban will update metadata
 
@@ -982,7 +989,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         metadata: { type: 'handshake', roleTitle }
                     };
                     if (!isBootstrapRole(role, _agentImage)) {
-                        await api.sendTeamMessage(teamId, handshakeMsg);
+                        try {
+                            await api.sendTeamMessage(teamId, handshakeMsg);
+                        } catch (handshakeError) {
+                            if (!isInvalidFromSessionIdHandshakeError(handshakeError)) {
+                                throw handshakeError;
+                            }
+                            logger.debug('[runClaude] Handshake rejected with invalid fromSessionId; force re-registering team membership');
+                            await forceRegisterCurrentSessionToTeam({
+                                api,
+                                teamId,
+                                sessionId: response.id,
+                                role,
+                                metadata: session.getMetadata() || metadata,
+                                taskStateManager,
+                                specId: _agentImageId || undefined,
+                            });
+                            await api.sendTeamMessage(teamId, handshakeMsg);
+                        }
                         logger.debug('[runClaude] Sent handshake message to team');
                         logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
 

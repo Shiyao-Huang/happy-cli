@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     buildPublishedCorpsSpec,
     deriveRoleIdFromGenomeRef,
+    fetchMarketplaceGenomeDetail,
     formatMarketplaceGenomeRef,
     getPreferredGenomeNames,
     parseMarketplaceFeedbackData,
@@ -353,5 +354,39 @@ describe('genomeMarketplace helpers', () => {
             specId: 'legacy-official-builder',
             matchedName: 'agent-builder-codex-r2',
         });
+    });
+
+    it('deduplicates repeated marketplace detail reads by url', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({
+                genome: {
+                    id: 'detail-1',
+                    namespace: '@official',
+                    name: 'help-agent',
+                },
+            }), { status: 200 }),
+        );
+
+        const first = await fetchMarketplaceGenomeDetail('detail-1', 'http://detail-cache.test');
+        const second = await fetchMarketplaceGenomeDetail('detail-1', 'http://detail-cache.test');
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(first?.name).toBe('help-agent');
+        expect(second?.name).toBe('help-agent');
+    });
+
+    it('stops token fallback searches after the marketplace returns a 429', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({ genomes: [] }), { status: 429 }),
+        );
+
+        const genomes = await searchMarketplaceGenomes({
+            query: 'help agent',
+            limit: 5,
+            hubUrl: 'http://cooldown.test',
+        });
+
+        expect(genomes).toEqual([]);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 });

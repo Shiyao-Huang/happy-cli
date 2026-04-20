@@ -21,7 +21,7 @@ import type { RunEnvelope } from '@/daemon/runEnvelope'
  *   list_team_runtime_logs, read_runtime_log, list_team_cc_logs,
  *   save_supervisor_state, score_supervisor_self,
  *   tsc_check, restart_daemon, git_diff_summary,
- *   get_effective_permissions
+ *   get_effective_permissions, get_host_health
  *
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
@@ -53,6 +53,7 @@ import { emitTraceEvent, emitTraceLink } from '@/trace/traceEmitter';
 import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
 import { restartDaemonFlow } from '@/daemon/restartDaemon';
+import { formatHostHealth, getHostHealth } from '@/daemon/hostHealth';
 import { generateRolePrompt } from '@/claude/team/roles';
 import {
     INSPECT_PRIVILEGED_ROLES,
@@ -636,8 +637,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         title: 'Read Team Log',
         inputSchema: {
             teamId: z.string().describe('Team ID to read logs for'),
-            limit: z.number().default(100).describe('Max messages to return'),
-            fromCursor: z.number().default(-1).describe('Line index to read from. -1 = use env AHA_SUPERVISOR_TEAM_LOG_CURSOR (auto-incremental). 0 = read all.'),
+            limit: z.coerce.number().default(100).describe('Max messages to return'),
+            fromCursor: z.coerce.number().default(-1).describe('Line index to read from. -1 = use env AHA_SUPERVISOR_TEAM_LOG_CURSOR (auto-incremental). 0 = read all.'),
             scopePath: z.string().optional().describe('Optional explicit scope path. Defaults to the current session scope when available.'),
             repoName: z.string().optional().describe('Optional explicit repo family filter. Defaults to the current session repo when available.'),
             includeGlobal: z.boolean().optional().describe('Include global or unscoped messages alongside scoped ones. Defaults to true when scope filtering is active.'),
@@ -769,6 +770,47 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             };
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
+        }
+    });
+
+    // ─── get_host_health ──────────────────────────────────────────────────────
+    // All agents can call this before heavy operations to inspect current machine health.
+    mcp.registerTool('get_host_health', {
+        description: [
+            'Inspect current host-machine health before running heavy operations.',
+            'Returns free memory, disk space, load average, active agent count, and alert messages.',
+            'Call this before build, full typecheck, full test, or other high-memory work.',
+            'Available to ALL team members.',
+        ].join(' '),
+        title: 'Get Host Health',
+        inputSchema: {
+            format: z.enum(['text', 'json']).optional().describe('Response format. Defaults to text.'),
+        },
+    }, async (args) => {
+        try {
+            const trackedSessions = await getDaemonTrackedSessionIds().catch(() => new Set<string>());
+            const report = getHostHealth(trackedSessions.size, configuration.ahaHomeDir);
+
+            if (args.format === 'json') {
+                return {
+                    content: [{ type: 'text', text: JSON.stringify(report, null, 2) }],
+                    isError: false,
+                };
+            }
+
+            const alertSuffix = report.alerts.length > 0
+                ? `\n\nAlerts:\n- ${report.alerts.join('\n- ')}`
+                : '\n\nAlerts:\n- none';
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: `${formatHostHealth(report)}${alertSuffix}`,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return { content: [{ type: 'text', text: `Error getting host health: ${String(error)}` }], isError: true };
         }
     });
 
@@ -1306,8 +1348,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         title: 'List Visible Tools',
         inputSchema: {
             sessionId: z.string().optional().describe('Optional session ID to inspect. Omit to inspect the calling session.'),
-            cursor: z.number().int().min(0).optional().describe('Offset for pagination. Defaults to 0.'),
-            limit: z.number().int().min(1).max(200).optional().describe('Maximum tools to return. Defaults to 50.'),
+            cursor: z.coerce.number().int().min(0).optional().describe('Offset for pagination. Defaults to 0.'),
+            limit: z.coerce.number().int().min(1).max(200).optional().describe('Maximum tools to return. Defaults to 50.'),
             includeAll: z.boolean().optional().describe('When false, prefer Aha MCP tools only. Defaults to true.'),
         },
     }, async (args) => {
@@ -1498,8 +1540,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         title: 'Read CC Log',
         inputSchema: {
             sessionId: z.string().describe('Claude local session ID or Aha session ID to read CC log for. Prefer the claudeLocalSessionId from list_team_runtime_logs/list_team_cc_logs.'),
-            limit: z.number().default(100).describe('Max log entries to return'),
-            fromByteOffset: z.number().default(-1).describe('Byte offset to read from. -1 = use env AHA_SUPERVISOR_CC_LOG_CURSORS for this claudeLocalSessionId. 0 = read all.'),
+            limit: z.coerce.number().default(100).describe('Max log entries to return'),
+            fromByteOffset: z.coerce.number().default(-1).describe('Byte offset to read from. -1 = use env AHA_SUPERVISOR_CC_LOG_CURSORS for this claudeLocalSessionId. 0 = read all.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -2854,6 +2896,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
                 },
                 hubUrl,
                 hubPublishKey: publishKey,
+                serverUrl: configuration.serverUrl,
+                authToken: client.getAuthToken(),
             });
 
             if (!diffResult.ok) {
@@ -3494,8 +3538,8 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
             runtimeType: z.enum(['claude', 'codex', 'open-code']).describe('Runtime to read logs for'),
             sessionId: z.string().optional().describe('Claude: claudeLocalSessionId from list_team_runtime_logs. Codex session logs: transcript session id / aha session id. Required for session logs.'),
             logKind: z.enum(['session', 'history']).default('session').describe('Log kind. Use "history" for ~/.codex/history.jsonl.'),
-            limit: z.number().default(100).describe('Max log entries to return'),
-            fromCursor: z.number().default(-1).describe('Cursor to read from. Byte offset for session logs, line cursor for codex history. -1 = use supervisor env cursor.'),
+            limit: z.coerce.number().default(100).describe('Max log entries to return'),
+            fromCursor: z.coerce.number().default(-1).describe('Cursor to read from. Byte offset for session logs, line cursor for codex history. -1 = use supervisor env cursor.'),
         },
     }, async (args) => {
         const role = client.getMetadata()?.role;
@@ -3919,7 +3963,7 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
     });
 
     mcp.registerTool('tsc_check', {
-        description: 'Run TypeScript type checking on a project directory using the correct Node version (reads .node-version). Automatically uses fnm to switch Node versions and sets --max-old-space-size to avoid OOM. Returns type errors if any. Available to all roles.',
+        description: '⚠️ [HIGH MEMORY: ~8GB] [EXCLUSIVE: max 1 concurrent] Run TypeScript type checking on a project directory using the correct Node version (reads .node-version). Automatically uses fnm to switch Node versions and sets --max-old-space-size to avoid OOM. Returns type errors if any. Will refuse if system has insufficient free memory or another tsc_check is already running. Available to all roles.',
         title: 'TypeScript Check',
         inputSchema: {
             path: z.string().describe('Project directory to type-check (e.g. /Users/swmt/happy0313/aha-cli)'),
@@ -3930,40 +3974,75 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             const { execSync } = await import('node:child_process');
             const fs = await import('node:fs');
             const pathMod = await import('node:path');
+            const os = await import('node:os');
 
             const projectDir = args.path;
             if (!fs.existsSync(projectDir)) {
                 return { content: [{ type: 'text', text: `Directory not found: ${projectDir}` }], isError: true };
             }
 
-            // Read .node-version if present
-            const nodeVersionFile = pathMod.join(projectDir, '.node-version');
-            let nodeVersion = '22'; // default
-            if (fs.existsSync(nodeVersionFile)) {
-                nodeVersion = fs.readFileSync(nodeVersionFile, 'utf-8').trim();
+            // ── Resource pre-check ────────────────────────────────────────────
+            const REQUIRED_MB = 8192;
+            const SAFETY_FACTOR = 1.5;
+            const freeMB = os.freemem() / (1024 * 1024);
+            if (freeMB < REQUIRED_MB * SAFETY_FACTOR) {
+                return {
+                    content: [{ type: 'text', text: `⚠️ Insufficient memory: ${Math.round(freeMB)}MB free, need ~${Math.round(REQUIRED_MB * SAFETY_FACTOR)}MB. Wait for other processes to finish before running tsc_check.` }],
+                    isError: true,
+                };
             }
 
-            const skipLib = args.skipLibCheck !== false ? '--skipLibCheck' : '';
+            // ── Exclusive file lock ───────────────────────────────────────────
+            const lockDir = pathMod.join(process.cwd(), '.aha', 'locks');
+            const lockFile = pathMod.join(lockDir, 'tsc.lock');
+            try {
+                fs.mkdirSync(lockDir, { recursive: true });
+            } catch { /* ignore */ }
 
-            // Build command: fnm use <version> && tsc --noEmit
-            const cmd = `eval "$(fnm env)" && fnm use ${nodeVersion} --silent-if-unchanged && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit ${skipLib} 2>&1 | head -200`;
+            if (fs.existsSync(lockFile)) {
+                const lockContent = fs.readFileSync(lockFile, 'utf-8').trim();
+                return {
+                    content: [{ type: 'text', text: `⚠️ Another tsc_check is already running (${lockContent}). Wait for it to finish before starting a new one to avoid OOM.` }],
+                    isError: true,
+                };
+            }
+
+            const lockInfo = `pid=${process.pid} started=${new Date().toISOString()} path=${projectDir}`;
+            fs.writeFileSync(lockFile, lockInfo, 'utf-8');
 
             try {
-                const output = execSync(cmd, {
-                    cwd: projectDir,
-                    timeout: 120_000,
-                    encoding: 'utf-8',
-                    shell: '/bin/zsh',
-                    env: { ...process.env, NODE_OPTIONS: '' },
-                });
-                return { content: [{ type: 'text', text: output.trim() || 'No type errors found.' }], isError: false };
-            } catch (execError: any) {
-                const output = execError.stdout || execError.stderr || String(execError);
-                // tsc returns exit code 2 when there are type errors — not a tool error
-                if (execError.status === 2 || execError.status === 1) {
-                    return { content: [{ type: 'text', text: `Type errors found:\n${output}` }], isError: false };
+                // Read .node-version if present
+                const nodeVersionFile = pathMod.join(projectDir, '.node-version');
+                let nodeVersion = '22'; // default
+                if (fs.existsSync(nodeVersionFile)) {
+                    nodeVersion = fs.readFileSync(nodeVersionFile, 'utf-8').trim();
                 }
-                return { content: [{ type: 'text', text: `tsc execution error:\n${output}` }], isError: true };
+
+                const skipLib = args.skipLibCheck !== false ? '--skipLibCheck' : '';
+
+                // Build command: fnm use <version> && tsc --noEmit
+                const cmd = `eval "$(fnm env)" && fnm use ${nodeVersion} --silent-if-unchanged && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit ${skipLib} 2>&1 | head -200`;
+
+                try {
+                    const output = execSync(cmd, {
+                        cwd: projectDir,
+                        timeout: 120_000,
+                        encoding: 'utf-8',
+                        shell: '/bin/zsh',
+                        env: { ...process.env, NODE_OPTIONS: '' },
+                    });
+                    return { content: [{ type: 'text', text: output.trim() || 'No type errors found.' }], isError: false };
+                } catch (execError: any) {
+                    const output = execError.stdout || execError.stderr || String(execError);
+                    // tsc returns exit code 2 when there are type errors — not a tool error
+                    if (execError.status === 2 || execError.status === 1) {
+                        return { content: [{ type: 'text', text: `Type errors found:\n${output}` }], isError: false };
+                    }
+                    return { content: [{ type: 'text', text: `tsc execution error:\n${output}` }], isError: true };
+                }
+            } finally {
+                // Always release lock
+                try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
             }
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
@@ -4027,8 +4106,8 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
         title: 'Read Unified Log',
         inputSchema: {
             teamId: z.string().describe('Team ID to read unified log for'),
-            limit: z.number().default(200).describe('Max total entries across all sources'),
-            fromTs: z.number().default(0).describe('Unix ms timestamp to start from. 0 = all time.'),
+            limit: z.coerce.number().default(200).describe('Max total entries across all sources'),
+            fromTs: z.coerce.number().default(0).describe('Unix ms timestamp to start from. 0 = all time.'),
             sources: z.array(z.enum(['team', 'supervisor', 'help', 'trace'])).default(['team', 'supervisor', 'help']).describe('Log sources to include. trace queries trace.db and is slower.'),
             roles: z.array(z.string()).optional().describe('Optional role filter for team message entries'),
         },

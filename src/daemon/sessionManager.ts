@@ -58,6 +58,35 @@ const helpAgentLeaseExpiryByTeam = new Map<string, Map<string, number>>();
 const HELP_AGENT_POOL_MAX = 2;
 const HELP_AGENT_LEASE_MS = 10 * 60 * 1000;
 
+function normalizeReportedRuntime(value: unknown): SpawnSessionOptions['agent'] | null {
+  if (value === 'claude' || value === 'codex' || value === 'ralph') {
+    return value;
+  }
+  return null;
+}
+
+function resolveCodexSpawnRuntimeError(
+  trackedSession: TrackedSession,
+  requestedRuntime?: SpawnSessionOptions['agent'],
+): string | null {
+  if (requestedRuntime !== 'codex') {
+    return null;
+  }
+
+  const sessionId = trackedSession.ahaSessionId ?? `PID-${trackedSession.pid}`;
+  const actualRuntime = normalizeReportedRuntime(trackedSession.ahaSessionMetadataFromLocalWebhook?.flavor);
+
+  if (actualRuntime === 'codex') {
+    return null;
+  }
+
+  if (actualRuntime) {
+    return `Spawned session ${sessionId} reported runtime "${actualRuntime}" instead of requested "codex". The mismatched session was stopped.`;
+  }
+
+  return `Spawned session ${sessionId} did not report a codex runtime. The session was stopped to avoid silently falling back to another runtime.`;
+}
+
 function getHelpAgentLeaseMap(teamId: string): Map<string, number> {
   let leaseMap = helpAgentLeaseExpiryByTeam.get(teamId);
   if (!leaseMap) {
@@ -999,6 +1028,21 @@ const spawnSessionInternal = async (options: SpawnSessionOptions): Promise<Spawn
       pidToAwaiter.set(ahaProcess.pid!, (completedSession) => {
         clearTimeout(timeout);
         logger.debug(`[SESSION MANAGER] Session ${completedSession.ahaSessionId} fully spawned with webhook`);
+        const runtimeError = resolveCodexSpawnRuntimeError(completedSession, options.agent);
+        if (runtimeError) {
+          logger.debug(`[SESSION MANAGER] ${runtimeError}`);
+          if (completedSession.ahaSessionId) {
+            stopSession(completedSession.ahaSessionId);
+          } else {
+            completedSession.intentionallyStopped = true;
+            completedSession.childProcess?.kill?.('SIGTERM');
+          }
+          resolve({
+            type: 'error',
+            errorMessage: runtimeError,
+          });
+          return;
+        }
         resolve({
           type: 'success',
           sessionId: completedSession.ahaSessionId!,

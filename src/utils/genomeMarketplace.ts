@@ -35,6 +35,19 @@ export type CorpsTemplateMember = {
     overlay?: LegionImage['members'][number]['overlay'];
 };
 
+class MarketplaceRateLimitedError extends Error {
+    constructor() {
+        super('marketplace_rate_limited');
+        this.name = 'MarketplaceRateLimitedError';
+    }
+}
+
+type MarketplaceCacheEntry<T> = {
+    expiresAt: number;
+    promise: Promise<T>;
+    resolved?: T;
+};
+
 type PublishTeamCorpsTemplateOptions = {
     api: {
         getTeam(teamId: string): Promise<{ team?: { id: string; name?: string; members?: any[] } } | null>;
@@ -107,6 +120,87 @@ function stableStringify(value: unknown): string {
     return JSON.stringify(value);
 }
 
+const MARKETPLACE_SUCCESS_TTL_MS = 60_000;
+const MARKETPLACE_MISS_TTL_MS = 15_000;
+const MARKETPLACE_RATE_LIMIT_COOLDOWN_MS = 15_000;
+
+const marketplacePageCache = new Map<string, MarketplaceCacheEntry<MarketplaceGenomeRecord[]>>();
+const marketplaceDetailCache = new Map<string, MarketplaceCacheEntry<MarketplaceGenomeRecord | null>>();
+let marketplaceCooldownUntil = 0;
+
+function activateMarketplaceCooldown(): void {
+    marketplaceCooldownUntil = Math.max(marketplaceCooldownUntil, Date.now() + MARKETPLACE_RATE_LIMIT_COOLDOWN_MS);
+}
+
+function isMarketplaceReadCoolingDown(): boolean {
+    return marketplaceCooldownUntil > Date.now();
+}
+
+async function readThroughMarketplaceCache<T>(
+    cache: Map<string, MarketplaceCacheEntry<T>>,
+    key: string,
+    fallbackValue: T,
+    loader: () => Promise<T>,
+    options?: {
+        successTtlMs?: number;
+        missTtlMs?: number;
+        isMiss?: (value: T) => boolean;
+    }
+): Promise<T> {
+    const cached = cache.get(key);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+        return cached.promise;
+    }
+
+    if (isMarketplaceReadCoolingDown()) {
+        if (cached?.resolved !== undefined) {
+            return cached.resolved;
+        }
+        return fallbackValue;
+    }
+
+    const staleValue = cached?.resolved;
+    const request = (async () => {
+        try {
+            return await loader();
+        } catch (error) {
+            if (error instanceof MarketplaceRateLimitedError) {
+                activateMarketplaceCooldown();
+                return staleValue !== undefined ? staleValue : fallbackValue;
+            }
+            if (staleValue !== undefined) {
+                return staleValue;
+            }
+            throw error;
+        }
+    })();
+
+    const entry: MarketplaceCacheEntry<T> = {
+        expiresAt: now + (options?.successTtlMs ?? MARKETPLACE_SUCCESS_TTL_MS),
+        promise: request,
+        resolved: staleValue,
+    };
+    cache.set(key, entry);
+
+    try {
+        const value = await request;
+        entry.resolved = value;
+        entry.promise = Promise.resolve(value);
+        entry.expiresAt = Date.now() + (
+            options?.isMiss?.(value)
+                ? (options?.missTtlMs ?? MARKETPLACE_MISS_TTL_MS)
+                : (options?.successTtlMs ?? MARKETPLACE_SUCCESS_TTL_MS)
+        );
+        return value;
+    } catch (error) {
+        if (cache.get(key) === entry) {
+            cache.delete(key);
+        }
+        throw error;
+    }
+}
+
 function tokenizeMarketplaceQuery(query: string): string[] {
     return uniqueStrings(
         Array.from(query.toLowerCase().match(/[\p{Letter}\p{Number}_-]{2,}/gu) ?? []),
@@ -120,29 +214,50 @@ async function fetchMarketplaceGenomePage(input: {
     limit?: number;
     hubUrl: string;
 }): Promise<MarketplaceGenomeRecord[]> {
-    const query = new URLSearchParams();
+    const cacheKey = stableStringify({
+        query: input.query ?? null,
+        category: input.category ?? null,
+        runtimeType: input.runtimeType ?? null,
+        limit: input.limit ?? 20,
+        hubUrl: input.hubUrl,
+    });
 
-    if (input.query) query.set('q', input.query);
-    if (input.category) query.set('category', input.category);
-    if (input.runtimeType) query.set('runtimeType', input.runtimeType);
-    query.set('sortBy', 'score');
-    query.set('limit', String(input.limit ?? 20));
+    return readThroughMarketplaceCache(
+        marketplacePageCache,
+        cacheKey,
+        [],
+        async () => {
+            const query = new URLSearchParams();
 
-    let response: Response;
-    try {
-        response = await fetch(`${input.hubUrl}/genomes?${query.toString()}`, {
-            signal: AbortSignal.timeout(5_000),
-        });
-    } catch (error) {
-        throw new Error(`${String(error)}. ${buildMarketplaceConnectionHint(input.hubUrl)}`);
-    }
+            if (input.query) query.set('q', input.query);
+            if (input.category) query.set('category', input.category);
+            if (input.runtimeType) query.set('runtimeType', input.runtimeType);
+            query.set('sortBy', 'score');
+            query.set('limit', String(input.limit ?? 20));
 
-    if (!response.ok) {
-        throw new Error(`genome-hub returned ${response.status}`);
-    }
+            let response: Response;
+            try {
+                response = await fetch(`${input.hubUrl}/genomes?${query.toString()}`, {
+                    signal: AbortSignal.timeout(5_000),
+                });
+            } catch (error) {
+                throw new Error(`${String(error)}. ${buildMarketplaceConnectionHint(input.hubUrl)}`);
+            }
 
-    const payload = await response.json() as { genomes?: MarketplaceGenomeRecord[] };
-    return payload.genomes ?? [];
+            if (response.status === 429) {
+                throw new MarketplaceRateLimitedError();
+            }
+            if (!response.ok) {
+                throw new Error(`genome-hub returned ${response.status}`);
+            }
+
+            const payload = await response.json() as { genomes?: MarketplaceGenomeRecord[] };
+            return payload.genomes ?? [];
+        },
+        {
+            isMiss: (value) => value.length === 0,
+        }
+    );
 }
 
 export function parseMarketplaceFeedbackData(feedbackData?: string | null): MarketplaceFeedbackSummary {
@@ -288,7 +403,7 @@ export async function searchMarketplaceGenomes(options?: {
     });
 
     const tokens = options?.query ? tokenizeMarketplaceQuery(options.query) : [];
-    if (exactMatches.length > 0 || tokens.length < 2) {
+    if (exactMatches.length > 0 || tokens.length < 2 || isMarketplaceReadCoolingDown()) {
         return exactMatches;
     }
 
@@ -332,17 +447,32 @@ function resolveMarketplaceGenomeUrls(specId: string, hubUrl?: string): string[]
 
 export async function fetchMarketplaceGenomeDetail(specId: string, hubUrl?: string): Promise<MarketplaceGenomeRecord | null> {
     for (const url of resolveMarketplaceGenomeUrls(specId, hubUrl)) {
-        const response = await fetch(url, {
-            signal: AbortSignal.timeout(5_000),
-        });
+        const genome = await readThroughMarketplaceCache(
+            marketplaceDetailCache,
+            url,
+            null,
+            async () => {
+                const response = await fetch(url, {
+                    signal: AbortSignal.timeout(5_000),
+                });
 
-        if (!response.ok) {
-            continue;
-        }
+                if (response.status === 429) {
+                    throw new MarketplaceRateLimitedError();
+                }
+                if (!response.ok) {
+                    return null;
+                }
 
-        const payload = await response.json() as { genome?: MarketplaceGenomeRecord };
-        if (payload.genome) {
-            return payload.genome;
+                const payload = await response.json() as { genome?: MarketplaceGenomeRecord };
+                return payload.genome ?? null;
+            },
+            {
+                isMiss: (value) => value === null,
+            }
+        );
+
+        if (genome) {
+            return genome;
         }
     }
 
@@ -395,15 +525,33 @@ export async function resolveOfficialGenomeSpecId(
 
     for (const officialName of getPreferredGenomeNames(role, runtime)) {
         try {
-            const response = await fetch(
-                `${baseUrl}/genomes/%40official/${encodeURIComponent(officialName)}`,
-                { signal: AbortSignal.timeout(3_000) }
+            const url = `${baseUrl}/genomes/%40official/${encodeURIComponent(officialName)}`;
+            const genome = await readThroughMarketplaceCache(
+                marketplaceDetailCache,
+                url,
+                null,
+                async () => {
+                    const response = await fetch(url, {
+                        signal: AbortSignal.timeout(3_000),
+                    });
+
+                    if (response.status === 429) {
+                        throw new MarketplaceRateLimitedError();
+                    }
+                    if (!response.ok) {
+                        return null;
+                    }
+
+                    const payload = await response.json() as { genome?: MarketplaceGenomeRecord };
+                    return payload.genome ?? null;
+                },
+                {
+                    isMiss: (value) => value === null,
+                }
             );
 
-            if (!response.ok) continue;
-            const payload = await response.json() as { genome?: { id?: string; runtimeType?: MarketplaceGenomeRecord['runtimeType'] } };
-            if (payload.genome?.id && (payload.genome.runtimeType == null || payload.genome.runtimeType === runtime)) {
-                return { specId: payload.genome.id, matchedName: officialName };
+            if (genome?.id && (genome.runtimeType == null || genome.runtimeType === runtime)) {
+                return { specId: genome.id, matchedName: officialName };
             }
         } catch {
             // Ignore and continue to the next fallback name.

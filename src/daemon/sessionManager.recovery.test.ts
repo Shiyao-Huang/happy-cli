@@ -443,6 +443,124 @@ describe('sessionManager recovered session self-heal', () => {
         delete process.env.CLAUDECODE;
     });
 
+    it('spawns a real codex session path instead of reusing the claude runtime contract', async () => {
+        const killChild = vi.fn();
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 88661,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+            kill: killChild,
+        });
+
+        const spawnPromise = spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            teamId: 'team-codex',
+            role: 'implementer',
+            sessionName: 'Codex Implementer',
+            sessionTag: 'team:team-codex:member:member-codex',
+            sessionPath: process.cwd(),
+            env: {
+                AHA_TEAM_MEMBER_ID: 'member-codex',
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSpawnAhaCLI).toHaveBeenCalledTimes(1);
+        });
+
+        const [args, spawnOptions] = mockSpawnAhaCLI.mock.calls[0];
+        expect(args).toEqual([
+            'codex',
+            '--aha-starting-mode',
+            'remote',
+            '--started-by',
+            'daemon',
+            '--session-tag',
+            'team:team-codex:member:member-codex',
+        ]);
+        expect(spawnOptions.env.CODEX_HOME).toEqual(expect.any(String));
+        expect(spawnOptions.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+        onAhaSessionWebhook('cmn-codex-session', {
+            path: process.cwd(),
+            host: 'test-host',
+            homeDir: '/Users/copizza',
+            ahaHomeDir: '/Users/copizza/.aha',
+            ahaLibDir: '/Users/copizza/Desktop/happyhere/aha-cli-0330-max-redefine-login',
+            ahaToolsDir: '/Users/copizza/Desktop/happyhere/aha-cli-0330-max-redefine-login/tools/unpacked',
+            hostPid: 88661,
+            teamId: 'team-codex',
+            roomId: 'team-codex',
+            role: 'implementer',
+            executionPlane: 'mainline',
+            memberId: 'member-codex',
+            sessionTag: 'team:team-codex:member:member-codex',
+            flavor: 'codex',
+            name: 'Codex Implementer',
+        } as any);
+
+        await expect(spawnPromise).resolves.toEqual({
+            type: 'success',
+            sessionId: 'cmn-codex-session',
+        });
+        expect(killChild).not.toHaveBeenCalled();
+    });
+
+    it('fails codex spawn when the webhook reports a claude runtime and stops the mismatched session', async () => {
+        const killChild = vi.fn();
+        mockSpawnAhaCLI.mockReturnValue({
+            pid: 88662,
+            on: vi.fn(),
+            stdout: undefined,
+            stderr: undefined,
+            kill: killChild,
+        });
+
+        const spawnPromise = spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            teamId: 'team-mismatch',
+            role: 'implementer',
+            sessionName: 'Codex Requested',
+            sessionTag: 'team:team-mismatch:member:member-mismatch',
+            sessionPath: process.cwd(),
+            env: {
+                AHA_TEAM_MEMBER_ID: 'member-mismatch',
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSpawnAhaCLI).toHaveBeenCalledTimes(1);
+        });
+
+        onAhaSessionWebhook('cmn-runtime-mismatch', {
+            path: process.cwd(),
+            host: 'test-host',
+            homeDir: '/Users/copizza',
+            ahaHomeDir: '/Users/copizza/.aha',
+            ahaLibDir: '/Users/copizza/Desktop/happyhere/aha-cli-0330-max-redefine-login',
+            ahaToolsDir: '/Users/copizza/Desktop/happyhere/aha-cli-0330-max-redefine-login/tools/unpacked',
+            hostPid: 88662,
+            teamId: 'team-mismatch',
+            roomId: 'team-mismatch',
+            role: 'implementer',
+            executionPlane: 'mainline',
+            memberId: 'member-mismatch',
+            sessionTag: 'team:team-mismatch:member:member-mismatch',
+            flavor: 'claude',
+            name: 'Codex Requested',
+        } as any);
+
+        await expect(spawnPromise).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Spawned session cmn-runtime-mismatch reported runtime "claude" instead of requested "codex". The mismatched session was stopped.',
+        });
+        expect(killChild).toHaveBeenCalledWith('SIGTERM');
+        expect(pidToTrackedSession.has(88662)).toBe(false);
+    });
+
     it('kills orphaned processes whose memberId is missing from a non-empty team roster', async () => {
         mockExecSync.mockImplementation((command: string) => {
             if (command.startsWith('ps -eo pid,args')) {

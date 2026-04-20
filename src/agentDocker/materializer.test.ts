@@ -492,6 +492,7 @@ describe('buildAgentWorkspacePlan', () => {
 
         mkdirSync(repoRoot, { recursive: true });
 
+        // Use a skill NOT in BUNDLED_RUNTIME_SKILLS to test the throw path
         expect(() => materializeAgentWorkspace({
             agentId: `missing-skill-${Date.now()}`,
             repoRoot,
@@ -503,12 +504,52 @@ describe('buildAgentWorkspacePlan', () => {
                 name: 'MissingSkillTest',
                 runtime: 'claude',
                 tools: {
-                    skills: ['context-mirror'],
+                    skills: ['nonexistent-skill'],
                 },
             },
         })).toThrow(
-            'Skill "context-mirror" declared in skills[] but content is missing.',
+            'Skill "nonexistent-skill" declared in skills[] but content is missing.',
         );
+    });
+
+    it('boots cleanly with stale package missing context-mirror using bundled fallback', () => {
+        const root = mkdtempSync(join(tmpdir(), 'aha-materializer-bundled-fallback-'));
+        const repoRoot = join(root, 'repo');
+        const runtimeLibRoot = join(root, 'runtime-lib');
+
+        mkdirSync(repoRoot, { recursive: true });
+        // Intentionally do NOT create context-mirror in runtime-lib to simulate stale package
+
+        const plan = materializeAgentWorkspace({
+            agentId: `bundled-fallback-${Date.now()}`,
+            repoRoot,
+            runtime: 'claude',
+            workspaceMode: 'shared',
+            runtimeLibRoot,
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'BundledFallbackTest',
+                runtime: 'claude',
+                tools: {
+                    skills: ['context-mirror'],
+                },
+                // No inline files, no runtime-lib source — should use bundled fallback
+            },
+        });
+
+        // Should succeed without throwing
+        expect(plan).toBeDefined();
+
+        // Should have a warning about the fallback
+        expect(plan.warnings.some(w => w.includes('genome-skill-fallback') && w.includes('context-mirror'))).toBe(true);
+
+        // The skill file should exist at the target location
+        const skillPath = join(plan.commandsDir, 'context-mirror', 'SKILL.md');
+        expect(existsSync(skillPath)).toBe(true);
+
+        // The content should be from the bundled skill
+        const content = readFileSync(skillPath, 'utf-8');
+        expect(content).toContain('/context-mirror');
     });
 
     it('succeeds with inline skill files even when runtime-lib does not contain the skill', () => {

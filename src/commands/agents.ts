@@ -871,10 +871,15 @@ export function buildBuiltinAgentImage(
   };
 }
 
+function resolveAgentImageRuntime(agentImage: Pick<AgentImage, 'runtimeType'>): 'claude' | 'codex' {
+  return agentImage.runtimeType === 'codex' ? 'codex' : 'claude';
+}
+
 export async function resolveMaterializedAgentImageForCreate(options: {
   builtinAgentImage: AgentImage;
   specId?: string | null;
   authToken?: string | null;
+  requestedRuntime?: 'claude' | 'codex';
 }): Promise<AgentImage> {
   if (!options.specId) {
     return options.builtinAgentImage;
@@ -888,6 +893,17 @@ export async function resolveMaterializedAgentImageForCreate(options: {
   const publishedAgentImage = await fetchAgentImage(authToken, options.specId);
   if (!publishedAgentImage) {
     throw new Error(`Resolved published agent image ${options.specId} was not found in genome-hub.`);
+  }
+
+  if (options.requestedRuntime) {
+    const publishedRuntime = resolveAgentImageRuntime(publishedAgentImage);
+    if (publishedRuntime !== options.requestedRuntime) {
+      logger.warn(
+        `[agents create] Published agent image ${options.specId} runtime ${publishedRuntime} ` +
+        `does not match requested runtime ${options.requestedRuntime}; falling back to builtin image.`,
+      );
+      return options.builtinAgentImage;
+    }
   }
 
   return publishedAgentImage;
@@ -923,12 +939,14 @@ async function createAgent(
     builtinAgentImage: built.agentImage,
     specId: specResolution.specId,
     authToken: credentials?.token,
+    requestedRuntime: opts.model,
   });
+  const effectiveSpecId = materializedAgentImage === built.agentImage ? undefined : specResolution.specId ?? undefined;
 
   const plan = buildAgentWorkspacePlanFromAgentImage(materializedAgentImage, {
     agentId,
     repoRoot,
-    specId: specResolution.specId ?? undefined,
+    specId: effectiveSpecId,
     workspaceMode: 'shared',
   });
 
@@ -956,12 +974,12 @@ async function createAgent(
 
   const spawnBody = {
     directory: plan.effectiveCwd,
-    agent: materializedAgentImage.runtimeType === 'codex' ? 'codex' : 'claude',
+    agent: opts.model === 'codex' ? 'codex' : 'claude',
     role: roleId,
     sessionName: displayName,
     teamId: opts.teamId,
     env: materializedEnv,
-    ...(specResolution.specId ? { specId: specResolution.specId } : {}),
+    ...(effectiveSpecId ? { specId: effectiveSpecId } : {}),
   };
 
   const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/spawn-session`, {
@@ -983,7 +1001,7 @@ async function createAgent(
   if (opts.teamId && sessionId) {
     try {
       await api.addTeamMember(opts.teamId, sessionId, roleId, displayName, {
-        specId: specResolution.specId ?? undefined,
+        specId: effectiveSpecId,
         executionPlane: 'mainline',
         runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
         // Coordinator roles need task.create authority; genome spec can add more via authorities[].
@@ -1018,10 +1036,16 @@ async function createAgent(
     return;
   }
 
+  if (!opts.asJson && specResolution.specId && !effectiveSpecId) {
+    console.log(chalk.yellow(
+      `  ⚠ specId=${specResolution.specId} targets a different runtime; using builtin ${opts.model} agent config instead`,
+    ));
+  }
+
   console.log(chalk.green(`✓ Agent created: ${sessionId}`));
   console.log(chalk.gray(`  role=${roleId} model=${opts.model} teamId=${opts.teamId || '-'} name=${displayName}`));
-  if (specResolution.specId) {
-    console.log(chalk.gray(`  specId=${specResolution.specId} (${specResolution.source})`));
+  if (effectiveSpecId) {
+    console.log(chalk.gray(`  specId=${effectiveSpecId} (${specResolution.source})`));
   }
   if (publishedCorpsTemplate?.published) {
     console.log(chalk.gray(`  corpsTemplate=${publishedCorpsTemplate.templateName}`));

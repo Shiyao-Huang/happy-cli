@@ -16,6 +16,8 @@ import { doEmailOtpAuth } from '@/api/supabaseAuth';
 import { ApiClient } from '@/api/api';
 import { createAccountJoinTicket, isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
 import { bootstrapRecoveryMaterial, getRecoveryMaterialSecret } from '@/auth/recoveryBootstrap';
+import { DEFAULT_SERVER_URL } from '@/configurationResolver';
+import { parseBackupKeyToSecret } from '@/utils/backupKey';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
   try {
@@ -92,6 +94,35 @@ function describeBootstrapError(error: unknown): string {
   return 'Unknown error';
 }
 
+function describeJoinError(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const serverCode = typeof error.response?.data?.code === 'string'
+      ? error.response.data.code
+      : null;
+    const serverError = typeof error.response?.data?.error === 'string'
+      ? error.response.data.error
+      : null;
+
+    if (serverCode === 'JOIN_TICKET_INVALID' || serverCode === 'JOIN_CODE_INVALID' || error.response?.status === 404) {
+      return t('auth.joinTicketInvalid');
+    }
+
+    if (serverCode === 'RECOVERY_NOT_READY' || error.response?.status === 409) {
+      return t('auth.joinRecoveryNotReady');
+    }
+
+    if (serverError) {
+      return serverError;
+    }
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Unknown error';
+}
+
 function formatExpiration(expiresAt: string | number | null | undefined): string | null {
   if (expiresAt === null || expiresAt === undefined) {
     return null;
@@ -103,6 +134,18 @@ function formatExpiration(expiresAt: string | number | null | undefined): string
   }
 
   return String(expiresAt);
+}
+
+function buildJoinLoginCommand(code?: string): string {
+  const serverUrl = configuration.serverUrl;
+  const isNonDefaultServer = serverUrl !== DEFAULT_SERVER_URL
+    && !serverUrl.startsWith(DEFAULT_SERVER_URL);
+  const envPrefix = isNonDefaultServer ? `AHA_SERVER_URL=${serverUrl} ` : '';
+  const loginCommand = code
+    ? `${envPrefix}npx aha auth login --code ${code}`
+    : `${envPrefix}npx aha auth login`;
+
+  return `npm i aha-agi && ${loginCommand}`;
 }
 
 async function ensureRecoveryMaterialForSeed(token: string, secret: Uint8Array, source: string): Promise<void> {
@@ -176,7 +219,7 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
-  --code <ticket> One-time join ticket, no browser needed
+  --code <ticket|backup-key> One-time join ticket or backup key, no browser needed
   --ticket    Explicit flag for one-time account join tickets
   --mobile    Use the old mobile QR/manual flow instead of default web login
   --email     Use email OTP login (no browser needed, works on headless Linux)
@@ -184,6 +227,7 @@ ${chalk.bold('Options:')}
 ${chalk.bold('Recommended flows:')}
   aha auth login
   aha auth login --code aha_join_xxx
+  aha auth login --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth show-join-code
   aha auth reconnect
   aha auth login --email
@@ -215,7 +259,42 @@ async function handleAuthJoin(args: string[]): Promise<void> {
       console.log(chalk.gray(`  Account ID: ${result.userId}`));
     }
   } catch (error) {
-    console.error(chalk.red('Join failed:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(chalk.red('Join failed:'), describeJoinError(error));
+    process.exit(1);
+  }
+
+  try { await stopDaemon(); } catch { }
+  printDaemonStatus(await ensureDaemonRunningAfterAuth());
+}
+
+async function handleAuthBackupKeyRestore(backupKey: string): Promise<void> {
+  let secret: Uint8Array;
+  try {
+    secret = parseBackupKeyToSecret(backupKey);
+  } catch {
+    console.error(chalk.red('Invalid code. Expected a one-time join ticket or backup key.'));
+    console.log(chalk.gray('To join from another device, run: aha auth show-join-code'));
+    console.log(chalk.gray('To restore from a backup key, use the secretKeyFormatted value from your restore JSON.'));
+    process.exit(1);
+  }
+
+  console.log(chalk.yellow('Restoring account from backup key...'));
+  try {
+    const token = await authGetToken(secret, 'reconnect');
+    await clearMachineId();
+    await writeCredentialsContentSecretKey({
+      contentSecretKey: secret,
+      token,
+    });
+    await ensureRecoveryMaterialForSeed(token, secret, 'backup key restore');
+
+    const { accountId } = decodeTokenSubject(token);
+    console.log(chalk.green('Restored account from backup key.'));
+    if (accountId) {
+      console.log(chalk.gray(`  Account ID: ${accountId}`));
+    }
+  } catch (error) {
+    console.error(chalk.red('Backup-key restore failed:'), error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
   }
 
@@ -235,7 +314,8 @@ async function handleAuthShowJoinCode(): Promise<void> {
     const { ticket, expiresAt } = await createAccountJoinTicket(credentials.token);
     console.log(chalk.green(t('auth.joinCodeReady')));
     console.log(chalk.gray(`  ${t('auth.runOnNewMachine')}`));
-    console.log(chalk.cyan(`  aha auth login --code ${ticket}`));
+    console.log(chalk.cyan(`  ${buildJoinLoginCommand(ticket)}`));
+    console.log(chalk.gray(`  ${t('auth.joinCodeUsageHint')}`));
 
     const expiresLabel = formatExpiration(expiresAt);
     if (expiresLabel) {
@@ -318,15 +398,14 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     return;
   }
 
-  // ── Restore with --code: join ticket only ──
+  // ── Restore with --code: join ticket or backup key ──
   if (restoreCode) {
     if (isAccountJoinTicket(restoreCode)) {
       await handleAuthJoin(['--ticket', restoreCode]);
       return;
     }
-    console.error(chalk.red('Invalid code. Only join tickets (aha_join_... or 6-character codes) are supported.'));
-    console.log(chalk.gray('To join from another device, run: aha auth show-join-code'));
-    process.exit(1);
+    await handleAuthBackupKeyRestore(restoreCode);
+    return;
   }
 
   // ── Restore with local credentials: try reconnect WITHOUT stopping daemon ──

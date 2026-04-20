@@ -23,7 +23,7 @@ interface Settings {
   daemonAutoStartWhenRunningAha?: boolean
   /**
    * SSH host alias for creating a local tunnel to genome-hub when it's not accessible directly.
-   * Example: "wow" — daemon will run `ssh -f -N -L 3006:localhost:3006 wow` on startup.
+   * Example: "my-server" — daemon will run `ssh -f -N -L 3006:localhost:3006 <your-ssh-host>` on startup.
    * Set to null/omit to disable auto-tunnel.
    */
   genomeHubSshHost?: string
