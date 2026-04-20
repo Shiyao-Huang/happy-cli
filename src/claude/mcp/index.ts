@@ -38,6 +38,8 @@ import { registerTaskTools } from './taskTools';
 import { registerAgentTools } from './agentTools';
 import { registerSupervisorTools } from './supervisorTools';
 import { registerEvolutionTools } from './evolutionTools';
+import { patchRegisterTool } from './mozartShim';
+import { createMozartAdapter } from './mozartHttpAdapter';
 
 export async function startAhaServer(
     api: any,
@@ -96,11 +98,21 @@ export async function startAhaServer(
         // Previously only 3 tools called pingDaemonHeartbeat(), causing agents to appear
         // "dead" when busy with other tools (send_team_message, score_agent, etc.).
         const originalRegisterTool = mcp.registerTool.bind(mcp);
+
+        // Mozart shim layer: MOZART_ENABLED=1 routes each tool through the Mozart adapter
+        // with automatic fallback. MOZART_ENABLED!=1 (default) = zero-change passthrough.
+        // createMozartAdapter() selects: HttpMozartAdapter (MOZART_PROXY_URL set) or stub.
+        const mozartAdapter = createMozartAdapter();
+        const mozartPatchedRegisterTool = patchRegisterTool(
+            (name: string, config: any, handler: any) => originalRegisterTool(name, config, handler),
+            mozartAdapter,
+        );
+
         mcp.registerTool = (name: string, config: any, handler: any) => {
-            return originalRegisterTool(name, config, async (...args: any[]) => {
+            return mozartPatchedRegisterTool(name, config, async (...args: any[]) => {
                 pingDaemonHeartbeat(); // fire-and-forget, debounced 10s
                 return handler(...args);
-            });
+            }) as any;
         };
 
         // Build shared helpers from the outer closure variables
@@ -222,6 +234,7 @@ export async function startAhaServer(
             // Team tools
             'send_team_message',
             'get_team_info',
+            'get_legion_view',
             'list_inactive_team_members',
             'get_team_pulse',
             // Task tools
@@ -230,6 +243,7 @@ export async function startAhaServer(
             'add_task_comment',
             'delete_task',
             'list_tasks',
+            'get_task',
             // 嵌套任务工具 (v2)
             'create_subtask',
             'list_subtasks',
@@ -249,6 +263,7 @@ export async function startAhaServer(
             'replace_agent',
             'evaluate_replacement_votes',
             'update_agent_model',
+            'batch_spawn_agents',
             // Evolution system (M3)
             'create_genome',
             'create_corps',
@@ -256,6 +271,7 @@ export async function startAhaServer(
             // Supervisor-only tools
             'read_team_log',
             'get_context_status',
+            'get_host_health',
             'get_self_view',
             'list_visible_tools',
             'explain_tool_access',
@@ -269,9 +285,14 @@ export async function startAhaServer(
             'score_supervisor_self',
             'update_genome_feedback',
             'evolve_genome',
+            'mutate_genome',
+            'compare_genome_versions',
+            'rollback_genome',
             'update_team_feedback',
+            'compact_agent',
             'kill_agent',
             'archive_session',
+            'retire_self',
             'recover_session',
             'save_supervisor_state',
             'restart_daemon',
