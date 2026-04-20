@@ -123,6 +123,21 @@ function clampPositiveInteger(value: number | undefined, fallback: number, max: 
     return Math.min(Math.max(Math.trunc(value as number), 0), max);
 }
 
+/**
+ * Resolve the authoritative session id to be used in task-route mutations.
+ *
+ * In codex/runtime-adapter/session-recovery scenarios, `client.sessionId`
+ * may be a local tracking id instead of the AHA session id known by server.
+ * Task routes validate actor/reporter session ids against roster/account and
+ * return 400 when mismatched. Prefer metadata.ahaSessionId when present.
+ */
+export function resolveTaskActorSessionId(
+    metadata: { ahaSessionId?: string } | null | undefined,
+    clientSessionId: string,
+): string {
+    return metadata?.ahaSessionId || clientSessionId;
+}
+
 export function summarizeTaskForList(task: ListableTask): Record<string, unknown> {
     return {
         id: task.id,
@@ -233,6 +248,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
+            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create tasks.' }], isError: true };
@@ -261,7 +277,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 description: args.description || '',
                 status: 'todo' as const,
                 assigneeId: creationPolicy.assigneeId,
-                reporterId: client.sessionId,
+                reporterId: sessionId,
                 priority: args.priority || 'medium',
                 labels: creationPolicy.labels,
             };
@@ -280,7 +296,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     {
                         team_id: teamId,
                         task_id: result.task.id,
-                        session_id: client.sessionId,
+                        session_id: sessionId,
                     },
                     `Task "${result.task.title}" created (priority=${result.task.priority}, assignee=${args.assigneeId || 'none'})`,
                     { attrs: { title: result.task.title, assigneeId: args.assigneeId } },
@@ -295,7 +311,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     content: `🆕 **New Task Created**: ${result.task.title}\nAssignee: ${args.assigneeId || 'None'}\nPriority: ${result.task.priority}`,
                     type: 'task-update',
                     timestamp: Date.now(),
-                    fromSessionId: client.sessionId,
+                    fromSessionId: sessionId,
                     fromRole: role,
                     mentions: args.assigneeId ? [args.assigneeId] : []
                 };
@@ -332,7 +348,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
-            const sessionId = client.sessionId;
+            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to update tasks.' }], isError: true };
@@ -447,7 +463,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     content: updateMsg,
                     type: 'task-update',
                     timestamp: Date.now(),
-                    fromSessionId: client.sessionId,
+                    fromSessionId: sessionId,
                     fromRole: role,
                     mentions: args.assigneeId ? [args.assigneeId] : []
                 };
@@ -485,13 +501,14 @@ export function registerTaskTools(ctx: McpToolContext): void {
             const metadata = client.getMetadata();
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
+            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to add task comments.' }], isError: true };
             }
 
             const result = await api.addTaskComment(teamId, args.taskId, {
-                sessionId: client.sessionId,
+                sessionId,
                 role,
                 displayName: metadata?.displayName || metadata?.name,
                 type: args.type,
@@ -556,7 +573,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     content: `🗑️ **Task Deleted**: ${args.taskId}`,
                     type: 'task-update',
                     timestamp: Date.now(),
-                    fromSessionId: client.sessionId,
+                    fromSessionId: resolveTaskActorSessionId(metadata, client.sessionId),
                     fromRole: role,
                 };
                 await api.sendTeamMessage(teamId, notification);
@@ -685,6 +702,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             // Check both teamId and roomId - roomId is used for team artifacts from AHA_ROOM_ID env
             const teamId = metadata?.teamId || metadata?.roomId;
             const role = metadata?.role;
+            const sessionId = resolveTaskActorSessionId(metadata, client.sessionId);
 
             if (!teamId) {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to create subtasks.' }], isError: true };
@@ -719,7 +737,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 description: args.description || '',
                 status: 'todo' as const,
                 assigneeId: args.assigneeId ?? parentTask.assigneeId ?? null,
-                reporterId: client.sessionId,
+                reporterId: sessionId,
                 priority: args.priority ?? parentTask.priority ?? 'medium',
                 parentTaskId: args.parentTaskId,
             };
@@ -738,7 +756,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                     content: `📌 Subtask created under "${parentTask.title}":\n• ${result.task.title}\nAssignee: ${result.task.assigneeId || 'Unassigned'}`,
                     type: 'task-update',
                     timestamp: Date.now(),
-                    fromSessionId: client.sessionId,
+                    fromSessionId: sessionId,
                     fromRole: role,
                     mentions: result.task.assigneeId ? [result.task.assigneeId] : []
                 });

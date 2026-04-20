@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildShowAllTaskPage, resolveCreateTaskPolicy, summarizeTaskForList } from './taskTools';
+import {
+    buildShowAllTaskPage,
+    resolveCreateTaskPolicy,
+    resolveTaskActorSessionId,
+    summarizeTaskForList,
+} from './taskTools';
 
 describe('resolveCreateTaskPolicy', () => {
     it('allows coordinator roles to create standard tasks with assignees', () => {
@@ -192,5 +197,17 @@ describe('buildShowAllTaskPage', () => {
         });
         expect(result.allTasks).toHaveLength(2);
         expect(result.allTasks.every((task: any) => task.status === 'review')).toBe(true);
+    });
+});
+
+describe('resolveTaskActorSessionId', () => {
+    it('prefers metadata.ahaSessionId when present', () => {
+        expect(resolveTaskActorSessionId({ ahaSessionId: 'server-sid' }, 'local-sid')).toBe('server-sid');
+    });
+
+    it('falls back to client session id when metadata is missing', () => {
+        expect(resolveTaskActorSessionId({}, 'local-sid')).toBe('local-sid');
+        expect(resolveTaskActorSessionId(null, 'local-sid')).toBe('local-sid');
+        expect(resolveTaskActorSessionId(undefined, 'local-sid')).toBe('local-sid');
     });
 });
