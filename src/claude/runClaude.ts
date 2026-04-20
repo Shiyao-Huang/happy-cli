@@ -46,7 +46,6 @@ import { fetchAgentImage, fetchAgentVerdictData } from './utils/fetchGenome';
 import { createHotEvolutionTick } from './utils/hotEvolutionTick';
 import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
-import { buildRuntimeAhaMcpServers } from '@/runtime/mcpBridgeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
 import { ensureCurrentSessionRegisteredToTeam, forceRegisterCurrentSessionToTeam } from './team/ensureTeamMembership';
@@ -1493,11 +1492,18 @@ ${instructions}
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
-    const availableMcpServers = buildRuntimeAhaMcpServers({
-        runtime: 'claude',
-        ahaServerUrl: ahaServer.url,
-        desktopMcpUrl,
-    });
+    const availableMcpServers: Record<string, { type: string; url: string }> = {
+        aha: {
+            type: 'http',
+            url: ahaServer.url,
+        },
+    };
+    if (desktopMcpUrl) {
+        availableMcpServers['aha-desktop'] = {
+            type: 'http',
+            url: desktopMcpUrl,
+        };
+    }
     const mcpServers = filterMaterializedMcpServers(availableMcpServers, _prebuiltMcpServerNames);
 
     // Extract SDK metadata in background using the same runtime inputs as the live

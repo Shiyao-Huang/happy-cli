@@ -32,7 +32,6 @@ import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { withDefaultAgentSkills } from '@/agentDocker/materializer';
-import { buildRuntimeAhaMcpServers } from '@/runtime/mcpBridgeConfig';
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
@@ -1558,15 +1557,24 @@ export async function runCodex(opts: {
     const desktopMcpUrl = process.env.AHA_DESKTOP_MCP_URL;
     const ahaServer = await startAhaServer(api, session);
     logger.debug(`[START] Aha MCP server started at ${ahaServer.url}`);
+    const bridgeCommand = join(projectPath(), 'bin', 'aha-mcp.mjs');
     const allowedMaterializedMcpServerNames = process.env.AHA_AGENT_MCP_CONFIG_PATH
         ? readMaterializedMcpServerNames(process.env.AHA_AGENT_MCP_CONFIG_PATH)
         : [];
-    const availableMcpServers = buildRuntimeAhaMcpServers({
-        runtime: 'codex',
-        ahaServerUrl: ahaServer.url,
-        desktopMcpUrl,
-        bridgeCommand: join(projectPath(), 'bin', 'aha-mcp.mjs'),
-    });
+    const availableMcpServers: Record<string, { type: string; command: string; args: string[] }> = {
+        aha: {
+            type: 'stdio',
+            command: bridgeCommand,
+            args: ['--url', ahaServer.url]
+        }
+    };
+    if (desktopMcpUrl) {
+        availableMcpServers['aha-desktop'] = {
+            type: 'stdio',
+            command: bridgeCommand,
+            args: ['--url', desktopMcpUrl]
+        };
+    }
     const mcpServers = filterMaterializedMcpServers(availableMcpServers, allowedMaterializedMcpServerNames);
     const ahaRoomIdEnv = process.env.AHA_ROOM_ID;
     const ahaRoleLabelEnv = process.env.AHA_ROLE_LABEL;

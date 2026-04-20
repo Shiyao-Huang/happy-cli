@@ -74,7 +74,6 @@ import { runHeartbeatCycle } from './heartbeat';
 import { runSupervisorCycle, collectLiveMainlineSessionIdsByTeam } from './supervisorScheduler';
 import { shouldUsePidHeartbeat } from './heartbeatPolicy';
 import { checkHelpAutoSpawn, createHelpAutoSpawnState } from './helpAutoSpawn';
-import { startMozartSidecarForDaemon, stopMozartSidecar, type MozartSidecarHandle } from './mozartSidecar';
 
 // Prepare initial metadata — use configuration.currentCliVersion (reads from disk)
 // instead of compiled packageJson.version to avoid stale version after bump-without-rebuild.
@@ -289,7 +288,6 @@ export async function startDaemon(): Promise<void> {
   let stopControlServer: (() => Promise<void>) | null = null;
   let restartOnStaleVersionAndHeartbeat: ReturnType<typeof setInterval> | null = null;
   let caffeinateStarted = false;
-  let mozartSidecarHandle: MozartSidecarHandle | null = null;
 
   try {
     // Start caffeinate
@@ -305,11 +303,6 @@ export async function startDaemon(): Promise<void> {
 
     // ── Genome hub access: SSH tunnel + publish key injection ─────────────────
     await ensureGenomeHubAccess();
-    // ── Mozart sidecar access (optional) ───────────────────────────────────────
-    // Enabled when MOZART_ENABLED=1:
-    // - If MOZART_PROXY_URL is already set, daemon uses external sidecar.
-    // - Otherwise daemon can auto-start sidecar (unless MOZART_SIDECAR_AUTOSTART=0).
-    mozartSidecarHandle = await startMozartSidecarForDaemon();
 
     // ── Per-team agent heartbeat tracking ─────────────────────────────────────
     const teamHeartbeats = new Map<string, AgentHeartbeat>();
@@ -848,7 +841,6 @@ export async function startDaemon(): Promise<void> {
       if (stopControlServer) {
         await stopControlServer();
       }
-      await stopMozartSidecar(mozartSidecarHandle);
       await cleanupDaemonState();
       await stopCaffeinate();
       await releaseDaemonLock(daemonLockHandle);
@@ -873,7 +865,6 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
     // Best-effort cleanup so lock/state/caffeinate are not orphaned
     try { await cleanupDaemonState(); } catch { /* ignore */ }
-    try { await stopMozartSidecar(mozartSidecarHandle); } catch { /* ignore */ }
     try { await stopCaffeinate(); } catch { /* ignore */ }
     try { await releaseDaemonLock(daemonLockHandle); } catch { /* ignore */ }
     process.exit(1);
