@@ -3898,6 +3898,25 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
             return { content: [{ type: 'text', text: 'Error: Only org-manager/supervisor/help-agent can restart the daemon.' }], isError: true };
         }
         try {
+            // Resource pre-check: avoid restarting under extreme memory/disk pressure.
+            // restart_daemon itself is not as heavy as build/tsc, but process churn under
+            // critical host pressure can cascade into broader instability.
+            const trackedSessions = await getDaemonTrackedSessionIds().catch(() => new Set<string>());
+            const host = getHostHealth(trackedSessions.size, configuration.ahaHomeDir);
+            const freeMemMB = Math.round(host.freeMem / 1_048_576);
+            const freeDiskMB = Math.round(host.diskFreeBytes / 1_048_576);
+            const MIN_FREE_MEM_MB = 512;
+            const MIN_FREE_DISK_MB = 1024;
+            if (freeMemMB < MIN_FREE_MEM_MB || freeDiskMB < MIN_FREE_DISK_MB) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `⚠️ Host under resource pressure (freeMem=${freeMemMB}MB, freeDisk=${freeDiskMB}MB). Refusing restart_daemon to avoid cascading failures. Run get_host_health, free resources, then retry.`,
+                    }],
+                    isError: true,
+                };
+            }
+
             const daemonState = await readDaemonState();
             if (!daemonState?.httpPort) {
                 return { content: [{ type: 'text', text: 'Daemon not running (no state file or port).' }], isError: true };
