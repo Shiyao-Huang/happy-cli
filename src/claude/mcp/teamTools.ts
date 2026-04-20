@@ -12,7 +12,7 @@
  * ```
  *
  * ## Tools registered
- * - send_team_message, get_team_info, list_inactive_team_members, get_team_pulse
+ * - send_team_message, get_team_info, get_legion_view, list_inactive_team_members, get_team_pulse
  *
  * ## Design
  * - All tools share McpToolContext (see mcpContext.ts)
@@ -56,6 +56,21 @@ type ResolvedTeamRosterMember = TeamRosterMember & {
     lastSeenMs: number | null;
     contextUsedPercent: number | null;
 };
+
+/**
+ * Resolve the authoritative session ID to use as `fromSessionId` in team messages.
+ *
+ * `client.sessionId` is a local tracking ID that may diverge from the AHA session
+ * the server has registered (codex runtime, runtime-adapter, session recovery).
+ * The server validates `fromSessionId` against `accountId` → 403 if mismatch.
+ * Using `metadata.ahaSessionId` (set by the server at session start) avoids this.
+ */
+export function resolveFromSessionId(
+    metadata: { ahaSessionId?: string } | null | undefined,
+    clientSessionId: string,
+): string {
+    return metadata?.ahaSessionId || clientSessionId;
+}
 
 export function buildTeamRosterView(input: {
     boardMembers: TeamRosterMember[];
@@ -159,11 +174,11 @@ export function registerTeamTools(ctx: McpToolContext): void {
     const loadArtifactRoster = async (teamId: string) => {
         let boardMembers: TeamRosterMember[] = [];
         let headerSessions: string[] = [];
+        let board: any = null;
 
         try {
             const artifact = await api.getArtifact(teamId);
 
-            let board: any = null;
             if (artifact.body && typeof artifact.body === 'object' && 'body' in artifact.body) {
                 const bodyValue = (artifact.body as { body?: unknown }).body;
                 if (typeof bodyValue === 'string') {
@@ -189,7 +204,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
             logger.debug('[ahaMCP] Failed to fetch team artifact:', e);
         }
 
-        return { boardMembers, headerSessions };
+        return { boardMembers, headerSessions, board };
     };
 
     const loadPulseMembers = async (teamId: string): Promise<TeamPulseMemberSnapshot[] | null> => {
@@ -247,6 +262,12 @@ export function registerTeamTools(ctx: McpToolContext): void {
             const inferredVoteDecision = (args.type === 'vote' && !args.voteDecision)
                 ? parseVoteDecision(args.content)
                 : args.voteDecision;
+            // Use server-side authoritative session ID for fromSessionId.
+            // client.sessionId is a local tracking ID that can diverge from the AHA session
+            // the server knows about (codex runtime, session recovery, runtime-adapter scenarios).
+            // The server validates fromSessionId against the current user's sessions → 403 if mismatch.
+            const authoritativeSessionId = resolveFromSessionId(metadata, client.sessionId);
+
             const messageMetadata = {
                 ...(args.priority ? { priority: args.priority } : {}),
                 ...(args.targetSessionId ? { targetSessionId: args.targetSessionId } : {}),
@@ -259,7 +280,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
                 shortContent: args.shortContent || (args.content.length > 150 ? args.content.substring(0, 150) + '...' : undefined),
                 type: args.type || 'chat',
                 timestamp: Date.now(),
-                fromSessionId: client.sessionId,
+                fromSessionId: authoritativeSessionId,
                 fromRole: role,
                 fromDisplayName: senderDisplayName,
                 mentions: args.mentions,
@@ -284,7 +305,7 @@ export function registerTeamTools(ctx: McpToolContext): void {
             if (role !== 'help-agent' && containsHelpMention(args.content)) {
                 const escalation = await triggerHelpLane({
                     teamId,
-                    sessionId: client.sessionId,
+                    sessionId: authoritativeSessionId,
                     role,
                     type: 'custom',
                     description: args.content,
@@ -572,6 +593,202 @@ Use the \`send_team_message\` tool to communicate with your team members.
                 content: [{
                     type: 'text',
                     text: `Failed to get team info: ${String(error)}`,
+                }],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool('get_legion_view', {
+        description: 'Get the legion-level mirror for your current team: identity, boot context, roster health, task distribution, and lifecycle risks. Use this to understand the team as a living system rather than a flat roster.',
+        title: 'Get Legion View',
+        inputSchema: {
+            format: z.enum(['text', 'json']).optional().describe('Response format. Use json for a structured mirror.'),
+        },
+    }, async (args) => {
+        try {
+            const metadata = client.getMetadata();
+            const teamId = metadata?.teamId || metadata?.roomId;
+            const mySessionId = client.sessionId;
+
+            if (!teamId) {
+                const soloView = {
+                    teamId: null,
+                    status: 'solo',
+                    message: 'You are not currently part of a team, so no legion mirror is available.',
+                };
+                return {
+                    content: [{
+                        type: 'text',
+                        text: args.format === 'json'
+                            ? JSON.stringify(soloView, null, 2)
+                            : soloView.message,
+                    }],
+                    isError: false,
+                };
+            }
+
+            const { boardMembers, headerSessions, board } = await loadArtifactRoster(teamId);
+            const pulseMembers = await loadPulseMembers(teamId);
+            const rosterView = buildTeamRosterView({
+                boardMembers,
+                headerSessions,
+                pulseMembers,
+                mySessionId,
+                includeInactive: false,
+            });
+
+            const tasksResult = await api.listTasks(teamId).catch(() => ({ tasks: [], version: 0 }));
+            const tasks = Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : [];
+            const visibleSessionIds = new Set(rosterView.members.map((member) => member.sessionId));
+            const allKnownSessionIds = new Set([
+                ...boardMembers.map((member) => member.sessionId).filter(Boolean),
+                ...headerSessions.filter(Boolean),
+            ]);
+
+            const taskCounts = {
+                total: tasks.length,
+                todo: 0,
+                inProgress: 0,
+                review: 0,
+                blocked: 0,
+                done: 0,
+                unassigned: 0,
+                orphaned: 0,
+            };
+
+            const blockedTaskIds: string[] = [];
+            const orphanedTaskIds: string[] = [];
+
+            for (const task of tasks) {
+                const status = String(task?.status || 'todo');
+                if (status === 'todo') taskCounts.todo += 1;
+                if (status === 'in-progress') taskCounts.inProgress += 1;
+                if (status === 'review') taskCounts.review += 1;
+                if (status === 'blocked') {
+                    taskCounts.blocked += 1;
+                    if (typeof task?.id === 'string') blockedTaskIds.push(task.id);
+                }
+                if (status === 'done') taskCounts.done += 1;
+
+                const assigneeId = typeof task?.assigneeId === 'string' ? task.assigneeId : null;
+                if (!assigneeId) {
+                    taskCounts.unassigned += 1;
+                    continue;
+                }
+                if (!visibleSessionIds.has(assigneeId) && !allKnownSessionIds.has(assigneeId)) {
+                    taskCounts.orphaned += 1;
+                    if (typeof task?.id === 'string') orphanedTaskIds.push(task.id);
+                }
+            }
+
+            const bootContext = (
+                (board?.team?.bootContext && typeof board.team.bootContext === 'object')
+                ? board.team.bootContext
+                : (board?.bootContext && typeof board.bootContext === 'object')
+                    ? board.bootContext
+                    : null
+            ) as Record<string, unknown> | null;
+
+            const rosterCounts = {
+                active: rosterView.members.filter((member) => member.liveness === 'alive').length,
+                suspect: rosterView.members.filter((member) => member.liveness === 'suspect').length,
+                inactive: rosterView.counts.inactive,
+                unknown: rosterView.counts.unknown,
+                visible: rosterView.counts.returned,
+                totalKnown: rosterView.counts.totalKnown,
+            };
+            const unfinishedTasks = taskCounts.total - taskCounts.done;
+            const continuityRisk = taskCounts.blocked > 0 || taskCounts.orphaned > 0 || rosterCounts.suspect > 0
+                ? 'high'
+                : unfinishedTasks > 0 && (taskCounts.unassigned > 0 || rosterCounts.active === 0)
+                    ? 'medium'
+                    : 'low';
+
+            const legionView = {
+                teamId,
+                identity: {
+                    teamName: typeof board?.team?.name === 'string' ? board.team.name : null,
+                    teamDescription: typeof bootContext?.teamDescription === 'string' ? bootContext.teamDescription : null,
+                    initialObjective: typeof bootContext?.initialObjective === 'string' ? bootContext.initialObjective : null,
+                },
+                bootContext: bootContext && typeof bootContext === 'object' ? bootContext : null,
+                roster: {
+                    pulseKnown: rosterView.pulseKnown,
+                    counts: rosterCounts,
+                    members: rosterView.members.map((member) => ({
+                        sessionId: member.sessionId,
+                        roleId: member.roleId || member.role || 'unknown',
+                        displayName: member.displayName || null,
+                        liveness: member.liveness,
+                        isCollaborating: member.isCollaborating,
+                        runtimeType: member.runtimeType || null,
+                        lastSeenMs: member.lastSeenMs,
+                        contextUsedPercent: member.contextUsedPercent,
+                    })),
+                },
+                tasks: {
+                    counts: taskCounts,
+                    blockedTaskIds,
+                    orphanedTaskIds,
+                },
+                lifecycle: {
+                    unfinishedTasks,
+                    teamAlive: rosterCounts.active > 0 || rosterCounts.suspect > 0,
+                    needsStaffing: unfinishedTasks > 0 && rosterCounts.active === 0,
+                    continuityRisk,
+                },
+            };
+
+            if (args.format === 'json') {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify(legionView, null, 2),
+                    }],
+                    isError: false,
+                };
+            }
+
+            const text = [
+                '═══ LEGION VIEW ═══',
+                '',
+                `[Identity] ${legionView.identity.teamName ?? teamId}`,
+                `  Objective: ${legionView.identity.initialObjective ?? legionView.identity.teamDescription ?? 'unknown'}`,
+                '',
+                '[Roster]',
+                `  Active: ${rosterCounts.active}`,
+                `  Suspect: ${rosterCounts.suspect}`,
+                `  Inactive: ${rosterCounts.inactive}`,
+                `  Visible: ${rosterCounts.visible}/${rosterCounts.totalKnown}`,
+                '',
+                '[Tasks]',
+                `  Total: ${taskCounts.total}`,
+                `  In Progress: ${taskCounts.inProgress}`,
+                `  Review: ${taskCounts.review}`,
+                `  Blocked: ${taskCounts.blocked}`,
+                `  Unassigned: ${taskCounts.unassigned}`,
+                `  Orphaned: ${taskCounts.orphaned}`,
+                '',
+                '[Lifecycle]',
+                `  Unfinished: ${unfinishedTasks}`,
+                `  Team Alive: ${legionView.lifecycle.teamAlive ? 'yes' : 'no'}`,
+                `  Needs Staffing: ${legionView.lifecycle.needsStaffing ? 'yes' : 'no'}`,
+                `  Continuity Risk: ${continuityRisk}`,
+            ].join('\n');
+
+            return {
+                content: [{
+                    type: 'text',
+                    text,
+                }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Failed to get legion view: ${String(error)}`,
                 }],
                 isError: true,
             };
