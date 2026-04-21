@@ -127,7 +127,7 @@ export function applyCodexSessionNamingFromEnv(
 
 const HANDSHAKE_RETRYABLE_STATUS_CODES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
 
-function resolveTeamActorSessionId(
+export function resolveTeamActorSessionId(
     metadata: { ahaSessionId?: string } | null | undefined,
     fallbackSessionId: string,
 ): string {
@@ -135,7 +135,7 @@ function resolveTeamActorSessionId(
     return ahaSessionId && ahaSessionId.length > 0 ? ahaSessionId : fallbackSessionId;
 }
 
-function extractHttpStatusCodeFromError(error: unknown): number | undefined {
+export function extractHttpStatusCodeFromError(error: unknown): number | undefined {
     if (typeof error !== 'object' || error === null) {
         return undefined;
     }
@@ -155,7 +155,7 @@ function extractHttpStatusCodeFromError(error: unknown): number | undefined {
     return statusMatch ? Number(statusMatch[1]) : undefined;
 }
 
-function isRetryableHandshakeError(error: unknown): boolean {
+export function isRetryableHandshakeError(error: unknown): boolean {
     const status = extractHttpStatusCodeFromError(error);
     if (typeof status === 'number') {
         return HANDSHAKE_RETRYABLE_STATUS_CODES.has(status);
@@ -170,18 +170,19 @@ function isRetryableHandshakeError(error: unknown): boolean {
     );
 }
 
-function isInvalidFromSessionIdHandshakeError(error: unknown): boolean {
+export function isInvalidFromSessionIdHandshakeError(error: unknown): boolean {
     const normalizedMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
     return normalizedMessage.includes('invalid fromsessionid');
 }
 
-async function sendTeamHandshakeWithRetry(opts: {
+export async function sendTeamHandshakeWithRetry(opts: {
     api: ApiClient;
     teamId: string;
     message: Record<string, unknown>;
     maxAttempts?: number;
+    sleep?: (ms: number) => Promise<void>;
 }): Promise<void> {
-    const { api, teamId, message, maxAttempts = 3 } = opts;
+    const { api, teamId, message, maxAttempts = 3, sleep = delay } = opts;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -202,7 +203,7 @@ async function sendTeamHandshakeWithRetry(opts: {
             logger.debug(
                 `[Codex] Handshake attempt ${attempt}/${maxAttempts} failed (status=${status ?? 'unknown'}), retrying in ${backoffMs}ms`
             );
-            await delay(backoffMs);
+            await sleep(backoffMs);
         }
     }
 
