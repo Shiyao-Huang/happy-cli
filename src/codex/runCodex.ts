@@ -49,6 +49,11 @@ import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication'
 import { CODEX_BRIDGE_DEBUG_ENV, isCodexBridgeDebugEnabled, logCodexBridge, logCodexSignal } from './utils/bridgeDebug';
 import { buildCodexRuntimeMetadata } from './runtimeMetadata';
 import {
+    getEffectiveTeamMessageDisplayName,
+    getEffectiveTeamMessageRole,
+    getOriginalTeamMessageSessionId,
+} from '@/api/teamMessageIdentity';
+import {
     type CodexAssistantSessionMessage,
     convertCodexApprovalEventToSessionMessage,
     convertCodexFunctionEventToSessionMessage,
@@ -746,8 +751,12 @@ export async function runCodex(opts: {
             return;
         }
         logger.debug('[Codex] Received team message, injecting as user message');
-        const senderLabel = message.fromDisplayName || message.fromRole || message.fromSessionId || 'Unknown';
-        if (message.fromSessionId === session.sessionId) return;
+        const originalFromSessionId = getOriginalTeamMessageSessionId(message);
+        const senderLabel = getEffectiveTeamMessageDisplayName(message)
+            || getEffectiveTeamMessageRole(message)
+            || originalFromSessionId
+            || 'Unknown';
+        if (originalFromSessionId === session.sessionId) return;
 
         const content = message.content || JSON.stringify(message);
         const formattedMessage = `[Team Message from ${senderLabel}]: ${content}`;

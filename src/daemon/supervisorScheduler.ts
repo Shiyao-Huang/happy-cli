@@ -30,6 +30,7 @@ import {
   getPendingActionRetryDelayMs,
   listSupervisorStates,
   readSupervisorState,
+  type SupervisorState,
   SUPERVISOR_PENDING_ACTION_MAX_RETRIES,
   updateSupervisorRun,
   updateSupervisorState,
@@ -99,6 +100,32 @@ export function collectLiveMainlineSessionIdsByTeam(
   }
 
   return sessionsByTeam;
+}
+
+export function hasLiveSupervisorForTeam(
+  teamId: string,
+  pidToTrackedSession: Map<number, TrackedSession>
+): boolean {
+  for (const session of pidToTrackedSession.values()) {
+    const meta = session.ahaSessionMetadataFromLocalWebhook;
+    const sessionTeamId = meta?.teamId || meta?.roomId || session.spawnOptions?.teamId;
+    const role = meta?.role || session.spawnOptions?.role;
+    const executionPlane = meta?.executionPlane || session.spawnOptions?.executionPlane;
+
+    if (sessionTeamId !== teamId) continue;
+    if (role !== 'supervisor') continue;
+    if (executionPlane && executionPlane !== 'bypass') continue;
+    if (session.intentionallyStopped) continue;
+
+    try {
+      process.kill(session.pid, 0);
+      return true;
+    } catch {
+      // Stale tracked entry; the persisted PID guard below will clean it up.
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -237,6 +264,26 @@ function getServerAuthHeaders(credentialsToken: string): Record<string, string> 
   };
 }
 
+function shouldScanAllTeamsForSupervisors(): boolean {
+  return process.env.AHA_SUPERVISOR_SCAN_ALL_TEAMS === '1';
+}
+
+function shouldScanSupervisorStateForWork(
+  supervisorState: SupervisorState,
+  liveTeamIds: Set<string>,
+): boolean {
+  if (supervisorState.terminated) {
+    return false;
+  }
+  if (liveTeamIds.has(supervisorState.teamId)) {
+    return true;
+  }
+  if (supervisorState.pendingAction?.type === 'notify_help') {
+    return true;
+  }
+  return process.env.AHA_SUPERVISOR_SCAN_IDLE_STATES === '1';
+}
+
 async function fetchOutstandingWorkSummary(
   teamId: string,
   credentialsToken: string,
@@ -272,6 +319,22 @@ async function fetchOutstandingWorkSummary(
       status: 'unknown',
     };
   }
+}
+
+async function fetchOutstandingWorkSummaries(
+  teamIds: Iterable<string>,
+  credentialsToken: string,
+): Promise<Map<string, TeamOutstandingWorkSummary>> {
+  const uniqueTeamIds = [...new Set([...teamIds].filter(Boolean))];
+  if (uniqueTeamIds.length === 0) {
+    return new Map();
+  }
+
+  const summaries = await Promise.all(
+    uniqueTeamIds.map((teamId) => fetchOutstandingWorkSummary(teamId, credentialsToken))
+  );
+
+  return new Map(summaries.map((summary) => [summary.teamId, summary] as const));
 }
 
 async function listTeamsWithOutstandingWork(credentialsToken: string): Promise<Map<string, TeamOutstandingWorkSummary>> {
@@ -332,6 +395,10 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
 
   const liveMainlineSessionIdsByTeam = collectLiveMainlineSessionIdsByTeam(pidToTrackedSession);
   const supervisorStates = listSupervisorStates();
+  const liveTeamIds = new Set(liveMainlineSessionIdsByTeam.keys());
+  const supervisorStatesForWorkScan = supervisorStates.filter((state) =>
+    shouldScanSupervisorStateForWork(state, liveTeamIds)
+  );
   const outstandingWorkByKnownTeam = new Map<string, TeamOutstandingWorkSummary>();
   const now = Date.now();
 
@@ -362,15 +429,17 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     }
   }
 
-  for (const supervisorState of supervisorStates) {
-    outstandingWorkByKnownTeam.set(
-      supervisorState.teamId,
-      await fetchOutstandingWorkSummary(supervisorState.teamId, credentialsToken)
-    );
+  const knownTeamIdsForWorkScan = new Set<string>([
+    ...liveTeamIds,
+    ...supervisorStatesForWorkScan.map((state) => state.teamId),
+  ]);
+
+  for (const [teamId, summary] of await fetchOutstandingWorkSummaries(knownTeamIdsForWorkScan, credentialsToken)) {
+    outstandingWorkByKnownTeam.set(teamId, summary);
   }
 
   // ── Per-team supervisor state processing ────────────────────────────────────
-  for (const supervisorState of supervisorStates) {
+  for (const supervisorState of supervisorStatesForWorkScan) {
     const liveSessionIds = liveMainlineSessionIdsByTeam.get(supervisorState.teamId) ?? new Set<string>();
     const outstandingWork = outstandingWorkByKnownTeam.get(supervisorState.teamId);
     const workStatus = outstandingWork?.status ?? 'unknown';
@@ -531,7 +600,12 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     return;
   }
 
-  const teamsWithOutstandingWork = await listTeamsWithOutstandingWork(credentialsToken);
+  const teamsWithOutstandingWork = shouldScanAllTeamsForSupervisors()
+    ? await listTeamsWithOutstandingWork(credentialsToken)
+    : new Map(
+      [...outstandingWorkByKnownTeam.entries()]
+        .filter(([, summary]) => summary.status === 'has_work')
+    );
   const activeTeamIds = new Set<string>([
     ...liveMainlineSessionIdsByTeam.keys(),
     ...teamsWithOutstandingWork.keys(),
@@ -564,6 +638,12 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         terminated: false,
         terminatedAt: 0,
       }));
+    }
+
+    // Singleton guard: use persisted PID to detect running supervisor across daemon restarts
+    if (hasLiveSupervisorForTeam(teamId, pidToTrackedSession)) {
+      logger.debug(`[SUPERVISOR SCHEDULER] Live supervisor already tracked for team ${teamId}, skipping`);
+      continue;
     }
 
     // Singleton guard: use persisted PID to detect running supervisor across daemon restarts

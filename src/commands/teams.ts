@@ -707,31 +707,25 @@ async function createTeam(
     });
   }
 
-  const artifact = await api.createArtifact(
-    payload.teamId,
-    {
-      type: 'team',
-      title: payload.name,
-      name: payload.name,
-      sessions: payload.sessionIds,
-      draft: false,
-      createdAt: Date.now(),
-    },
+  const createResult = await api.createTeam({
+    id: payload.teamId,
+    name: payload.name,
+    description: payload.goal,
     board,
-  );
-
-  const team = (await api.getTeam(payload.teamId))?.team || {
-    id: artifact.id,
+  });
+  const team = createResult.team || (await api.getTeam(payload.teamId))?.team || {
+    id: payload.teamId,
     name: payload.name,
     memberCount: board.team.members.length,
     taskCount: Array.isArray(board.tasks) ? board.tasks.length : 0,
     members: board.team.members,
-    createdAt: artifact.createdAt,
-    updatedAt: artifact.updatedAt,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
   };
+  const createdTeamId = team.id || payload.teamId;
 
   for (const sessionId of payload.sessionIds) {
-    await syncSessionMetadataToTeam(api, payload.teamId, sessionId, 'member');
+    await syncSessionMetadataToTeam(api, createdTeamId, sessionId, 'member');
   }
 
   if (options.asJson) {
@@ -739,7 +733,7 @@ async function createTeam(
     return;
   }
 
-  console.log(chalk.green(`✓ Team ${payload.teamId} created successfully`));
+  console.log(chalk.green(`✓ Team ${createdTeamId} created successfully`));
   printTeam(team, true);
   console.log();
 }

@@ -48,6 +48,7 @@ import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult,
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
+import { t } from '@/i18n';
 import { ensureCurrentSessionRegisteredToTeam, forceRegisterCurrentSessionToTeam } from './team/ensureTeamMembership';
 import { buildModelSelfAwarenessPrompt, resolveContextWindowTokens, DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS } from '@/utils/modelContextWindows';
 import { resolveInitialModelOverrides } from './utils/modelOverrides';
@@ -55,6 +56,11 @@ import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
 import { computeEffectiveAllowedToolsFromMetadata, hasDynamicGrantOptIn } from './utils/temporaryToolGrants';
 import { buildSessionScopeFilters } from './team/sessionScope';
+import {
+    getEffectiveTeamMessageDisplayName,
+    getEffectiveTeamMessageRole,
+    getOriginalTeamMessageSessionId,
+} from '@/api/teamMessageIdentity';
 
 export interface StartOptions {
     model?: string
@@ -78,12 +84,17 @@ function formatTeamMessage(
 ): string {
     const mentionTag = isMentioned ? '[MENTIONED]' : '';
     const urgentTag = message.metadata?.priority === 'urgent' ? '[URGENT]' : '';
+    const effectiveRole = getEffectiveTeamMessageRole(message);
+    const senderLabel = getEffectiveTeamMessageDisplayName(message)
+        || effectiveRole
+        || getOriginalTeamMessageSessionId(message)?.substring(0, 8)
+        || 'Unknown';
 
     return `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📨 Team Message ${mentionTag} ${urgentTag}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-From: ${message.fromDisplayName || message.fromRole || message.fromSessionId?.substring(0, 8) || 'Unknown'} [role: ${message.fromRole || 'unknown'}]
+From: ${senderLabel} [role: ${effectiveRole || 'unknown'}]
 Type: ${message.type || 'chat'}
 Time: ${new Date(message.timestamp).toLocaleString()}
 
@@ -867,13 +878,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     if (message.teamId === teamId) {
                         logger.debug(`[Team] 📨 Received message from ${message.fromSessionId} (${message.fromRole})`);
                         logger.debugLargeJson('[runClaude] Team message received:', message);
+                        const originalFromSessionId = getOriginalTeamMessageSessionId(message);
 
                         // Save to local storage
                         await teamStorage.saveMessage(teamId, message);
                         logger.debug(`[runClaude] Saved team message ${message.id} to local storage`);
 
                         // Self-filter: IGNORE messages from myself
-                        if (message.fromSessionId === response.id) {
+                        if (originalFromSessionId === response.id) {
                             logger.debug(`[Team] Ignoring my own message`);
                             return;
                         }
@@ -883,7 +895,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         const isRoleMentioned = role && contentLower.includes(`@${role.toLowerCase()}`);
                         const isMentioned = message.mentions?.includes(response.id) || isRoleMentioned || false;
 
-                        const fromRole = message.fromRole;
+                        const fromRole = getEffectiveTeamMessageRole(message);
                         logger.debug(`[runClaude] Injecting team message (from:${fromRole || 'user'}, mentioned:${isMentioned})`);
 
                         // Format the message for injection
@@ -959,11 +971,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         ].filter(Boolean).join('; ')
                         : undefined;
 
+                    const bootstrapRole = isBootstrapRole(role, _agentImage);
                     let introContent: string = '';
 
-                    if (isBootstrapRole(role, _agentImage)) {
-                        logger.debug('[runClaude] Bootstrap role — skipping team handshake (silent mode)');
-                        logger.debug(`[Team] 🔇 ${roleTitle} working silently (bootstrap mode)`);
+                    if (bootstrapRole) {
+                        introContent = t('team.handshake.bootstrap', { roleTitle, role: role || 'agent', teamId });
+                        logger.debug('[runClaude] Bootstrap role — sending visible initialization handshake');
                     } else {
                         const roleSummary = agentImageDescription || roleDef?.name || roleTitle;
                         introContent = buildAgentHandshakeContent({
@@ -988,42 +1001,40 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         fromRole: role,
                         metadata: { type: 'handshake', roleTitle }
                     };
-                    if (!isBootstrapRole(role, _agentImage)) {
-                        try {
-                            await api.sendTeamMessage(teamId, handshakeMsg);
-                        } catch (handshakeError) {
-                            if (!isInvalidFromSessionIdHandshakeError(handshakeError)) {
-                                throw handshakeError;
-                            }
-                            logger.debug('[runClaude] Handshake rejected with invalid fromSessionId; force re-registering team membership');
-                            await forceRegisterCurrentSessionToTeam({
-                                api,
-                                teamId,
-                                sessionId: response.id,
-                                role,
-                                metadata: session.getMetadata() || metadata,
-                                taskStateManager,
-                                specId: _agentImageId || undefined,
-                            });
-                            await api.sendTeamMessage(teamId, handshakeMsg);
+                    try {
+                        await api.sendTeamMessage(teamId, handshakeMsg);
+                    } catch (handshakeError) {
+                        if (!isInvalidFromSessionIdHandshakeError(handshakeError)) {
+                            throw handshakeError;
                         }
-                        logger.debug('[runClaude] Sent handshake message to team');
-                        logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
-
-                        // ── Trace: handshake_sent ───────────────────────────
-                        try {
-                            emitTraceEvent(
-                                TraceEventKind.handshake_sent,
-                                'runClaude',
-                                {
-                                    team_id: teamId,
-                                    session_id: response.id,
-                                },
-                                `${roleTitle} (${role}) sent handshake to team ${teamId}`,
-                                { attrs: { role, roleTitle } },
-                            );
-                        } catch { /* trace must never break main flow */ }
+                        logger.debug('[runClaude] Handshake rejected with invalid fromSessionId; force re-registering team membership');
+                        await forceRegisterCurrentSessionToTeam({
+                            api,
+                            teamId,
+                            sessionId: response.id,
+                            role,
+                            metadata: session.getMetadata() || metadata,
+                            taskStateManager,
+                            specId: _agentImageId || undefined,
+                        });
+                        await api.sendTeamMessage(teamId, handshakeMsg);
                     }
+                    logger.debug('[runClaude] Sent handshake message to team');
+                    logger.debug(`[Team] 📢 ${roleTitle} announced presence in team chat`);
+
+                    // ── Trace: handshake_sent ───────────────────────────
+                    try {
+                        emitTraceEvent(
+                            TraceEventKind.handshake_sent,
+                            'runClaude',
+                            {
+                                team_id: teamId,
+                                session_id: response.id,
+                            },
+                            `${roleTitle} (${role}) sent handshake to team ${teamId}`,
+                            { attrs: { role, roleTitle, bootstrap: bootstrapRole } },
+                        );
+                    } catch { /* trace must never break main flow */ }
                 } catch (e) {
                     logger.debug('[runClaude] Failed to send handshake:', e);
                     logger.debug(`[Team] ⚠️ Failed to send handshake for ${role}`);

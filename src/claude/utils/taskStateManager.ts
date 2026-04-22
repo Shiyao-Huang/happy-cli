@@ -346,28 +346,31 @@ export class TaskStateManager {
      * This enables CLI agents to work with teams without requiring Kanban UI initialization
      */
     private async initializeTeamArtifact(): Promise<void> {
-        const initialHeader = {
-            type: 'team',
-            name: `Team ${this.teamId.substring(0, 8)}`,
+        const teamName = `Team ${this.teamId.substring(0, 8)}`;
+        const board = {
+            tasks: [],
+            columns: DEFAULT_COLUMNS,
+            team: {
+                name: teamName,
+                members: [],
+            },
             createdAt: Date.now()
-        };
-        const initialBody = {
-            body: JSON.stringify({
-                tasks: [],
-                columns: DEFAULT_COLUMNS,
-                team: {
-                    members: [],
-                },
-                createdAt: Date.now()
-            })
         };
 
         try {
-            await this.api.createArtifact(this.teamId, initialHeader, initialBody);
-            logger.debug(`[TaskStateManager] Successfully initialized team artifact ${this.teamId}`);
+            const result = await this.api.createTeam({
+                id: this.teamId,
+                name: teamName,
+                board,
+            });
+            const createdTeamId = result.team?.id;
+            if (createdTeamId && createdTeamId !== this.teamId) {
+                throw new Error(`Server created fallback team ${createdTeamId} instead of requested team ${this.teamId}`);
+            }
+            logger.debug(`[TaskStateManager] Successfully initialized team ${this.teamId}`);
         } catch (createError) {
-            logger.debug(`[TaskStateManager] Failed to initialize team artifact:`, createError);
-            throw new Error(`Failed to initialize team artifact: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
+            logger.debug(`[TaskStateManager] Failed to initialize team:`, createError);
+            throw new Error(`Failed to initialize team: ${createError instanceof Error ? createError.message : 'Unknown error'}`);
         }
     }
 

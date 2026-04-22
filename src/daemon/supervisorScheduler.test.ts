@@ -46,6 +46,8 @@ describe('supervisorScheduler', () => {
         mockReadSupervisorState.mockReset();
         mockUpdateSupervisorState.mockReset();
         mockUpdateSupervisorRun.mockReset();
+        delete process.env.AHA_SUPERVISOR_SCAN_ALL_TEAMS;
+        delete process.env.AHA_SUPERVISOR_SCAN_IDLE_STATES;
 
         mockListSupervisorStates.mockReturnValue([]);
         mockReadSupervisorState.mockImplementation((teamId: string) => ({
@@ -68,6 +70,7 @@ describe('supervisorScheduler', () => {
     });
 
     it('spawns a supervisor for teams with unfinished tasks even when no live mainline agent remains', async () => {
+        process.env.AHA_SUPERVISOR_SCAN_ALL_TEAMS = '1';
         mockAxiosGet.mockImplementation(async (url: string) => {
             if (url === 'https://server.test/v1/teams') {
                 return {
@@ -125,6 +128,209 @@ describe('supervisorScheduler', () => {
                 specId: 'spec-supervisor',
             })
         );
+    });
+
+    it('does not scan every historical team by default', async () => {
+        mockAxiosGet.mockImplementation(async (url: string) => {
+            if (url === 'https://server.test/v1/teams') {
+                return {
+                    data: {
+                        teams: [{ id: 'team-1', taskCount: 2 }],
+                    },
+                };
+            }
+            throw new Error(`Unexpected axios.get call: ${url}`);
+        });
+
+        const spawnSession = vi.fn();
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map(),
+            heartbeatCount: 20,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession,
+            requestHelp: vi.fn(),
+        });
+
+        expect(mockAxiosGet).not.toHaveBeenCalledWith(
+            'https://server.test/v1/teams',
+            expect.anything(),
+        );
+        expect(spawnSession).not.toHaveBeenCalled();
+    });
+
+    it('spawns for a local pending supervisor state without all-team scanning', async () => {
+        const pendingState = {
+            teamId: 'team-1',
+            lastRunAt: 0,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: null,
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: {
+                type: 'notify_help',
+                message: 'team stalled',
+            },
+            pendingActionMeta: null,
+        };
+        mockListSupervisorStates.mockReturnValue([pendingState]);
+        mockReadSupervisorState.mockReturnValue(pendingState);
+        mockAxiosGet.mockImplementation(async (url: string) => {
+            if (url === 'https://server.test/v1/teams/team-1/tasks') {
+                return {
+                    data: {
+                        tasks: [{ id: 'task-1', status: 'todo' }],
+                    },
+                };
+            }
+
+            if (url.includes('/genomes/%40official/supervisor')) {
+                return {
+                    data: {
+                        genome: { id: 'spec-supervisor' },
+                    },
+                };
+            }
+
+            throw new Error(`Unexpected axios.get call: ${url}`);
+        });
+
+        const spawnSession = vi.fn().mockResolvedValue({
+            type: 'success',
+            sessionId: 'supervisor-session-1',
+        });
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map(),
+            heartbeatCount: 20,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession,
+            requestHelp: vi.fn(),
+        });
+
+        expect(spawnSession).toHaveBeenCalledTimes(1);
+        expect(spawnSession).toHaveBeenCalledWith(
+            expect.objectContaining({
+                teamId: 'team-1',
+                role: 'supervisor',
+                specId: 'spec-supervisor',
+            })
+        );
+    });
+
+    it('does not revive conditional escalation states by default', async () => {
+        const conditionalState = {
+            teamId: 'team-1',
+            lastRunAt: 0,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: null,
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: {
+                type: 'conditional_escalation',
+                condition: 'daemon still down',
+                action: 'notify human',
+                deadline: Date.now() - 1000,
+            },
+            pendingActionMeta: null,
+        };
+        mockListSupervisorStates.mockReturnValue([conditionalState]);
+        mockReadSupervisorState.mockReturnValue(conditionalState);
+
+        const spawnSession = vi.fn();
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map(),
+            heartbeatCount: 20,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession,
+            requestHelp: vi.fn(),
+        });
+
+        expect(mockAxiosGet).not.toHaveBeenCalled();
+        expect(spawnSession).not.toHaveBeenCalled();
+    });
+
+    it('does not spawn a duplicate supervisor when one is already tracked live', async () => {
+        const pendingState = {
+            teamId: 'team-1',
+            lastRunAt: 0,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: null,
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 0,
+            pendingAction: {
+                type: 'notify_help',
+                message: 'team stalled',
+            },
+            pendingActionMeta: null,
+        };
+        mockListSupervisorStates.mockReturnValue([pendingState]);
+        mockReadSupervisorState.mockReturnValue(pendingState);
+        mockAxiosGet.mockImplementation(async (url: string) => {
+            if (url === 'https://server.test/v1/teams/team-1/tasks') {
+                return {
+                    data: {
+                        tasks: [{ id: 'task-1', status: 'todo' }],
+                    },
+                };
+            }
+            throw new Error(`Unexpected axios.get call: ${url}`);
+        });
+
+        const spawnSession = vi.fn();
+
+        await runSupervisorCycle({
+            pidToTrackedSession: new Map([
+                [process.pid, {
+                    startedBy: 'daemon',
+                    ahaSessionId: 'supervisor-session',
+                    pid: process.pid,
+                    ahaSessionMetadataFromLocalWebhook: {
+                        teamId: 'team-1',
+                        role: 'supervisor',
+                        executionPlane: 'bypass',
+                    } as any,
+                }],
+            ]),
+            heartbeatCount: 20,
+            supervisorInterval: 20,
+            supervisorTerminateIdleMs: 60_000,
+            pendingActionBaseRetryMs: 60_000,
+            heartbeatIntervalMs: 3_000,
+            credentialsToken: 'token-1',
+            spawnSession,
+            requestHelp: vi.fn(),
+        });
+
+        expect(spawnSession).not.toHaveBeenCalled();
     });
 
     it('does not terminate a team when task summary lookup fails', async () => {

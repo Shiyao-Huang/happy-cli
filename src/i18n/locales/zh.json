@@ -231,6 +231,7 @@
   "team.deleteSuccess": "✓ 团队已删除",
   "team.renameSuccess": "✓ 团队已重命名",
   "team.noMessages": "未找到消息",
+  "team.handshake.bootstrap": "正在初始化 {roleTitle}（{role}），团队 {teamId}。我已在线，正在准备团队工作区。",
 
   "agent.updateModelSuccess": "✓ 模型更新成功",
   "agent.killSuccess": "✓ 代理已终止",

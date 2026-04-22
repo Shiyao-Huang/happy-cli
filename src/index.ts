@@ -23,7 +23,7 @@ import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledAhaVersion, stopDaemon } from './daemon/controlClient'
+import { isDaemonRunningCurrentlyInstalledAhaVersion, startDaemonDetached, stopDaemon } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayAhaProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
@@ -33,8 +33,6 @@ import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
-import { spawnAhaCLI } from './utils/spawnAhaCLI'
-import { stripSessionScopedAhaEnv } from './utils/sessionScopedAhaEnv'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 import {
@@ -355,24 +353,7 @@ function handleTopLevelCommandError(error: unknown): never {
       return
 
     } else if (daemonSubcommand === 'start') {
-      // Spawn detached daemon process
-      const child = spawnAhaCLI(['daemon', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true })
-      });
-      child.unref();
-
-      // Wait for daemon to write state file (up to 5 seconds)
-      let started = false;
-      for (let i = 0; i < 50; i++) {
-        if (await checkIfDaemonRunningAndCleanupStaleState()) {
-          started = true;
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-
+      const started = await startDaemonDetached();
       if (started) {
         console.log(t('daemon.startedSuccess'));
       } else {
@@ -542,16 +523,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       logger.debug('Starting Aha background service...');
 
       try {
-        // Use the built binary to spawn daemon
-        const daemonProcess = spawnAhaCLI(['daemon', 'start-sync'], {
-          detached: true,
-          stdio: 'ignore',
-          env: stripSessionScopedAhaEnv(process.env, { stripClaudeCode: true })
-        })
-        daemonProcess.unref();
-
-        // Give daemon a moment to write PID & port file
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await startDaemonDetached();
       } catch (error) {
         logger.debug('Failed to start daemon (non-fatal):', error);
         console.log(chalk.yellow('Warning: Could not start background service. Some features may be limited.'));

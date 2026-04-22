@@ -231,6 +231,7 @@
   "team.deleteSuccess": "✓ Team deleted successfully",
   "team.renameSuccess": "✓ Team renamed successfully",
   "team.noMessages": "No messages found",
+  "team.handshake.bootstrap": "Initializing {roleTitle} ({role}) for team {teamId}. I am online and preparing the team workspace.",
 
   "agent.updateModelSuccess": "✓ Model updated successfully",
   "agent.killSuccess": "✓ Agent terminated",

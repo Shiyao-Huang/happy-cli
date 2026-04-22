@@ -70,6 +70,11 @@ type ListableTask = {
     depth?: number;
 };
 
+type TaskMutationResult = {
+    success: boolean;
+    task?: any;
+};
+
 interface ShowAllTaskPageArgs {
     tasks: ListableTask[];
     status?: string;
@@ -357,7 +362,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 labels: creationPolicy.labels,
             };
 
-            const { result, sessionId } = await runWithTaskSessionFallback({
+            const { result, sessionId } = await runWithTaskSessionFallback<TaskMutationResult>({
                 operation: 'create_task',
                 metadata,
                 clientSessionId: client.sessionId,
@@ -523,7 +528,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
             };
 
             // Use REST API - server handles artifact update + WebSocket event emission
-            const { result, sessionId } = await runWithTaskSessionFallback({
+            const { result, sessionId } = await runWithTaskSessionFallback<TaskMutationResult>({
                 operation: 'update_task',
                 metadata,
                 clientSessionId: client.sessionId,
@@ -601,7 +606,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to add task comments.' }], isError: true };
             }
 
-            const { result } = await runWithTaskSessionFallback({
+            const { result } = await runWithTaskSessionFallback<TaskMutationResult>({
                 operation: 'add_task_comment',
                 metadata,
                 clientSessionId: client.sessionId,
@@ -841,7 +846,7 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 parentTaskId: args.parentTaskId,
             };
 
-            const { result, sessionId } = await runWithTaskSessionFallback({
+            const { result, sessionId } = await runWithTaskSessionFallback<TaskMutationResult>({
                 operation: 'create_subtask',
                 metadata,
                 clientSessionId: client.sessionId,

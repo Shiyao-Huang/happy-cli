@@ -23,6 +23,7 @@ import { configuration } from '@/configuration';
 import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 import { buildMarketplaceConnectionHint, buildMarketplacePublishAuthHint } from '@/utils/marketplaceConnection';
+import { withTeamMessageIdentityFallback } from './teamMessageIdentity';
 
 export class ApiClient {
 
@@ -50,6 +51,31 @@ export class ApiClient {
       return JSON.stringify({ body });
     }
     return JSON.stringify({ body: JSON.stringify(body ?? null) });
+  }
+
+  private isEndpointUnavailable(error: unknown): boolean {
+    return axios.isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 405);
+  }
+
+  private isFromSessionIdForbidden(error: unknown, message: any): boolean {
+    return axios.isAxiosError(error)
+      && error.response?.status === 403
+      && typeof message?.fromSessionId === 'string'
+      && message.fromSessionId.length > 0;
+  }
+
+  private async postTeamMessage(teamId: string, message: any): Promise<void> {
+    await axios.post(
+      `${configuration.serverUrl}/v1/teams/${teamId}/messages`,
+      message,
+      {
+        headers: {
+          'Authorization': `Bearer ${this.credential.token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
   }
 
   private unwrapDataEncryptionKey(encodedKey: string): Uint8Array | null {
@@ -953,23 +979,30 @@ export class ApiClient {
 
   async sendTeamMessage(teamId: string, message: any): Promise<void> {
     try {
-      await axios.post(
-        `${configuration.serverUrl}/v1/teams/${teamId}/messages`,
-        message,
-        {
-          headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        }
-      );
+      await this.postTeamMessage(teamId, message);
       logger.debug(`[API] Sent team message to ${teamId}`);
       logger.debug(`[METRICS] TeamMessage sent to ${teamId}`);
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 410) {
         logger.debug(`[API] Session deleted (410), stopping message send to ${teamId}`);
         return;
+      }
+      if (this.isFromSessionIdForbidden(error, message)) {
+        const fallbackMessage = withTeamMessageIdentityFallback(message);
+        logger.debug(`[API] Team message fromSessionId rejected for ${teamId}; retrying with identity fallback metadata`);
+        try {
+          await this.postTeamMessage(teamId, fallbackMessage);
+          logger.debug(`[API] Sent team message to ${teamId} with identity fallback`);
+          logger.debug(`[METRICS] TeamMessage sent to ${teamId}`);
+          return;
+        } catch (fallbackError) {
+          if (axios.isAxiosError(fallbackError) && fallbackError.response?.status === 410) {
+            logger.debug(`[API] Session deleted (410), stopping fallback message send to ${teamId}`);
+            return;
+          }
+          logger.debug(`[API] [ERROR] Failed to send team message after identity fallback:`, fallbackError);
+          throw new Error(`Failed to send team message: ${fallbackError instanceof Error ? fallbackError.message : 'Unknown error'}`);
+        }
       }
       logger.debug(`[API] [ERROR] Failed to send team message:`, error);
       throw new Error(`Failed to send team message: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -1307,6 +1340,59 @@ export class ApiClient {
     } catch (error) {
       logger.debug(`[API] [ERROR] Failed to create artifact ${artifactId}:`, error);
       throw new Error(`Failed to create artifact: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async createTeam(params: {
+    id?: string;
+    name: string;
+    description?: string;
+    board: Record<string, unknown>;
+  }): Promise<{ team: { id: string; name: string; memberCount: number; taskCount: number; members?: any[]; createdAt: number; updatedAt: number } }> {
+    try {
+      const response = await axios.post(
+        `${configuration.serverUrl}/v1/teams`,
+        params,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      logger.debug(`[API] Created/repaired team ${response.data?.team?.id ?? params.id ?? params.name}`);
+      return response.data;
+    } catch (error) {
+      if (!this.isEndpointUnavailable(error)) {
+        logger.debug(`[API] [ERROR] Failed to create team:`, error);
+        throw new Error(`Failed to create team: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+
+      logger.debug('[API] /v1/teams create unavailable, falling back to legacy artifact creation');
+      const artifact = await this.createArtifact(
+        params.id ?? `team-${Date.now()}`,
+        {
+          type: 'team',
+          title: params.name,
+          name: params.name,
+          sessions: [],
+          draft: false,
+          createdAt: Date.now(),
+        },
+        params.board,
+      );
+      return {
+        team: {
+          id: artifact.id,
+          name: params.name,
+          memberCount: Array.isArray((params.board as any)?.team?.members) ? (params.board as any).team.members.length : 0,
+          taskCount: Array.isArray((params.board as any)?.tasks) ? (params.board as any).tasks.length : 0,
+          members: Array.isArray((params.board as any)?.team?.members) ? (params.board as any).team.members : [],
+          createdAt: artifact.createdAt,
+          updatedAt: artifact.updatedAt,
+        }
+      };
     }
   }
 

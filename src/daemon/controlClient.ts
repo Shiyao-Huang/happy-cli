@@ -275,8 +275,18 @@ export async function startDaemonDetached(): Promise<boolean> {
   child.unref();
 
   for (let i = 0; i < 50; i++) {
-    if (await checkIfDaemonRunningAndCleanupStaleState()) {
-      return true;
+    const state = await readDaemonState();
+    if (state?.pid && state.httpPort) {
+      try {
+        process.kill(state.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    if (child.pid && !(await isPidRunning(child.pid))) {
+      return false;
     }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
