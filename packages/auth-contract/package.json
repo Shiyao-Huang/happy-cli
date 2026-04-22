@@ -1,0 +1,14 @@
+{
+  "name": "@packages/auth-contract",
+  "version": "0.1.0",
+  "description": "Shared auth types and error codes for Kanban and aha-cli",
+  "license": "MIT",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "require": "./src/index.ts"
+    }
+  }
+}

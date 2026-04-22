@@ -4,6 +4,10 @@ import { randomBytes } from 'node:crypto';
 import { encodeBase64, decodeBase64 } from './encryption';
 import { configuration } from '@/configuration';
 import tweetnacl from 'tweetnacl';
+import {
+    type AuthSession,
+    type SupabaseCompleteResponse,
+} from '@packages/auth-contract';
 
 const SUPABASE_URL_ENV_NAME = 'SUPABASE_URL';
 const SUPABASE_ANON_KEY_ENV_NAME = 'SUPABASE_ANON_KEY';
@@ -149,7 +153,7 @@ async function completeWithServer(accessToken: string): Promise<SupabaseComplete
     const keypair = generateRecoveryKeyPair();
     const newSecret = new Uint8Array(randomBytes(32));
     const secretPayload = await buildSupabaseCompleteSecretPayload(accessToken, newSecret);
-    const response = await axios.post(`${configuration.serverUrl}/v1/auth/supabase/complete`, {
+    const response = await axios.post<SupabaseCompleteResponse>(`${configuration.serverUrl}/v1/auth/supabase/complete`, {
         accessToken,
         recoveryPublicKey: encodeBase64(keypair.publicKey),
         ...secretPayload,
