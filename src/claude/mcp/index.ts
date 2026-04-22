@@ -85,7 +85,7 @@ export async function startAhaServer(
     // MCP SDK 1.26.0 requires a new transport per request in stateless mode
     // ("Stateless transport cannot be reused across requests").
     //
-    const createMcpInstance = () => {
+    const createMcpInstance = async () => {
         const mcp = new McpServer({
             name: "Aha MCP",
             version: "1.0.0",
@@ -173,7 +173,7 @@ export async function startAhaServer(
         registerTeamTools(ctx);
         registerTaskTools(ctx);
         registerAgentTools(ctx);
-        registerSupervisorTools(ctx);
+        await registerSupervisorTools(ctx);
         registerEvolutionTools(ctx);
 
         return mcp;
@@ -186,7 +186,7 @@ export async function startAhaServer(
     //
     const server = createServer(async (req, res) => {
         try {
-            const mcp = createMcpInstance();
+            const mcp = await createMcpInstance();
             const transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: undefined,
             });
@@ -277,6 +277,9 @@ export async function startAhaServer(
             'restart_daemon',
             'tsc_check',
             'git_diff_summary',
+            'get_resource_status',
+            'acquire_heavy_op_slot',
+            'release_heavy_op_slot',
             'read_unified_log',
         ],
         stop: () => {

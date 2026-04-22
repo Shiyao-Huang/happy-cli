@@ -54,6 +54,8 @@ import { TraceEventKind } from '@/trace/traceTypes';
 import { readDaemonState } from '@/persistence';
 import { restartDaemonFlow } from '@/daemon/restartDaemon';
 import { formatHostHealth, getHostHealth } from '@/daemon/hostHealth';
+import { registerResourceGovernorTools } from '@/governance/mcpResourceTools';
+import { getResourceGovernor } from '@/governance/resourceGovernor';
 import { generateRolePrompt } from '@/claude/team/roles';
 import {
     INSPECT_PRIVILEGED_ROLES,
@@ -229,7 +231,7 @@ export async function writeRetireHandoffTaskComments(args: {
     }
 }
 
-export function registerSupervisorTools(ctx: McpToolContext): void {
+export async function registerSupervisorTools(ctx: McpToolContext): Promise<void> {
     const {
         mcp,
         api,
@@ -812,6 +814,12 @@ export function registerSupervisorTools(ctx: McpToolContext): void {
         } catch (error) {
             return { content: [{ type: 'text', text: `Error getting host health: ${String(error)}` }], isError: true };
         }
+    });
+
+    // ─── Resource Governor tools ──────────────────────────────────────────────
+    registerResourceGovernorTools(mcp, {
+        ahaHomeDir: configuration.ahaHomeDir,
+        activeAgentCount: (await getDaemonTrackedSessionIds().catch(() => new Set<string>())).size,
     });
 
     // ─── get_self_view — the mirror ────────────────────────────────────────────
@@ -4000,34 +4008,15 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
                 return { content: [{ type: 'text', text: `Directory not found: ${projectDir}` }], isError: true };
             }
 
-            // ── Resource pre-check ────────────────────────────────────────────
-            const REQUIRED_MB = 8192;
-            const SAFETY_FACTOR = 1.5;
-            const freeMB = os.freemem() / (1024 * 1024);
-            if (freeMB < REQUIRED_MB * SAFETY_FACTOR) {
+            // ── ResourceGovernor unified slot acquisition ─────────────────────
+            const governor = getResourceGovernor({ ahaHomeDir: configuration.ahaHomeDir });
+            const acquire = governor.acquire('tsc', projectDir);
+            if (!acquire.granted) {
                 return {
-                    content: [{ type: 'text', text: `⚠️ Insufficient memory: ${Math.round(freeMB)}MB free, need ~${Math.round(REQUIRED_MB * SAFETY_FACTOR)}MB. Wait for other processes to finish before running tsc_check.` }],
+                    content: [{ type: 'text', text: `⚠️ ${acquire.reason}` }],
                     isError: true,
                 };
             }
-
-            // ── Exclusive file lock ───────────────────────────────────────────
-            const lockDir = pathMod.join(process.cwd(), '.aha', 'locks');
-            const lockFile = pathMod.join(lockDir, 'tsc.lock');
-            try {
-                fs.mkdirSync(lockDir, { recursive: true });
-            } catch { /* ignore */ }
-
-            if (fs.existsSync(lockFile)) {
-                const lockContent = fs.readFileSync(lockFile, 'utf-8').trim();
-                return {
-                    content: [{ type: 'text', text: `⚠️ Another tsc_check is already running (${lockContent}). Wait for it to finish before starting a new one to avoid OOM.` }],
-                    isError: true,
-                };
-            }
-
-            const lockInfo = `pid=${process.pid} started=${new Date().toISOString()} path=${projectDir}`;
-            fs.writeFileSync(lockFile, lockInfo, 'utf-8');
 
             try {
                 // Read .node-version if present
@@ -4060,8 +4049,8 @@ If calibrationScore drops below 60 over 5+ runs, reduce confidence on new predic
                     return { content: [{ type: 'text', text: `tsc execution error:\n${output}` }], isError: true };
                 }
             } finally {
-                // Always release lock
-                try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
+                // Always release slot
+                governor.release('tsc');
             }
         } catch (error) {
             return { content: [{ type: 'text', text: `Error: ${String(error)}` }], isError: true };
