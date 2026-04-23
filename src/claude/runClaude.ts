@@ -72,6 +72,15 @@ import {
     getEffectiveTeamMessageRole,
     getOriginalTeamMessageSessionId,
 } from '@/api/teamMessageIdentity';
+import { stringifyForPrompt, truncateForPrompt } from './team/promptCompaction';
+
+const MAX_TEAM_MESSAGE_CONTENT_CHARS = 8_000;
+const MAX_TEAM_BOARD_CONTEXT_CHARS = 12_000;
+const MAX_TEAM_HISTORY_CONTEXT_CHARS = 6_000;
+const MAX_TEAM_INSTRUCTIONS_CONTEXT_CHARS = 16_000;
+const MAX_TEAM_ASSIGNMENT_CONTEXT_CHARS = 48_000;
+const MAX_ORG_MANAGER_TASK_PROMPT_CHARS = 12_000;
+const MAX_ROLE_APPEND_PROMPT_CHARS = 32_000;
 
 export interface StartOptions {
     model?: string
@@ -101,6 +110,12 @@ function formatTeamMessage(
         || getOriginalTeamMessageSessionId(message)?.substring(0, 8)
         || 'Unknown';
 
+    const content = truncateForPrompt(
+        message.content || '',
+        MAX_TEAM_MESSAGE_CONTENT_CHARS,
+        '[team message content truncated; use read_team_log/read_task_comments for the full source]',
+    );
+
     return `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📨 Team Message ${mentionTag} ${urgentTag}
@@ -109,7 +124,7 @@ From: ${senderLabel} [role: ${effectiveRole || 'unknown'}]
 Type: ${message.type || 'chat'}
 Time: ${new Date(message.timestamp).toLocaleString()}
 
-${message.content}
+${content}
 
 ${isMentioned ? `⚠️  You were mentioned in this message.
 💡 Your role: ${myRole}
@@ -510,7 +525,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     };
 
     const composeAppendSystemPrompt = (basePrompt?: string, rolePrompt?: string): string | undefined => {
-        const blocks = [basePrompt, currentModelAwarenessPrompt, rolePrompt]
+        const compactRolePrompt = truncateForPrompt(
+            rolePrompt,
+            MAX_ROLE_APPEND_PROMPT_CHARS,
+            '[role prompt truncated; use get_genome_spec/list_tasks for complete live details]',
+        );
+        const blocks = [basePrompt, currentModelAwarenessPrompt, compactRolePrompt]
             .map((block) => block?.trim())
             .filter((block): block is string => Boolean(block));
 
@@ -756,6 +776,24 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // TaskStateManager for Kanban context management
     let taskStateManager: TaskStateManager | undefined;
+    const processedTeamMessageIds = new Set<string>();
+
+    const rememberTeamMessageId = (id: string | undefined): boolean => {
+        if (!id) {
+            return true;
+        }
+        if (processedTeamMessageIds.has(id)) {
+            return false;
+        }
+        processedTeamMessageIds.add(id);
+        if (processedTeamMessageIds.size > 500) {
+            const oldest = processedTeamMessageIds.values().next().value;
+            if (oldest) {
+                processedTeamMessageIds.delete(oldest);
+            }
+        }
+        return true;
+    };
 
     // StatusReporter for automatic status updates to team
     let statusReporter: StatusReporter | undefined;
@@ -864,6 +902,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 try {
                     // Check if this message belongs to the current team
                     if (message.teamId === teamId) {
+                        if (!rememberTeamMessageId(message.id)) {
+                            logger.debug(`[Team] Ignoring duplicate team message ${message.id}`);
+                            return;
+                        }
                         logger.debug(`[Team] 📨 Received message from ${message.fromSessionId} (${message.fromRole})`);
                         logger.debugLargeJson('[runClaude] Team message received:', message);
                         const originalFromSessionId = getOriginalTeamMessageSessionId(message);
@@ -1203,6 +1245,18 @@ Treat these overrides as team-level additions on top of your default genome/role
 `
                     : '';
 
+                const filteredBoardText = stringifyForPrompt(filteredBoard, MAX_TEAM_BOARD_CONTEXT_CHARS);
+                const compactHistoryText = truncateForPrompt(
+                    historyText,
+                    MAX_TEAM_HISTORY_CONTEXT_CHARS,
+                    '[recent chat history truncated; call read_team_log for complete history]',
+                );
+                const compactInstructions = truncateForPrompt(
+                    instructions,
+                    MAX_TEAM_INSTRUCTIONS_CONTEXT_CHARS,
+                    '[genome/team instructions truncated; use get_genome_spec for the complete genome prompt]',
+                );
+
                 const contextMsg = `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📢 TEAM ASSIGNMENT: ${teamName}
@@ -1215,13 +1269,13 @@ ${teamBootContextSection}
 ${teamOverlaySection}
 
 📋 Team Context (Filtered for your Role):
-${JSON.stringify(filteredBoard, null, 2)}
+${filteredBoardText}
 
 📜 Recent Chat History (Context):
-${historyText}
+${compactHistoryText}
 
 ✅ Instructions:
-${instructions}
+${compactInstructions}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `.trim();
 
@@ -1260,9 +1314,26 @@ ${instructions}
 
                 // For org-manager with task prompt, merge it into the context message
                 // so it's processed in the SAME conversation turn (not a separate turn)
-                let finalContextMsg = contextMsg;
+                let finalContextMsg = truncateForPrompt(
+                    contextMsg,
+                    MAX_TEAM_ASSIGNMENT_CONTEXT_CHARS,
+                    '[team assignment context truncated; use get_team_info/list_tasks/read_team_log for full live state]',
+                );
                 if (role === 'org-manager' && taskPrompt) {
-                    finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
+                    const compactTaskPrompt = truncateForPrompt(
+                        taskPrompt,
+                        MAX_ORG_MANAGER_TASK_PROMPT_CHARS,
+                        '[initial task prompt truncated; ask the user for missing details if needed]',
+                    );
+                    const baseBudget = Math.max(
+                        12_000,
+                        MAX_TEAM_ASSIGNMENT_CONTEXT_CHARS - compactTaskPrompt.length - 400,
+                    );
+                    finalContextMsg = truncateForPrompt(
+                        contextMsg,
+                        baseBudget,
+                        '[team assignment context truncated; use get_team_info/list_tasks/read_team_log for full live state]',
+                    ) + `\n\nThe user's task request:\n\n${compactTaskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
                     logger.debug('[runClaude] Merged AHA_TASK_PROMPT into context for org-manager');
                     // Use pushImmediate (non-isolated) so Claude treats this as actionable user message
                     messageQueue.pushImmediate(escapeInjectedContextForTransport(finalContextMsg), enhancedMode);
