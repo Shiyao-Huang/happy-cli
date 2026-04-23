@@ -44,7 +44,12 @@ import { TraceEventKind } from '@/trace/traceTypes';
 import { ApprovalWorkflow, createApprovalWorkflow } from './team/approvalWorkflow';
 import { fetchAgentImage, fetchAgentVerdictData } from './utils/fetchGenome';
 import { createHotEvolutionTick } from './utils/hotEvolutionTick';
-import { buildAgentWorkspacePlanFromAgentImage, MaterializeAgentWorkspaceResult, withDefaultAgentSkills } from '@/agentDocker/materializer';
+import {
+    buildAgentWorkspacePlanFromAgentImage,
+    buildMaterializedAgentFilesPrompt,
+    type MaterializeAgentWorkspaceResult,
+    withDefaultAgentSkills,
+} from '@/agentDocker/materializer';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
 import { getInjectedAllowedToolsForAgentImage } from '@/utils/genomePublication';
 import { buildRuntimeBuildMetadata } from '@/utils/runtimeBuild';
@@ -645,6 +650,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug(`[genome] Settings path: ${_workspacePlan.settingsPath}`);
             for (const w of _workspacePlan.warnings) {
                 logger.debug(`[genome] Workspace warning: ${w}`);
+            }
+
+            const materializedFilesPrompt = buildMaterializedAgentFilesPrompt(_workspacePlan, _agentImage.files);
+            if (materializedFilesPrompt) {
+                currentAppendSystemPrompt = currentAppendSystemPrompt
+                    ? `${currentAppendSystemPrompt}\n\n${materializedFilesPrompt}`
+                    : materializedFilesPrompt;
+                logger.debug('[genome] Materialized files prompt appended to system prompt');
             }
         } catch (err) {
             logger.error('[genome] Failed to materialize workspace:', serializeErrorForLog(err));

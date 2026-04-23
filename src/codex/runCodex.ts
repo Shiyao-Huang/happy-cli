@@ -31,7 +31,12 @@ import { stopCaffeinate } from "@/utils/caffeinate";
 import { Client as McpHttpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { filterMaterializedMcpServers, readMaterializedMcpServerNames } from '@/agentDocker/runtimeConfig';
-import { withDefaultAgentSkills } from '@/agentDocker/materializer';
+import {
+    buildAgentWorkspacePlanFromAgentImage,
+    buildMaterializedAgentFilesPrompt,
+    type MaterializeAgentWorkspaceResult,
+    withDefaultAgentSkills,
+} from '@/agentDocker/materializer';
 // Team collaboration imports
 import { TaskStateManager } from '@/claude/utils/taskStateManager';
 import { StatusReporter, createStatusReporter } from '@/claude/team/statusReporter';
@@ -1649,6 +1654,7 @@ export async function runCodex(opts: {
     // ============================================================
     let agentImageInjectionBlock: string | null = null;
     let agentImage: AgentImage | null = null;
+    let agentImageWorkspacePlan: MaterializeAgentWorkspaceResult | null = null;
     const agentImageId = process.env.AHA_SPEC_ID;
     if (agentImageId) {
         try {
@@ -1683,6 +1689,27 @@ export async function runCodex(opts: {
                     agentImageInjectionBlock = injection;
                     logger.debug(`[Codex] AgentImage injection built for spec ${agentImageId}`);
                 }
+                try {
+                    agentImageWorkspacePlan = buildAgentWorkspacePlanFromAgentImage(fetchedAgentImage, {
+                        agentId: process.env.AHA_TEAM_MEMBER_ID || response.id,
+                        repoRoot: process.cwd(),
+                        specId: agentImageId,
+                        workspaceMode: 'shared',
+                    });
+                    const materializedFilesPrompt = buildMaterializedAgentFilesPrompt(
+                        agentImageWorkspacePlan,
+                        fetchedAgentImage.files,
+                    );
+                    if (materializedFilesPrompt) {
+                        currentAppendSystemPrompt = currentAppendSystemPrompt
+                            ? `${currentAppendSystemPrompt}\n\n${materializedFilesPrompt}`
+                            : materializedFilesPrompt;
+                        logger.debug('[Codex] Materialized agent image files prompt appended');
+                    }
+                    logger.debug(`[Codex] AgentImage files materialized at ${agentImageWorkspacePlan.workspaceRoot}`);
+                } catch (materializeError) {
+                    logger.debug(`[Codex] Failed to materialize agent image files: ${materializeError}`);
+                }
             }
         } catch (error) {
             if (process.env.AHA_GENOME_FALLBACK !== '1') {
@@ -1710,7 +1737,7 @@ export async function runCodex(opts: {
         const warnings = materializeAgentImageSkillsToCodexHome(effectiveCodexHome, {
             agentImage,
             runtimeLibRoot: join(configuration.ahaHomeDir, 'runtime-lib'),
-            repoRoot: process.cwd(),
+            repoRoot: agentImageWorkspacePlan?.workspaceRoot ?? process.cwd(),
             env: sourceCodexEnv,
         });
         for (const warning of warnings) {

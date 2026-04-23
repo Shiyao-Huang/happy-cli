@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    buildMaterializedAgentFilesPrompt,
     materializeAgentWorkspace,
     type MaterializeAgentWorkspaceInput,
     type MaterializeAgentWorkspaceResult,
@@ -150,6 +151,35 @@ describe('materializer integration scaffold (for QA closure)', () => {
         expect(fixture.plan.actions.some((action) => action.kind === 'write-env')).toBe(true);
         expect(fixture.plan.actions.some((action) => action.kind === 'write-mcp-config')).toBe(true);
         expect(fixture.plan.actions.some((action) => action.kind === 'attach-repo')).toBe(true);
+    });
+
+    it('builds absolute-path guidance for bundled image files', () => {
+        const fixture = createMaterializerFixture({
+            config: {
+                kind: 'aha.agent.v1',
+                name: 'Docs Reader',
+                runtime: 'claude',
+                workspace: {
+                    defaultMode: 'shared',
+                    allowedModes: ['shared', 'isolated'],
+                },
+                files: {
+                    'docs/system-mirror/README.md': '# mirror',
+                    '.claude/commands/context-mirror/SKILL.md': '# skill',
+                },
+            },
+            workspaceMode: 'shared',
+        });
+        cleanupRoots.push(fixture.root);
+
+        const prompt = buildMaterializedAgentFilesPrompt(fixture.plan, {
+            'docs/system-mirror/README.md': '# mirror',
+            '.claude/commands/context-mirror/SKILL.md': '# skill',
+        });
+
+        expect(prompt).toContain('Bundled files from your AgentImage are stored under:');
+        expect(prompt).toContain(`docs/system-mirror/README.md -> ${fixture.plan.workspaceRoot}/docs/system-mirror/README.md`);
+        expect(prompt).not.toContain('.claude/commands/context-mirror/SKILL.md');
     });
 
     it.skip('wires settingsPath through runClaude -> loop -> launcher once materializer v1 lands', () => {

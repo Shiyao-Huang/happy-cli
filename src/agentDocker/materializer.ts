@@ -168,6 +168,32 @@ export interface RuntimeLibLayout {
     toolsDir: string;
 }
 
+export function buildMaterializedAgentFilesPrompt(
+    plan: Pick<MaterializeAgentWorkspaceResult, 'workspaceRoot'>,
+    files?: Record<string, string>,
+): string {
+    const visibleFiles = Object.keys(files ?? {})
+        .filter((relativePath) => !relativePath.startsWith('.claude/commands/'))
+        .sort((left, right) => left.localeCompare(right));
+
+    if (visibleFiles.length === 0) {
+        return '';
+    }
+
+    const displayedFiles = visibleFiles.slice(0, 40);
+    const hiddenCount = visibleFiles.length - displayedFiles.length;
+
+    return [
+        '## Materialized Agent Image Files',
+        `Bundled files from your AgentImage are stored under: ${plan.workspaceRoot}`,
+        'When a genome prompt names a bundled relative path, resolve it against that root, not against the current working directory or home directory.',
+        'Do not use broad glob patterns such as **/system-mirror/** to discover these files; the exact absolute paths are listed below.',
+        'Use absolute paths when reading bundled files:',
+        ...displayedFiles.map((relativePath) => `- ${relativePath} -> ${join(plan.workspaceRoot, relativePath)}`),
+        ...(hiddenCount > 0 ? [`- ... ${hiddenCount} more bundled file(s) under ${plan.workspaceRoot}`] : []),
+    ].join('\n');
+}
+
 const FALLBACK_COPY_EXCLUDED_BASENAMES = new Set([
     '.DS_Store',
     '.git',
