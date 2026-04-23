@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const mockAxiosGet = vi.hoisted(() => vi.fn());
 const mockLogger = vi.hoisted(() => ({
@@ -32,9 +34,51 @@ import {
  * 直接测试导出的 resolveEntityUrl。
  */
 describe('fetchAgentImage resolveEntityUrl', () => {
+    const originalAhaConfigFile = process.env.AHA_CONFIG_FILE;
+    const originalAhaServerUrl = process.env.AHA_SERVER_URL;
+    const originalGenomeHubUrl = process.env.GENOME_HUB_URL;
+    let tempDir: string | null = null;
+
     beforeEach(() => {
         mockAxiosGet.mockReset();
         mockLogger.debug.mockReset();
+        if (originalAhaConfigFile === undefined) {
+            delete process.env.AHA_CONFIG_FILE;
+        } else {
+            process.env.AHA_CONFIG_FILE = originalAhaConfigFile;
+        }
+        if (originalGenomeHubUrl === undefined) {
+            delete process.env.GENOME_HUB_URL;
+        } else {
+            process.env.GENOME_HUB_URL = originalGenomeHubUrl;
+        }
+        if (originalAhaServerUrl === undefined) {
+            delete process.env.AHA_SERVER_URL;
+        } else {
+            process.env.AHA_SERVER_URL = originalAhaServerUrl;
+        }
+    });
+
+    afterEach(() => {
+        if (tempDir) {
+            rmSync(tempDir, { recursive: true, force: true });
+            tempDir = null;
+        }
+        if (originalAhaConfigFile === undefined) {
+            delete process.env.AHA_CONFIG_FILE;
+        } else {
+            process.env.AHA_CONFIG_FILE = originalAhaConfigFile;
+        }
+        if (originalGenomeHubUrl === undefined) {
+            delete process.env.GENOME_HUB_URL;
+        } else {
+            process.env.GENOME_HUB_URL = originalGenomeHubUrl;
+        }
+        if (originalAhaServerUrl === undefined) {
+            delete process.env.AHA_SERVER_URL;
+        } else {
+            process.env.AHA_SERVER_URL = originalAhaServerUrl;
+        }
     });
 
     it('UUID format → /entities/id/:id', () => {
@@ -48,6 +92,11 @@ describe('fetchAgentImage resolveEntityUrl', () => {
         expect(url).not.toContain('/latest');
     });
 
+    it('URL-encodes semantic ref name segments', () => {
+        const url = resolveEntityUrl('@official/org manager#north?lane');
+        expect(url).toContain('/entities/%40official/org%20manager%23north%3Flane');
+    });
+
     it('@ns/name:version → /entities/:encodedNs/:name/:version', () => {
         const url = resolveEntityUrl('@official/supervisor:2');
         expect(url).toContain('/entities/%40official/supervisor/2');
@@ -56,6 +105,22 @@ describe('fetchAgentImage resolveEntityUrl', () => {
     it('base URL comes from configuration resolver path shape', () => {
         const url = resolveEntityUrl('@myteam/worker:10');
         expect(url).toContain('/entities/%40myteam/worker/10');
+    });
+
+    it('derives the hub base URL from persisted CLI server config', () => {
+        tempDir = mkdtempSync(join(process.cwd(), 'tmp-fetch-genome-'));
+        const configFile = join(tempDir, 'config.json');
+        writeFileSync(configFile, JSON.stringify({
+            serverUrl: 'https://ahaagi.com/api',
+            webappUrl: 'https://ahaagi.com/webappv3',
+        }));
+        process.env.AHA_CONFIG_FILE = configFile;
+        delete process.env.AHA_SERVER_URL;
+        delete process.env.GENOME_HUB_URL;
+
+        expect(resolveEntityPackageUrl('@official/org-manager')).toBe(
+            'https://ahaagi.com/genome/entities/%40official/org-manager/package',
+        );
     });
 
     it('returns null for feedbackData only on 404', async () => {

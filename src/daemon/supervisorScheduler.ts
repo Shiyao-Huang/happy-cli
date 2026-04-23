@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 /**
  * @module supervisorScheduler
  * @description Periodic supervisor lifecycle management: spawn, idle-retire, pending-action retry.
@@ -35,6 +35,7 @@ import {
   updateSupervisorRun,
   updateSupervisorState,
 } from './supervisorState';
+import { type AgentHeartbeat } from '@/claude/team/heartbeat';
 
 interface TeamOutstandingWorkSummary {
   teamId: string;
@@ -60,6 +61,8 @@ export interface SupervisorContext {
   heartbeatIntervalMs: number;
   /** Credentials used to authenticate genome-hub / happy-server calls */
   credentialsToken: string;
+  /** MCP-layer heartbeat trackers per team (for detecting zombie supervisors) */
+  teamHeartbeats?: Map<string, AgentHeartbeat>;
   /** Spawn a new session */
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   /** Spawn a help-agent for a team */
@@ -102,9 +105,27 @@ export function collectLiveMainlineSessionIdsByTeam(
   return sessionsByTeam;
 }
 
+/**
+ * Collect session IDs that MCP-layer heartbeat considers dead (zombies).
+ * PID alive but no MCP activity for the heartbeat timeout → dead.
+ */
+function collectMcpDeadSessionIds(
+  teamHeartbeats?: Map<string, AgentHeartbeat>,
+): Set<string> {
+  const dead = new Set<string>();
+  if (!teamHeartbeats) return dead;
+  for (const [, hb] of teamHeartbeats) {
+    for (const agent of hb.getDeadAgents()) {
+      dead.add(agent.agentId);
+    }
+  }
+  return dead;
+}
+
 export function hasLiveSupervisorForTeam(
   teamId: string,
-  pidToTrackedSession: Map<number, TrackedSession>
+  pidToTrackedSession: Map<number, TrackedSession>,
+  mcpDeadSessionIds?: Set<string>,
 ): boolean {
   for (const session of pidToTrackedSession.values()) {
     const meta = session.ahaSessionMetadataFromLocalWebhook;
@@ -116,6 +137,16 @@ export function hasLiveSupervisorForTeam(
     if (role !== 'supervisor') continue;
     if (executionPlane && executionPlane !== 'bypass') continue;
     if (session.intentionallyStopped) continue;
+
+    // If MCP-layer heartbeat considers this supervisor dead, treat as not live
+    // even if the PID is still alive (zombie supervisor split-brain).
+    if (mcpDeadSessionIds && session.ahaSessionId && mcpDeadSessionIds.has(session.ahaSessionId)) {
+      logger.debug(
+        `[SUPERVISOR SCHEDULER] Supervisor session ${session.ahaSessionId} (PID ${session.pid}) ` +
+        `is alive in OS but marked dead by MCP heartbeat — treating as zombie`
+      );
+      continue;
+    }
 
     try {
       process.kill(session.pid, 0);
@@ -180,7 +211,7 @@ interface ResolvedGenome {
  * Returns null on failure — caller falls back to hardcoded role.
  */
 async function resolveSystemGenome(name: string, credentialsToken: string): Promise<ResolvedGenome | null> {
-  const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+  const hubUrl = normalizeGenomeHubUrl();
 
   try {
     const res = await axios.get(
@@ -194,7 +225,7 @@ async function resolveSystemGenome(name: string, credentialsToken: string): Prom
         const rawSpec = res.data?.genome?.spec;
         spec = typeof rawSpec === 'string' ? JSON.parse(rawSpec) : rawSpec ?? null;
       } catch { /* spec parse failure is non-fatal */ }
-      return { specId: id, spec };
+      return { specId: `@official/${name}`, spec };
     }
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
@@ -230,7 +261,7 @@ async function resolveSystemGenome(name: string, credentialsToken: string): Prom
  * Returns null on failure — caller falls back to hardcoded role.
  */
 async function resolveSystemGenomeId(name: string, credentialsToken: string): Promise<string | null> {
-  const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+  const hubUrl = normalizeGenomeHubUrl();
 
   try {
     const res = await axios.get(
@@ -238,7 +269,7 @@ async function resolveSystemGenomeId(name: string, credentialsToken: string): Pr
       { timeout: 5000 }
     );
     const id = res.data?.genome?.id ?? null;
-    if (id) return id;
+    if (id) return `@official/${name}`;
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
       logger.error(`[DEV] Genome Hub API failed for ${name}:`, error);
@@ -389,11 +420,13 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     pendingActionBaseRetryMs,
     heartbeatIntervalMs,
     credentialsToken,
+    teamHeartbeats,
     spawnSession,
     requestHelp,
   } = ctx;
 
   const liveMainlineSessionIdsByTeam = collectLiveMainlineSessionIdsByTeam(pidToTrackedSession);
+  const mcpDeadSessionIds = collectMcpDeadSessionIds(teamHeartbeats);
   const supervisorStates = listSupervisorStates();
   const liveTeamIds = new Set(liveMainlineSessionIdsByTeam.keys());
   const supervisorStatesForWorkScan = supervisorStates.filter((state) =>
@@ -641,7 +674,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     }
 
     // Singleton guard: use persisted PID to detect running supervisor across daemon restarts
-    if (hasLiveSupervisorForTeam(teamId, pidToTrackedSession)) {
+    if (hasLiveSupervisorForTeam(teamId, pidToTrackedSession, mcpDeadSessionIds)) {
       logger.debug(`[SUPERVISOR SCHEDULER] Live supervisor already tracked for team ${teamId}, skipping`);
       continue;
     }
@@ -650,10 +683,26 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
     if (supervisorState.lastSupervisorPid > 0) {
       try {
         process.kill(supervisorState.lastSupervisorPid, 0); // liveness check
-        logger.debug(
-          `[SUPERVISOR SCHEDULER] Supervisor already running (PID ${supervisorState.lastSupervisorPid}) for team ${teamId}, skipping`
-        );
-        continue;
+
+        // PID is alive, but check if MCP heartbeat considers the supervisor session dead (zombie).
+        const lastSessionId = supervisorState.lastSessionId;
+        const isZombie = lastSessionId && mcpDeadSessionIds.has(lastSessionId);
+        if (isZombie) {
+          logger.debug(
+            `[SUPERVISOR SCHEDULER] Supervisor PID ${supervisorState.lastSupervisorPid} (session ${lastSessionId}) ` +
+            `is alive in OS but marked dead by MCP heartbeat — killing zombie and respawning for team ${teamId}`
+          );
+          try {
+            process.kill(supervisorState.lastSupervisorPid, 'SIGTERM');
+          } catch { /* already dead */ }
+          await updateSupervisorRun(teamId, { lastSupervisorPid: 0 });
+          // Fall through to spawn a new supervisor
+        } else {
+          logger.debug(
+            `[SUPERVISOR SCHEDULER] Supervisor already running (PID ${supervisorState.lastSupervisorPid}) for team ${teamId}, skipping`
+          );
+          continue;
+        }
       } catch {
         logger.debug(
           `[SUPERVISOR SCHEDULER] Previous supervisor PID ${supervisorState.lastSupervisorPid} is gone ` +
@@ -730,7 +779,7 @@ export async function runSupervisorCycle(ctx: SupervisorContext): Promise<void> 
         if (process.env.AHA_GENOME_FALLBACK !== '1') {
           logger.warn(
             `[GENOME] ⚠️  supervisor genome not found in genome-hub — spawning without DNA.\n` +
-            `         Ensure genome-hub is running (GENOME_HUB_URL=${process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL})\n` +
+            `         Ensure genome-hub is running (GENOME_HUB_URL=${normalizeGenomeHubUrl()})\n` +
             `         and @official/supervisor is seeded. (Set AHA_GENOME_FALLBACK=1 to silence.)`
           );
         }

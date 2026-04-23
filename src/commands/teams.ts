@@ -1500,6 +1500,7 @@ async function spawnTeamWithPreset(
 
       try {
         await api.addTeamMember(teamId, sessionId, roleId, name, {
+          specId,
           executionPlane: 'mainline',
           runtimeType: opts.model === 'codex' ? 'codex' : 'claude',
         });

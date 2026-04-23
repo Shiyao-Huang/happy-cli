@@ -26,6 +26,7 @@ const envSchema = z.object({
   // Server URLs (optional, with defaults)
   AHA_SERVER_URL: z.string().url().optional().describe('Server API endpoint URL'),
   AHA_WEBAPP_URL: z.string().url().optional().describe('Web application URL'),
+  GENOME_HUB_URL: z.string().url().optional().describe('Genome hub endpoint URL'),
 
   // Directory configuration
   AHA_HOME_DIR: z.string().optional().describe('Aha home directory path'),
@@ -121,6 +122,7 @@ function validateConfiguration(): void {
 class Configuration {
   public readonly serverUrl: string
   public readonly webappUrl: string
+  public readonly genomeHubUrl: string
   public readonly isDaemonProcess: boolean
 
   // Directories and paths (from persistence)
@@ -157,6 +159,7 @@ class Configuration {
     const resolvedServerConfig = resolveServerConfig(process.env, persistentConfig)
     this.serverUrl = resolvedServerConfig.serverUrl
     this.webappUrl = resolvedServerConfig.webappUrl
+    this.genomeHubUrl = resolvedServerConfig.genomeHubUrl
 
     this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.AHA_EXPERIMENTAL?.toLowerCase() || '');
     this.disableCaffeinate = ['true', '1', 'yes'].includes(process.env.AHA_DISABLE_CAFFEINATE?.toLowerCase() || '');

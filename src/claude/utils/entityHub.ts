@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver';
+import { normalizeGenomeHubUrl } from '@/configurationResolver';
 import type { AgentPackage, DiffChange, Genome, AgentVerdict } from '@/api/types/genome';
 
 export type EntityLogRef = {
@@ -9,7 +9,7 @@ export type EntityLogRef = {
 };
 
 function genomeHubBaseUrl(): string {
-    return (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    return normalizeGenomeHubUrl();
 }
 
 function authHeaders(token?: string): Record<string, string> {

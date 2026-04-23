@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 /**
  * redefine 分支里的 AgentImage loader 只读 canonical entity projection。
  * 不再走 happy-server 代理，不再做离线磁盘 fallback。
@@ -13,6 +13,7 @@ import {
     parseGenomeSpec as parseAgentImage,
 } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
+import { buildGenomeRefPath, parseGenomeRef } from '@/utils/genomeRefs';
 
 /** Compatibility alias for canonical diff-ledger rows returned by GET /genomes/:ns/:name/ledger. */
 export type AgentPlugLedgerEntry = DiffLedgerEntry;
@@ -23,7 +24,11 @@ const blobCache = new Map<string, { content: string; expiresAt: number }>();
 const LATEST_TTL_MS = 5 * 60 * 1000; // 5 分钟
 
 function genomeHubBaseUrl(): string {
-    return (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    return normalizeGenomeHubUrl();
+}
+
+function genomeCacheKey(specId: string): string {
+    return `${genomeHubBaseUrl()}::${specId}`;
 }
 
 /**
@@ -33,13 +38,9 @@ function genomeHubBaseUrl(): string {
  * Format 3: @ns/name:N → /entities/:ns/:name/:N
  */
 export function resolveEntityUrl(specId: string): string {
-    const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
-    if (nsMatch) {
-        const [, ns, name, ver] = nsMatch;
-        const encodedNs = encodeURIComponent(ns);
-        return ver
-            ? `${genomeHubBaseUrl()}/entities/${encodedNs}/${name}/${ver}`
-            : `${genomeHubBaseUrl()}/entities/${encodedNs}/${name}`;
+    const parsedRef = parseGenomeRef(specId);
+    if (parsedRef) {
+        return `${genomeHubBaseUrl()}${buildGenomeRefPath('entities', parsedRef)}`;
     }
     return `${genomeHubBaseUrl()}/entities/id/${encodeURIComponent(specId)}`;
 }
@@ -86,7 +87,8 @@ export async function fetchAgentImage(
     specId: string,
 ): Promise<AgentImage | null> {
     // redefine 分支：只保留内存缓存，不允许离线 fallback。
-    const cached = memCache.get(specId);
+    const cacheKey = genomeCacheKey(specId);
+    const cached = memCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
         return cached.spec;
     }
@@ -95,7 +97,7 @@ export async function fetchAgentImage(
         const agentPackage = await fetchAgentPackage(token, specId);
         if (agentPackage) {
             const spec = hydrateAgentImageFromPackage(agentPackage);
-            memCache.set(specId, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
+            memCache.set(cacheKey, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
             logger.debug(`[entity-package] Fetched ${specId}: ${agentPackage.manifest.identity.name} via ${resolveEntityPackageUrl(specId)}`);
             return spec;
         }
@@ -114,7 +116,7 @@ export async function fetchAgentImage(
         }
 
         const spec = parseAgentImage(response.data.entity);
-        memCache.set(specId, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
+        memCache.set(cacheKey, { spec, expiresAt: Date.now() + LATEST_TTL_MS });
         logger.debug(`[entity] Fetched ${specId}: ${response.data.entity.name} via ${url}`);
         return spec;
     } catch (error) {
@@ -127,7 +129,8 @@ export async function fetchAgentPackage(
     token: string,
     specId: string,
 ): Promise<AgentPackage | null> {
-    const cached = packageCache.get(specId);
+    const cacheKey = genomeCacheKey(specId);
+    const cached = packageCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
         return cached.package;
     }
@@ -147,7 +150,7 @@ export async function fetchAgentPackage(
         }
 
         const hydratedPackage = await hydratePackageBlobContent(token, response.data.package);
-        packageCache.set(specId, { package: hydratedPackage, expiresAt: Date.now() + LATEST_TTL_MS });
+        packageCache.set(cacheKey, { package: hydratedPackage, expiresAt: Date.now() + LATEST_TTL_MS });
         return hydratedPackage;
     } catch (error) {
         logger.debug(`[entity-package] Failed to fetch ${specId}: ${error}`);
@@ -186,7 +189,8 @@ async function hydratePackageBlobContent(
 }
 
 async function fetchBlobContent(token: string, hash: string): Promise<string> {
-    const cached = blobCache.get(hash);
+    const cacheKey = `${genomeHubBaseUrl()}::${hash}`;
+    const cached = blobCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
         return cached.content;
     }
@@ -204,7 +208,7 @@ async function fetchBlobContent(token: string, hash: string): Promise<string> {
     }
 
     const content = response.data.blob.content;
-    blobCache.set(hash, { content, expiresAt: Date.now() + LATEST_TTL_MS });
+    blobCache.set(cacheKey, { content, expiresAt: Date.now() + LATEST_TTL_MS });
     return content;
 }
 
@@ -213,11 +217,8 @@ async function fetchBlobContent(token: string, hash: string): Promise<string> {
  * Returns null for UUID-format specIds.
  */
 export function parseSpecIdParts(specId: string): { namespace: string; name: string } | null {
-    const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
-    if (nsMatch) {
-        return { namespace: nsMatch[1], name: nsMatch[2] };
-    }
-    return null;
+    const parsedRef = parseGenomeRef(specId);
+    return parsedRef ? { namespace: parsedRef.namespace, name: parsedRef.name } : null;
 }
 
 /**

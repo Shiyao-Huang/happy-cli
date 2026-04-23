@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
+import { normalizeGenomeHubUrl, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
 import type { RunEnvelope } from '@/daemon/runEnvelope'
 /**
  * @module supervisorTools
@@ -76,6 +76,7 @@ import {
 import { McpToolContext } from './mcpContext';
 import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import type { Metadata } from '@/api/types';
+import { buildGenomeRefPath, parseGenomeRef } from '@/utils/genomeRefs';
 
 /**
  * Resolve entity namespace + name from explicit params or a specRef string.
@@ -88,9 +89,44 @@ export function resolveEntityNsName(
 ): { ns: string; name: string } | null {
     if (specNamespace && specName) return { ns: specNamespace, name: specName };
     if (!specRef) return null;
-    const match = specRef.match(/^@?([^/]+)\/([^:]+)/);
-    if (!match) return null;
-    return { ns: `@${match[1]}`, name: match[2] };
+    const parsedRef = parseGenomeRef(specRef);
+    if (parsedRef) return { ns: parsedRef.namespace, name: parsedRef.name.replace(/:.+$/, '') };
+    const legacyMatch = specRef.match(/^@?([^/]+)\/([^:]+)/);
+    return legacyMatch ? { ns: `@${legacyMatch[1]}`, name: legacyMatch[2] } : null;
+}
+
+export async function resolveGenomeIdentityForSpecId(
+    specId: string,
+    options?: {
+        hubUrl?: string;
+        fetchImpl?: typeof fetch;
+        timeoutMs?: number;
+    },
+): Promise<{ namespace?: string; name?: string; version?: number } | null> {
+    const parsedRef = parseGenomeRef(specId);
+    const hubUrl = normalizeGenomeHubUrl(options?.hubUrl);
+    const genomeUrl = parsedRef
+        ? `${hubUrl}${buildGenomeRefPath('genomes', parsedRef)}`
+        : `${hubUrl}/genomes/id/${encodeURIComponent(specId)}`;
+    const fetchImpl = options?.fetchImpl ?? fetch;
+
+    try {
+        const res = await fetchImpl(genomeUrl, { signal: AbortSignal.timeout(options?.timeoutMs ?? 3_000) });
+        if (res.ok) {
+            const data = await res.json() as { genome?: { namespace?: string; name?: string; version?: number } };
+            return {
+                namespace: data.genome?.namespace ?? parsedRef?.namespace,
+                name: data.genome?.name ?? parsedRef?.name,
+                version: data.genome?.version ?? parsedRef?.version,
+            };
+        }
+    } catch {
+        // A semantic ref still carries enough identity to keep scoring/evidence grouped.
+    }
+
+    return parsedRef
+        ? { namespace: parsedRef.namespace, name: parsedRef.name, version: parsedRef.version }
+        : null;
 }
 
 /**
@@ -341,14 +377,10 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
     };
 
     const resolveEntityMirrorUrl = (specId: string): string => {
-        const base = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-        const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
-        if (nsMatch) {
-            const [, ns, name, version] = nsMatch;
-            const encodedNs = encodeURIComponent(ns);
-            return version
-                ? `${base}/entities/${encodedNs}/${name}/${version}`
-                : `${base}/entities/${encodedNs}/${name}`;
+        const base = normalizeGenomeHubUrl();
+        const parsedRef = parseGenomeRef(specId);
+        if (parsedRef) {
+            return `${base}${buildGenomeRefPath('entities', parsedRef)}`;
         }
         return `${base}/entities/id/${encodeURIComponent(specId)}`;
     };
@@ -487,7 +519,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
         let replayedSpec: Record<string, unknown> | null = null;
         let replayMatchesView: boolean | null = null;
         if (entity.namespace && entity.name) {
-            const hubBaseUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+            const hubBaseUrl = normalizeGenomeHubUrl();
             const encodedNs = encodeURIComponent(entity.namespace);
             const encodedName = encodeURIComponent(entity.name);
             const ledgerParams = new URLSearchParams();
@@ -789,9 +821,9 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                         if (response?.ok) {
                             const result = await response.json() as {
                                 sessions?: Array<{
-                                    codexTranscriptPath?: string;
                                     ahaSessionId: string;
                                     claudeLocalSessionId?: string;
+                                    codexTranscriptPath?: string;
                                     runtimeType?: string;
                                     role?: string;
                                 }>;
@@ -808,9 +840,9 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                                 targetMetadata = {
                                     ...(targetMetadata || {}),
                                     ...(match.runtimeType ? { flavor: match.runtimeType as any } : {}),
-                                    ...(match.codexTranscriptPath ? { codexTranscriptPath: match.codexTranscriptPath } : {}),
                                     ...(match.role ? { role: match.role } : {}),
                                     ...(match.claudeLocalSessionId ? { claudeSessionId: match.claudeLocalSessionId } : {}),
+                                    ...(match.codexTranscriptPath ? { codexTranscriptPath: match.codexTranscriptPath } : {}),
                                 };
                             }
                         }
@@ -821,9 +853,9 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             const report = getContextStatusReport({
                 homeDir: process.env.HOME || '/tmp',
                 metadata: targetMetadata,
-                allowRecentFallback: !args.sessionId,
                 ahaSessionId: targetAhaSessionId,
                 requestedSessionId,
+                allowRecentFallback: !args.sessionId,
             });
             return {
                 content: [{
@@ -1887,16 +1919,10 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
         let specName: string | undefined;
         let specVersion: number | undefined = sessionGenomeMapping?.specVersion;
         if (resolvedSpecId) {
-            try {
-                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-                const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}`, { signal: AbortSignal.timeout(3_000) });
-                if (res.ok) {
-                    const data = await res.json() as { genome?: { namespace?: string; name?: string; version?: number } };
-                    specNamespace = data.genome?.namespace ?? undefined;
-                    specName = data.genome?.name ?? undefined;
-                    specVersion ??= data.genome?.version;
-                }
-            } catch { /* proceed without */ }
+            const identity = await resolveGenomeIdentityForSpecId(resolvedSpecId);
+            specNamespace = identity?.namespace ?? undefined;
+            specName = identity?.name ?? undefined;
+            specVersion ??= identity?.version;
         }
 
         // ── Auto-extract tokensUsed from CC log when not provided ─────
@@ -2072,7 +2098,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                             target: effectiveFeedbackTarget,
                             role: args.role,
                             feedback,
-                            hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                            hubUrl: normalizeGenomeHubUrl(),
                             hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
                             serverUrl: configuration.serverUrl,
                             authToken: client.getAuthToken(),
@@ -2302,7 +2328,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
 
         if ((!resolvedNamespace || !resolvedName) && args.genomeId) {
             try {
-                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+                const hubUrl = normalizeGenomeHubUrl();
                 const res = await fetch(`${hubUrl}/genomes/id/${encodeURIComponent(args.genomeId)}`, {
                     signal: AbortSignal.timeout(5_000),
                 });
@@ -2386,7 +2412,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                 target: effectiveFeedbackTarget,
                 role: args.role,
                 feedback,
-                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                hubUrl: normalizeGenomeHubUrl(),
                 hubPublishKey: process.env.HUB_PUBLISH_KEY ?? '',
                 serverUrl: configuration.serverUrl,
                 authToken: client.getAuthToken(),
@@ -2545,7 +2571,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             return { content: [{ type: 'text', text: 'Error: description is required when changes[] are provided.' }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const hubUrl = normalizeGenomeHubUrl();
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         let currentMirror: Awaited<ReturnType<typeof fetchEntityMirror>>;
@@ -2738,7 +2764,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can mutate genomes. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const hubUrl = normalizeGenomeHubUrl();
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
         const authToken = client.getAuthToken() ?? '';
         const packageSpecId = `${args.genomeNamespace}/${args.genomeName}`;
@@ -3028,7 +3054,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can compare genome versions. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const hubUrl = normalizeGenomeHubUrl();
 
         try {
             const versions = (await fetchGenomeVersions(hubUrl, args.genomeNamespace, args.genomeName))
@@ -3199,7 +3225,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             return { content: [{ type: 'text', text: `Error: Only ${(GENOME_EDIT_ROLES as readonly string[]).join(', ')} can rollback genomes. Your role: ${callerRole ?? 'unknown'}` }], isError: true };
         }
 
-        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const hubUrl = normalizeGenomeHubUrl();
         const publishKey = process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
 
         try {
@@ -3313,7 +3339,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
     });
 
     mcp.registerTool('compact_agent', {
-        description: 'Trigger context compaction on a running agent. Sends /compact command to reduce context window usage while preserving key information. Supervisor/help-agent only.',
+        description: 'Administrative compaction command for explicit operator/coordinator-directed recovery. Do not use it as a manual response to context percentage; automatic context handling is runtime-owned. Supervisor/help-agent only.',
         title: 'Compact Agent',
         inputSchema: {
             sessionId: z.string().describe('Session ID of agent to compact'),
@@ -3814,7 +3840,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                             authorRole: 'supervisor',
                             authorSession: args.sessionId,
                         },
-                        hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                        hubUrl: normalizeGenomeHubUrl(),
                         hubPublishKey: publishKey || undefined,
                         serverUrl: configuration.serverUrl,
                         authToken: client.getAuthToken(),

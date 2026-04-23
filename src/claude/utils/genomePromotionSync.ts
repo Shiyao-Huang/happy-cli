@@ -1,5 +1,5 @@
 import { configuration } from '@/configuration'
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 import type { DiffChange } from '@/api/types/genome'
 import { normalizeFeedbackProxyBaseUrl } from './genomeFeedbackSync'
 
@@ -139,7 +139,7 @@ export async function createGenomeViaMarketplace(args: {
     transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike)
-    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '')
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl)
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl)
 
@@ -311,7 +311,7 @@ export async function submitDiffViaMarketplace(args: {
     transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
 
@@ -397,7 +397,7 @@ export async function submitPackageDiffViaMarketplace(args: {
     transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
 
@@ -485,7 +485,7 @@ export async function promoteGenomeViaMarketplace(args: {
     transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike)
-    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '')
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl)
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl)
 

@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
+import { normalizeGenomeHubUrl, readPublishKeyFromSettings, resolveAhaHomeDir } from '@/configurationResolver'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 /**
@@ -37,6 +37,7 @@ import { projectTeamAgentMirror } from '../utils/runEnvelopeMirror';
 import { readDaemonState, readSettings } from '@/persistence';
 import { extractTeamConfigSnapshot, buildRuntimePermissionSnapshot, explainRuntimeToolAccess } from './inspectionTools';
 import {
+    type ResolvedGenomeSelection,
     publishTeamCorpsTemplate,
     resolvePreferredAgentImageId,
     resolveSpawnRuntimeForRole,
@@ -142,6 +143,21 @@ export function registerAgentTools(ctx: McpToolContext): void {
     } = ctx;
 
     const getHubPublishKey = () => process.env.HUB_PUBLISH_KEY || readPublishKeyFromSettings(configuration.settingsFile);
+    const getHubUrl = () => normalizeGenomeHubUrl();
+
+    const recordGenomeSpawn = (selection: ResolvedGenomeSelection, actorId: string): void => {
+        const entityId = selection.entityId ?? (
+            selection.specId && !selection.specId.startsWith('@') ? selection.specId : null
+        );
+        if (!entityId) return;
+        const hubUrl = selection.hubUrl ?? getHubUrl();
+        fetch(`${hubUrl}/genomes/id/${encodeURIComponent(entityId)}/spawn`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ actorId }),
+            signal: AbortSignal.timeout(3_000),
+        }).catch(() => { /* non-critical */ });
+    };
 
     const syncTargetSessionTemporaryGrants = async (sessionId: string): Promise<{
         session: any;
@@ -154,7 +170,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
         const listResult = await listTemporaryToolGrants({
             sessionId,
             activeOnly: true,
-            hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+            hubUrl: getHubUrl(),
             hubPublishKey: getHubPublishKey(),
         });
         if (!listResult.ok) {
@@ -227,7 +243,7 @@ export function registerAgentTools(ctx: McpToolContext): void {
             : { effectiveGenome: genomeSpecRef?.current ?? null };
         // Marketplace browse is read-only; allow all authenticated team members.
         // Spawn gating (canSpawnAgents) applies only to create_agent.
-        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
+        const hubUrl = getHubUrl();
         try {
             const includeCorps = args.category === 'corps';
             const marketplaceEntries = (await searchMarketplaceGenomes({
@@ -436,12 +452,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             }
             if (resolvedSpecId) {
                 spawnBody.specId = resolvedSpecId;
-                // Fire-and-forget: increment spawn count in genome-hub
-                const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-                fetch(`${hubUrl}/genomes/id/${encodeURIComponent(resolvedSpecId)}/spawn`, {
-                    method: 'POST',
-                    signal: AbortSignal.timeout(3_000),
-                }).catch(() => { /* non-critical */ });
+                recordGenomeSpawn(specResolution, memberId);
             }
 
             // ── Trace: spawn_requested ──────────────────────────────────
@@ -859,7 +870,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
                 reason: args.reason,
                 taskId: args.taskId,
                 expiresAt,
-                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                hubUrl: getHubUrl(),
                 hubPublishKey: getHubPublishKey(),
             });
             if (!grantResult.ok || !grantResult.grant) {
@@ -915,7 +926,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
             const revokeResult = await revokeTemporaryToolAccess({
                 grantId: args.grantId,
                 revokedBy: callerSessionId,
-                hubUrl: process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL,
+                hubUrl: getHubUrl(),
                 hubPublishKey: getHubPublishKey(),
             });
             if (!revokeResult.ok || !revokeResult.grant) {
@@ -1369,11 +1380,7 @@ The \`prompt\` field is injected as the agent's initial task context. Write it a
 
                     // Fire-and-forget spawn count increment
                     if (specResolution.specId) {
-                        const hubUrl = process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL;
-                        fetch(`${hubUrl}/genomes/id/${encodeURIComponent(specResolution.specId)}/spawn`, {
-                            method: 'POST',
-                            signal: AbortSignal.timeout(3_000),
-                        }).catch(() => {});
+                        recordGenomeSpawn(specResolution, memberId);
                     }
 
                     try {

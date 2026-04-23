@@ -125,7 +125,7 @@ describe('supervisorScheduler', () => {
                 teamId: 'team-1',
                 role: 'supervisor',
                 executionPlane: 'bypass',
-                specId: 'spec-supervisor',
+                specId: '@official/supervisor',
             })
         );
     });
@@ -226,7 +226,7 @@ describe('supervisorScheduler', () => {
             expect.objectContaining({
                 teamId: 'team-1',
                 role: 'supervisor',
-                specId: 'spec-supervisor',
+                specId: '@official/supervisor',
             })
         );
     });
@@ -331,6 +331,107 @@ describe('supervisorScheduler', () => {
         });
 
         expect(spawnSession).not.toHaveBeenCalled();
+    });
+
+    it('respawns when the persisted supervisor PID is alive but MCP heartbeat marks it dead', async () => {
+        const zombieState = {
+            teamId: 'team-1',
+            lastRunAt: 0,
+            teamLogCursor: 0,
+            ccLogCursors: {},
+            codexHistoryCursor: 0,
+            codexSessionCursors: {},
+            lastConclusion: '',
+            lastSessionId: 'supervisor-session-dead',
+            terminated: false,
+            idleRuns: 0,
+            lastSupervisorPid: 22222,
+            pendingAction: null,
+            pendingActionMeta: null,
+        };
+        mockReadSupervisorState.mockReturnValue(zombieState);
+        mockAxiosGet.mockImplementation(async (url: string) => {
+            if (url === 'https://server.test/v1/teams/team-1/tasks') {
+                return {
+                    data: {
+                        tasks: [],
+                    },
+                };
+            }
+
+            if (url.includes('/genomes/%40official/supervisor')) {
+                return {
+                    data: {
+                        genome: { id: 'spec-supervisor' },
+                    },
+                };
+            }
+
+            throw new Error(`Unexpected axios.get call: ${url}`);
+        });
+
+        const spawnSession = vi.fn().mockResolvedValue({
+            type: 'success',
+            sessionId: 'supervisor-session-new',
+        });
+        const processKill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+        try {
+            await runSupervisorCycle({
+                pidToTrackedSession: new Map([
+                    [11, {
+                        pid: 11,
+                        ahaSessionId: 'mainline-session',
+                        ahaSessionMetadataFromLocalWebhook: {
+                            teamId: 'team-1',
+                            role: 'implementer',
+                            executionPlane: 'mainline',
+                            path: '/repo',
+                        },
+                    } as any],
+                    [22222, {
+                        pid: 22222,
+                        ahaSessionId: 'supervisor-session-dead',
+                        ahaSessionMetadataFromLocalWebhook: {
+                            teamId: 'team-1',
+                            role: 'supervisor',
+                            executionPlane: 'bypass',
+                        },
+                    } as any],
+                ]),
+                teamHeartbeats: new Map([
+                    ['team-1', {
+                        getDeadAgents: () => [{
+                            agentId: 'supervisor-session-dead',
+                            role: 'supervisor',
+                            lastSeen: Date.now() - 120_000,
+                            orphanedTasks: [],
+                            deadForMs: 120_000,
+                        }],
+                    } as any],
+                ]),
+                heartbeatCount: 20,
+                supervisorInterval: 20,
+                supervisorTerminateIdleMs: 60_000,
+                pendingActionBaseRetryMs: 60_000,
+                heartbeatIntervalMs: 3_000,
+                credentialsToken: 'token-1',
+                spawnSession,
+                requestHelp: vi.fn(),
+            });
+
+            expect(processKill).toHaveBeenCalledWith(22222, 'SIGTERM');
+        } finally {
+            processKill.mockRestore();
+        }
+
+        expect(mockUpdateSupervisorRun).toHaveBeenCalledWith('team-1', { lastSupervisorPid: 0 });
+        expect(spawnSession).toHaveBeenCalledTimes(1);
+        expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            teamId: 'team-1',
+            role: 'supervisor',
+            executionPlane: 'bypass',
+        }));
     });
 
     it('does not terminate a team when task summary lookup fails', async () => {

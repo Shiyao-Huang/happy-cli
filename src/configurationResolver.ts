@@ -21,7 +21,7 @@ const persistentCliConfigSchema = z.object({
 
 export type PersistentCliConfig = z.infer<typeof persistentCliConfigSchema>
 
-function deriveGenomeHubUrl(serverUrl: string): string {
+export function deriveGenomeHubUrl(serverUrl: string): string {
   const normalizedServerUrl = serverUrl.replace(/\/$/, '')
   if (normalizedServerUrl.endsWith('/genome')) {
     return normalizedServerUrl
@@ -131,6 +131,40 @@ export function resolveServerConfig(
     webappUrl: env.AHA_WEBAPP_URL || persistentConfig.webappUrl || DEFAULT_WEBAPP_URL,
     genomeHubUrl: env.GENOME_HUB_URL || deriveGenomeHubUrl(serverUrl),
   }
+}
+
+export function readResolvedPersistentCliConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  packageName: string = packageJson.name
+): PersistentCliConfig {
+  const configFile = resolvePersistentConfigFile(env, packageName)
+  if (!existsSync(configFile)) {
+    return persistentCliConfigSchema.parse({})
+  }
+
+  return readPersistentCliConfig(configFile)
+}
+
+/**
+ * Resolve the genome-hub URL from the same source of truth as the API server.
+ *
+ * Important: genome entity ids are local to one hub/database. Runtime code should
+ * not silently fall back to DEFAULT_GENOME_HUB_URL after the CLI has logged into a
+ * different server, otherwise a UUID resolved from one hub can be fetched from
+ * another hub and appear "missing".
+ */
+export function resolveConfiguredGenomeHubUrl(
+  env: NodeJS.ProcessEnv = process.env,
+  persistentConfig: PersistentCliConfig = readResolvedPersistentCliConfig(env)
+): string {
+  return resolveServerConfig(env, persistentConfig).genomeHubUrl
+}
+
+export function normalizeGenomeHubUrl(
+  hubUrl?: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return (hubUrl ?? resolveConfiguredGenomeHubUrl(env)).replace(/\/$/, '')
 }
 
 /**

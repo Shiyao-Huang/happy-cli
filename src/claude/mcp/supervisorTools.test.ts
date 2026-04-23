@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     buildVisibleToolsPayload,
     resolveEntityNsName,
+    resolveGenomeIdentityForSpecId,
     buildVerdictContent,
     writeRetireHandoffTaskComments,
     type RetireHandoffTaskApi,
@@ -61,6 +62,65 @@ describe('resolveEntityNsName', () => {
     it('handles specRef with complex name containing dashes', () => {
         const result = resolveEntityNsName(undefined, undefined, '@my-org/agent-builder:v3.1');
         expect(result).toEqual({ ns: '@my-org', name: 'agent-builder' });
+    });
+});
+
+describe('resolveGenomeIdentityForSpecId', () => {
+    it('resolves semantic refs through namespace/name instead of the id endpoint', async () => {
+        const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            genome: {
+                namespace: '@official',
+                name: 'org-manager',
+                version: 4,
+            },
+        }), { status: 200 })) as unknown as typeof fetch;
+
+        await expect(resolveGenomeIdentityForSpecId('@official/org-manager', {
+            hubUrl: 'http://hub.test',
+            fetchImpl,
+        })).resolves.toEqual({
+            namespace: '@official',
+            name: 'org-manager',
+            version: 4,
+        });
+
+        expect(fetchImpl).toHaveBeenCalledWith(
+            'http://hub.test/genomes/%40official/org-manager',
+            expect.any(Object),
+        );
+    });
+
+    it('falls back to semantic ref identity when hub lookup fails', async () => {
+        const fetchImpl = vi.fn().mockResolvedValue(new Response('{}', { status: 404 })) as unknown as typeof fetch;
+
+        await expect(resolveGenomeIdentityForSpecId('@official/org-manager:3', {
+            hubUrl: 'http://hub.test',
+            fetchImpl,
+        })).resolves.toEqual({
+            namespace: '@official',
+            name: 'org-manager',
+            version: 3,
+        });
+    });
+
+    it('uses the id endpoint for opaque hub ids', async () => {
+        const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            genome: {
+                namespace: '@official',
+                name: 'org-manager',
+                version: 2,
+            },
+        }), { status: 200 })) as unknown as typeof fetch;
+
+        await resolveGenomeIdentityForSpecId('cm-hub-local-org-manager', {
+            hubUrl: 'http://hub.test',
+            fetchImpl,
+        });
+
+        expect(fetchImpl).toHaveBeenCalledWith(
+            'http://hub.test/genomes/id/cm-hub-local-org-manager',
+            expect.any(Object),
+        );
     });
 });
 

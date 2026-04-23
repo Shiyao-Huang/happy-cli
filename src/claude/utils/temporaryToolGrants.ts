@@ -1,7 +1,7 @@
 import type { Metadata } from '@/api/types';
 import type { AgentImage } from '@/api/types/genome';
 import { configuration } from '@/configuration';
-import { DEFAULT_GENOME_HUB_URL, readPublishKeyFromSettings } from '@/configurationResolver';
+import { normalizeGenomeHubUrl, readPublishKeyFromSettings } from '@/configurationResolver';
 
 type FetchResponseLike = {
     ok: boolean;
@@ -180,7 +180,7 @@ export async function listTemporaryToolGrants(args: {
     body: string;
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    const hubUrl = (args.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const hubPublishKey = resolveHubPublishKey(args.hubPublishKey);
     const query = new URLSearchParams({
         sessionId: args.sessionId,
@@ -220,7 +220,7 @@ export async function grantTemporaryToolAccess(args: {
     body: string;
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    const hubUrl = (args.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const hubPublishKey = resolveHubPublishKey(args.hubPublishKey);
     const response = await fetchImpl(`${hubUrl}/permissions/grant`, {
         method: 'POST',
@@ -260,7 +260,7 @@ export async function revokeTemporaryToolAccess(args: {
     body: string;
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    const hubUrl = (args.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const hubPublishKey = resolveHubPublishKey(args.hubPublishKey);
     const response = await fetchImpl(`${hubUrl}/permissions/${encodeURIComponent(args.grantId)}`, {
         method: 'DELETE',

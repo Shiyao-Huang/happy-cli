@@ -1,4 +1,5 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
+import { buildGenomeRefPath, parseGenomeRef } from '@/utils/genomeRefs';
 import type { LegionImage } from '@/api/types/genome';
 import { logger } from '@/ui/logger';
 import { buildMarketplaceConnectionHint } from './marketplaceConnection';
@@ -26,6 +27,8 @@ export type ResolvedGenomeSelection = {
     specId: string | null;
     source: 'explicit' | 'best-rated' | 'official' | 'none';
     matchedName?: string;
+    entityId?: string;
+    hubUrl?: string;
 };
 
 export type CorpsTemplateMember = {
@@ -393,7 +396,7 @@ export async function searchMarketplaceGenomes(options?: {
     limit?: number;
     hubUrl?: string;
 }): Promise<MarketplaceGenomeRecord[]> {
-    const hubUrl = (options?.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(options?.hubUrl);
     const exactMatches = await fetchMarketplaceGenomePage({
         query: options?.query,
         category: options?.category,
@@ -431,15 +434,10 @@ export async function searchMarketplaceGenomes(options?: {
 }
 
 function resolveMarketplaceGenomeUrls(specId: string, hubUrl?: string): string[] {
-    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-    const nsMatch = specId.match(/^(@[^/]+)\/([^:]+)(?::(\d+))?$/);
-
-    if (nsMatch) {
-        const [, ns, name, version] = nsMatch;
-        const encodedNs = encodeURIComponent(ns);
-        return version
-            ? [`${baseUrl}/genomes/${encodedNs}/${name}/${version}`]
-            : [`${baseUrl}/genomes/${encodedNs}/${name}`];
+    const baseUrl = normalizeGenomeHubUrl(hubUrl);
+    const parsedRef = parseGenomeRef(specId);
+    if (parsedRef) {
+        return [`${baseUrl}${buildGenomeRefPath('genomes', parsedRef)}`];
     }
 
     return [`${baseUrl}/genomes/id/${encodeURIComponent(specId)}`];
@@ -494,6 +492,13 @@ export function formatMarketplaceGenomeRef(
     return `${genome.namespace}/${genome.name}`;
 }
 
+function stableGenomeSpecId(
+    genome: Pick<MarketplaceGenomeRecord, 'id' | 'namespace' | 'name' | 'version'>,
+    fallbackRef?: string,
+): string {
+    return formatMarketplaceGenomeRef(genome) ?? fallbackRef ?? genome.id;
+}
+
 export function parseCorpsSpecFromGenome(genome: Pick<MarketplaceGenomeRecord, 'name' | 'category' | 'spec'>): LegionImage {
     if (!genome.spec) {
         throw new Error(`Marketplace record "${genome.name}" has no spec payload.`);
@@ -520,8 +525,8 @@ export async function resolveOfficialGenomeSpecId(
     role: string,
     runtime: 'claude' | 'codex',
     hubUrl?: string
-): Promise<{ specId: string | null; matchedName?: string }> {
-    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+): Promise<{ specId: string | null; matchedName?: string; entityId?: string; hubUrl?: string }> {
+    const baseUrl = normalizeGenomeHubUrl(hubUrl);
 
     for (const officialName of getPreferredGenomeNames(role, runtime)) {
         try {
@@ -551,7 +556,12 @@ export async function resolveOfficialGenomeSpecId(
             );
 
             if (genome?.id && (genome.runtimeType == null || genome.runtimeType === runtime)) {
-                return { specId: genome.id, matchedName: officialName };
+                return {
+                    specId: stableGenomeSpecId(genome, `@official/${officialName}`),
+                    entityId: genome.id,
+                    hubUrl: baseUrl,
+                    matchedName: officialName,
+                };
             }
         } catch {
             // Ignore and continue to the next fallback name.
@@ -582,7 +592,13 @@ export async function resolvePreferredAgentImageId(options: {
     const official = await resolveOfficialGenomeSpecId(options.role, options.runtime, options.hubUrl);
     if (official.specId) {
         if (strategy === 'official') {
-            return { specId: official.specId, source: 'official', matchedName: official.matchedName };
+            return {
+                specId: official.specId,
+                entityId: official.entityId,
+                hubUrl: official.hubUrl,
+                source: 'official',
+                matchedName: official.matchedName,
+            };
         }
         // best-rated strategy: prefer official lineage but allow marketplace
         // to override if a higher-rated public alternative exists
@@ -604,12 +620,24 @@ export async function resolvePreferredAgentImageId(options: {
         const marketBest = selectBestRatedGenomeCandidate(marketCandidates, preferredNames, {
             runtimeType: options.runtime,
         });
-        if (marketBest?.id && marketBest.id !== official.specId) {
+        if (marketBest?.id && marketBest.id !== official.entityId && stableGenomeSpecId(marketBest) !== official.specId) {
             // Marketplace found a different genome with better rating — use it
-            return { specId: marketBest.id, source: 'best-rated', matchedName: marketBest.name };
+            return {
+                specId: stableGenomeSpecId(marketBest),
+                entityId: marketBest.id,
+                hubUrl: normalizeGenomeHubUrl(options.hubUrl),
+                source: 'best-rated',
+                matchedName: marketBest.name,
+            };
         }
 
-        return { specId: official.specId, source: 'official', matchedName: official.matchedName };
+        return {
+            specId: official.specId,
+            entityId: official.entityId,
+            hubUrl: official.hubUrl,
+            source: 'official',
+            matchedName: official.matchedName,
+        };
     }
 
     // No official genome found — fall back to marketplace discovery
@@ -634,7 +662,13 @@ export async function resolvePreferredAgentImageId(options: {
             runtimeType: options.runtime,
         });
         if (selected?.id) {
-            return { specId: selected.id, source: 'best-rated', matchedName: selected.name };
+            return {
+                specId: stableGenomeSpecId(selected),
+                entityId: selected.id,
+                hubUrl: normalizeGenomeHubUrl(options.hubUrl),
+                source: 'best-rated',
+                matchedName: selected.name,
+            };
         }
     }
 
@@ -740,7 +774,7 @@ export async function publishTeamCorpsTemplate(options: PublishTeamCorpsTemplate
     templateId?: string;
     error?: string;
 }> {
-    const hubUrl = (options.hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(options.hubUrl);
     const publishKey = options.publishKey ?? process.env.HUB_PUBLISH_KEY ?? '';
 
     try {

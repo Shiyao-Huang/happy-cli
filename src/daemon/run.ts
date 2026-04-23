@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL, injectGenomeHubUrlFromServerUrl } from '@/configurationResolver'
+import { injectGenomeHubUrlFromServerUrl, resolveConfiguredGenomeHubUrl } from '@/configurationResolver'
 /**
  * @module run
  * @description Daemon entry point: lifecycle, signals, lock, auth, heartbeat orchestration.
@@ -110,18 +110,20 @@ async function ensureGenomeHubAccess(): Promise<number> {
     logger.warn('[GENOME HUB] HUB_PUBLISH_KEY not set and genomeHubPublishKey missing from settings — genome feedback uploads will fail with 401');
   }
 
-  // 1b. Inject genome-hub URL from settings if not in env
+  // 1b. Inject genome-hub URL from settings/config if not in env
   const settingsHubUrl = settings.genomeHubUrl || '';
   if (settingsHubUrl && !process.env.GENOME_HUB_URL) {
     process.env.GENOME_HUB_URL = settingsHubUrl;
     logger.debug(`[GENOME HUB] Loaded GENOME_HUB_URL from settings: ${settingsHubUrl}`);
   }
+  if (!process.env.GENOME_HUB_URL) {
+    const configuredHubUrl = resolveConfiguredGenomeHubUrl();
+    process.env.GENOME_HUB_URL = configuredHubUrl;
+    logger.debug(`[GENOME HUB] Derived GENOME_HUB_URL from CLI server config: ${configuredHubUrl}`);
+  }
 
   // 2. Check reachability and optionally create SSH tunnel
-  const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
-  if (!process.env.GENOME_HUB_URL) {
-    logger.warn(`[GENOME HUB] GENOME_HUB_URL not set, falling back to ${DEFAULT_GENOME_HUB_URL}`);
-  }
+  const hubUrl = process.env.GENOME_HUB_URL!.replace(/\/$/, '');
   const sshHost = process.env.GENOME_HUB_SSH_HOST || settings.genomeHubSshHost || '';
 
   if (!sshHost) {
@@ -767,6 +769,7 @@ export async function startDaemon(): Promise<void> {
           startupDiskVersion: diskVersion,
           fileState,
           controlPort,
+          teamHeartbeats,
         });
 
         heartbeatCount++;
@@ -779,6 +782,7 @@ export async function startDaemon(): Promise<void> {
           pendingActionBaseRetryMs,
           heartbeatIntervalMs,
           credentialsToken: credentials.token,
+          teamHeartbeats,
           spawnSession,
           requestHelp,
         });

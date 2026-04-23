@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 import type { AggregatedFeedback } from './feedbackPrivacy';
 import type { FeedbackUploadTarget } from './supervisorAgentVerdict';
 import { configuration } from '@/configuration';
@@ -251,10 +251,7 @@ export async function syncGenomeFeedbackToMarketplace(args: {
     transport: 'direct-hub' | 'server-proxy';
 }> {
     const fetchImpl = args.fetchImpl ?? (fetch as FetchLike);
-    if (!args.hubUrl && !process.env.GENOME_HUB_URL) {
-        logger.warn(`[genome-feedback] GENOME_HUB_URL not set, falling back to ${DEFAULT_GENOME_HUB_URL}`);
-    }
-    const hubUrl = (args.hubUrl ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl(args.hubUrl);
     const rawServerUrl = args.serverUrl ?? configuration.serverUrl;
     const serverUrl = normalizeFeedbackProxyBaseUrl(rawServerUrl);
     if (serverUrl !== rawServerUrl.replace(/\/$/, '')) {

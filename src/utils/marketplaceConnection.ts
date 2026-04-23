@@ -1,6 +1,6 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 export function buildMarketplaceConnectionHint(hubUrl?: string): string {
-    const baseUrl = (hubUrl ?? process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const baseUrl = normalizeGenomeHubUrl(hubUrl);
 
     if (/localhost:3006|127\.0\.0\.1:3006/.test(baseUrl)) {
         return `genome-hub is unreachable at ${baseUrl}. If the marketplace is running on another machine, set GENOME_HUB_URL or open an SSH tunnel (example: ssh -L 3006:127.0.0.1:3006 <your-ssh-host>, or set GENOME_HUB_SSH_HOST in settings).`;

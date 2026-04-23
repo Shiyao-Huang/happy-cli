@@ -1,4 +1,4 @@
-import { DEFAULT_GENOME_HUB_URL } from '@/configurationResolver'
+import { normalizeGenomeHubUrl } from '@/configurationResolver'
 import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
@@ -2557,7 +2557,7 @@ export class ApiClient {
     category?: string;
   }): Promise<{ genome: any }> {
     // Primary: genome-hub (M3 marketplace, port 3006)
-    const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl();
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
     const namespace = genome.namespace ?? '@public';
@@ -2635,7 +2635,7 @@ export class ApiClient {
     isPublic?: boolean;
     publisherId?: string | null;
   }): Promise<{ genome: any; corps: LegionImage }> {
-    const hubUrl = (process.env.GENOME_HUB_URL ?? DEFAULT_GENOME_HUB_URL).replace(/\/$/, '');
+    const hubUrl = normalizeGenomeHubUrl();
     const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
 

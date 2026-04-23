@@ -6,6 +6,7 @@ import {
   readPersistentCliConfig,
   readPublishKeyFromSettings,
   resolveAhaHomeDir,
+  resolveConfiguredGenomeHubUrl,
   resolvePersistentConfigFile,
   resolveServerConfig,
   injectGenomeHubUrlFromServerUrl,
@@ -101,6 +102,25 @@ describe('configurationResolver', () => {
       webappUrl: 'https://aha-agi.com/webappv3',
       genomeHubUrl: 'https://aha-agi.com/genome',
     })
+  })
+
+  it('derives genomeHubUrl from persisted serverUrl when no env override is set', () => {
+    expect(resolveConfiguredGenomeHubUrl({}, {
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+      enableModelSelection: false,
+    })).toBe('https://ahaagi.com/genome')
+  })
+
+  it('reads persisted serverUrl when resolving runtime genomeHubUrl', () => {
+    tempDir = mkdtempSync(join(process.cwd(), 'tmp-config-'))
+    const configFile = join(tempDir, 'config.json')
+    writeFileSync(configFile, JSON.stringify({
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+    }))
+
+    expect(resolveConfiguredGenomeHubUrl({ AHA_CONFIG_FILE: configFile })).toBe('https://ahaagi.com/genome')
   })
 
   it('prefers explicit GENOME_HUB_URL over AHA_SERVER_URL derivation', () => {

@@ -351,8 +351,31 @@ describe('genomeMarketplace helpers', () => {
         );
 
         await expect(resolveOfficialGenomeSpecId('agent-builder', 'codex', 'http://example.test')).resolves.toEqual({
-            specId: 'legacy-official-builder',
+            specId: '@official/agent-builder-codex-r2',
+            entityId: 'legacy-official-builder',
+            hubUrl: 'http://example.test',
             matchedName: 'agent-builder-codex-r2',
+        });
+    });
+
+    it('returns a semantic official ref instead of leaking hub-local UUIDs', async () => {
+        vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({
+                genome: {
+                    id: 'cm-hub-local-org-manager',
+                    namespace: '@official',
+                    name: 'org-manager',
+                    runtimeType: 'claude',
+                    version: 3,
+                },
+            }), { status: 200 }),
+        );
+
+        await expect(resolveOfficialGenomeSpecId('org-manager', 'claude', 'https://hub.example/genome')).resolves.toMatchObject({
+            specId: '@official/org-manager',
+            entityId: 'cm-hub-local-org-manager',
+            hubUrl: 'https://hub.example/genome',
+            matchedName: 'org-manager',
         });
     });
 
@@ -373,6 +396,25 @@ describe('genomeMarketplace helpers', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(first?.name).toBe('help-agent');
         expect(second?.name).toBe('help-agent');
+    });
+
+    it('URL-encodes semantic refs when reading marketplace details', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch' as never).mockResolvedValue(
+            new Response(JSON.stringify({
+                genome: {
+                    id: 'detail-special',
+                    namespace: '@official',
+                    name: 'org manager#north?lane',
+                },
+            }), { status: 200 }),
+        );
+
+        await fetchMarketplaceGenomeDetail('@official/org manager#north?lane', 'http://detail-encoding.test');
+
+        expect(fetchMock).toHaveBeenCalledWith(
+            'http://detail-encoding.test/genomes/%40official/org%20manager%23north%3Flane',
+            expect.any(Object),
+        );
     });
 
     it('stops token fallback searches after the marketplace returns a 429', async () => {
