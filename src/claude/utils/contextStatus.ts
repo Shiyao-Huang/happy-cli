@@ -216,6 +216,7 @@ export function getContextStatusReport(options: {
     metadata?: Metadata | null;
     ahaSessionId: string;
     requestedSessionId?: string;
+    allowRecentFallback?: boolean;
 }): ContextStatusReport {
     const homeDir = options.homeDir || process.env.HOME || '/tmp';
     const metadata = options.metadata || undefined;
@@ -239,11 +240,12 @@ export function getContextStatusReport(options: {
         // 3. findMostRecentCodexTranscriptFile — fallback for sessions that predate the path-capture fix
         const codexFile = metadata?.codexTranscriptPath
             || findCodexTranscriptFile(homeDir, options.ahaSessionId)
-            || findMostRecentCodexTranscriptFile(homeDir);
+            || (options.allowRecentFallback === false ? null : findMostRecentCodexTranscriptFile(homeDir));
         if (!codexFile) {
             return buildUnavailableContextStatus('codex', 'Codex transcript not found. Cannot determine context status.', [
                 `ahaSessionId=${options.ahaSessionId}`,
                 ...(requestedSessionId ? [`requestedSessionId=${requestedSessionId}`] : []),
+                ...(options.allowRecentFallback === false ? ['Recent transcript fallback disabled for explicit target session inspection.'] : []),
                 'Use list_team_runtime_logs to inspect whether daemon captured codexTranscriptPath for this session.',
             ]);
         }

@@ -789,6 +789,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                         if (response?.ok) {
                             const result = await response.json() as {
                                 sessions?: Array<{
+                                    codexTranscriptPath?: string;
                                     ahaSessionId: string;
                                     claudeLocalSessionId?: string;
                                     runtimeType?: string;
@@ -807,6 +808,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
                                 targetMetadata = {
                                     ...(targetMetadata || {}),
                                     ...(match.runtimeType ? { flavor: match.runtimeType as any } : {}),
+                                    ...(match.codexTranscriptPath ? { codexTranscriptPath: match.codexTranscriptPath } : {}),
                                     ...(match.role ? { role: match.role } : {}),
                                     ...(match.claudeLocalSessionId ? { claudeSessionId: match.claudeLocalSessionId } : {}),
                                 };
@@ -819,6 +821,7 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
             const report = getContextStatusReport({
                 homeDir: process.env.HOME || '/tmp',
                 metadata: targetMetadata,
+                allowRecentFallback: !args.sessionId,
                 ahaSessionId: targetAhaSessionId,
                 requestedSessionId,
             });

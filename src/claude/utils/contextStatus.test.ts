@@ -93,6 +93,40 @@ describe('getContextStatusReport', () => {
         expect(report.rateLimits).toBeDefined();
     });
 
+    it('does not use an unrelated recent Codex transcript for explicit target inspection', () => {
+        const homeDir = mkdtempSync(join(tmpdir(), 'aha-context-codex-target-'));
+        const sessionDir = join(homeDir, '.codex', 'sessions', '2026', '03', '20');
+        mkdirSync(sessionDir, { recursive: true });
+
+        writeFileSync(join(sessionDir, 'rollout-2026-03-20T00-00-00-other-codex-session.jsonl'), [
+            JSON.stringify({
+                timestamp: '2026-03-20T00:00:00.000Z',
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        last_token_usage: { input_tokens: 12000, cached_input_tokens: 3000 },
+                        model_context_window: 30000,
+                    },
+                },
+            }),
+        ].join('\n'), 'utf-8');
+
+        const report = getContextStatusReport({
+            homeDir,
+            ahaSessionId: 'target-aha-session',
+            requestedSessionId: 'target-aha-session',
+            allowRecentFallback: false,
+            metadata: {
+                flavor: 'codex',
+            } as any,
+        });
+
+        expect(report.available).toBe(false);
+        expect(report.runtimeType).toBe('codex');
+        expect(report.diagnostics?.join('\n')).toContain('Recent transcript fallback disabled');
+    });
+
     it('prefers resolvedModel context window over stale session metadata for Claude', () => {
         const homeDir = mkdtempSync(join(tmpdir(), 'aha-context-claude-resolved-model-'));
         const projectsDir = join(homeDir, '.claude', 'projects', 'repo');
