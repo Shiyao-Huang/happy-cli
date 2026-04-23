@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,6 +9,7 @@ import {
   resolvePersistentConfigFile,
   resolveServerConfig,
   injectGenomeHubUrlFromServerUrl,
+  writePersistentCliConfig,
 } from '@/configurationResolver'
 
 describe('configurationResolver', () => {
@@ -45,6 +46,26 @@ describe('configurationResolver', () => {
     expect(readPersistentCliConfig(configFile)).toEqual({
       serverUrl: 'http://localhost:3005',
       webappUrl: 'http://localhost:8081',
+      enableModelSelection: false,
+    })
+  })
+
+  it('writes persistent config values while preserving unrelated settings', () => {
+    tempDir = mkdtempSync(join(process.cwd(), 'tmp-config-'))
+    const configFile = join(tempDir, 'nested', 'config.json')
+
+    writePersistentCliConfig(configFile, {
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+    })
+
+    writePersistentCliConfig(configFile, {
+      serverUrl: 'https://aha-agi.com/api',
+    })
+
+    expect(JSON.parse(readFileSync(configFile, 'utf8'))).toMatchObject({
+      serverUrl: 'https://aha-agi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
       enableModelSelection: false,
     })
   })

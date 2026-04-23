@@ -81,7 +81,7 @@ export const AHA_CLI_SCHEMA: CliCommandSchema = {
       description: 'Authentication management.',
       usage: 'aha auth <login|reconnect|join|show-join-code|logout|status>',
       children: [
-        { name: 'login', kind: 'command', description: 'Authenticate with Aha.', usage: 'aha auth login [--code <ticket>] [--force|--new|-n] [--mobile] [--email]' },
+        { name: 'login', kind: 'command', description: 'Authenticate with Aha.', usage: 'aha auth login [--code <ticket>] [--server-url <url>] [--webapp-url <url>] [--force|--new|-n] [--mobile] [--email]' },
         { name: 'reconnect', kind: 'command', description: 'Refresh token for cached account.', usage: 'aha auth reconnect' },
         { name: 'join', kind: 'command', description: 'Join an existing account using a one-time ticket.', usage: 'aha auth join --ticket <ticket>' },
         { name: 'show-join-code', kind: 'command', description: 'Generate a one-time join command for another machine.', usage: 'aha auth show-join-code' },

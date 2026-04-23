@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import packageJson from '../package.json'
 import { z } from 'zod'
 
@@ -76,6 +76,32 @@ export function readPersistentCliConfig(configFile: string): PersistentCliConfig
   const content = readFileSync(configFile, 'utf8')
   const parsed = JSON.parse(content)
   return persistentCliConfigSchema.parse(parsed)
+}
+
+export function writePersistentCliConfig(
+  configFile: string,
+  patch: Partial<PersistentCliConfig>
+): PersistentCliConfig {
+  let current: Record<string, unknown> = {}
+
+  if (existsSync(configFile)) {
+    current = JSON.parse(readFileSync(configFile, 'utf8')) as Record<string, unknown>
+  }
+
+  const nextConfig = persistentCliConfigSchema.parse({
+    ...current,
+    ...patch,
+  })
+
+  mkdirSync(dirname(configFile), { recursive: true })
+  writeFileSync(configFile, `${JSON.stringify(nextConfig, null, 2)}\n`, { mode: 0o600 })
+  try {
+    chmodSync(configFile, 0o600)
+  } catch {
+    // Best effort on platforms/filesystems that do not support chmod.
+  }
+
+  return nextConfig
 }
 
 /**

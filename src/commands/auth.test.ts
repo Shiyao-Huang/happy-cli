@@ -4,7 +4,14 @@ import { parseBackupKeyToSecret } from '@/utils/backupKey';
 
 const mockConfiguration = vi.hoisted(() => ({
   ahaHomeDir: '/tmp/.aha-test',
+  configFile: '/tmp/.aha-test/config.json',
   serverUrl: 'https://aha-agi.test',
+  webappUrl: 'https://aha-agi.test/webappv3',
+}));
+
+const mockConfigurationResolver = vi.hoisted(() => ({
+  DEFAULT_WEBAPP_URL: 'https://aha-agi.com/webappv3',
+  writePersistentCliConfig: vi.fn(),
 }));
 
 const mockApi = vi.hoisted(() => ({
@@ -22,7 +29,7 @@ const mockPersistence = vi.hoisted(() => ({
 
 const mockAccountJoin = vi.hoisted(() => ({
   createAccountJoinTicket: vi.fn(),
-  isAccountJoinTicket: vi.fn((code: string) => code.startsWith('aha_join_')),
+  isAccountJoinTicket: vi.fn((code: string) => code.startsWith('aha_join_') || /^[A-Z2-9]{6}$/.test(code)),
   redeemAccountJoinTicket: vi.fn(),
 }));
 
@@ -46,6 +53,8 @@ vi.mock('@/ui/auth', () => ({
 vi.mock('@/configuration', () => ({
   configuration: mockConfiguration,
 }));
+
+vi.mock('@/configurationResolver', () => mockConfigurationResolver);
 
 vi.mock('@/daemon/controlClient', () => mockControlClient);
 
@@ -94,6 +103,7 @@ describe('handleAuthCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConfiguration.serverUrl = 'https://aha-agi.test';
+    mockConfiguration.webappUrl = 'https://aha-agi.test/webappv3';
     mockPersistence.readSettings.mockResolvedValue({
       onboardingCompleted: false,
       machineId: 'machine-123',
@@ -127,13 +137,14 @@ describe('handleAuthCommand', () => {
 
     const output = collectOutput(logSpy);
     expect(mockAccountJoin.createAccountJoinTicket).toHaveBeenCalledWith('token-123');
-    expect(output).toContain('npm i aha-agi && AHA_SERVER_URL=https://aha-agi.test npx aha auth login --code aha_join_abc123');
+    expect(output).toContain('npm i aha-agi && npx aha auth login --server-url https://aha-agi.test --webapp-url https://aha-agi.test/webappv3 --code aha_join_abc123');
     expect(output).toContain('One-time join command ready');
     expect(output).toContain('This join code is single-use.');
   });
 
-  it('omits the server override for the default production deployment', async () => {
+  it('pins the server URL for the default production deployment too', async () => {
     mockConfiguration.serverUrl = 'https://aha-agi.com/api';
+    mockConfiguration.webappUrl = 'https://aha-agi.com/webappv3';
     mockPersistence.readCredentials.mockResolvedValue({
       token: 'token-123',
       encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3]) },
@@ -148,8 +159,38 @@ describe('handleAuthCommand', () => {
     await handleAuthCommand(['show-join-code']);
 
     const output = collectOutput(logSpy);
-    expect(output).toContain('npm i aha-agi && npx aha auth login --code aha_join_default123');
-    expect(output).not.toContain('AHA_SERVER_URL=');
+    expect(output).toContain('npm i aha-agi && npx aha auth login --server-url https://aha-agi.com/api --webapp-url https://aha-agi.com/webappv3 --code aha_join_default123');
+  });
+
+  it('uses and persists explicit server URLs during code login', async () => {
+    mockPersistence.readCredentials.mockResolvedValue(null);
+    mockAccountJoin.redeemAccountJoinTicket.mockResolvedValue({
+      token: 'token-joined',
+      userId: 'acct-joined',
+      secret: new Uint8Array([4, 5, 6]),
+    });
+
+    await handleAuthCommand([
+      'login',
+      '--server-url',
+      'https://ahaagi.com/api',
+      '--webapp-url',
+      'https://ahaagi.com/webappv3',
+      '--code',
+      'AJXMVN',
+    ]);
+
+    expect(mockConfiguration.serverUrl).toBe('https://ahaagi.com/api');
+    expect(mockConfiguration.webappUrl).toBe('https://ahaagi.com/webappv3');
+    expect(mockConfigurationResolver.writePersistentCliConfig).toHaveBeenCalledWith('/tmp/.aha-test/config.json', {
+      serverUrl: 'https://ahaagi.com/api',
+      webappUrl: 'https://ahaagi.com/webappv3',
+    });
+    expect(mockAccountJoin.redeemAccountJoinTicket).toHaveBeenCalledWith('AJXMVN');
+    expect(mockPersistence.writeCredentialsContentSecretKey).toHaveBeenCalledWith({
+      contentSecretKey: new Uint8Array([4, 5, 6]),
+      token: 'token-joined',
+    });
   });
 
   it('shows teams in auth status', async () => {

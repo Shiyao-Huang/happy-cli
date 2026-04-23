@@ -16,7 +16,7 @@ import { doEmailOtpAuth } from '@/api/supabaseAuth';
 import { ApiClient } from '@/api/api';
 import { createAccountJoinTicket, isAccountJoinTicket, redeemAccountJoinTicket } from '@/api/accountJoin';
 import { bootstrapRecoveryMaterial, getRecoveryMaterialSecret } from '@/auth/recoveryBootstrap';
-import { DEFAULT_SERVER_URL } from '@/configurationResolver';
+import { DEFAULT_WEBAPP_URL, writePersistentCliConfig } from '@/configurationResolver';
 import { parseBackupKeyToSecret } from '@/utils/backupKey';
 
 function decodeTokenSubject(token: string): { accountId?: string; sessionId?: string } {
@@ -46,6 +46,97 @@ function readRestoreCodeArg(args: string[]): string | undefined {
 
   const positional = args.find((arg) => !arg.startsWith('-'));
   return positional;
+}
+
+type AuthLoginServerOverrides = {
+  args: string[];
+  serverUrl?: string;
+  webappUrl?: string;
+};
+
+type MutableServerConfiguration = {
+  serverUrl: string;
+  webappUrl: string;
+};
+
+function normalizeUrlOption(flag: string, value: string): string {
+  try {
+    const parsed = new URL(value);
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    throw new Error(`${flag} must be a valid URL. Received: ${value}`);
+  }
+}
+
+function readServerUrlFlag(flag: string): 'serverUrl' | 'webappUrl' | null {
+  if (flag === '--server-url' || flag === '--base-url') {
+    return 'serverUrl';
+  }
+  if (flag === '--webapp-url') {
+    return 'webappUrl';
+  }
+  return null;
+}
+
+function parseAuthLoginServerOverrides(args: string[]): AuthLoginServerOverrides {
+  const strippedArgs: string[] = [];
+  const overrides: Omit<AuthLoginServerOverrides, 'args'> = {};
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const [maybeFlag, inlineValue] = arg.includes('=') ? arg.split(/=(.*)/s, 2) : [arg, undefined];
+    const key = readServerUrlFlag(maybeFlag);
+
+    if (!key) {
+      strippedArgs.push(arg);
+      continue;
+    }
+
+    const rawValue = inlineValue ?? args[index + 1];
+    if (!rawValue) {
+      throw new Error(`Missing value for ${maybeFlag}.`);
+    }
+
+    overrides[key] = normalizeUrlOption(maybeFlag, rawValue);
+    if (inlineValue === undefined) {
+      index += 1;
+    }
+  }
+
+  return {
+    args: strippedArgs,
+    ...overrides,
+  };
+}
+
+function applyAuthLoginServerOverrides(overrides: AuthLoginServerOverrides): Partial<MutableServerConfiguration> {
+  const patch: Partial<MutableServerConfiguration> = {};
+  const mutableConfiguration = configuration as unknown as MutableServerConfiguration;
+
+  if (overrides.serverUrl) {
+    mutableConfiguration.serverUrl = overrides.serverUrl;
+    patch.serverUrl = overrides.serverUrl;
+  }
+  if (overrides.webappUrl) {
+    mutableConfiguration.webappUrl = overrides.webappUrl;
+    patch.webappUrl = overrides.webappUrl;
+  }
+
+  return patch;
+}
+
+function persistAuthLoginServerOverrides(patch: Partial<MutableServerConfiguration>): void {
+  if (!patch.serverUrl && !patch.webappUrl) {
+    return;
+  }
+
+  writePersistentCliConfig(configuration.configFile, patch);
+  if (patch.serverUrl) {
+    console.log(chalk.gray(`  Server URL: ${configuration.serverUrl}`));
+  }
+  if (patch.webappUrl) {
+    console.log(chalk.gray(`  Web app URL: ${configuration.webappUrl}`));
+  }
 }
 
 type DaemonEnsureResult = Awaited<ReturnType<typeof ensureDaemonRunning>> | null;
@@ -136,14 +227,26 @@ function formatExpiration(expiresAt: string | number | null | undefined): string
   return String(expiresAt);
 }
 
+function quoteShellValue(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+-]+$/.test(value)) {
+    return value;
+  }
+
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function buildJoinLoginCommand(code?: string): string {
-  const serverUrl = configuration.serverUrl;
-  const isNonDefaultServer = serverUrl !== DEFAULT_SERVER_URL
-    && !serverUrl.startsWith(DEFAULT_SERVER_URL);
-  const envPrefix = isNonDefaultServer ? `AHA_SERVER_URL=${serverUrl} ` : '';
-  const loginCommand = code
-    ? `${envPrefix}npx aha auth login --code ${code}`
-    : `${envPrefix}npx aha auth login`;
+  const loginArgs = [
+    'npx aha auth login',
+    '--server-url',
+    quoteShellValue(configuration.serverUrl),
+    '--webapp-url',
+    quoteShellValue(configuration.webappUrl || DEFAULT_WEBAPP_URL),
+  ];
+  if (code) {
+    loginArgs.push('--code', quoteShellValue(code));
+  }
+  const loginCommand = loginArgs.join(' ');
 
   return `npm i aha-agi && ${loginCommand}`;
 }
@@ -208,7 +311,7 @@ function showAuthHelp(): void {
 ${chalk.bold('aha auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
-  aha auth login [--code <ticket>] [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
+  aha auth login [--code <ticket>] [--server-url <url>] [--webapp-url <url>] [--force|--new|-n] [--mobile] [--email] Authenticate with Aha
   aha auth reconnect                                   Refresh token for the currently cached account
   aha auth join --ticket <ticket>                      Join an existing account from a one-time link ticket
   aha auth show-join-code                              Generate a one-time join command for another machine
@@ -220,13 +323,15 @@ ${chalk.bold('Options:')}
   --force     Clear credentials, machine ID, stop daemon, and create a new account
   --new,-n    Explicitly create a new account during web auth
   --code <ticket|backup-key> One-time join ticket or backup key, no browser needed
+  --server-url <url>, --base-url <url> Server API URL to use and save for future runs
+  --webapp-url <url> Web app URL to save for browser-based auth and device links
   --ticket    Explicit flag for one-time account join tickets
   --mobile    Use the old mobile QR/manual flow instead of default web login
   --email     Use email OTP login (no browser needed, works on headless Linux)
 
 ${chalk.bold('Recommended flows:')}
   aha auth login
-  aha auth login --code aha_join_xxx
+  aha auth login --server-url https://ahaagi.com/api --webapp-url https://ahaagi.com/webappv3 --code aha_join_xxx
   aha auth login --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth show-join-code
   aha auth reconnect
@@ -360,16 +465,20 @@ async function handleAuthReconnect(): Promise<void> {
 }
 
 async function handleAuthLogin(args: string[]): Promise<void> {
-  const createNewAccount = args.includes('--force') || args.includes('-f') || args.includes('--new') || args.includes('-n');
-  const restoreAccount = args.includes('--restore') || args.includes('-r');
+  const serverOverrides = parseAuthLoginServerOverrides(args);
+  const serverOverridePatch = applyAuthLoginServerOverrides(serverOverrides);
+  const loginArgs = serverOverrides.args;
+  const hasServerOverride = !!serverOverridePatch.serverUrl || !!serverOverridePatch.webappUrl;
+  const createNewAccount = loginArgs.includes('--force') || loginArgs.includes('-f') || loginArgs.includes('--new') || loginArgs.includes('-n');
+  const restoreAccount = loginArgs.includes('--restore') || loginArgs.includes('-r');
   const forceAuth = createNewAccount || restoreAccount;
-  const useMobileAuth = args.includes('--mobile');
-  const useEmailAuth = args.includes('--email');
+  const useMobileAuth = loginArgs.includes('--mobile');
+  const useEmailAuth = loginArgs.includes('--email');
   const existingCreds = await readCredentials();
   const settings = await readSettings();
 
   // Extract --code <value> if provided
-  const restoreCode = readRestoreCodeArg(args);
+  const restoreCode = readRestoreCodeArg(loginArgs);
 
   if (createNewAccount && restoreAccount) {
     console.error(chalk.red('Choose either --new/--force or --restore, not both.'));
@@ -386,6 +495,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     await clearMachineId();
     await writeCredentialsLegacy({ secret: result.secret, token: result.token });
     await ensureRecoveryMaterialForSeed(result.token, result.secret, 'email login');
+    persistAuthLoginServerOverrides(serverOverridePatch);
     const { accountId } = decodeTokenSubject(result.token);
     console.log(chalk.green(t('auth.signedInEmail')));
     if (accountId) {
@@ -400,6 +510,8 @@ async function handleAuthLogin(args: string[]): Promise<void> {
 
   // ── Restore with --code: join ticket or backup key ──
   if (restoreCode) {
+    // The join path starts the daemon before returning, so save URL overrides first.
+    persistAuthLoginServerOverrides(serverOverridePatch);
     if (isAccountJoinTicket(restoreCode)) {
       await handleAuthJoin(['--ticket', restoreCode]);
       return;
@@ -462,7 +574,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
   }
 
   // Check if already authenticated (if not forcing)
-  if (!forceAuth) {
+  if (!forceAuth && !hasServerOverride) {
     if (existingCreds && settings?.machineId) {
       console.log(chalk.green(t('auth.alreadyAuthenticated')));
       console.log(chalk.gray(`  Machine ID: ${settings.machineId}`));
@@ -486,6 +598,7 @@ async function handleAuthLogin(args: string[]): Promise<void> {
       forceAuth: restoreAccount
     });
     await ensureRecoveryMaterialForCredentials(result.credentials, useMobileAuth ? 'mobile auth' : 'web auth');
+    persistAuthLoginServerOverrides(serverOverridePatch);
     const daemonResult = await ensureDaemonRunningAfterAuth();
     const { accountId } = decodeTokenSubject(result.credentials.token);
     console.log(chalk.green(t('auth.authSuccess')));
