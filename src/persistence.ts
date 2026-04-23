@@ -5,7 +5,7 @@
  */
 
 import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, open, unlink, rename, stat, chmod } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
@@ -44,6 +44,8 @@ interface Settings {
 const defaultSettings: Settings = {
   onboardingCompleted: false
 }
+
+const SETTINGS_FILE_MODE = 0o600;
 
 function getLegacySettingsFile(): string {
   return join(homedir(), '.aha', 'settings.json');
@@ -114,7 +116,8 @@ export async function writeSettings(settings: Settings): Promise<void> {
     await mkdir(configuration.ahaHomeDir, { recursive: true })
   }
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
+  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2), { mode: SETTINGS_FILE_MODE })
+  await chmod(configuration.settingsFile, SETTINGS_FILE_MODE)
 }
 
 /**
@@ -177,8 +180,9 @@ export async function updateSettings(
     }
 
     // Write atomically using rename
-    await writeFile(tmpFile, JSON.stringify(updated, null, 2));
+    await writeFile(tmpFile, JSON.stringify(updated, null, 2), { mode: SETTINGS_FILE_MODE });
     await rename(tmpFile, configuration.settingsFile); // Atomic on POSIX
+    await chmod(configuration.settingsFile, SETTINGS_FILE_MODE);
 
     return updated;
   } finally {

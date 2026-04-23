@@ -176,17 +176,17 @@ Scribe → 生成文档
 ### 💬 获取帮助
 - **Email**: hsy863551305@gmail.com
 - **微信**: CopizzaH（添加好友时请备注"Aha用户"）
-- **Issues**: [GitHub Issues](https://github.com/aha-agi/aha-cli/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/aha-agi/aha-cli/discussions)
+- **Issues**: [GitHub Issues](https://github.com/Shiyao-Huang/happy-cli/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Shiyao-Huang/happy-cli/discussions)
 
 ### 🎁 分享你的经验
-用 Aha 做了什么酷炫的项目？在 [Show & Tell](https://github.com/aha-agi/aha-cli/discussions/categories/show-and-tell) 分享你的故事！
+用 Aha 做了什么酷炫的项目？在 [Show & Tell](https://github.com/Shiyao-Huang/happy-cli/discussions/categories/show-and-tell) 分享你的故事！
 
 ### 🐛 报告问题
-遇到 bug？在 [Issues](https://github.com/aha-agi/aha-cli/issues) 告诉我们。
+遇到 bug？在 [Issues](https://github.com/Shiyao-Huang/happy-cli/issues) 告诉我们。
 
 ### 💡 提出建议
-有好想法？在 [Feature Requests](https://github.com/aha-agi/aha-cli/discussions/categories/ideas) 提出你的建议。
+有好想法？在 [Feature Requests](https://github.com/Shiyao-Huang/happy-cli/discussions/categories/ideas) 提出你的建议。
 
 ### 🔧 贡献代码
 想参与开发？查看 [CONTRIBUTING.md](./CONTRIBUTING.md)
@@ -339,7 +339,7 @@ npm install -g cc-aha-cli && aha daemon start
 Made with ❤️ by Aha Community
 
 [Website](https://aha.engineering) •
-[GitHub](https://github.com/aha-agi/aha-cli) •
+[GitHub](https://github.com/Shiyao-Huang/happy-cli) •
 [Twitter](https://twitter.com/aha_engineering) •
 [Discord](https://discord.gg/aha)
 

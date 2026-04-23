@@ -56,6 +56,12 @@ import { buildMountedAgentPrompt } from '@/utils/buildMountedAgentPrompt';
 import { sanitizeFallbackModel } from './utils/sanitizeFallbackModel';
 import { computeEffectiveAllowedToolsFromMetadata, hasDynamicGrantOptIn } from './utils/temporaryToolGrants';
 import { buildSessionScopeFilters } from './team/sessionScope';
+import { serializeErrorForLog } from '@/utils/serializeErrorForLog';
+import {
+    buildBootstrapFallbackInstructions,
+    hasOrgManagerBootstrapTask,
+    resolveTeamContextGenomeForInjection,
+} from './utils/teamBootstrapInstructions';
 import {
     getEffectiveTeamMessageDisplayName,
     getEffectiveTeamMessageRole,
@@ -144,37 +150,6 @@ function isInvalidFromSessionIdHandshakeError(error: unknown): boolean {
     return normalizedMessage.includes('invalid fromsessionid');
 }
 
-function serializeErrorForLog(error: unknown): Record<string, unknown> {
-    if (error instanceof Error) {
-        const base: Record<string, unknown> = {
-            name: error.name,
-            message: error.message,
-            stack: error.stack,
-        };
-
-        const anyError = error as Error & { code?: unknown; cause?: unknown };
-        if (anyError.code !== undefined) {
-            base.code = anyError.code;
-        }
-        if (anyError.cause !== undefined) {
-            base.cause = anyError.cause instanceof Error
-                ? {
-                    name: anyError.cause.name,
-                    message: anyError.cause.message,
-                    stack: anyError.cause.stack,
-                }
-                : anyError.cause;
-        }
-        return base;
-    }
-
-    if (error && typeof error === 'object') {
-        return error as Record<string, unknown>;
-    }
-
-    return { value: String(error) };
-}
-
 /**
  * Replace `{{VAR_NAME}}` placeholders in a genome systemPrompt with runtime values.
  * Unknown tokens are left as-is so downstream code can still detect them.
@@ -236,7 +211,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const settings = await readSettings();
     let machineId = settings?.machineId
     if (!machineId) {
-        logger.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/aha-agi/aha-cli/issues/new/choose`);
+        logger.error(`[START] No machine ID found in settings, which is unexepcted since authAndSetupMachineIfNeeded should have created it. Please report this issue on https://github.com/Shiyao-Huang/happy-cli/issues/new/choose`);
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
@@ -1109,19 +1084,33 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                     };
                 }
 
+                const taskPrompt = process.env.AHA_TASK_PROMPT;
+                const mustDeliverBootstrapTask = hasOrgManagerBootstrapTask(role, taskPrompt);
                 let instructions: string;
+                let currentGenomeForContext = _agentImageRef.current ?? _agentImage;
 
                 // ── Genome Tier 1：Prompt 注入 ───────────────────────────────────────
                 // Use _agentImageRef.current (updated by hot-evolution interval) so
                 // an evolved systemPrompt takes effect on the next turn without restart.
                 // Falls back to startup _agentImage if ref was not set (ad-hoc agents).
-                const _currentGenome = _agentImageRef.current ?? _agentImage;
-                if (_currentGenome?.systemPrompt) {
-                    instructions = resolvePromptTemplateVars(_currentGenome.systemPrompt, {
+                const genomeResolution = await resolveTeamContextGenomeForInjection({
+                    token: credentials.token,
+                    specId: _agentImageId || undefined,
+                    startupGenome: _agentImage,
+                    agentImageRef: _agentImageRef,
+                    fetchAgentImage,
+                    onGenomeResolved: (latestGenome) => {
+                        allowDynamicToolGrants = hasDynamicGrantOptIn(latestGenome);
+                    },
+                });
+                currentGenomeForContext = genomeResolution.genome;
+
+                if (currentGenomeForContext?.systemPrompt) {
+                    instructions = resolvePromptTemplateVars(currentGenomeForContext.systemPrompt, {
                         // Self-mirror: identity fields so genome prompts can reference the agent's own state
                         AHA_SESSION_ID: response.id,
                         AHA_SPEC_ID: _agentImageId || '(none)',
-                        AHA_SPEC_VERSION: String(_currentGenome.version ?? '?'),
+                        AHA_SPEC_VERSION: String(currentGenomeForContext.version ?? '?'),
                         AHA_DISPLAY_NAME: (metadata as { displayName?: string } | undefined)?.displayName || role || 'agent',
                         AHA_AGENT_ROLE: role || 'agent',
                         AHA_TEAM_ID: teamId || process.env.AHA_ROOM_ID || '(unknown-team)',
@@ -1135,10 +1124,37 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         AHA_SUPERVISOR_LAST_SESSION_ID: process.env.AHA_SUPERVISOR_LAST_SESSION_ID || '(none)',
                         AHA_SUPERVISOR_PENDING_ACTION_BLOCK: buildPendingActionBlock(),
                     });
-                    if (_currentGenome.systemPromptSuffix) {
-                        instructions += '\n\n' + _currentGenome.systemPromptSuffix;
+                    if (currentGenomeForContext.systemPromptSuffix) {
+                        instructions += '\n\n' + currentGenomeForContext.systemPromptSuffix;
                     }
-                    logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId}, v${_currentGenome.version ?? '?'})`);
+                    logger.debug(`[genome] Using genome systemPrompt (specId=${_agentImageId}, v${currentGenomeForContext.version ?? '?'}, source=${genomeResolution.source})`);
+                } else if (mustDeliverBootstrapTask) {
+                    instructions = buildBootstrapFallbackInstructions({
+                        role,
+                        specId: _agentImageId || undefined,
+                        resolutionSource: genomeResolution.source,
+                    });
+                    logger.warn(
+                        `[runClaude] Using degraded bootstrap fallback instructions so AHA_TASK_PROMPT is not lost (role=${role ?? 'agent'}, specId=${_agentImageId ?? 'none'}, source=${genomeResolution.source})`,
+                    );
+                    try {
+                        await api.sendTeamMessage(teamId, {
+                            id: randomUUID(),
+                            teamId,
+                            content: `Bootstrap warning: ${role ?? 'agent'} could not load its genome prompt during startup (${genomeResolution.source}), so it is using a degraded fallback to preserve the initial task.`,
+                            type: 'chat' as const,
+                            timestamp: Date.now(),
+                            fromSessionId: response.id,
+                            fromRole: role,
+                            metadata: {
+                                type: 'bootstrap_warning',
+                                specId: _agentImageId || null,
+                                resolutionSource: genomeResolution.source,
+                            },
+                        });
+                    } catch (warningError) {
+                        logger.warn('[runClaude] Failed to send bootstrap fallback warning to team chat', serializeErrorForLog(warningError));
+                    }
                 } else if (_agentImageId || _agentImage) {
                     throw new Error(
                         `[runClaude] Missing required genome systemPrompt for role=${role ?? 'agent'} specId=${_agentImageId ?? 'unknown'}`,
@@ -1216,7 +1232,7 @@ ${instructions}
                 // Ensure we have role and teamId in metadata for generateRolePrompt
                 if (!sessionMetadataForContext.role) sessionMetadataForContext.role = role;
                 if (!sessionMetadataForContext.teamId) sessionMetadataForContext.teamId = teamId;
-                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, _agentImage ?? undefined, _agentVerdictData);
+                const rolePromptForContext = generateRolePrompt(sessionMetadataForContext, joinKanbanContext, currentGenomeForContext ?? _agentImage ?? undefined, _agentVerdictData);
                 logger.debug(`[runClaude] Generated role prompt for context injection (role: ${role})`);
 
                 const enhancedMode: EnhancedMode = {
@@ -1231,7 +1247,6 @@ ${instructions}
 
                 // For org-manager with task prompt, merge it into the context message
                 // so it's processed in the SAME conversation turn (not a separate turn)
-                const taskPrompt = process.env.AHA_TASK_PROMPT;
                 let finalContextMsg = contextMsg;
                 if (role === 'org-manager' && taskPrompt) {
                     finalContextMsg = contextMsg + `\n\nThe user's task request:\n\n${taskPrompt}\n\nAnalyze this task and use create_agent to assemble the team NOW. Do NOT wait for instructions.`;
@@ -1496,7 +1511,7 @@ ${instructions}
     });
 
     process.on('unhandledRejection', (reason, promise) => {
-        logger.warn('[START] Unhandled rejection (non-fatal):', reason);
+        logger.warn('[START] Unhandled rejection (non-fatal):', serializeErrorForLog(reason));
         logger.warn('[START] Rejection type:', typeof reason, 'keys:', reason && typeof reason === 'object' ? Object.keys(reason) : 'N/A');
         logger.warn('[START] Promise:', promise);
     });

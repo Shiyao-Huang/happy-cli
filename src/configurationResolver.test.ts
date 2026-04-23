@@ -55,8 +55,8 @@ describe('configurationResolver', () => {
     const configFile = join(tempDir, 'nested', 'config.json')
 
     writePersistentCliConfig(configFile, {
-      serverUrl: 'https://ahaagi.com/api',
-      webappUrl: 'https://ahaagi.com/webappv3',
+      serverUrl: 'https://preview.aha-agi.com/api',
+      webappUrl: 'https://preview.aha-agi.com/webappv3',
     })
 
     writePersistentCliConfig(configFile, {
@@ -65,7 +65,7 @@ describe('configurationResolver', () => {
 
     expect(JSON.parse(readFileSync(configFile, 'utf8'))).toMatchObject({
       serverUrl: 'https://aha-agi.com/api',
-      webappUrl: 'https://ahaagi.com/webappv3',
+      webappUrl: 'https://preview.aha-agi.com/webappv3',
       enableModelSelection: false,
     })
   })

@@ -5,7 +5,7 @@ import { stripSessionScopedAhaEnv } from './sessionScopedAhaEnv';
 describe('stripSessionScopedAhaEnv', () => {
     it('removes session-scoped agent identity while preserving global config', () => {
         const sanitized = stripSessionScopedAhaEnv({
-            AHA_SERVER_URL: 'https://ahaagi.com/api',
+            AHA_SERVER_URL: 'https://aha-agi.com/api',
             AHA_HOME_DIR: '/tmp/.aha',
             AHA_RECOVER_SESSION_ID: 'cmn-stale',
             AHA_ROOM_ID: 'team-old',
@@ -15,7 +15,7 @@ describe('stripSessionScopedAhaEnv', () => {
             CUSTOM_FLAG: 'keep-me',
         });
 
-        expect(sanitized.AHA_SERVER_URL).toBe('https://ahaagi.com/api');
+        expect(sanitized.AHA_SERVER_URL).toBe('https://aha-agi.com/api');
         expect(sanitized.AHA_HOME_DIR).toBe('/tmp/.aha');
         expect(sanitized.CUSTOM_FLAG).toBe('keep-me');
         expect(sanitized.AHA_RECOVER_SESSION_ID).toBeUndefined();
@@ -29,12 +29,12 @@ describe('stripSessionScopedAhaEnv', () => {
         const sanitized = stripSessionScopedAhaEnv(
             {
                 CLAUDECODE: '1',
-                AHA_SERVER_URL: 'https://ahaagi.com/api',
+                AHA_SERVER_URL: 'https://aha-agi.com/api',
             },
             { stripClaudeCode: true },
         );
 
         expect(sanitized.CLAUDECODE).toBeUndefined();
-        expect(sanitized.AHA_SERVER_URL).toBe('https://ahaagi.com/api');
+        expect(sanitized.AHA_SERVER_URL).toBe('https://aha-agi.com/api');
     });
 });

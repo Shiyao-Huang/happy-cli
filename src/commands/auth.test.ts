@@ -173,18 +173,18 @@ describe('handleAuthCommand', () => {
     await handleAuthCommand([
       'login',
       '--server-url',
-      'https://ahaagi.com/api',
+      'https://preview.aha-agi.com/api',
       '--webapp-url',
-      'https://ahaagi.com/webappv3',
+      'https://preview.aha-agi.com/webappv3',
       '--code',
       'AJXMVN',
     ]);
 
-    expect(mockConfiguration.serverUrl).toBe('https://ahaagi.com/api');
-    expect(mockConfiguration.webappUrl).toBe('https://ahaagi.com/webappv3');
+    expect(mockConfiguration.serverUrl).toBe('https://preview.aha-agi.com/api');
+    expect(mockConfiguration.webappUrl).toBe('https://preview.aha-agi.com/webappv3');
     expect(mockConfigurationResolver.writePersistentCliConfig).toHaveBeenCalledWith('/tmp/.aha-test/config.json', {
-      serverUrl: 'https://ahaagi.com/api',
-      webappUrl: 'https://ahaagi.com/webappv3',
+      serverUrl: 'https://preview.aha-agi.com/api',
+      webappUrl: 'https://preview.aha-agi.com/webappv3',
     });
     expect(mockAccountJoin.redeemAccountJoinTicket).toHaveBeenCalledWith('AJXMVN');
     expect(mockPersistence.writeCredentialsContentSecretKey).toHaveBeenCalledWith({

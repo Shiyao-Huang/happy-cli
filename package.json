@@ -57,16 +57,16 @@
   ],
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started aha",
-    "typecheck": "node --max-old-space-size=16384 ./node_modules/.bin/tsc --noEmit --skipLibCheck --incremental --tsBuildInfoFile .tsbuildinfo",
+    "typecheck": "node --max-old-space-size=4096 ./node_modules/.bin/tsc --noEmit --skipLibCheck --incremental --tsBuildInfoFile .tsbuildinfo",
     "prebuild": "node scripts/prebuild-warn.mjs",
-    "build": "shx rm -rf dist && pkgroll",
+    "build": "NODE_OPTIONS='--max-old-space-size=4096' shx rm -rf dist && NODE_OPTIONS='--max-old-space-size=4096' pkgroll",
     "build:strict": "yarn typecheck && yarn build",
-    "test": "yarn build && tsx --env-file .env.integration-test node_modules/.bin/vitest run",
+    "test": "NODE_OPTIONS='--max-old-space-size=4096' yarn build && NODE_OPTIONS='--max-old-space-size=4096' tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "start": "yarn build && ./bin/aha.mjs",
     "dev": "tsx src/index.ts",
     "dev:local-server": "yarn build && tsx --env-file .env.dev-local-server src/index.ts",
     "dev:integration-test-env": "yarn build && tsx --env-file .env.integration-test src/index.ts",
-    "prepack": "yarn build && node scripts/prepare-npm-package.mjs",
+    "prepack": "NODE_OPTIONS='--max-old-space-size=4096' yarn build && node scripts/prepare-npm-package.mjs",
     "prepublishOnly": "echo 'skipping tests for binary publish'",
     "release": "release-it",
     "postinstall": "node scripts/unpack-tools.cjs && node scripts/install-git-hooks.cjs",
@@ -134,11 +134,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/aha-agi/aha-cli.git"
+    "url": "https://github.com/Shiyao-Huang/happy-cli.git"
   },
-  "homepage": "https://github.com/aha-agi/aha-cli#readme",
+  "homepage": "https://github.com/Shiyao-Huang/happy-cli#readme",
   "bugs": {
-    "url": "https://github.com/aha-agi/aha-cli/issues"
+    "url": "https://github.com/Shiyao-Huang/happy-cli/issues/new/choose"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",

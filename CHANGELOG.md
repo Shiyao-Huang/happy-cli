@@ -21,11 +21,11 @@ This is the first public open-source release of aha-cli. The codebase has been c
 - **Team queue visibility**: `todoAssignedToOthers` field in `teamStats` prevents duplicate pickup of already-claimed tasks.
 
 ### Changed
-- **Brand cleanup**: All references to `aha-v3`, `top1vibe`, and `slopus` replaced with `aha` / `ahaagi.com`. README updated with current architecture and setup instructions.
+- **Brand cleanup**: All references to legacy package names, deployment hosts, and upstream repository metadata replaced with `aha` / `aha-agi.com`. README updated with current architecture and setup instructions.
 - **Obfuscation default**: `npm publish` obfuscation now defaults to `none` for open-source distribution.
 - **Pre-commit**: Serialized `prerecommit` runs pinned to Node 22 with a 10 GB heap to avoid multi-agent `tsc` OOM on shared machines.
 - **Claude Code SDK**: Updated to `2.1.85`; Codex bridge compatibility target documented as `codex-cli 0.117.0`.
-- **URL constants**: All default URLs standardized on `ahaagi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
+- **URL constants**: All default URLs standardized on `aha-agi.com` (`DEFAULT_SERVER_URL`, `DEFAULT_WEBAPP_URL`, `DEFAULT_GENOME_HUB_URL`).
 
 ### Fixed
 - **DNS fallback**: macOS systems with empty system DNS now fall back to Google/Cloudflare resolvers via a global `dns.lookup` patch installed at CLI entry.
@@ -54,9 +54,9 @@ This is the first public open-source release of aha-cli. The codebase has been c
 ## [2.0.15] - 2026-03-26
 
 ### Changed
-- Removed npm package metadata links that still pointed to `slopus` repositories and issue trackers.
+- Removed npm package metadata links that still pointed to legacy upstream repositories and issue trackers.
 - Standardized published docs, support links, and bundled CLI help output on `https://github.com/Shiyao-Huang/aha/issues/new/choose`.
-- Replaced remaining published `top1vibe.com` references with `aha-agi.com`.
+- Replaced remaining published legacy deployment-host references with `aha-agi.com`.
 - Aligned source defaults with published defaults for API, web app, and genome hub URLs.
 
 ## [2.0.12] - 2026-03-24

@@ -6,6 +6,7 @@ import {
     getCodexToolError,
     isInvalidFromSessionIdHandshakeError,
     isRetryableHandshakeError,
+    resolveCodexModelOverride,
     resolveTeamActorSessionId,
     sendTeamHandshakeWithRetry,
 } from '../runCodex';
@@ -135,6 +136,25 @@ describe('applyCodexSessionNamingFromEnv', () => {
             name: 'Delivery Team',
             roomName: 'Delivery Team',
         });
+    });
+});
+
+describe('resolveCodexModelOverride', () => {
+    it('keeps Codex-compatible model IDs', () => {
+        expect(resolveCodexModelOverride('gpt-5.4')).toBe('gpt-5.4');
+        expect(resolveCodexModelOverride('  gpt-5.4  ')).toBe('gpt-5.4');
+    });
+
+    it('drops Anthropic model IDs so Codex uses its configured default', () => {
+        expect(resolveCodexModelOverride('claude-sonnet-4-6')).toBeUndefined();
+        expect(resolveCodexModelOverride('anthropic/claude-sonnet-4-6')).toBeUndefined();
+        expect(resolveCodexModelOverride('anthropic:claude-opus-4-6')).toBeUndefined();
+    });
+
+    it('treats empty values as no override', () => {
+        expect(resolveCodexModelOverride('')).toBeUndefined();
+        expect(resolveCodexModelOverride('   ')).toBeUndefined();
+        expect(resolveCodexModelOverride(undefined)).toBeUndefined();
     });
 });
 

@@ -331,7 +331,7 @@ ${chalk.bold('Options:')}
 
 ${chalk.bold('Recommended flows:')}
   aha auth login
-  aha auth login --server-url https://ahaagi.com/api --webapp-url https://ahaagi.com/webappv3 --code aha_join_xxx
+  aha auth login --server-url https://aha-agi.com/api --webapp-url https://aha-agi.com/webappv3 --code aha_join_xxx
   aha auth login --code XXXXX-XXXXX-XXXXX-XXXXX
   aha auth show-join-code
   aha auth reconnect

@@ -6,7 +6,7 @@
 
 ```
 npx aha-agi-v2 --server https://aha-agi.com    → wow 测试
-npx aha-agi-v2 --server https://ahaagi.com      → 生产
+npx aha-agi-v2 --server https://aha-agi.com      → 生产
 npx aha-agi-v2                                    → 默认生产
 ```
 

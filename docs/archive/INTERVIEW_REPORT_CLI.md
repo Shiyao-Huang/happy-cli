@@ -856,6 +856,6 @@ export const colorize = {
 
 ---
 
-*Generated with [Claude Code](https://claude.ai/code) via [Happy](https://happy.engineering)*
+*Generated with [Claude Code](https://claude.ai/code) via [Aha](https://aha-agi.com)*
 *Co-Authored-By: Claude <noreply@anthropic.com>*
-*Co-Authored-By: Happy <yesreply@happy.engineering>*
+*Co-Authored-By: Aha <hsy863551305@gmail.com>*

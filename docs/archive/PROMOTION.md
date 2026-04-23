@@ -127,7 +127,7 @@ The multi-agent system is particularly interesting - you can have Master coordin
 
 Would love to hear your feedback!
 
-GitHub: https://github.com/aha-agi/aha-cli
+GitHub: https://github.com/Shiyao-Huang/happy-cli
 ```
 
 #### r/ClaudeCode
@@ -289,7 +289,7 @@ aha daemon start
 
 ## 链接
 
-- GitHub: https://github.com/aha-agi/aha-cli
+- GitHub: https://github.com/Shiyao-Huang/happy-cli
 - 文档: [GETTING_STARTED.md]
 - 联系方式: hsy863551305@gmail.com
 

@@ -27,6 +27,10 @@ interface AuthSetupOptions extends DoAuthOptions {
     forceAuth?: boolean;
 }
 
+function writeAuthLine(message = ''): void {
+    process.stdout.write(`${message}\n`);
+}
+
 export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials | null> {
     console.clear();
     const authMethod = options.method ?? 'web';
@@ -42,7 +46,7 @@ export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials |
             supportsV2: true
         });
     } catch (error) {
-        console.log(t('auth.failed'));
+        writeAuthLine(t('auth.failed'));
         return null;
     }
 
@@ -59,15 +63,15 @@ export async function doAuth(options: DoAuthOptions = {}): Promise<Credentials |
  */
 async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials | null> {
     console.clear();
-    console.log(t('auth.mobileHeader'));
-    console.log(t('auth.scanQrMobile'));
+    writeAuthLine(t('auth.mobileHeader'));
+    writeAuthLine(t('auth.scanQrMobile'));
 
     const authUrl = buildTerminalConnectUrl(encodeBase64Url(keypair.publicKey));
     displayQRCode(authUrl);
 
-    console.log(t('auth.orManualUrl'));
-    console.log(authUrl);
-    console.log('');
+    writeAuthLine(t('auth.orManualUrl'));
+    writeAuthLine(authUrl);
+    writeAuthLine();
 
     return await waitForAuthentication(keypair);
 }
@@ -77,31 +81,31 @@ async function doMobileAuth(keypair: tweetnacl.BoxKeyPair): Promise<Credentials 
  */
 async function doWebAuth(keypair: tweetnacl.BoxKeyPair, options: DoAuthOptions): Promise<Credentials | null> {
     console.clear();
-    console.log(t('auth.webHeader'));
+    writeAuthLine(t('auth.webHeader'));
 
     const webUrl = generateWebAuthUrl(keypair.publicKey, {
         nextPath: options.webNextPath,
         machineId: options.machineId,
         mode: options.webMode
     });
-    console.log(t('auth.openingBrowser'));
+    writeAuthLine(t('auth.openingBrowser'));
 
     const browserOpened = await openBrowser(webUrl);
 
     if (browserOpened) {
-        console.log(t('auth.browserOpened'));
-        console.log(t('auth.completeBrowserAuth'));
+        writeAuthLine(t('auth.browserOpened'));
+        writeAuthLine(t('auth.completeBrowserAuth'));
     } else {
-        console.log(t('auth.browserFailed'));
+        writeAuthLine(t('auth.browserFailed'));
     }
 
     // I changed this to always show the URL because we got a report from
     // someone running aha inside a devcontainer that they saw the
     // "Complete authentication in your browser window." but nothing opened.
-    // https://github.com/aha-agi/aha-cli/issues/19
-    console.log(t('auth.manualUrl'));
-    console.log(webUrl);
-    console.log('');
+    // https://github.com/Shiyao-Huang/happy-cli/issues/19
+    writeAuthLine(t('auth.manualUrl'));
+    writeAuthLine(webUrl);
+    writeAuthLine();
 
     return await waitForAuthentication(keypair);
 }
@@ -117,7 +121,7 @@ async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Cre
     // Handle Ctrl-C during waiting
     const handleInterrupt = () => {
         cancelled = true;
-        console.log(t('auth.cancelled'));
+        writeAuthLine(t('auth.cancelled'));
         process.exit(0);
     };
 
@@ -141,7 +145,7 @@ async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Cre
                                 token: token
                             }
                             await writeCredentialsLegacy(credentials);
-                            console.log(t('auth.successLegacy'));
+                            writeAuthLine(t('auth.successLegacy'));
                             return {
                                 encryption: {
                                     type: 'legacy',
@@ -158,7 +162,7 @@ async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Cre
                                     token: token
                                 }
                                 await writeCredentialsContentSecretKey(credentials);
-                                console.log(t('auth.successV2'));
+                                writeAuthLine(t('auth.successV2'));
                                 return {
                                     encryption: {
                                         type: 'contentSecretKey',
@@ -167,17 +171,17 @@ async function waitForAuthentication(keypair: tweetnacl.BoxKeyPair): Promise<Cre
                                     token: token
                                 };
                             } else {
-                                console.log(t('auth.decryptFailed'));
+                                writeAuthLine(t('auth.decryptFailed'));
                                 return null;
                             }
                         }
                     } else {
-                        console.log(t('auth.decryptFailed'));
+                        writeAuthLine(t('auth.decryptFailed'));
                         return null;
                     }
                 }
             } catch (error) {
-                console.log(t('auth.checkFailed'));
+                writeAuthLine(t('auth.checkFailed'));
                 return null;
             }
 

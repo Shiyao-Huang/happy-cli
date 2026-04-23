@@ -12,6 +12,7 @@ import { execFileSync, type ExecFileSyncOptions } from 'child_process';
 import { logCodexBridge } from './utils/bridgeDebug';
 import { createCodexTransport } from './windowsSafeStdioClientTransport';
 import { withWindowsHide } from '@/utils/windowsProcessOptions';
+import { prepareCodexNetworkShim, type CodexNetworkShim } from './codexNetworkProxy';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half of the maximum possible timeout (~28 days for int32 value in NodeJS)
 
@@ -250,6 +251,7 @@ export class CodexMcpClient {
     private conversationId: string | null = null;
     private handler: ((event: any) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
+    private networkShim: CodexNetworkShim | null = null;
 
     constructor() {
         this.client = new Client(
@@ -285,22 +287,41 @@ export class CodexMcpClient {
 
         const mcpCommand = getCodexMcpCommand();
         logger.debug(`[CodexMCP] Connecting to Codex MCP server using command: codex ${mcpCommand}`);
+        this.networkShim = await prepareCodexNetworkShim();
+
+        const childEnv = Object.keys(process.env).reduce((acc, key) => {
+            const value = process.env[key];
+            if (typeof value === 'string') acc[key] = value;
+            return acc;
+        }, {} as Record<string, string>);
+        if (this.networkShim) {
+            Object.assign(childEnv, this.networkShim.env);
+        }
 
         this.transport = createCodexTransport({
             command: 'codex',
             args: [mcpCommand],
-            env: Object.keys(process.env).reduce((acc, key) => {
-                const value = process.env[key];
-                if (typeof value === 'string') acc[key] = value;
-                return acc;
-            }, {} as Record<string, string>)
+            env: childEnv
         });
 
         // Register request handlers for Codex permission methods
         this.registerPermissionHandlers();
 
-        await this.client.connect(this.transport);
-        this.connected = true;
+        try {
+            await this.client.connect(this.transport);
+            this.connected = true;
+        } catch (error) {
+            if (this.networkShim) {
+                try {
+                    await this.networkShim.close();
+                } catch (closeError) {
+                    logger.debug('[CodexMCP] Error closing Codex network shim after connect failure:', closeError);
+                }
+                this.networkShim = null;
+            }
+            this.transport = null;
+            throw error;
+        }
 
         logger.debug('[CodexMCP] Connected to Codex');
     }
@@ -567,6 +588,14 @@ export class CodexMcpClient {
 
         this.transport = null;
         this.connected = false;
+        if (this.networkShim) {
+            try {
+                await this.networkShim.close();
+            } catch (error) {
+                logger.debug('[CodexMCP] Error closing Codex network shim:', error);
+            }
+            this.networkShim = null;
+        }
         // Preserve session/conversation identifiers for potential reconnection / recovery flows.
         // Only forceCloseSession() should clear them.
         logger.debug(`[CodexMCP] Disconnected; session ${this.sessionId ?? 'none'} preserved`);

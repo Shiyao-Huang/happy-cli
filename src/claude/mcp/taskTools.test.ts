@@ -6,6 +6,7 @@ import {
     resolveTaskActorSessionId,
     runWithTaskSessionFallback,
     shouldRetryTaskSessionWithClient,
+    splitTaskCommentContent,
     summarizeTaskForList,
 } from './taskTools';
 
@@ -217,6 +218,32 @@ describe('resolveTaskActorSessionId', () => {
         expect(resolveTaskActorSessionId({}, 'local-sid')).toBe('local-sid');
         expect(resolveTaskActorSessionId(null, 'local-sid')).toBe('local-sid');
         expect(resolveTaskActorSessionId(undefined, 'local-sid')).toBe('local-sid');
+    });
+});
+
+describe('splitTaskCommentContent', () => {
+    it('keeps short comments as a single trimmed chunk', () => {
+        expect(splitTaskCommentContent('  short note  ', 20)).toEqual(['short note']);
+    });
+
+    it('drops blank comments after trimming', () => {
+        expect(splitTaskCommentContent('   \n\t   ', 20)).toEqual([]);
+    });
+
+    it('splits long task comments into bounded chunks to avoid server 400s', () => {
+        const content = [
+            'a'.repeat(12),
+            'b'.repeat(12),
+            'c'.repeat(12),
+        ].join('\n');
+
+        const chunks = splitTaskCommentContent(content, 20);
+
+        expect(chunks.length).toBeGreaterThan(1);
+        expect(chunks.every((chunk) => chunk.length <= 20)).toBe(true);
+        expect(chunks.join('\n')).toContain('aaaaaaaaaaaa');
+        expect(chunks.join('\n')).toContain('bbbbbbbbbbbb');
+        expect(chunks.join('\n')).toContain('cccccccccccc');
     });
 });
 

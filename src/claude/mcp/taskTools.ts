@@ -75,6 +75,41 @@ type TaskMutationResult = {
     task?: any;
 };
 
+const TASK_COMMENT_CONTENT_CHUNK_SIZE = 3600;
+
+export function splitTaskCommentContent(
+    content: string,
+    maxChunkSize = TASK_COMMENT_CONTENT_CHUNK_SIZE,
+): string[] {
+    const trimmed = content.trim();
+    if (!trimmed) {
+        return [];
+    }
+    if (trimmed.length <= maxChunkSize) {
+        return [trimmed];
+    }
+
+    const chunks: string[] = [];
+    let remaining = trimmed;
+    while (remaining.length > maxChunkSize) {
+        const window = remaining.slice(0, maxChunkSize);
+        const newlineBoundary = window.lastIndexOf('\n');
+        const spaceBoundary = window.lastIndexOf(' ');
+        const boundary = Math.max(newlineBoundary, spaceBoundary);
+        const minUsefulBoundary = Math.floor(maxChunkSize * 0.6);
+        const cutAt = boundary >= minUsefulBoundary ? boundary + 1 : maxChunkSize;
+
+        chunks.push(remaining.slice(0, cutAt).trim());
+        remaining = remaining.slice(cutAt).trimStart();
+    }
+
+    if (remaining.length > 0) {
+        chunks.push(remaining);
+    }
+
+    return chunks.filter((chunk) => chunk.length > 0);
+}
+
 interface ShowAllTaskPageArgs {
     tasks: ListableTask[];
     status?: string;
@@ -591,8 +626,8 @@ export function registerTaskTools(ctx: McpToolContext): void {
         title: 'Add Task Comment',
         inputSchema: {
             taskId: z.string().describe('The ID of the task to comment on'),
-            content: z.string().describe('Comment text'),
-            type: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'blocker', 'decision', 'plan', 'plan-review', 'execution-check', 'rework-request']).default('note').describe('Structured comment type'),
+            content: z.string().min(1).describe('Comment text'),
+            type: z.enum(['note', 'status-change', 'review-feedback', 'handoff', 'blocker', 'decision', 'human-override', 'plan', 'plan-review', 'execution-check', 'rework-request']).default('note').describe('Structured comment type'),
             mentions: z.array(z.string()).optional().describe('Optional session IDs to mention'),
         },
     }, async (args) => {
@@ -606,27 +641,41 @@ export function registerTaskTools(ctx: McpToolContext): void {
                 return { content: [{ type: 'text', text: 'Error: You must be in a team to add task comments.' }], isError: true };
             }
 
-            const { result } = await runWithTaskSessionFallback<TaskMutationResult>({
-                operation: 'add_task_comment',
-                metadata,
-                clientSessionId: client.sessionId,
-                preferredSessionId,
-                execute: (activeSessionId) => api.addTaskComment(teamId, args.taskId, {
-                    sessionId: activeSessionId,
-                    role,
-                    displayName: metadata?.displayName || metadata?.name,
-                    type: args.type,
-                    content: args.content,
-                    mentions: args.mentions,
-                }),
-            });
+            const chunks = splitTaskCommentContent(args.content);
+            if (chunks.length === 0) {
+                return { content: [{ type: 'text', text: 'Error: Comment content must not be empty.' }], isError: true };
+            }
+            let activeSessionId = preferredSessionId;
 
-            if (!result.success || !result.task) {
-                return { content: [{ type: 'text', text: 'Error: Failed to add task comment.' }], isError: true };
+            for (let index = 0; index < chunks.length; index++) {
+                const content = chunks.length === 1
+                    ? chunks[index]
+                    : `[part ${index + 1}/${chunks.length}]\n${chunks[index]}`;
+
+                const { result, sessionId } = await runWithTaskSessionFallback<TaskMutationResult>({
+                    operation: 'add_task_comment',
+                    metadata,
+                    clientSessionId: client.sessionId,
+                    preferredSessionId: activeSessionId,
+                    execute: (candidateSessionId) => api.addTaskComment(teamId, args.taskId, {
+                        sessionId: candidateSessionId,
+                        role,
+                        displayName: metadata?.displayName || metadata?.name,
+                        type: args.type,
+                        content,
+                        mentions: args.mentions,
+                    }),
+                });
+
+                activeSessionId = sessionId;
+                if (!result.success || !result.task) {
+                    return { content: [{ type: 'text', text: `Error: Failed to add task comment part ${index + 1}/${chunks.length}.` }], isError: true };
+                }
             }
 
+            const splitSuffix = chunks.length > 1 ? ` (${chunks.length} parts).` : '.';
             return {
-                content: [{ type: 'text', text: `Comment added to task ${args.taskId}.` }],
+                content: [{ type: 'text', text: `Comment added to task ${args.taskId}${splitSuffix}` }],
                 isError: false,
             };
         } catch (error) {

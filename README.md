@@ -102,7 +102,7 @@ Persistent config can also live in `~/.aha/config.json`:
 
 ```bash
 # Clone the repo
-git clone https://github.com/aha-agi/aha-cli.git
+git clone https://github.com/Shiyao-Huang/happy-cli.git
 cd aha-cli
 
 # Install dependencies
@@ -164,5 +164,5 @@ MIT — see [LICENSE](./LICENSE)
 
 ## Contact
 
-- **Issues**: [GitHub Issues](https://github.com/aha-agi/aha-cli/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/aha-agi/aha-cli/discussions)
+- **Issues**: [GitHub Issues](https://github.com/Shiyao-Huang/happy-cli/issues/new/choose)
+- **Discussions**: [GitHub Discussions](https://github.com/Shiyao-Huang/happy-cli/discussions)

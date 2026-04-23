@@ -17,7 +17,7 @@
 #### 适合初学者的 Issue
 寻找标记为 `good first issue` 的问题：
 ```
-https://github.com/aha-agi/aha-cli/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+https://github.com/Shiyao-Huang/happy-cli/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
 ```
 
 #### 开发流程
@@ -310,7 +310,7 @@ aha-cli/
 - [@swmtjy](https://github.com/swmtjy) - 创始人 & 核心开发
 
 ### 所有贡献者
-查看完整列表：[Contributors](https://github.com/aha-agi/aha-cli/graphs/contributors)
+查看完整列表：[Contributors](https://github.com/Shiyao-Huang/happy-cli/graphs/contributors)
 
 ## 📜 行为准则
 
@@ -336,7 +336,7 @@ aha-cli/
 
 1. ⭐ **Star** 这个项目
 2. 🍴 **Fork** 到你的账号
-3. 💻 选择一个 [Issue](https://github.com/aha-agi/aha-cli/issues) 开始
+3. 💻 选择一个 [Issue](https://github.com/Shiyao-Huang/happy-cli/issues) 开始
 4. 💬 在 [Discord](https://discord.gg/aha) 介绍自己
 
 **我们期待你的贡献！** 🎉
@@ -347,7 +347,7 @@ aha-cli/
 
 **Together, we make coding accessible anywhere! 🚀**
 
-[Start Contributing](https://github.com/aha-agi/aha-cli/issues) •
+[Start Contributing](https://github.com/Shiyao-Huang/happy-cli/issues) •
 [Join Discord](https://discord.gg/aha) •
 [Read Docs](https://docs.aha.engineering)
 

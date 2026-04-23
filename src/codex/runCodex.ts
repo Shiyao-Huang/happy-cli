@@ -132,6 +132,40 @@ export function applyCodexSessionNamingFromEnv(
 
 const HANDSHAKE_RETRYABLE_STATUS_CODES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
 
+export function isCodexUnsupportedModelOverride(model: string | null | undefined): boolean {
+    const normalized = model?.trim().toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+
+    return (
+        normalized.startsWith('claude-')
+        || normalized.startsWith('anthropic/')
+        || normalized.startsWith('anthropic:')
+        || normalized.includes('/claude-')
+        || normalized.includes(':claude-')
+    );
+}
+
+export function resolveCodexModelOverride(model: string | null | undefined): string | undefined {
+    const normalized = model?.trim();
+    if (!normalized || isCodexUnsupportedModelOverride(normalized)) {
+        return undefined;
+    }
+    return normalized;
+}
+
+function resolveCodexModelOverrideWithLogging(
+    model: string | null | undefined,
+    source: string,
+): string | undefined {
+    const resolved = resolveCodexModelOverride(model);
+    if (model?.trim() && !resolved) {
+        logger.debug(`[Codex] Ignoring ${source} model override because Codex cannot run Anthropic model IDs: ${model}`);
+    }
+    return resolved;
+}
+
 export function resolveTeamActorSessionId(
     metadata: { ahaSessionId?: string } | null | undefined,
     fallbackSessionId: string,
@@ -606,7 +640,10 @@ export async function runCodex(opts: {
     }
     applyCodexSessionNamingFromEnv(metadata);
     if (process.env.AHA_AGENT_MODEL) {
-        metadata.modelOverride = process.env.AHA_AGENT_MODEL;
+        const codexModelOverride = resolveCodexModelOverrideWithLogging(process.env.AHA_AGENT_MODEL, 'environment');
+        if (codexModelOverride) {
+            metadata.modelOverride = codexModelOverride;
+        }
     }
     if (process.env.AHA_FALLBACK_AGENT_MODEL) {
         metadata.fallbackModelOverride = process.env.AHA_FALLBACK_AGENT_MODEL;
@@ -630,7 +667,10 @@ export async function runCodex(opts: {
     // Aha default: bypassPermissions (highest privilege for both Claude and Codex)
     let currentPermissionMode: PermissionMode = resolvePermissionMode(process.env.AHA_PERMISSION_MODE);
     logger.debug(`[Codex] Permission mode initialized: ${currentPermissionMode}`);
-    let currentModel: string | undefined = session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL || undefined;
+    let currentModel: string | undefined = resolveCodexModelOverrideWithLogging(
+        session.getMetadata()?.modelOverride || process.env.AHA_AGENT_MODEL,
+        'session metadata',
+    );
     let currentCustomSystemPrompt: string | undefined = undefined;
     let currentAppendSystemPrompt: string | undefined = undefined;
     let currentAllowedTools: string[] | undefined = undefined;
@@ -783,7 +823,7 @@ export async function runCodex(opts: {
             metadata.name = newMetadata.roomName;
         }
         if (newMetadata.modelOverride !== undefined) {
-            currentModel = newMetadata.modelOverride || undefined;
+            currentModel = resolveCodexModelOverrideWithLogging(newMetadata.modelOverride, 'metadata update');
             logger.debug(`[Codex] Model override updated from metadata: ${currentModel || 'default'}`);
             syncModelAwareness();
         }
@@ -861,7 +901,7 @@ export async function runCodex(opts: {
 
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined;
+            messageModel = resolveCodexModelOverrideWithLogging(message.meta.model, 'user message');
             currentModel = messageModel;
             logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
             syncModelAwareness();
@@ -1617,9 +1657,12 @@ export async function runCodex(opts: {
                 agentImage = fetchedAgentImage;
                 allowDynamicToolGrants = hasDynamicGrantOptIn(fetchedAgentImage);
                 if (fetchedAgentImage.modelId && !currentModel) {
-                    currentModel = fetchedAgentImage.modelId;
-                    logger.debug(`[Codex] Model set from agent image: ${currentModel}`);
-                    syncModelAwareness();
+                    const agentImageModel = resolveCodexModelOverrideWithLogging(fetchedAgentImage.modelId, 'agent image');
+                    if (agentImageModel) {
+                        currentModel = agentImageModel;
+                        logger.debug(`[Codex] Model set from agent image: ${currentModel}`);
+                        syncModelAwareness();
+                    }
                 }
                 const mergedAllowedTools = fetchedAgentImage.allowedTools?.length
                     ? Array.from(new Set([
@@ -2035,8 +2078,9 @@ Always reflect progress on the board and call these tools whenever you start or 
                     if (composedBaseInstructions) {
                         startConfig['base-instructions'] = composedBaseInstructions;
                     }
-                    if (message.mode.model) {
-                        startConfig.model = message.mode.model;
+                    const codexModel = resolveCodexModelOverrideWithLogging(message.mode.model, 'message mode');
+                    if (codexModel) {
+                        startConfig.model = codexModel;
                     }
 
                     // Check for resume file from multiple sources

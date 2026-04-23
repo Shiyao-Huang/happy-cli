@@ -5,6 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process'
 import { logger } from '@/ui/logger'
+import { serializeErrorForLog } from '@/utils/serializeErrorForLog'
 import { configuration } from '@/configuration'
 
 let caffeinateProcess: ChildProcess | null = null
@@ -134,7 +135,7 @@ function setupCleanupHandlers(): void {
         cleanup()
     })
     process.on('unhandledRejection', (reason, promise) => {
-        logger.warn('[caffeinate] Unhandled rejection (non-fatal):', reason)
+        logger.warn('[caffeinate] Unhandled rejection (non-fatal):', serializeErrorForLog(reason))
         logger.warn('[caffeinate] Rejection type:', typeof reason, 'keys:', reason && typeof reason === 'object' ? Object.keys(reason as object) : 'N/A')
     })
 }

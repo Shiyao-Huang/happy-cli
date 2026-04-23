@@ -47,7 +47,7 @@ curl -s -X POST "http://localhost:3006/genomes/:namespace/:name/diff" \
 ```
 localhost 请求自动跳过 publish key 认证。无 score 门槛。
 
-**create_agent 超时原因**: `ahaagi.com` DNS 不可达时，daemon 进入 LOCAL-ONLY 模式。spawn 的子进程无法回连 → webhook 超时 → `create_agent` 抛出 TimeoutError。这不是代码 bug，是网络问题。
+**create_agent 超时原因**: `aha-agi.com` DNS 不可达时，daemon 进入 LOCAL-ONLY 模式。spawn 的子进程无法回连 → webhook 超时 → `create_agent` 抛出 TimeoutError。这不是代码 bug，是网络问题。
 
 ---
 
@@ -138,7 +138,7 @@ Round 4: 现在你有了真实问题，才能找到真实约束
 - RBAC spec/role 名不一致导致 evolve_genome 阻塞（**已解决**：master 已加入 GENOME_EDIT_ROLES，但运行中的 MCP server 是旧编译版本，用 REST API 直接绕过）
 - list_available_agents 被 implementer 权限拒绝（**已修**：implementer v6 添加了该工具）
 - handoff 文件 READ 端缺失（**已修**：collectPredecessorHandoffContext 现在读 ~/.aha/handoffs/<id>.md）
-- `create_agent` 在 ahaagi.com 断网时超时（已知问题，用 REST API 绕过或等网络恢复）
+- `create_agent` 在 aha-agi.com 断网时超时（已知问题，用 REST API 绕过或等网络恢复）
 
 ---
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -25,7 +25,7 @@ vi.mock('node:os', async () => {
     };
 });
 
-import { readSettings } from './persistence';
+import { readSettings, updateSettings, writeSettings } from './persistence';
 
 describe('readSettings', () => {
     let root: string;
@@ -79,5 +79,27 @@ describe('readSettings', () => {
         const settings = await readSettings();
         expect(settings.genomeHubSshHost).toBe('v3-wow');
         expect(settings.genomeHubPublishKey).toBe('v3-key');
+    });
+
+    it('writes settings with owner-only permissions', async () => {
+        await writeSettings({
+            onboardingCompleted: true,
+            genomeHubPublishKey: 'secret-key',
+        });
+
+        expect(statSync(mockConfiguration.settingsFile).mode & 0o777).toBe(0o600);
+    });
+
+    it('preserves owner-only permissions after atomic settings updates', async () => {
+        writeFileSync(mockConfiguration.settingsFile, JSON.stringify({
+            onboardingCompleted: false,
+        }), { mode: 0o644 });
+
+        await updateSettings((current) => ({
+            ...current,
+            genomeHubPublishKey: 'updated-secret-key',
+        }));
+
+        expect(statSync(mockConfiguration.settingsFile).mode & 0o777).toBe(0o600);
     });
 });
