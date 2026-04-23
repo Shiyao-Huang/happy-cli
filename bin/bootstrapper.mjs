@@ -238,11 +238,25 @@ export async function resolveEntrypoint() {
   const now = Date.now();
   let targetEntrypoint = null;
   let targetVersion = config.currentVersion;
+  const bundled = getBundledVersion();
 
   // Try current symlink first
   targetEntrypoint = getCurrentSymlinkEntrypoint();
   if (targetEntrypoint) {
     log('debug', `Using current symlink: ${targetEntrypoint}`);
+  }
+
+  // A freshly installed npm package should not be shadowed by an older cached
+  // entrypoint. This is especially important for one-shot join commands that
+  // depend on newly added CLI flags.
+  if (
+    targetEntrypoint
+    && bundled.version
+    && targetVersion
+    && compareVersions(bundled.version, targetVersion) >= 0
+  ) {
+    log('debug', `Bundled version ${bundled.version} >= cached ${targetVersion}; using bundled entrypoint`);
+    return getBundledEntrypoint();
   }
 
   // Check for updates (non-blocking, failures are logged but not fatal)
@@ -252,7 +266,6 @@ export async function resolveEntrypoint() {
       config.lastCheck = now;
 
       // Never downgrade: skip if bundled version is newer or equal
-      const bundled = getBundledVersion();
       if (bundled.version && compareVersions(latestVersion, bundled.version) <= 0) {
         log('debug', `Registry version ${latestVersion} <= bundled ${bundled.version}; skipping update`);
         writeConfig(config);
