@@ -64,9 +64,17 @@ function shouldTraceUrl(rawUrl: string): boolean {
       || path.startsWith('/v1/')
       || path === '/v1'
       || path.startsWith('/genomes')
+      || path.startsWith('/genome/genomes')
       || path.startsWith('/entities')
+      || path.startsWith('/genome/entities')
       || path.startsWith('/corps')
-      || path.startsWith('/permissions');
+      || path.startsWith('/genome/corps')
+      || path.startsWith('/permissions')
+      || path.startsWith('/genome/permissions')
+      || path.startsWith('/blobs')
+      || path.startsWith('/genome/blobs')
+      || path.startsWith('/trials')
+      || path.startsWith('/genome/trials');
 
     return isKnownAhaPath && (isKnownAhaHost || isKnownAhaPort || rawUrl.startsWith('/'));
   } catch {
