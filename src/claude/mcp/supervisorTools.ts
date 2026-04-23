@@ -757,11 +757,70 @@ export async function registerSupervisorTools(ctx: McpToolContext): Promise<void
     }, async (args) => {
         // pingDaemonHeartbeat() now called automatically via registerTool wrapper in index.ts
         try {
+            const requesterMetadata = client.getMetadata();
+            let targetMetadata = requesterMetadata;
+            let targetAhaSessionId = client.sessionId;
+            let requestedSessionId = args.sessionId;
+
+            if (args.sessionId) {
+                const targetSession = args.sessionId === client.sessionId
+                    ? null
+                    : await api.getSession(args.sessionId).catch(() => null);
+                if (targetSession?.metadata) {
+                    targetMetadata = targetSession.metadata;
+                    targetAhaSessionId = targetSession.id || args.sessionId;
+                } else {
+                    targetAhaSessionId = args.sessionId;
+                }
+
+                const teamId = targetMetadata?.teamId
+                    || targetMetadata?.roomId
+                    || requesterMetadata?.teamId
+                    || requesterMetadata?.roomId;
+                if (teamId) {
+                    const daemonState = await readDaemonState().catch(() => null);
+                    if (daemonState?.httpPort) {
+                        const response = await fetch(`http://127.0.0.1:${daemonState.httpPort}/list-team-sessions`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ teamId }),
+                            signal: AbortSignal.timeout(5_000),
+                        }).catch(() => null);
+                        if (response?.ok) {
+                            const result = await response.json() as {
+                                sessions?: Array<{
+                                    ahaSessionId: string;
+                                    claudeLocalSessionId?: string;
+                                    runtimeType?: string;
+                                    role?: string;
+                                }>;
+                            };
+                            const match = result.sessions?.find((session) =>
+                                session.ahaSessionId === args.sessionId ||
+                                session.claudeLocalSessionId === args.sessionId
+                            );
+                            if (match) {
+                                targetAhaSessionId = match.ahaSessionId;
+                                requestedSessionId = match.runtimeType === 'claude'
+                                    ? (match.claudeLocalSessionId || match.ahaSessionId)
+                                    : match.ahaSessionId;
+                                targetMetadata = {
+                                    ...(targetMetadata || {}),
+                                    ...(match.runtimeType ? { flavor: match.runtimeType as any } : {}),
+                                    ...(match.role ? { role: match.role } : {}),
+                                    ...(match.claudeLocalSessionId ? { claudeSessionId: match.claudeLocalSessionId } : {}),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
             const report = getContextStatusReport({
                 homeDir: process.env.HOME || '/tmp',
-                metadata: client.getMetadata(),
-                ahaSessionId: client.sessionId,
-                requestedSessionId: args.sessionId,
+                metadata: targetMetadata,
+                ahaSessionId: targetAhaSessionId,
+                requestedSessionId,
             });
             return {
                 content: [{

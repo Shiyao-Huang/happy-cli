@@ -36,6 +36,7 @@ describe('getContextStatusReport', () => {
         });
 
         expect(report.runtimeType).toBe('claude');
+        expect(report.available).toBe(true);
         expect(report.currentContextK).toBe(130);
         expect(report.usedPercent).toBe(65);
         expect(report.status).toContain('MODERATE');
@@ -84,6 +85,7 @@ describe('getContextStatusReport', () => {
         });
 
         expect(report.runtimeType).toBe('codex');
+        expect(report.available).toBe(true);
         expect(report.currentContextK).toBe(15);
         expect(report.contextLimitK).toBe(30);
         expect(report.usedPercent).toBe(50);
@@ -125,5 +127,25 @@ describe('getContextStatusReport', () => {
         expect(report.contextLimitK).toBe(1000);
         expect(report.usedPercent).toBe(13);
         expect(report.status).toContain('LOW');
+    });
+
+    it('returns an unavailable report instead of throwing when a target Claude log is missing', () => {
+        const homeDir = mkdtempSync(join(tmpdir(), 'aha-context-missing-claude-'));
+        mkdirSync(join(homeDir, '.claude', 'projects'), { recursive: true });
+
+        const report = getContextStatusReport({
+            homeDir,
+            ahaSessionId: 'aha-session-missing',
+            requestedSessionId: 'claude-local-missing',
+            metadata: {
+                flavor: 'claude',
+                claudeSessionId: 'claude-local-missing',
+            } as any,
+        });
+
+        expect(report.available).toBe(false);
+        expect(report.runtimeType).toBe('claude');
+        expect(report.status).toContain('UNAVAILABLE');
+        expect(report.diagnostics?.join('\n')).toContain('claudeSessionId=claude-local-missing');
     });
 });

@@ -6,6 +6,7 @@ import { DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS, resolveContextWindowTokens } from
 type ContextStatusReport = {
     runtimeType: 'claude' | 'codex';
     sourceFilePath: string;
+    available: boolean;
     currentContextK: number;
     remainingK: number | null;
     usedPercent: number | null;
@@ -18,6 +19,7 @@ type ContextStatusReport = {
     recommendation: string;
     contextLimitK?: number | null;
     rateLimits?: unknown;
+    diagnostics?: string[];
 };
 
 function classifyStatus(usedPercent: number | null): { status: string; recommendation: string } {
@@ -57,6 +59,26 @@ function classifyStatus(usedPercent: number | null): { status: string; recommend
 
 function roundK(tokens: number): number {
     return Math.round(tokens / 1000);
+}
+
+function buildUnavailableContextStatus(
+    runtimeType: 'claude' | 'codex',
+    reason: string,
+    diagnostics: string[] = [],
+): ContextStatusReport {
+    return {
+        runtimeType,
+        sourceFilePath: '',
+        available: false,
+        currentContextK: 0,
+        remainingK: null,
+        usedPercent: null,
+        status: '⚪ UNAVAILABLE — runtime log not found',
+        turns: 0,
+        recommendation: reason,
+        contextLimitK: null,
+        diagnostics: [reason, ...diagnostics],
+    };
 }
 
 function safeReadLines(filePath: string): string[] {
@@ -113,6 +135,7 @@ function buildClaudeContextStatus(filePath: string, contextLimitTokens?: number)
     return {
         runtimeType: 'claude',
         sourceFilePath: filePath,
+        available: true,
         currentContextK: roundK(currentContextTokens),
         remainingK: contextLimitK === null ? null : Math.max(0, contextLimitK - roundK(currentContextTokens)),
         usedPercent,
@@ -169,6 +192,7 @@ function buildCodexContextStatus(filePath: string): ContextStatusReport {
     return {
         runtimeType: 'codex',
         sourceFilePath: filePath,
+        available: true,
         currentContextK: roundK(currentContextTokens),
         remainingK: contextLimitK === null ? null : Math.max(0, contextLimitK - roundK(currentContextTokens)),
         usedPercent,
@@ -217,9 +241,19 @@ export function getContextStatusReport(options: {
             || findCodexTranscriptFile(homeDir, options.ahaSessionId)
             || findMostRecentCodexTranscriptFile(homeDir);
         if (!codexFile) {
-            throw new Error('Codex transcript not found. Cannot determine context status.');
+            return buildUnavailableContextStatus('codex', 'Codex transcript not found. Cannot determine context status.', [
+                `ahaSessionId=${options.ahaSessionId}`,
+                ...(requestedSessionId ? [`requestedSessionId=${requestedSessionId}`] : []),
+                'Use list_team_runtime_logs to inspect whether daemon captured codexTranscriptPath for this session.',
+            ]);
         }
-        return buildCodexContextStatus(codexFile);
+        try {
+            return buildCodexContextStatus(codexFile);
+        } catch (error) {
+            return buildUnavailableContextStatus('codex', error instanceof Error ? error.message : String(error), [
+                `sourceFilePath=${codexFile}`,
+            ]);
+        }
     }
 
     const claudeSessionId = requestedSessionId || metadata?.claudeSessionId;
@@ -228,13 +262,26 @@ export function getContextStatusReport(options: {
         // Fall back to the most recently modified log file (within 2 min window).
         const fallbackFile = findMostRecentClaudeLogFile(homeDir);
         if (!fallbackFile) {
-            throw new Error('Claude session ID not found and no recent log file available. Cannot determine context status.');
+            return buildUnavailableContextStatus('claude', 'Claude session ID not found and no recent log file available. Cannot determine context status.', [
+                `ahaSessionId=${options.ahaSessionId}`,
+                'The session may not have emitted its Claude local session id yet.',
+            ]);
         }
         return buildClaudeContextStatus(fallbackFile, resolveClaudeContextLimitTokens(metadata));
     }
     const claudeFile = findClaudeLogFile(homeDir, claudeSessionId);
     if (!claudeFile) {
-        throw new Error('Claude log not found. Cannot determine context status.');
+        return buildUnavailableContextStatus('claude', 'Claude log not found. Cannot determine context status.', [
+            `ahaSessionId=${options.ahaSessionId}`,
+            `claudeSessionId=${claudeSessionId}`,
+            'Use list_team_runtime_logs to confirm the Claude local session id for this team member.',
+        ]);
     }
-    return buildClaudeContextStatus(claudeFile, resolveClaudeContextLimitTokens(metadata));
+    try {
+        return buildClaudeContextStatus(claudeFile, resolveClaudeContextLimitTokens(metadata));
+    } catch (error) {
+        return buildUnavailableContextStatus('claude', error instanceof Error ? error.message : String(error), [
+            `sourceFilePath=${claudeFile}`,
+        ]);
+    }
 }
