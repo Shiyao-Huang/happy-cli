@@ -9,6 +9,7 @@
 
 import { installDnsFallback } from '@/utils/dnsFallback'
 import { injectGenomeHubUrlFromServerUrl } from '@/configurationResolver'
+import { installAxiosTraceInstrumentation, installFetchTraceInstrumentation } from '@/trace/httpTrace'
 import chalk from 'chalk'
 import { t } from '@/i18n'
 import { runClaude, StartOptions } from '@/claude/runClaude'
@@ -16,6 +17,8 @@ import { logger } from './ui/logger'
 
 // Install DNS fallback before any network calls — affects all code paths (daemon + sessions)
 installDnsFallback()
+installAxiosTraceInstrumentation()
+installFetchTraceInstrumentation()
 // Inject GENOME_HUB_URL from AHA_SERVER_URL once at startup — no runtime derivation
 injectGenomeHubUrlFromServerUrl()
 import { readCredentials } from './persistence'
@@ -84,8 +87,8 @@ ${chalk.bold('Options:')}
   ${chalk.cyan('--debug')}                 Enable debug logging
 
 ${chalk.bold('Documentation:')}
-  GitHub: ${chalk.blue.underline('https://github.com/aha-agi/aha-cli')}
-  Docs:  ${chalk.blue.underline('https://github.com/aha-agi/aha-cli/blob/main/README.md')}
+  GitHub: ${chalk.blue.underline('https://github.com/Shiyao-Huang/happy-cli')}
+  Docs:  ${chalk.blue.underline('https://github.com/Shiyao-Huang/happy-cli/blob/main/README.md')}
 
 ${chalk.bold('Examples:')}
   ${chalk.gray('# Diagnose and clean up')}

@@ -13,6 +13,7 @@
  *   score_chain   — supervisor scoring and feedback upload
  *   lifecycle_chain — daemon, auth, session housekeeping
  *   supervisor_chain — supervisor cycle boundaries
+ *   http_chain    — outbound HTTP request outcomes
  */
 
 // ── Event Kinds ─────────────────────────────────────────────────────────────
@@ -53,6 +54,10 @@ export enum TraceEventKind {
   // supervisor_chain (2)
   supervisor_cycle_started = 'supervisor_cycle_started',
   supervisor_cycle_completed = 'supervisor_cycle_completed',
+
+  // http_chain (2)
+  http_request_completed = 'http_request_completed',
+  http_request_failed = 'http_request_failed',
 }
 
 /** All valid event kind string values */

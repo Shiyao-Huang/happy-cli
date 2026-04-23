@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { projectPath } from '@/projectPath'
 import packageJson from '../../package.json'
 import { t } from '@/i18n'
+import { closeTraceDb, initTraceDb, queryErrors, resolveTraceDbPath } from '@/trace/traceStore'
 
 /**
  * Get relevant environment information for debugging
@@ -63,6 +64,16 @@ function getLogFiles(logDir: string): { file: string, path: string, modified: Da
     } catch {
         return [];
     }
+}
+
+function formatBytes(bytes: number): string {
+    if (bytes < 1024) {
+        return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+        return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
@@ -262,10 +273,33 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
             console.log(chalk.yellow(t('doctor.noLogFiles')));
         }
 
+        console.log(chalk.bold(t('doctor.traceHeader')));
+        const traceDbPath = resolveTraceDbPath();
+        console.log(`${t('doctor.traceDbLabel')}${chalk.blue(traceDbPath)}`);
+        if (!existsSync(traceDbPath)) {
+            console.log(chalk.yellow(t('doctor.traceDbMissing')));
+        } else {
+            try {
+                const traceStats = statSync(traceDbPath);
+                initTraceDb(traceDbPath);
+                const recentErrors = queryErrors({ since: Date.now() - 24 * 60 * 60 * 1000, limit: 5 });
+                console.log(t('doctor.traceDbSizeLabel', { size: formatBytes(traceStats.size) }));
+                console.log(t('doctor.traceRecentErrorsLabel', { count: recentErrors.length }));
+                for (const event of recentErrors) {
+                    const when = new Date(event.ts).toLocaleString();
+                    console.log(chalk.gray(`  ${when} ${event.kind}: ${event.summary ?? ''}`));
+                }
+            } catch (error) {
+                console.log(chalk.red(t('doctor.traceDbReadFailed')));
+            } finally {
+                closeTraceDb();
+            }
+        }
+
         // Support and bug reports
         console.log(chalk.bold(t('doctor.supportHeader')));
-        console.log(`${t('doctor.reportIssuesLabel')}${chalk.blue('https://github.com/aha-agi/aha-cli/issues/new/choose')}`);
-        console.log(`${t('doctor.documentationLabel')}${chalk.blue('https://aha.engineering/')}`);
+        console.log(`${t('doctor.reportIssuesLabel')}${chalk.blue('https://github.com/Shiyao-Huang/happy-cli/issues/new/choose')}`);
+        console.log(`${t('doctor.documentationLabel')}${chalk.blue('https://aha-agi.com/')}`);
     }
 
     console.log(chalk.green(t('doctor.complete')));
