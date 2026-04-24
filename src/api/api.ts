@@ -1,4 +1,4 @@
-import { normalizeGenomeHubUrl } from '@/configurationResolver'
+import { normalizeGenomeHubUrl, resolveHubPublishKey } from '@/configurationResolver'
 import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState, Artifact } from '@/api/types'
@@ -24,6 +24,7 @@ import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 import { buildMarketplaceConnectionHint, buildMarketplacePublishAuthHint } from '@/utils/marketplaceConnection';
 import { withTeamMessageIdentityFallback } from './teamMessageIdentity';
+import { setGenomeHubToken, getGenomeHubToken } from '@/claude/utils/genomeTokenCache';
 
 export class ApiClient {
 
@@ -37,6 +38,40 @@ export class ApiClient {
   private constructor(credential: Credentials) {
     this.credential = credential
     this.pushClient = new PushNotificationClient(credential.token, configuration.serverUrl)
+  }
+
+  /**
+   * Fetch a short-lived genome token from happy-server (`POST /v1/genome/token`).
+   * Cached in memory (shared via genomeTokenCache) until 5 minutes before expiry.
+   */
+  private async fetchGenomeToken(): Promise<string | null> {
+    // Check shared cache first
+    const cached = getGenomeHubToken();
+    if (cached) return cached;
+
+    try {
+      const resp = await axios.post(
+        `${configuration.serverUrl}/v1/genome/token`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${this.credential.token}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 8000,
+        },
+      );
+      const token = resp.data?.token as string | undefined;
+      const expiresIn = (resp.data?.expiresIn as number) ?? 3600;
+      if (token) {
+        setGenomeHubToken(token, expiresIn);
+        logger.debug(`[API] Genome token fetched, expires in ${expiresIn}s`);
+        return token;
+      }
+    } catch (err) {
+      logger.debug(`[API] Failed to fetch genome token: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return null;
   }
 
   private normalizeTeamArtifactBody(body: any): string {
@@ -2558,7 +2593,6 @@ export class ApiClient {
   }): Promise<{ genome: any }> {
     // Primary: genome-hub (M3 marketplace, port 3006)
     const hubUrl = normalizeGenomeHubUrl();
-    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
     const namespace = genome.namespace ?? '@public';
     const encodedNs = encodeURIComponent(namespace);
@@ -2574,6 +2608,15 @@ export class ApiClient {
       isPublic: genome.isPublic ?? false,
     };
 
+    // Auth: prefer JWT from happy-server, fall back to legacy HUB_PUBLISH_KEY
+    let authToken: string | null | undefined = await this.fetchGenomeToken();
+    if (!authToken) {
+      authToken = resolveHubPublishKey({ settingsFile: configuration.settingsFile }) || undefined;
+      if (authToken) {
+        logger.debug(`[API] Using legacy HUB_PUBLISH_KEY for genome-hub auth (no JWT available)`);
+      }
+    }
+
     try {
       const response = await axios.post(
         `${hubUrl}/genomes/${encodedNs}/${encodedName}/promote`,
@@ -2581,7 +2624,7 @@ export class ApiClient {
         {
           headers: {
             'Content-Type': 'application/json',
-            ...(hubKey ? { 'Authorization': `Bearer ${hubKey}` } : {}),
+            ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
           },
           timeout: 10000,
         }
@@ -2593,12 +2636,18 @@ export class ApiClient {
       if (hubError?.response) {
         const status = hubError.response.status;
         const body = JSON.stringify(hubError.response.data ?? {});
-        const authHint = buildMarketplacePublishAuthHint(status);
-        throw new Error(`genome-hub returned ${status}: ${body}. ${authHint}`);
+
+        // If JWT auth failed (401/403), try happy-server fallback before giving up
+        if (status === 401 || status === 403) {
+          logger.debug(`[API] genome-hub auth failed (${status}), falling back to happy-server proxy`);
+        } else {
+          const authHint = buildMarketplacePublishAuthHint(status);
+          throw new Error(`genome-hub returned ${status}: ${body}. ${authHint}`);
+        }
       }
 
-      // genome-hub unreachable — fall back to happy-server legacy endpoint
-      logger.debug(`[API] genome-hub unreachable (${hubError?.message}), falling back to happy-server`);
+      // genome-hub unreachable or auth failed — fall back to happy-server legacy endpoint
+      logger.debug(`[API] genome-hub failed (${hubError?.message}), falling back to happy-server`);
       try {
         const fallback = await axios.post(
           `${configuration.serverUrl}/v1/genomes`,
@@ -2636,7 +2685,7 @@ export class ApiClient {
     publisherId?: string | null;
   }): Promise<{ genome: any; corps: LegionImage }> {
     const hubUrl = normalizeGenomeHubUrl();
-    const hubKey = process.env.HUB_PUBLISH_KEY ?? '';
+    const hubKey = resolveHubPublishKey({ settingsFile: configuration.settingsFile });
     const connectionHint = buildMarketplaceConnectionHint(hubUrl);
 
     try {
