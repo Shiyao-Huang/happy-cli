@@ -204,9 +204,24 @@ class Logger {
     }
   }
 
+  private static safeStringify(obj: unknown): string {
+    try {
+      const seen = new WeakSet();
+      return JSON.stringify(obj, (_key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+        }
+        return value;
+      });
+    } catch {
+      return String(obj);
+    }
+  }
+
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg => 
-      typeof arg === 'string' ? arg : JSON.stringify(arg)
+    const logLine = `${prefix} ${message} ${args.map(arg =>
+      typeof arg === 'string' ? arg : Logger.safeStringify(arg)
     ).join(' ')}\n`
     
     // Send to remote server if configured
