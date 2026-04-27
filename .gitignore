@@ -29,3 +29,7 @@ pnpm-lock.yaml
 **/*.log
 .release-notes-temp.md
 .gstack/
+
+# Package tarballs and test screenshots
+*.tgz
+m1-e2e-*.png

@@ -1008,23 +1008,3 @@ export interface A2AProjectionCard {
 
 /** AgentPlug — 进化增量，Image ⊕ Plug → next Image */
 export type AgentPlug = DiffChange[];
-
-// ── Backward-compat aliases (旧名→新名，新代码禁止使用旧名) ──────────
-
-/** @deprecated Use AgentImage */
-export type GenomeSpec = AgentImage;
-
-/** @deprecated Use AgentImage */
-export type AgentSpec = AgentImage;
-
-/** @deprecated Use LegionImage */
-export type CorpsSpec = LegionImage;
-
-/** @deprecated Use LegionMemberOverlay */
-export type CorpsMemberOverlay = LegionMemberOverlay;
-
-/** @deprecated Use LegionTaskPolicy */
-export type CorpsTaskPolicy = LegionTaskPolicy;
-
-/** @deprecated Use AgentVerdict */
-export type GenomeFeedback = AgentVerdict;

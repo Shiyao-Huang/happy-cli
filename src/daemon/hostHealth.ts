@@ -47,9 +47,6 @@ export interface HostHealthReport {
     alerts: string[];
 }
 
-/** Below this threshold the daemon will send a startup disk-low warning */
-export const LOW_DISK_FREE_PCT = 10;
-
 /** Disk alert threshold (free% <= this → alert) */
 export const DISK_ALERT_FREE_PCT = 10;
 
